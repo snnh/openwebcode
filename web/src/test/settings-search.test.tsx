@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsDialog } from "../settings/SettingsDialog";
 import { ExtensionRow, localizeConfigFields } from "../settings/sections/ExtensionsSection";
@@ -114,16 +114,14 @@ describe("设置搜索", () => {
     await waitFor(() => expect(visibleTabs()).toEqual([tab]));
   });
 
-  it("匹配分组名时该分组全部页签保留", () => {
+  it.each([
+    { query: "个人偏好", tabs: ["外观", "通用", "会话默认", "快捷键"] },
+    { query: "AI 与服务", tabs: ["模型目录", "模型选择", "上下文", "联网服务", "模型定价", "提示词"] },
+  ])("匹配分组名（$query）保留其全部页签", ({ query, tabs }) => {
+    cleanup();
     renderDialog();
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "个人偏好" } });
-    expect(visibleTabs()).toEqual(["外观", "通用", "会话默认", "快捷键"]);
-  });
-
-  it("匹配 AI 与服务分组名时六个页签全部保留", () => {
-    renderDialog();
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "AI 与服务" } });
-    expect(visibleTabs()).toEqual(["模型目录", "模型选择", "上下文", "联网服务", "模型定价", "提示词"]);
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: query } });
+    expect(visibleTabs()).toEqual(tabs);
   });
 
   it("无匹配时展示空态；Esc 清空恢复全部页签", () => {
@@ -136,13 +134,14 @@ describe("设置搜索", () => {
     expect(visibleTabs().length).toBe(15);
   });
 
-  it("导航中不再包含服务设置页签", () => {
+  it("导航完整性：不含服务设置页签、未识别分组无归属不进结果", async () => {
+    // 导航中不再包含服务设置页签
     renderDialog();
     expect(document.querySelector('[data-settings-tab="server"]')).toBeNull();
     expect(visibleTabs()).not.toContain("服务设置");
-  });
 
-  it("未识别分组的字段不进搜索结果（没有可渲染的归属页签）", async () => {
+    // 未识别分组的字段不进搜索结果（没有可渲染的归属页签）
+    cleanup();
     renderDialog({
       groups: [{
         id: "mystery",
@@ -209,7 +208,8 @@ async function openTab(name: string): Promise<void> {
 }
 
 describe("设置页签切换与未保存改动确认", () => {
-  it("编辑服务设置后切换页签：取消留在原页签，确认后丢弃并切换", async () => {
+  it("切换页签：未保存确认（取消留在原页/确认丢弃）；无脏不弹", async () => {
+    // 编辑服务设置后切换页签：取消留在原页签，确认后丢弃并切换
     renderDirtyDialog();
     await openTab("服务信息");
     fireEvent.change(await screen.findByLabelText("检查间隔（小时）"), { target: { value: "48" } });
@@ -223,9 +223,9 @@ describe("设置页签切换与未保存改动确认", () => {
     fireEvent.click(screen.getByRole("button", { name: /快捷键/ }));
     fireEvent.click(within(await screen.findByRole("dialog", { name: "放弃更改" })).getByRole("button", { name: "放弃更改" }));
     await waitFor(() => expect(activeTab()).toBe("shortcuts"));
-  });
 
-  it("无未保存改动时切换页签不弹确认", async () => {
+    // 无未保存改动时切换页签不弹确认
+    cleanup();
     renderDirtyDialog();
     await openTab("服务信息");
     await screen.findByLabelText("检查间隔（小时）");
@@ -249,7 +249,8 @@ describe("设置页签切换与未保存改动确认", () => {
     await waitFor(() => expect(activeTab()).toBe("shortcuts"));
   });
 
-  it("提示词文本框编辑计入 dirty：切换页签与关闭对话框都需确认", async () => {
+  it("提示词脏：切换与关闭需确认；未编辑关闭不弹", async () => {
+    // 提示词文本框编辑计入 dirty：切换页签与关闭对话框都需确认
     renderDirtyDialog();
     await openTab("提示词");
     fireEvent.change(await screen.findByLabelText("追加指令"), { target: { value: "额外指令" } });
@@ -261,9 +262,9 @@ describe("设置页签切换与未保存改动确认", () => {
     // 关闭对话框（完成按钮）同样先确认
     fireEvent.click(screen.getByRole("button", { name: "完成" }));
     expect(await screen.findByRole("dialog", { name: "放弃更改" })).toBeInTheDocument();
-  });
 
-  it("提示词未编辑时关闭对话框不弹确认", async () => {
+    // 提示词未编辑时关闭对话框不弹确认
+    cleanup();
     renderDirtyDialog();
     await openTab("提示词");
     await screen.findByLabelText("追加指令");
@@ -273,23 +274,25 @@ describe("设置页签切换与未保存改动确认", () => {
 });
 
 describe("updateCheckIntervalHours 取值范围", () => {
-  it("接受 0（仅手动检查）并保存", async () => {
+  it("updateCheckIntervalHours：0 可保存、超过 720 拒绝", async () => {
+    // 接受 0（仅手动检查）并保存
     renderDirtyDialog();
     const save = vi.spyOn(api, "saveSettings").mockResolvedValue(dirtySettingsView);
     await openTab("服务信息");
     fireEvent.change(await screen.findByLabelText("检查间隔（小时）"), { target: { value: "0" } });
     fireEvent.click(screen.getByRole("button", { name: "保存服务设置" }));
     await waitFor(() => expect(save).toHaveBeenCalledWith({ updateCheckIntervalHours: 0 }));
-  });
 
-  it("拒绝超过 720 的值", async () => {
+    // 拒绝超过 720 的值
+    cleanup();
     renderDirtyDialog();
-    const save = vi.spyOn(api, "saveSettings").mockResolvedValue(dirtySettingsView);
+    const rejectSave = vi.spyOn(api, "saveSettings").mockResolvedValue(dirtySettingsView);
+    rejectSave.mockClear();
     await openTab("服务信息");
     fireEvent.change(await screen.findByLabelText("检查间隔（小时）"), { target: { value: "721" } });
     fireEvent.click(screen.getByRole("button", { name: "保存服务设置" }));
     expect(await screen.findByText(/不能超过 720 小时/)).toBeInTheDocument();
-    expect(save).not.toHaveBeenCalled();
+    expect(rejectSave).not.toHaveBeenCalled();
   });
 });
 
@@ -453,21 +456,21 @@ describe("扩展类型化配置表单", () => {
     expect(preview).toHaveTextContent(/2 个内置工具/);
   });
 
-  it("无 configSchema 时回退到原始 JSON 编辑", () => {
+  it("无 configSchema：回退原始 JSON 编辑；空配置不渲染编辑区", () => {
+    // 无 configSchema 时回退到原始 JSON 编辑
     const extension = extensionFixture({ config: { a: 1 } });
     const view = renderWithClient(<ExtensionRow extension={extension} />);
     expect(view.getByText("配置 JSON")).toBeInTheDocument();
     const textarea = view.container.querySelector("textarea.extension-json");
     expect(textarea).not.toBeNull();
     expect((textarea as HTMLTextAreaElement).value).toBe(JSON.stringify({ a: 1 }, null, 2));
-  });
 
-  it("无 configSchema 且配置为空时不渲染配置编辑区", () => {
-    const extension = extensionFixture({ config: {} });
-    const view = renderWithClient(<ExtensionRow extension={extension} />);
-    expect(view.queryByText("配置 JSON")).toBeNull();
-    expect(view.queryByText("配置")).toBeNull();
-    expect(view.container.querySelector("textarea.extension-json")).toBeNull();
+    // 无 configSchema 且配置为空时不渲染配置编辑区
+    cleanup();
+    const empty = renderWithClient(<ExtensionRow extension={extensionFixture({ config: {} })} />);
+    expect(empty.queryByText("配置 JSON")).toBeNull();
+    expect(empty.queryByText("配置")).toBeNull();
+    expect(empty.container.querySelector("textarea.extension-json")).toBeNull();
   });
 
   it("integer 字段渲染 min/max/step，保存为整数；非整数中止保存并报错", async () => {
@@ -633,7 +636,8 @@ describe("扩展类型化配置表单", () => {
 });
 
 describe("localizeConfigFields 英文字段映射", () => {
-  it("按字段 key 覆盖 title/description，递归嵌套组", () => {
+  it("localizeConfigFields：递归覆盖 title/description；无覆盖表原样返回", () => {
+    // 按字段 key 覆盖 title/description，递归嵌套组
     const fields = parseConfigSchema({
       type: "object",
       properties: {
@@ -660,12 +664,11 @@ describe("localizeConfigFields 英文字段映射", () => {
     // 组级覆盖未给 description 时保留 schema 原值（此处原本就没有）
     expect(translate!.children).toHaveLength(1);
     expect(translate!.children![0]).toMatchObject({ key: "mode", title: "Trigger" });
-  });
 
-  it("无覆盖表或字段为 null 时原样返回", () => {
+    // 无覆盖表或字段为 null 时原样返回
     expect(localizeConfigFields(null, { a: { title: "A" } })).toBeNull();
-    const fields = parseConfigSchema({ type: "object", properties: { a: { type: "string" } } });
-    expect(localizeConfigFields(fields, undefined)).toBe(fields);
+    const bareFields = parseConfigSchema({ type: "object", properties: { a: { type: "string" } } });
+    expect(localizeConfigFields(bareFields, undefined)).toBe(bareFields);
   });
 });
 

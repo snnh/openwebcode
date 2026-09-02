@@ -239,26 +239,26 @@ describe("compact-vault host side", () => {
     expect(result).toBe("提炼结果");
   });
 
-  it("recall_memory reports unknown keys with the available key list", async () => {
+  it("recall_memory 异常矩阵：未知 key 列可用列表、缺 sessionId 拒绝、fast model 故障回退原文", async () => {
+    // 未知 key → 报告可用 key 列表
     const contents: Record<string, string> = {
       "index.json": JSON.stringify({ uptoIndex: 5, sections: [{ key: "goals", title: "目标", files: [], desc: "x" }] }),
     };
     const { api } = makeApi(contents);
-    const result = await recallMemory(api, { keys: ["nope"] }, {}, "s1");
-    expect(result).toContain("可用 key：goals");
-  });
+    const unknown = await recallMemory(api, { keys: ["nope"] }, {}, "s1");
+    expect(unknown).toContain("可用 key：goals");
 
-  it("recall_memory requires sessionId and falls back to raw fragments when the fast model fails", async () => {
-    const contents: Record<string, string> = {
+    // 缺 sessionId 拒绝；fast model 故障时回退原文片段
+    const withFile: Record<string, string> = {
       "index.json": JSON.stringify({ uptoIndex: 5, sections: [{ key: "goals", title: "目标", files: ["segments/seg-001.md"], desc: "x" }] }),
       "segments/seg-001.md": "片段原文",
     };
-    const api: VaultHostApi = {
-      readVaultFile: async (_sessionId, relative) => ({ content: relative in contents ? contents[relative] : null }),
+    const brokenApi: VaultHostApi = {
+      readVaultFile: async (_sessionId, relative) => ({ content: relative in withFile ? withFile[relative] : null }),
       modelComplete: async () => { throw new Error("fast model down"); },
     };
-    await expect(recallMemory(api, { keys: ["goals"] }, {}, undefined)).rejects.toThrow(/sessionId/);
-    const fallback = await recallMemory(api, { keys: ["goals"] }, {}, "s1");
+    await expect(recallMemory(brokenApi, { keys: ["goals"] }, {}, undefined)).rejects.toThrow(/sessionId/);
+    const fallback = await recallMemory(brokenApi, { keys: ["goals"] }, {}, "s1");
     expect(fallback).toContain("片段原文");
   });
 
@@ -496,7 +496,8 @@ describe("compact-vault thinking-model fallback and maxTokens", () => {
     expect(ledger.compacted?.summary).toContain("key=goals");
   });
 
-  it("有上限时优先走 FastModelClient，空返回自动直连兜底", async () => {
+  it("maxTokens：有上限时 FastModelClient/直连兜底均携带，缺省不限制", async () => {
+    // 有上限：FastModelClient 先被调用，空返回自动直连兜底；兜底请求带配置的上限
     const calls: StreamChatRequest[] = [];
     const providers = new ProviderRegistry();
     providers.register(makeStubProvider("test-stub", async function* (request) {
@@ -518,23 +519,22 @@ describe("compact-vault thinking-model fallback and maxTokens", () => {
       yield { type: "done", stopReason: "end_turn" };
     }));
     const client = new FastModelClient(providers, { provider: "test-stub", model: "fast-m" });
-    const { result } = await compactSession(plainMessages(12), {
+    const { result: cappedResult } = await compactSession(plainMessages(12), {
       fastModel: client,
       providers,
       // 扩展配置：用户手动设置输出上限（默认不限制）
       getConfig: () => ({ maxTokens: 4096 }),
     });
-    expect(result.changed).toBe(true);
+    expect(cappedResult.changed).toBe(true);
     // 直连兜底请求带配置的 maxTokens（FastModelClient 调用也带）
     expect(calls.length).toBeGreaterThan(1);
     expect(calls.at(-1)?.maxTokens).toBe(4096);
-  });
 
-  it("maxTokens 缺省不限制：直连请求不携带输出上限", async () => {
-    const calls: StreamChatRequest[] = [];
-    const providers = new ProviderRegistry();
-    providers.register(makeStubProvider("test-stub", async function* (request) {
-      calls.push(request);
+    // 缺省不限制：直连请求不携带输出上限
+    const uncappedCalls: StreamChatRequest[] = [];
+    const uncappedProviders = new ProviderRegistry();
+    uncappedProviders.register(makeStubProvider("test-stub", async function* (request) {
+      uncappedCalls.push(request);
       const last = request.messages.at(-1);
       const prompt = last?.content.find((block) => block.type === "text")?.text ?? "";
       if (prompt.includes("对话转录")) {
@@ -544,10 +544,10 @@ describe("compact-vault thinking-model fallback and maxTokens", () => {
       }
       yield { type: "done", stopReason: "end_turn" };
     }));
-    const client = new FastModelClient(providers, { provider: "test-stub", model: "fast-m" });
-    const { result } = await compactSession(plainMessages(12), { fastModel: client, providers });
-    expect(result.changed).toBe(true);
-    expect(calls.length).toBeGreaterThan(0);
-    expect(calls.every((call) => call.maxTokens === undefined)).toBe(true);
+    const uncappedClient = new FastModelClient(uncappedProviders, { provider: "test-stub", model: "fast-m" });
+    const { result: uncappedResult } = await compactSession(plainMessages(12), { fastModel: uncappedClient, providers: uncappedProviders });
+    expect(uncappedResult.changed).toBe(true);
+    expect(uncappedCalls.length).toBeGreaterThan(0);
+    expect(uncappedCalls.every((call) => call.maxTokens === undefined)).toBe(true);
   });
 });

@@ -77,7 +77,8 @@ describe("空白/纯空白行不进索引（isBlankLine 与 trim 等价的观察
     expect(page.recovery).toMatchObject({ state: "needs_repair" });
   });
 
-  it("行首空白+内容不是空行：JSON.parse 接受前导空白，正常记录", async () => {
+  it("行首空白/CRLF 行尾：JSON.parse 容忍的行级边界均正常记录", async () => {
+    // 行首空白+内容不是空行：JSON.parse 接受前导空白
     const root = await tempRoot("owc-reader-blank-");
     const filePath = path.join(root, "messages.jsonl");
     await writeFile(filePath, jsonl("  ", textMsg(uuid(0), "padded"), "\n", textMsg(uuid(1), "plain"), "\n"));
@@ -87,18 +88,16 @@ describe("空白/纯空白行不进索引（isBlankLine 与 trim 等价的观察
     expect(page.recovery).toBeUndefined();
     expect(page.messages.map((m) => m.id)).toEqual([uuid(0), uuid(1)]);
     expect(textOf(page.messages[0]!)).toBe("padded");
-  });
 
-  it("CRLF 行尾：\\r 作为行内容一部分，JSON.parse 接受 → 正常记录且 byId 可查", async () => {
-    const root = await tempRoot("owc-reader-blank-");
-    const filePath = path.join(root, "messages.jsonl");
-    await writeFile(filePath, jsonl(textMsg(uuid(0), "a"), "\r\n", textMsg(uuid(1), "b"), "\r\n"));
+    // CRLF 行尾：\r 作为行内容一部分，JSON.parse 接受 → byId 可查
+    const crlfPath = path.join(root, "messages-crlf.jsonl");
+    await writeFile(crlfPath, jsonl(textMsg(uuid(0), "a"), "\r\n", textMsg(uuid(1), "b"), "\r\n"));
 
-    const page = await readMessagesTail<ChatMessage>(filePath, 10);
-    expect(page.totalLines).toBe(2);
-    expect(page.recovery).toBeUndefined();
-    expect(page.messages.map((m) => m.id)).toEqual([uuid(0), uuid(1)]);
-    const before = await readMessagesBefore<ChatMessage>(filePath, uuid(1), 10);
+    const crlfPage = await readMessagesTail<ChatMessage>(crlfPath, 10);
+    expect(crlfPage.totalLines).toBe(2);
+    expect(crlfPage.recovery).toBeUndefined();
+    expect(crlfPage.messages.map((m) => m.id)).toEqual([uuid(0), uuid(1)]);
+    const before = await readMessagesBefore<ChatMessage>(crlfPath, uuid(1), 10);
     expect(before.messages.map((m) => m.id)).toEqual([uuid(0)]);
   });
 });
@@ -133,53 +132,51 @@ describe("超长单行（>64KB chunk）与常规行混合扫描", () => {
     expect(beforeHead.hasMore).toBe(false);
   });
 
-  it("超大行作末行且无尾换行：全文往返，结束判定正确", async () => {
+  it("无尾换行文件：超大行作末行/单条独占时结束判定正确", async () => {
+    // 超大行作末行且无尾换行：全文往返
     const root = await tempRoot("owc-reader-huge-");
-    const filePath = path.join(root, "messages.jsonl");
-    await writeFile(filePath, jsonl(textMsg(uuid(1), "small"), "\n", textMsg(uuid(0), BIG_TEXT)));
+    const mixedPath = path.join(root, "mixed.jsonl");
+    await writeFile(mixedPath, jsonl(textMsg(uuid(1), "small"), "\n", textMsg(uuid(0), BIG_TEXT)));
 
-    const page = await readMessagesTail<ChatMessage>(filePath, 10);
+    const page = await readMessagesTail<ChatMessage>(mixedPath, 10);
     expect(page.totalLines).toBe(2);
     expect(page.hasMore).toBe(false);
     expect(page.messages.map((m) => m.id)).toEqual([uuid(1), uuid(0)]);
     expect(textOf(page.messages[1]!)).toBe(BIG_TEXT);
-  });
 
-  it("仅一条超大行无尾换行", async () => {
-    const root = await tempRoot("owc-reader-huge-");
-    const filePath = path.join(root, "messages.jsonl");
-    await writeFile(filePath, jsonl(textMsg(uuid(0), BIG_TEXT)));
+    // 仅一条超大行无尾换行
+    const singlePath = path.join(root, "single.jsonl");
+    await writeFile(singlePath, jsonl(textMsg(uuid(0), BIG_TEXT)));
 
-    const page = await readMessagesTail<ChatMessage>(filePath, 10);
-    expect(page.totalLines).toBe(1);
-    expect(page.hasMore).toBe(false);
-    expect(page.messages.map((m) => m.id)).toEqual([uuid(0)]);
-    expect(textOf(page.messages[0]!)).toBe(BIG_TEXT);
+    const singlePage = await readMessagesTail<ChatMessage>(singlePath, 10);
+    expect(singlePage.totalLines).toBe(1);
+    expect(singlePage.hasMore).toBe(false);
+    expect(singlePage.messages.map((m) => m.id)).toEqual([uuid(0)]);
+    expect(textOf(singlePage.messages[0]!)).toBe(BIG_TEXT);
   });
 });
 
 describe("id 提取（行首 1KB 切片 + 整行回退）", () => {
-  it("legacy 布局：content 在前、id 越过 1KB → 整行回退路径仍建 byId", async () => {
+  it("id 非首键：越过 1KB 整行回退、≤1KB 正则命中，均建 byId", async () => {
+    // legacy 布局：content 在前、id 越过 1KB → 整行回退路径仍建 byId
     const root = await tempRoot("owc-reader-id-");
-    const filePath = path.join(root, "messages.jsonl");
+    const legacyPath = path.join(root, "legacy.jsonl");
     const legacy = JSON.stringify({ content: [{ type: "text", text: "J".repeat(2500) }], id: uuid(5), role: "user", createdAt: "x" });
-    await writeFile(filePath, jsonl(legacy, "\n", textMsg(uuid(6), "after"), "\n"));
+    await writeFile(legacyPath, jsonl(legacy, "\n", textMsg(uuid(6), "after"), "\n"));
 
-    const before = await readMessagesBefore<ChatMessage>(filePath, uuid(6), 10);
-    expect(before.messages).toHaveLength(1);
-    expect(before.messages[0]!.id).toBe(uuid(5));
-    expect(textOf(before.messages[0]!)).toBe("J".repeat(2500));
-  });
+    const beforeLegacy = await readMessagesBefore<ChatMessage>(legacyPath, uuid(6), 10);
+    expect(beforeLegacy.messages).toHaveLength(1);
+    expect(beforeLegacy.messages[0]!.id).toBe(uuid(5));
+    expect(textOf(beforeLegacy.messages[0]!)).toBe("J".repeat(2500));
 
-  it("id 非首键但整行 ≤1KB：整行正则分支命中", async () => {
-    const root = await tempRoot("owc-reader-id-");
-    const filePath = path.join(root, "messages.jsonl");
+    // id 非首键但整行 ≤1KB：整行正则分支命中
+    const reorderedPath = path.join(root, "reordered.jsonl");
     const reordered = JSON.stringify({ role: "user", id: uuid(7), content: [{ type: "text", text: "reordered" }], createdAt: "x" });
-    await writeFile(filePath, jsonl(reordered, "\n", textMsg(uuid(8), "after"), "\n"));
+    await writeFile(reorderedPath, jsonl(reordered, "\n", textMsg(uuid(8), "after"), "\n"));
 
-    const before = await readMessagesBefore<ChatMessage>(filePath, uuid(8), 10);
-    expect(before.messages).toHaveLength(1);
-    expect(before.messages[0]!.id).toBe(uuid(7));
+    const beforeReordered = await readMessagesBefore<ChatMessage>(reorderedPath, uuid(8), 10);
+    expect(beforeReordered.messages).toHaveLength(1);
+    expect(beforeReordered.messages[0]!.id).toBe(uuid(7));
   });
 
   it("无 36-hex id 的行不建 byId，但行仍计入 totalLines", async () => {
@@ -203,7 +200,8 @@ describe("id 提取（行首 1KB 切片 + 整行回退）", () => {
 });
 
 describe("增量扫描（追加后索引扩展/重建）", () => {
-  it("尾换行文件追加跨 chunk 超大行：扩展路径拼接正确", async () => {
+  it("追加：尾换行走索引扩展、无尾换行走全量重建", async () => {
+    // 尾换行文件追加跨 chunk 超大行：扩展路径拼接正确
     const root = await tempRoot("owc-reader-incr-");
     const filePath = path.join(root, "messages.jsonl");
     await writeFile(filePath, jsonl(textMsg(uuid(0), "a"), "\n", textMsg(uuid(1), "b"), "\n"));
@@ -220,19 +218,17 @@ describe("增量扫描（追加后索引扩展/重建）", () => {
 
     const before = await readMessagesBefore<ChatMessage>(filePath, uuid(2), 10);
     expect(before.messages.map((m) => m.id)).toEqual([uuid(0), uuid(1)]);
-  });
 
-  it("无尾换行文件追加：索引全量重建仍正确", async () => {
-    const root = await tempRoot("owc-reader-incr-");
-    const filePath = path.join(root, "messages.jsonl");
-    await writeFile(filePath, jsonl(textMsg(uuid(0), "a")));
-    const first = await readMessagesTail<ChatMessage>(filePath, 10);
-    expect(first.totalLines).toBe(1);
+    // 无尾换行文件追加：索引全量重建仍正确（独立文件避免复用上面的扩展索引）
+    const rebuildPath = path.join(root, "messages-rebuild.jsonl");
+    await writeFile(rebuildPath, jsonl(textMsg(uuid(0), "a")));
+    const rebuiltFirst = await readMessagesTail<ChatMessage>(rebuildPath, 10);
+    expect(rebuiltFirst.totalLines).toBe(1);
 
-    await appendFile(filePath, jsonl("\n", textMsg(uuid(1), BIG_TEXT), "\n"));
-    const second = await readMessagesTail<ChatMessage>(filePath, 10);
-    expect(second.totalLines).toBe(2);
-    expect(second.messages.map((m) => m.id)).toEqual([uuid(0), uuid(1)]);
-    expect(textOf(second.messages[1]!)).toBe(BIG_TEXT);
+    await appendFile(rebuildPath, jsonl("\n", textMsg(uuid(1), BIG_TEXT), "\n"));
+    const rebuiltSecond = await readMessagesTail<ChatMessage>(rebuildPath, 10);
+    expect(rebuiltSecond.totalLines).toBe(2);
+    expect(rebuiltSecond.messages.map((m) => m.id)).toEqual([uuid(0), uuid(1)]);
+    expect(textOf(rebuiltSecond.messages[1]!)).toBe(BIG_TEXT);
   });
 });

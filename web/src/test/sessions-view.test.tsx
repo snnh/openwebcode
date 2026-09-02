@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import type { Session } from "../lib/contracts";
 import { api } from "../lib/api";
 import { uiStore } from "../app/ui-store";
@@ -100,7 +100,8 @@ describe("SessionsView", () => {
     expect(screen.queryByRole("textbox", { name: "重命名会话" })).toBeNull();
   });
 
-  it("重命名：未编辑提交不调接口；Esc 取消", () => {
+  it("重命名：未编辑不调接口、Esc 取消、清空提交空串", async () => {
+    // 未编辑提交不调接口；Esc 取消
     const patch = vi.spyOn(api, "patchSession").mockResolvedValue(makeSession("a"));
     renderView([makeSession("a", { title: "旧标题" })]);
     fireEvent.click(screen.getByRole("button", { name: "重命名 旧标题" }));
@@ -115,16 +116,16 @@ describe("SessionsView", () => {
     expect(patch).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox", { name: "重命名会话" })).toBeNull();
     expect(screen.getByText("旧标题")).toBeInTheDocument();
-  });
 
-  it("重命名：清空标题提交发送空串（清除标题覆盖）", async () => {
-    const patch = vi.spyOn(api, "patchSession").mockResolvedValue(makeSession("a"));
+    // 清空标题提交发送空串（清除标题覆盖）
+    cleanup();
+    const clearPatch = vi.spyOn(api, "patchSession").mockResolvedValue(makeSession("a"));
     renderView([makeSession("a", { title: "自定义标题" })]);
     fireEvent.click(screen.getByRole("button", { name: "重命名 自定义标题" }));
-    const input = screen.getByRole("textbox", { name: "重命名会话" });
-    fireEvent.change(input, { target: { value: "   " } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => expect(patch).toHaveBeenCalledWith("a", { title: "" }));
+    const clearInput = screen.getByRole("textbox", { name: "重命名会话" });
+    fireEvent.change(clearInput, { target: { value: "   " } });
+    fireEvent.keyDown(clearInput, { key: "Enter" });
+    await waitFor(() => expect(clearPatch).toHaveBeenCalledWith("a", { title: "" }));
   });
 
   it("置顶/取消置顶调用 patchSession pinned", async () => {
@@ -136,31 +137,33 @@ describe("SessionsView", () => {
     await waitFor(() => expect(patch).toHaveBeenCalledWith("b", { pinned: false }));
   });
 
-  it("删除按钮打开删除确认（ui.setDeleteTarget）", () => {
+  it("工具栏按钮接线：删除确认/新建/设置/主题持久化", () => {
+    // 删除按钮打开删除确认（ui.setDeleteTarget）
     renderView([makeSession("a", { title: "要删的" })]);
     fireEvent.click(screen.getByRole("button", { name: "删除会话 要删的" }));
     expect(uiStore.get().deleteTarget).toBe("a");
-  });
 
-  it("新建会话按钮打开新建对话框（ui.setNewSessionOpen）", () => {
+    // 新建会话按钮打开新建对话框
+    cleanup();
     renderView([]);
     fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
     expect(uiStore.get().newSessionOpen).toBe(true);
-  });
 
-  it("设置按钮打开设置对话框（ui.openSettings）", () => {
+    // 设置按钮打开设置对话框（ui.openSettings）
+    cleanup();
     renderView([]);
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
     expect(uiStore.get().settingsOpen).toBe(true);
-  });
 
-  it("主题切换按钮写入偏好（localStorage owc-theme）", () => {
+    // 主题切换按钮写入偏好（localStorage owc-theme）
+    cleanup();
     renderView([]);
     fireEvent.click(screen.getByRole("button", { name: "切换主题" }));
     expect(["light", "dark"]).toContain(window.localStorage.getItem("owc-theme"));
   });
 
-  it("导入会话：选择文件后调用 importSession，成功提示并选中导入会话", async () => {
+  it("导入会话：成功提示并选中；失败 ui.notify error", async () => {
+    // 成功：调用 importSession，提示并选中导入会话
     const imported = makeSession("imported", { title: "导入的会话" });
     const spy = vi.spyOn(api, "importSession").mockResolvedValue(imported);
     const { container } = renderView([]);
@@ -169,13 +172,13 @@ describe("SessionsView", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(uiStore.get().sessionId).toBe("imported"));
     expect(uiStore.get().notice?.text).toBe("已导入会话「导入的会话」");
-  });
 
-  it("导入失败时提示错误（ui.notify error）", async () => {
+    // 失败：提示错误
+    cleanup();
     vi.spyOn(api, "importSession").mockRejectedValue(new Error("格式不对"));
-    const { container } = renderView([]);
-    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
-    fireEvent.change(input, { target: { files: [new File(["bad"], "bad.jsonl")] } });
+    const { container: failing } = renderView([]);
+    const badInput = failing.querySelector<HTMLInputElement>('input[type="file"]')!;
+    fireEvent.change(badInput, { target: { files: [new File(["bad"], "bad.jsonl")] } });
     await waitFor(() => expect(uiStore.get().notice?.kind).toBe("error"));
     expect(uiStore.get().notice?.text).toBe("格式不对");
   });

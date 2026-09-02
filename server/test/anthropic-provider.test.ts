@@ -371,11 +371,10 @@ const dummyRequest: StreamChatRequest = {
 };
 
 describe("ConcurrencyLimitedProvider (0.5.0 Phase 2)", () => {
-  it("limits concurrent streamChat calls to maxConcurrent", async () => {
+  it("并发包装三保证：上限内并行、超出 FIFO、错误释放槽位", async () => {
+    // 同时运行不超过 maxConcurrent
     const { provider, getMaxConcurrent } = fakeProvider("test");
     const limited = new ConcurrencyLimitedProvider(provider, 2);
-
-    // Launch 5 concurrent requests
     const promises = Array.from({ length: 5 }, () => {
       const events: ProviderEvent[] = [];
       return (async () => {
@@ -383,17 +382,14 @@ describe("ConcurrencyLimitedProvider (0.5.0 Phase 2)", () => {
         return events;
       })();
     });
-
     await Promise.all(promises);
-
     // At most 2 should have been running simultaneously
     expect(getMaxConcurrent()).toBe(2);
-  });
 
-  it("queues excess requests and processes them in FIFO order", async () => {
+    // 超出部分排队并按 FIFO 顺序执行
     const callOrder: number[] = [];
     let counter = 0;
-    const provider: Provider = {
+    const fifoProvider: Provider = {
       name: "test",
       async *streamChat(_request: StreamChatRequest): AsyncIterable<ProviderEvent> {
         const id = counter++;
@@ -402,39 +398,30 @@ describe("ConcurrencyLimitedProvider (0.5.0 Phase 2)", () => {
         yield { type: "done", stopReason: "end_turn" };
       },
     };
-    const limited = new ConcurrencyLimitedProvider(provider, 1);
-
-    // Launch 3 concurrent requests
+    const fifoLimited = new ConcurrencyLimitedProvider(fifoProvider, 1);
     await Promise.all([
-      (async () => { for await (const _ of limited.streamChat(dummyRequest)) {} })(),
-      (async () => { for await (const _ of limited.streamChat(dummyRequest)) {} })(),
-      (async () => { for await (const _ of limited.streamChat(dummyRequest)) {} })(),
+      (async () => { for await (const _ of fifoLimited.streamChat(dummyRequest)) {} })(),
+      (async () => { for await (const _ of fifoLimited.streamChat(dummyRequest)) {} })(),
+      (async () => { for await (const _ of fifoLimited.streamChat(dummyRequest)) {} })(),
     ]);
-
     expect(callOrder).toEqual([0, 1, 2]);
-  });
 
-  it("releases slot on error", async () => {
+    // 错误路径释放槽位：第二次调用照常执行
     let callCount = 0;
-    const provider: Provider = {
+    const throwingProvider: Provider = {
       name: "test",
       async *streamChat(_request: StreamChatRequest): AsyncIterable<ProviderEvent> {
         callCount++;
         throw new Error("boom");
       },
     };
-    const limited = new ConcurrencyLimitedProvider(provider, 1);
-
-    // First call throws
+    const errorLimited = new ConcurrencyLimitedProvider(throwingProvider, 1);
     await expect(async () => {
-      for await (const _ of limited.streamChat(dummyRequest)) {}
+      for await (const _ of errorLimited.streamChat(dummyRequest)) {}
     }).rejects.toThrow("boom");
-
-    // Second call should succeed (slot was released)
     await expect(async () => {
-      for await (const _ of limited.streamChat(dummyRequest)) {}
+      for await (const _ of errorLimited.streamChat(dummyRequest)) {}
     }).rejects.toThrow("boom");
-
     expect(callCount).toBe(2);
   });
 
@@ -527,7 +514,7 @@ describe("ConcurrencyLimitedProvider (0.5.0 Phase 2)", () => {
     expect(limited.getStats()).toMatchObject({ active: 0, queued: 0 });
   });
 
-  it("ProviderRegistry.register：不显式传 maxConcurrent 不包装，显式传 DEFAULT_MAX_CONCURRENT 按 3 限流", () => {
+  it("注册包装透明：缺省不限流、显式 DEFAULT_MAX_CONCURRENT 按 3 限流；代理 name/promptCaching", () => {
     const registry = new ProviderRegistry();
     const plain = fakeProvider("plain");
     registry.register(plain.provider);
@@ -539,19 +526,18 @@ describe("ConcurrencyLimitedProvider (0.5.0 Phase 2)", () => {
     expect(registry.concurrencyStats()["limited"]).toEqual({ active: 0, queued: 0, maxConcurrent: 3 });
     // 包装透明：name 代理到底层 provider
     expect(registry.get("limited")?.name).toBe("limited");
-  });
 
-  it("proxies name and promptCaching properties", () => {
-    const provider: Provider = {
+    // 包装器直接代理 name 与 promptCaching
+    const proxied: Provider = {
       name: "test-provider",
       promptCaching: true,
       async *streamChat(): AsyncIterable<ProviderEvent> {
         yield { type: "done", stopReason: "end_turn" };
       },
     };
-    const limited = new ConcurrencyLimitedProvider(provider, 3);
-    expect(limited.name).toBe("test-provider");
-    expect(limited.promptCaching).toBe(true);
+    const wrapper = new ConcurrencyLimitedProvider(proxied, 3);
+    expect(wrapper.name).toBe("test-provider");
+    expect(wrapper.promptCaching).toBe(true);
   });
 });
 
@@ -561,7 +547,8 @@ function retryRequest(signal: AbortSignal): StreamChatRequest {
 }
 
 describe("collectProviderTurn", () => {
-  it("可重试错误按 maxAttempts 重试后成功", async () => {
+  it("可重试错误按 maxAttempts 重试后成功；不可重试错误立即抛出", async () => {
+    // 可重试：重试后成功
     let attempts = 0;
     const provider: Provider = {
       name: "flaky",
@@ -575,6 +562,19 @@ describe("collectProviderTurn", () => {
     const turn = await collectProviderTurn(provider, retryRequest(new AbortController().signal), { baseDelayMs: 1 });
     expect(attempts).toBe(2);
     expect(turn.events.at(-1)).toEqual({ type: "done", stopReason: "end_turn" });
+
+    // 不可重试：立即抛出，不重试
+    let immediateAttempts = 0;
+    const nonRetryable: Provider = {
+      name: "deterministic",
+      async *streamChat() {
+        immediateAttempts += 1;
+        throw new ProviderError("invalid_request", "bad args", false);
+      },
+    };
+    await expect(collectProviderTurn(nonRetryable, retryRequest(new AbortController().signal), { baseDelayMs: 1 }))
+      .rejects.toMatchObject({ kind: "invalid_request", retryable: false });
+    expect(immediateAttempts).toBe(1);
   });
 
   it("abortableDelay 进入前检查 signal：重试等待期间已中止则立即抛出，不白等", async () => {
@@ -593,20 +593,6 @@ describe("collectProviderTurn", () => {
       onRetry: () => controller.abort(new DOMException("cancelled", "AbortError")),
     })).rejects.toMatchObject({ name: "AbortError" });
     expect(Date.now() - startedAt).toBeLessThan(5_000);
-  });
-
-  it("不可重试错误立即抛出", async () => {
-    let attempts = 0;
-    const provider: Provider = {
-      name: "deterministic",
-      async *streamChat() {
-        attempts += 1;
-        throw new ProviderError("invalid_request", "bad args", false);
-      },
-    };
-    await expect(collectProviderTurn(provider, retryRequest(new AbortController().signal), { baseDelayMs: 1 }))
-      .rejects.toMatchObject({ kind: "invalid_request", retryable: false });
-    expect(attempts).toBe(1);
   });
 });
 

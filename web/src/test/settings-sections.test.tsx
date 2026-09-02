@@ -39,38 +39,39 @@ afterEach(() => {
 });
 
 describe("设置分区：快捷键（Phase 5b）", () => {
-  it("列出全部默认键位与已注册命令标题", () => {
+  it("ShortcutsSection：列出默认键位；命令未注册回退显示 id", () => {
+    // 全部默认键位与已注册命令标题
     const dispose = registerBuiltinCommands(() => stubActions());
-    const view = renderWithClient(<ShortcutsSection />);
-    expect(view.getByText("显示所有命令")).toBeInTheDocument();
-    expect(view.getByText("切换主侧边栏可见性")).toBeInTheDocument();
+    const registered = renderWithClient(<ShortcutsSection />);
+    expect(registered.getByText("显示所有命令")).toBeInTheDocument();
+    expect(registered.getByText("切换主侧边栏可见性")).toBeInTheDocument();
     // 每条默认键位一行
-    expect(view.getAllByRole("row")).toHaveLength(DEFAULT_KEYBINDINGS.length);
+    expect(registered.getAllByRole("row")).toHaveLength(DEFAULT_KEYBINDINGS.length);
     dispose();
-  });
+    registered.unmount();
 
-  it("命令未注册时回退显示命令 id", () => {
-    const view = renderWithClient(<ShortcutsSection />);
-    expect(view.getByText("workbench.action.showCommands")).toBeInTheDocument();
+    // 命令未注册时回退显示命令 id
+    const fallback = renderWithClient(<ShortcutsSection />);
+    expect(fallback.getByText("workbench.action.showCommands")).toBeInTheDocument();
   });
 });
 
 describe("设置分区：远程访问（Phase 5b §6.8）", () => {
-  it("回环监听：展示地址并标注为安全默认", async () => {
+  it("远程访问：回环展示为安全默认、非回环展示风险提示", async () => {
     vi.spyOn(api, "settings").mockResolvedValue(settingsWithHost("127.0.0.1"));
-    const view = renderWithClient(<RemoteAccessSection />);
-    expect(await view.findByText("127.0.0.1:3210")).toBeInTheDocument();
-    expect(view.getByText(/仅本机回环/)).toBeInTheDocument();
-    expect(view.queryByRole("alert")).toBeNull();
+    const loopback = renderWithClient(<RemoteAccessSection />);
+    expect(await loopback.findByText("127.0.0.1:3210")).toBeInTheDocument();
+    expect(loopback.getByText(/仅本机回环/)).toBeInTheDocument();
+    expect(loopback.queryByRole("alert")).toBeNull();
     // token 配置说明展示（多处提及，至少一处）
-    expect(view.getAllByText(/OWC_ACCESS_TOKEN/).length).toBeGreaterThan(0);
-  });
+    expect(loopback.getAllByText(/OWC_ACCESS_TOKEN/).length).toBeGreaterThan(0);
+    loopback.unmount();
 
-  it("非回环监听：展示风险提示", async () => {
+    // 非回环监听：展示风险提示
     vi.spyOn(api, "settings").mockResolvedValue(settingsWithHost("0.0.0.0"));
-    const view = renderWithClient(<RemoteAccessSection />);
-    expect(await view.findByText("0.0.0.0:3210")).toBeInTheDocument();
-    expect(view.getByRole("alert").textContent).toMatch(/风险/);
+    const exposed = renderWithClient(<RemoteAccessSection />);
+    expect(await exposed.findByText("0.0.0.0:3210")).toBeInTheDocument();
+    expect(exposed.getByRole("alert").textContent).toMatch(/风险/);
   });
 
   it("加载失败如实显示", async () => {
@@ -79,21 +80,22 @@ describe("设置分区：远程访问（Phase 5b §6.8）", () => {
     expect(await view.findByText(/无法加载服务设置/)).toBeInTheDocument();
   });
 
-  it("监听地址/端口字段在远程访问页签可编辑并带重启徽标", async () => {
+  it("监听地址/端口：可编辑带重启徽标 vs 环境变量锁定只读", async () => {
+    // 可编辑并带重启徽标
     vi.spyOn(api, "settings").mockResolvedValue(settingsWithHost("127.0.0.1"));
-    const view = renderWithClient(<RemoteAccessSection />);
+    const editable = renderWithClient(<RemoteAccessSection />);
     // 分组标题
-    expect(await view.findByRole("heading", { name: "监听与端口", level: 4 })).toBeInTheDocument();
+    expect(await editable.findByRole("heading", { name: "监听与端口", level: 4 })).toBeInTheDocument();
     // 可编辑输入框（aria-label 为字段标签）
-    expect(view.getByLabelText("监听地址")).toBeEnabled();
-    expect(view.getByLabelText("监听端口")).toBeEnabled();
+    expect(editable.getByLabelText("监听地址")).toBeEnabled();
+    expect(editable.getByLabelText("监听端口")).toBeEnabled();
     // host source=file → 已覆盖徽标；两者 restartRequired → 重启后生效徽标
-    expect(view.getByText("已覆盖")).toBeInTheDocument();
-    expect(view.getAllByText("重启后生效")).toHaveLength(2);
-    expect(view.getByRole("button", { name: "保存服务设置" })).toBeInTheDocument();
-  });
+    expect(editable.getByText("已覆盖")).toBeInTheDocument();
+    expect(editable.getAllByText("重启后生效")).toHaveLength(2);
+    expect(editable.getByRole("button", { name: "保存服务设置" })).toBeInTheDocument();
+    editable.unmount();
 
-  it("环境变量控制的监听地址在远程访问页签保持只读", async () => {
+    // 环境变量控制 → 只读
     const envLocked: SettingsView = {
       groups: [{
         id: "network",
@@ -105,10 +107,10 @@ describe("设置分区：远程访问（Phase 5b §6.8）", () => {
       }],
     };
     vi.spyOn(api, "settings").mockResolvedValue(envLocked);
-    const view = renderWithClient(<RemoteAccessSection />);
-    expect(await view.findByLabelText("监听地址")).toBeDisabled();
-    expect(view.getByText("环境变量")).toBeInTheDocument();
-    expect(view.getByText(/由环境变量控制，界面内不可修改/)).toBeInTheDocument();
+    const locked = renderWithClient(<RemoteAccessSection />);
+    expect(await locked.findByLabelText("监听地址")).toBeDisabled();
+    expect(locked.getByText("环境变量")).toBeInTheDocument();
+    expect(locked.getByText(/由环境变量控制，界面内不可修改/)).toBeInTheDocument();
   });
 });
 
@@ -199,7 +201,7 @@ describe("设置分组迁移（服务设置页签移除后）", () => {
     ],
   };
 
-  it("执行器/存储/更新检查分组渲染在服务信息分区（系统与存储）", async () => {
+  it("执行器/存储/更新检查归服务信息分区并保留 env-lock 与重启徽标", async () => {
     vi.spyOn(api, "settings").mockResolvedValue(mixed);
     const view = renderWithClient(<SystemStorageSection />);
     expect(await view.findByLabelText("数据目录")).toBeInTheDocument();
@@ -211,89 +213,57 @@ describe("设置分组迁移（服务设置页签移除后）", () => {
     expect(view.queryByLabelText("监听地址")).toBeNull();
     expect(view.queryByLabelText("远程模型目录 URL")).toBeNull();
     expect(view.queryByLabelText("固定美元汇率")).toBeNull();
-  });
 
-  it("env-lock 与重启徽标在服务信息分区保持", async () => {
-    vi.spyOn(api, "settings").mockResolvedValue(mixed);
-    const view = renderWithClient(<SystemStorageSection />);
-    expect(await view.findByLabelText("执行器路径")).toBeDisabled();
+    // env-lock 与重启徽标保持
+    expect(view.getByLabelText("执行器路径")).toBeDisabled();
     expect(view.getByText("环境变量")).toBeInTheDocument();
     expect(view.getByText(/由环境变量控制，界面内不可修改/)).toBeInTheDocument();
     // dataDir 与 corePath 均 restartRequired
     expect(view.getAllByText("重启后生效")).toHaveLength(2);
   });
 
-  it("模型选择分组渲染在模型选择分区", async () => {
+  it("模型选择与模型目录分组渲染在各自分区", async () => {
+    // 模型选择分区
     vi.spyOn(api, "settings").mockResolvedValue(mixed);
-    const view = renderWithClient(<ModelSelectionSection />);
-    expect(await view.findByLabelText("会话默认模型")).toBeInTheDocument();
-    expect(view.getByRole("heading", { name: "模型选择", level: 4 })).toBeInTheDocument();
+    const selection = renderWithClient(<ModelSelectionSection />);
+    expect(await selection.findByLabelText("会话默认模型")).toBeInTheDocument();
+    expect(selection.getByRole("heading", { name: "模型选择", level: 4 })).toBeInTheDocument();
     // 其他分组不渲染
-    expect(view.queryByLabelText("远程模型目录 URL")).toBeNull();
-    expect(view.queryByLabelText("数据目录")).toBeNull();
-    expect(view.queryByLabelText("监听地址")).toBeNull();
-  });
+    expect(selection.queryByLabelText("远程模型目录 URL")).toBeNull();
+    expect(selection.queryByLabelText("数据目录")).toBeNull();
+    expect(selection.queryByLabelText("监听地址")).toBeNull();
+    selection.unmount();
 
-  it("模型目录与同步分组渲染在模型目录分区", async () => {
+    // 模型目录分区
     vi.spyOn(api, "settings").mockResolvedValue(mixed);
-    const view = renderWithClient(<ModelCatalogSyncSection />);
-    expect(await view.findByLabelText("远程模型目录 URL")).toBeInTheDocument();
-    expect(view.getByRole("heading", { name: "模型目录与同步", level: 4 })).toBeInTheDocument();
+    const catalog = renderWithClient(<ModelCatalogSyncSection />);
+    expect(await catalog.findByLabelText("远程模型目录 URL")).toBeInTheDocument();
+    expect(catalog.getByRole("heading", { name: "模型目录与同步", level: 4 })).toBeInTheDocument();
     // 其他分组不渲染
-    expect(view.queryByLabelText("会话默认模型")).toBeNull();
-    expect(view.queryByLabelText("数据目录")).toBeNull();
-    expect(view.queryByLabelText("监听地址")).toBeNull();
+    expect(catalog.queryByLabelText("会话默认模型")).toBeNull();
+    expect(catalog.queryByLabelText("数据目录")).toBeNull();
+    expect(catalog.queryByLabelText("监听地址")).toBeNull();
   });
 
-  it("汇率分组渲染在定价页签字段组件", async () => {
+  it.each<{ groupId: string; heading: string; present: string[]; absent: string[]; toggleRow?: boolean }>([
+    { groupId: "exchangeRate", heading: "汇率", present: ["固定美元汇率"], absent: ["数据目录"] },
+    { groupId: "general", heading: "通用", present: ["默认货币", "启用 Chat 模式"], absent: ["数据目录", "离线模式", "自动压缩水位（%）"] },
+    { groupId: "defaults", heading: "会话默认", present: ["默认思考力度"], absent: ["默认货币", "自动压缩水位（%）"] },
+    { groupId: "context", heading: "上下文与运行", present: ["自动压缩水位（%）", "单条消息最大轮次"], absent: ["默认货币"] },
+    { groupId: "webSearch", heading: "联网", present: ["离线模式", "联网搜索模式"], absent: [], toggleRow: true },
+  ])("$heading 分组归属各自分区渲染", async ({ groupId, heading, present, absent, toggleRow }) => {
     vi.spyOn(api, "settings").mockResolvedValue(mixed);
-    const view = renderWithClient(<ServerSettingsFields showGroup={(groupId) => groupId === "exchangeRate"} />);
-    expect(await view.findByLabelText("固定美元汇率")).toBeInTheDocument();
-    expect(view.getByRole("heading", { name: "汇率", level: 4 })).toBeInTheDocument();
-    expect(view.queryByLabelText("数据目录")).toBeNull();
-  });
-
-  it("通用分组渲染在通用页签字段组件（重排后仅语言/货币/模式）", async () => {
-    vi.spyOn(api, "settings").mockResolvedValue(mixed);
-    const view = renderWithClient(<ServerSettingsFields showGroup={(groupId) => groupId === "general"} />);
-    expect(await view.findByLabelText("默认货币")).toBeInTheDocument();
-    expect(view.getByRole("heading", { name: "通用", level: 4 })).toBeInTheDocument();
-    expect(view.getByText("启用 Chat 模式")).toBeInTheDocument();
-    expect(view.queryByLabelText("数据目录")).toBeNull();
-    // 重排后离线模式/自动压缩水位不再随通用分组渲染
-    expect(view.queryByText("离线模式")).toBeNull();
-    expect(view.queryByLabelText("自动压缩水位（%）")).toBeNull();
-  });
-
-  it("会话默认分组渲染在会话默认页签字段组件", async () => {
-    vi.spyOn(api, "settings").mockResolvedValue(mixed);
-    const view = renderWithClient(<ServerSettingsFields showGroup={(groupId) => groupId === "defaults"} />);
-    expect(await view.findByLabelText("默认思考力度")).toBeInTheDocument();
-    expect(view.getByRole("heading", { name: "会话默认", level: 4 })).toBeInTheDocument();
-    expect(view.queryByLabelText("默认货币")).toBeNull();
-    expect(view.queryByLabelText("自动压缩水位（%）")).toBeNull();
-  });
-
-  it("上下文分组渲染在上下文页签字段组件", async () => {
-    vi.spyOn(api, "settings").mockResolvedValue(mixed);
-    const view = renderWithClient(<ServerSettingsFields showGroup={(groupId) => groupId === "context"} />);
-    expect(await view.findByLabelText("自动压缩水位（%）")).toBeInTheDocument();
-    expect(view.getByLabelText("单条消息最大轮次")).toBeInTheDocument();
-    expect(view.getByRole("heading", { name: "上下文与运行", level: 4 })).toBeInTheDocument();
-    expect(view.queryByLabelText("默认货币")).toBeNull();
-  });
-
-  it("离线模式开关随联网分组渲染，镜像布尔字段写法", async () => {
-    vi.spyOn(api, "settings").mockResolvedValue(mixed);
-    const view = renderWithClient(<ServerSettingsFields showGroup={(groupId) => groupId === "webSearch"} />);
-    expect(await view.findByText("离线模式")).toBeInTheDocument();
-    expect(view.getByRole("heading", { name: "联网", level: 4 })).toBeInTheDocument();
-    expect(view.getByLabelText("联网搜索模式")).toBeInTheDocument();
-    // 布尔字段渲染为 checkbox（无 aria-label，文案在字段头部），默认关
-    const toggle = view.getByRole("checkbox");
-    expect(toggle).not.toBeChecked();
-    expect(toggle).toBeEnabled();
-    expect(view.getByText("关闭")).toBeInTheDocument();
+    const view = renderWithClient(<ServerSettingsFields showGroup={(groupId2) => groupId2 === groupId} />);
+    expect(await view.findByRole("heading", { name: heading, level: 4 })).toBeInTheDocument();
+    for (const text of present) expect(view.getByText(text)).toBeInTheDocument();
+    for (const text of absent) expect(view.queryByText(text)).toBeNull();
+    if (toggleRow) {
+      // 布尔字段渲染为 checkbox（无 aria-label，文案在字段头部），默认关
+      const toggle = view.getByRole("checkbox");
+      expect(toggle).not.toBeChecked();
+      expect(toggle).toBeEnabled();
+      expect(view.getByText("关闭")).toBeInTheDocument();
+    }
   });
 });
 
@@ -434,31 +404,32 @@ describe("ModelCatalogSection capabilities", () => {
     })));
   });
 
-  it("runs remote catalog sync and displays its result", async () => {
+  it("模型目录远程同步：触发结果与上次同步展示", async () => {
+    // 触发同步并展示结果
     mockProfileQueries();
     const sync = vi.spyOn(api, "syncModels").mockResolvedValue({
       ok: true,
       count: 2,
       updatedAt: "2026-07-21T00:00:00.000Z",
     });
-    const view = renderCatalog();
+    const first = renderCatalog();
 
-    fireEvent.click(await view.findByRole("button", { name: "立即同步" }));
+    fireEvent.click(await first.findByRole("button", { name: "立即同步" }));
 
     await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
-    expect(await view.findByText(/已同步 2 个远程模型/)).toBeInTheDocument();
-  });
+    expect(await first.findByText(/已同步 2 个远程模型/)).toBeInTheDocument();
+    first.unmount();
 
-  it("shows the last successful remote catalog sync", async () => {
+    // 展示上次成功的远程同步
     vi.spyOn(api, "models").mockResolvedValue([multimodalModel]);
     vi.spyOn(api, "modelSyncStatus").mockResolvedValue({
       count: 2,
       updatedAt: "2026-07-21T00:00:00.000Z",
     });
     vi.spyOn(api, "providerProfiles").mockResolvedValue({ modelProviders: [], webProviders: [], activeWeb: {} });
-    const view = renderCatalog();
+    const second = renderCatalog();
 
-    expect(await view.findByText(/上次同步：/)).toHaveTextContent("2 个远程模型");
+    expect(await second.findByText(/上次同步：/)).toHaveTextContent("2 个远程模型");
   });
 });
 

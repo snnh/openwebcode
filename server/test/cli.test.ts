@@ -171,18 +171,17 @@ describe("CLI 工具限制旗标", () => {
 });
 
 describe("CLI --fallback-models", () => {
-  it("格式错误（缺 / 或空段）：报错误退出码 1，不连接 server", async () => {
-    for (const value of ["no-slash", "/model", "provider/"]) {
+  it("fallback-models 非法输入（格式/超限循环）", async () => {
+    for (const [value, message] of [
+      ["no-slash", "--fallback-models 格式错误"],
+      ["/model", "--fallback-models 格式错误"],
+      ["provider/", "--fallback-models 格式错误"],
+      ["a/1,b/2,c/3,d/4", "最多 3 个"],
+    ]) {
       const result = await runCli(["run", "hi", "--fallback-models", value], 10_000);
       expect(result.code).toBe(1);
-      expect(result.stderr).toContain("--fallback-models 格式错误");
+      expect(result.stderr).toContain(message);
     }
-  }, 30_000);
-
-  it("超过 3 个：报错误退出码 1", async () => {
-    const result = await runCli(["run", "hi", "--fallback-models", "a/1,b/2,c/3,d/4"], 10_000);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("最多 3 个");
   }, 30_000);
 
   it("合法：新建会话携带 fallbackModels 并持久化（重复项被剔除）", async () => {

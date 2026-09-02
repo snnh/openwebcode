@@ -46,28 +46,19 @@ describe("replaceFileWithRetry", () => {
 describe("writeUtf8Atomically mode", () => {
   const makeRoot = (): Promise<string> => tempRoot("owc-atomic-");
 
-  it("POSIX 平台写后 chmod 目标文件", async () => {
+  it.each([
+    { platform: "linux", expectChmod: true },
+    { platform: "win32", expectChmod: false },
+  ])("写入后 chmod：POSIX 收紧 / Windows no-op（platform=$platform）", async ({ platform, expectChmod }) => {
     const root = await makeRoot();
     const target = path.join(root, "secret.json");
     const chmodCalls: Array<{ target: string; mode: number }> = [];
     await writeUtf8Atomically(target, "{}\n", {
-      platform: "linux",
+      platform,
       mode: 0o600,
       chmodFile: async (file, mode) => { chmodCalls.push({ target: file, mode }); },
     });
-    expect(chmodCalls).toEqual([{ target, mode: 0o600 }]);
-  });
-
-  it("Windows 平台不 chmod（no-op）", async () => {
-    const root = await makeRoot();
-    const target = path.join(root, "secret.json");
-    let chmodCalled = false;
-    await writeUtf8Atomically(target, "{}\n", {
-      platform: "win32",
-      mode: 0o600,
-      chmodFile: async () => { chmodCalled = true; },
-    });
-    expect(chmodCalled).toBe(false);
+    expect(chmodCalls).toEqual(expectChmod ? [{ target, mode: 0o600 }] : []);
   });
 
   it.skipIf(process.platform === "win32")("POSIX 实文件断言权限位 0600", async () => {

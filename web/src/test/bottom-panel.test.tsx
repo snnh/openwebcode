@@ -157,7 +157,7 @@ describe("BottomPanel 页签与开合", () => {
 });
 
 describe("BottomPanel 状态项", () => {
-  it("桌面端：状态点+文案、tokens·成本、窗口占用 %", async () => {
+  it("状态项：状态点+tokens·成本+窗口%；空闲/无会话不渲染", async () => {
     mockBaseApis();
     sessionMeta.setUsage(session.id, { inputTokens: 1_200, outputTokens: 80, cacheRead: 0, cacheWrite: 0 });
     sessionMeta.setWatermark(session.id, {
@@ -170,14 +170,14 @@ describe("BottomPanel 状态项", () => {
       buildMs: 1,
       incremental: true,
     });
-    renderWithClient(<BottomPanel sessionId={session.id} agentState="streaming" mobile={false} />);
-    const status = screen.getByLabelText("会话状态");
+    const first = renderWithClient(<BottomPanel sessionId={session.id} agentState="streaming" mobile={false} />);
+    const status = first.getByLabelText("会话状态");
     expect(status).toHaveTextContent("正在输出");
     await waitFor(() => expect(status).toHaveTextContent("1.3k tok"));
     expect(status).toHaveTextContent("窗口 38%");
-  });
+    first.unmount();
 
-  it("空闲态显示空闲；无会话时不渲染状态项", () => {
+    // 无会话时不渲染状态项
     mockBaseApis();
     renderWithClient(<BottomPanel mobile={false} />);
     expect(screen.queryByLabelText("会话状态")).toBeNull();
@@ -276,7 +276,8 @@ describe("CostPanel", () => {
 });
 
 describe("CostPanel 缓存节省卡", () => {
-  it("totals 带 cacheSavings 渲染节省卡（偏好币种）；incomplete 标 * 并在 title 注明", async () => {
+  it("缓存节省卡：偏好币种与 * 标注；无缓存活动整卡消失", async () => {
+    // totals 带 cacheSavings 渲染节省卡（偏好币种）；incomplete 标 * 并在 title 注明
     vi.spyOn(api, "costReport").mockResolvedValue(report({
       totals: {
         runs: 2, inputTokens: 1_000, outputTokens: 200, cacheRead: 500, cacheWrite: 100,
@@ -284,12 +285,13 @@ describe("CostPanel 缓存节省卡", () => {
         cacheSavings: { cnyMicroUnits: "2400000", usdMicroUnits: "330000" },
       },
     }));
-    renderWithClient(<CostPanel />);
-    const card = await screen.findByTestId("cache-savings-card");
+    const first = renderWithClient(<CostPanel />);
+    const card = await first.findByTestId("cache-savings-card");
     expect(card).toHaveTextContent("≈¥2.4");
     expect(card.textContent).not.toContain("*");
+    first.unmount();
+
     // 不完整估算：标 * + title 注明
-    cleanup();
     vi.spyOn(api, "costReport").mockResolvedValue(report({
       totals: {
         runs: 2, inputTokens: 1_000, outputTokens: 200, cacheRead: 500, cacheWrite: 100,
@@ -298,20 +300,20 @@ describe("CostPanel 缓存节省卡", () => {
         cacheSavingsIncomplete: true,
       },
     }));
-    renderWithClient(<CostPanel />);
-    const incompleteCard = await screen.findByTestId("cache-savings-card");
+    const second = renderWithClient(<CostPanel />);
+    const incompleteCard = await second.findByTestId("cache-savings-card");
     expect(incompleteCard.textContent).toContain("*");
     expect(incompleteCard.querySelector("b")!.getAttribute("title")).toContain("不完整");
-  });
+    second.unmount();
 
-  it("无缓存活动时命中/节省卡整卡消失", async () => {
+    // 无缓存活动时命中/节省卡整卡消失
     vi.spyOn(api, "costReport").mockResolvedValue(report({
       totals: { runs: 1, inputTokens: 100, outputTokens: 50, cacheRead: 0, cacheWrite: 0, usdMicroUnits: "1000", cnyMicroUnits: "7000", unpricedTokens: 0 },
     }));
-    renderWithClient(<CostPanel />);
-    await screen.findByText(/按日/);
-    expect(screen.queryByTestId("cache-hit-card")).toBeNull();
-    expect(screen.queryByTestId("cache-savings-card")).toBeNull();
+    const third = renderWithClient(<CostPanel />);
+    await third.findByText(/按日/);
+    expect(third.queryByTestId("cache-hit-card")).toBeNull();
+    expect(third.queryByTestId("cache-savings-card")).toBeNull();
   });
 });
 
@@ -325,30 +327,30 @@ describe("CostPanel 表格分页", () => {
     }));
   }
 
-  it("超过每页组数出现分页器：翻页切换组、每页条数可改", async () => {
+  it("分页器：超过每页组数渲染并可翻页改条数；不超不渲染", async () => {
     vi.spyOn(api, "costReport").mockResolvedValue(report({ days: manyDays(25) }));
-    renderWithClient(<CostPanel />);
-    await screen.findByText(/按日/);
+    const first = renderWithClient(<CostPanel />);
+    await first.findByText(/按日/);
     // 默认每页 10 组：第一页 m-0..m-9，分页器显示 3 页
-    expect(screen.getByText("p · m-0")).toBeInTheDocument();
-    expect(screen.getByText("p · m-9")).toBeInTheDocument();
-    expect(screen.queryByText("p · m-10")).toBeNull();
-    const pager = screen.getAllByLabelText("下一页")[0]!;
+    expect(first.getByText("p · m-0")).toBeInTheDocument();
+    expect(first.getByText("p · m-9")).toBeInTheDocument();
+    expect(first.queryByText("p · m-10")).toBeNull();
+    const pager = first.getAllByLabelText("下一页")[0]!;
     fireEvent.click(pager);
-    expect(screen.getByText("p · m-10")).toBeInTheDocument();
-    expect(screen.queryByText("p · m-9")).toBeNull();
-    expect(screen.getByText(/第 2 \/ 3 页/)).toBeInTheDocument();
+    expect(first.getByText("p · m-10")).toBeInTheDocument();
+    expect(first.queryByText("p · m-9")).toBeNull();
+    expect(first.getByText(/第 2 \/ 3 页/)).toBeInTheDocument();
     // 每页 50 → 全部 25 组一页装下
-    fireEvent.change(screen.getAllByLabelText("每页组数")[0]!, { target: { value: "50" } });
-    expect(screen.getByText("p · m-0")).toBeInTheDocument();
-    expect(screen.getByText("p · m-24")).toBeInTheDocument();
-  });
+    fireEvent.change(first.getAllByLabelText("每页组数")[0]!, { target: { value: "50" } });
+    expect(first.getByText("p · m-0")).toBeInTheDocument();
+    expect(first.getByText("p · m-24")).toBeInTheDocument();
+    first.unmount();
 
-  it("组数不超过每页时不渲染分页器", async () => {
+    // 组数不超过每页时不渲染分页器
     vi.spyOn(api, "costReport").mockResolvedValue(report());
-    renderWithClient(<CostPanel />);
-    await screen.findByText(/按日/);
-    expect(screen.queryByLabelText("下一页")).toBeNull();
+    const second = renderWithClient(<CostPanel />);
+    await second.findByText(/按日/);
+    expect(second.queryByLabelText("下一页")).toBeNull();
   });
 });
 
@@ -389,7 +391,7 @@ describe("PerfPanel", () => {
     expect(screen.getByText(/选择会话以查看性能数据|Select a session/)).toBeDefined();
   });
 
-  it("可暂停并持久化实时性能监控", () => {
+  it("实时监控开关：可暂停持久化；刷新后保持暂停不采样不轮询", () => {
     renderPanel("s1");
     const toggle = screen.getByRole("switch", { name: /实时性能监控|Live performance monitoring/ });
     expect(toggle).toHaveAttribute("aria-checked", "true");
@@ -401,10 +403,11 @@ describe("PerfPanel", () => {
     expect(stopFrameSampler).toHaveBeenCalled();
     expect(window.localStorage.getItem("owc-perf-monitoring")).toBe("false");
     expect(screen.getByText(/实时采样与数据刷新已暂停|Live sampling and data refresh are paused/)).toBeDefined();
-  });
+    cleanup();
 
-  it("刷新后保持暂停且不启动采样或轮询", () => {
+    // 刷新后保持暂停且不启动采样或轮询
     window.localStorage.setItem("owc-perf-monitoring", "false");
+    vi.clearAllMocks();
     renderPanel("s1");
 
     expect(screen.getByRole("switch", { name: /实时性能监控|Live performance monitoring/ })).toHaveAttribute("aria-checked", "false");

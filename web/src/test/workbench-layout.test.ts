@@ -29,7 +29,7 @@ describe("workbench/layout", () => {
     ]);
   });
 
-  it("showView：点同一视图折叠/展开侧栏（VSCode 行为），切换视图则展开", () => {
+  it("视图切换语义：showView 同视图折叠·异视图展开、selectView 仅切换", () => {
     layout.showView("files");
     expect(layoutStore.get().sidebarView).toBe("files");
     expect(layoutStore.get().sidebarVisible).toBe(true);
@@ -47,9 +47,8 @@ describe("workbench/layout", () => {
     layout.showView("scm");
     expect(layoutStore.get().sidebarView).toBe("scm");
     expect(layoutStore.get().sidebarVisible).toBe(true);
-  });
 
-  it("selectView：仅切换视图，不改变侧栏可见性", () => {
+    // selectView：仅切换视图，不改变侧栏可见性
     layoutStore.set({ sidebarVisible: false });
     layout.selectView("problems");
     expect(layoutStore.get().sidebarView).toBe("problems");
@@ -57,16 +56,14 @@ describe("workbench/layout", () => {
     expect(window.localStorage.getItem("owc-wb-view")).toBe("problems");
   });
 
-  it("toggleSidebar / setSidebarVisible 持久化折叠态", () => {
+  it("侧栏状态：折叠持久化与宽度夹取", () => {
     layout.toggleSidebar();
     expect(layoutStore.get().sidebarVisible).toBe(false);
     expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("1");
     layout.setSidebarVisible(true);
     expect(layoutStore.get().sidebarVisible).toBe(true);
     expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("0");
-  });
 
-  it("setSidebarWidth 夹取范围并持久化", () => {
     layout.setSidebarWidth(100);
     expect(layoutStore.get().sidebarWidth).toBe(RAIL_MIN_WIDTH);
     layout.setSidebarWidth(9999);
@@ -76,7 +73,7 @@ describe("workbench/layout", () => {
     expect(window.localStorage.getItem("owc-rail-width")).toBe("300");
   });
 
-  it("setBottomOpen 支持值与函数更新；toggleBottomPanel 翻转", () => {
+  it("底部面板：bottomOpen 值·函数更新、页签与高度夹取持久化", () => {
     layout.setBottomOpen(true);
     expect(layoutStore.get().bottomOpen).toBe(true);
     expect(window.localStorage.getItem("owc-panel-open")).toBe("1");
@@ -85,9 +82,7 @@ describe("workbench/layout", () => {
     expect(window.localStorage.getItem("owc-panel-open")).toBe("0");
     layout.toggleBottomPanel();
     expect(layoutStore.get().bottomOpen).toBe(true);
-  });
 
-  it("setBottomTab / setBottomHeight 持久化（高度夹取范围）", () => {
     layout.setBottomTab("timeline");
     expect(layoutStore.get().bottomTab).toBe("timeline");
     expect(window.localStorage.getItem("owc-panel-tab")).toBe("timeline");

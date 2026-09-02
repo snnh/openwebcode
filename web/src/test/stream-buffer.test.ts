@@ -82,7 +82,8 @@ describe("createStreamBuffer", () => {
     expect(blocks[3]?.name).toBe("read_file");
   });
 
-  it("平滑放出：短文本按基线预算逐帧放出，放完不续帧", () => {
+  it("预算放出：基线逐帧放出、大积压自适应加速追平", () => {
+    // 短文本按基线预算逐帧放出，放完不续帧
     const frames = manualFrames();
     const buffer = createStreamBuffer(frames.env);
     buffer.queueDelta("s1", "abcdef");
@@ -92,18 +93,17 @@ describe("createStreamBuffer", () => {
     expect(joined(buffer.blocksFor("s1"))).toBe("abcdef");
     expect(buffer.blocksFor("s1")[0]?.parts).toEqual(["abc", "def"]);
     expect(frames.pending()).toBe(0);
-  });
 
-  it("大积压自适应加速追平，无需新 delta 即可放完", () => {
-    const frames = manualFrames();
-    const buffer = createStreamBuffer(frames.env);
+    // 大积压自适应加速追平，无需新 delta 即可放完
+    const burstFrames = manualFrames();
+    const burstBuffer = createStreamBuffer(burstFrames.env);
     const text = "x".repeat(100);
-    buffer.queueDelta("s1", text);
-    frames.runFrame();
-    expect(joined(buffer.blocksFor("s1"))).toHaveLength(13);
-    for (let i = 0; i < 20 && joined(buffer.blocksFor("s1")).length < text.length; i += 1) frames.runFrame();
-    expect(joined(buffer.blocksFor("s1"))).toBe(text);
-    expect(frames.pending()).toBe(0);
+    burstBuffer.queueDelta("s1", text);
+    burstFrames.runFrame();
+    expect(joined(burstBuffer.blocksFor("s1"))).toHaveLength(13);
+    for (let i = 0; i < 20 && joined(burstBuffer.blocksFor("s1")).length < text.length; i += 1) burstFrames.runFrame();
+    expect(joined(burstBuffer.blocksFor("s1"))).toBe(text);
+    expect(burstFrames.pending()).toBe(0);
   });
 
   it("工具参数增量不平滑：长分片当帧全量提交；name-only 首片先建卡片", () => {

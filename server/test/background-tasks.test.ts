@@ -575,7 +575,7 @@ function makeScheduler(file: string, now: () => number, fires: FireRecord[]): Cr
 }
 
 describe("parseCronExpression", () => {
-  it("接受合法各形态：star / star-n / 范围 / 列表 / 单值 / 带步长范围", () => {
+  it("parseCronExpression：合法形态/7→0/非法拒绝", () => {
     const every = parseCronExpression("* * * * *");
     expect(every.minute).toHaveLength(60);
     expect(every.domAny).toBe(true);
@@ -588,14 +588,11 @@ describe("parseCronExpression", () => {
     expect(parseCronExpression("0 9-17/2 * * *").hour).toEqual([9, 11, 13, 15, 17]);
     // `a/n` 等价 `a-max/n`（标准语义）
     expect(parseCronExpression("10/20 * * * *").minute).toEqual([10, 30, 50]);
-  });
 
-  it("day-of-week 的 7 归一为 0（周日）", () => {
+    // day-of-week 的 7 归一为 0（周日）
     expect(parseCronExpression("0 9 * * 7").dayOfWeek).toEqual([0]);
     expect(parseCronExpression("0 9 * * 0,7").dayOfWeek).toEqual([0]);
-  });
 
-  it("拒绝非法表达式并给出可读错误", () => {
     expect(() => parseCronExpression("* * * *")).toThrow(/exactly 5 fields/);
     expect(() => parseCronExpression("* * * * * *")).toThrow(/exactly 5 fields/);
     expect(() => parseCronExpression("61 * * * *")).toThrow(/out of range 0-59/);
@@ -611,25 +608,23 @@ describe("parseCronExpression", () => {
 });
 
 describe("nextCronFire（本地时区）", () => {
-  it("每天 09:00：当天未到取当天，已过取次日", () => {
-    const fields = parseCronExpression("0 9 * * *");
-    expect(nextCronFire(fields, new Date(2026, 6, 30, 8, 30).getTime())).toBe(new Date(2026, 6, 30, 9, 0).getTime());
-    expect(nextCronFire(fields, new Date(2026, 6, 30, 9, 0).getTime())).toBe(new Date(2026, 6, 31, 9, 0).getTime());
-  });
+  it("nextCronFire 矩阵（日任务/分钟/或语义/跨年/不可达）", () => {
+    // 每天 09:00：当天未到取当天，已过取次日
+    const daily = parseCronExpression("0 9 * * *");
+    expect(nextCronFire(daily, new Date(2026, 6, 30, 8, 30).getTime())).toBe(new Date(2026, 6, 30, 9, 0).getTime());
+    expect(nextCronFire(daily, new Date(2026, 6, 30, 9, 0).getTime())).toBe(new Date(2026, 6, 31, 9, 0).getTime());
 
-  it("每 15 分钟：取下一刻钟点", () => {
-    const fields = parseCronExpression("*/15 * * * *");
-    expect(nextCronFire(fields, new Date(2026, 6, 30, 10, 7).getTime())).toBe(new Date(2026, 6, 30, 10, 15).getTime());
-    expect(nextCronFire(fields, new Date(2026, 6, 30, 10, 15).getTime())).toBe(new Date(2026, 6, 30, 10, 30).getTime());
-  });
+    // 每 15 分钟：取下一刻钟点
+    const quarterHourly = parseCronExpression("*/15 * * * *");
+    expect(nextCronFire(quarterHourly, new Date(2026, 6, 30, 10, 7).getTime())).toBe(new Date(2026, 6, 30, 10, 15).getTime());
+    expect(nextCronFire(quarterHourly, new Date(2026, 6, 30, 10, 15).getTime())).toBe(new Date(2026, 6, 30, 10, 30).getTime());
 
-  it("日/周都受限时取或（标准 cron 语义）", () => {
+    // 日/周都受限时取或（标准 cron 语义）
     // 每月 13 号 或 每周五 的 00:00；2026-07-30 是周四 → 下一天周五 07-31
-    const fields = parseCronExpression("0 0 13 * 5");
-    expect(nextCronFire(fields, new Date(2026, 6, 30, 10, 0).getTime())).toBe(new Date(2026, 6, 31, 0, 0).getTime());
-  });
+    const domOrDow = parseCronExpression("0 0 13 * 5");
+    expect(nextCronFire(domOrDow, new Date(2026, 6, 30, 10, 0).getTime())).toBe(new Date(2026, 6, 31, 0, 0).getTime());
 
-  it("跨月/跨年与不可达表达式", () => {
+    // 跨月/跨年与不可达表达式
     expect(nextCronFire(parseCronExpression("0 0 1 1 *"), new Date(2026, 6, 30).getTime())).toBe(new Date(2027, 0, 1, 0, 0).getTime());
     // 2 月 31 日永不触发
     expect(nextCronFire(parseCronExpression("0 0 31 2 *"), T0)).toBeNull();

@@ -60,7 +60,8 @@ describe("LiveStream", () => {
     expect(article!.querySelector(".cursor")).not.toBeNull();
   });
 
-  it("aggregates two or more adjacent tool blocks into a default-open group", () => {
+  it("tool blocks：相邻 ≥2 聚合默认展开、孤立单行流式参数", () => {
+    // 相邻 ≥2 聚合为默认展开组
     const blocks: StreamBlock[] = [
       block("tool", "t1", '{"command":"ls"}', "bash"),
       block("tool", "t2", '{"path":"a.ts"}', "read_file"),
@@ -72,13 +73,12 @@ describe("LiveStream", () => {
     expect(container.querySelector(".tool-group-title")).toHaveTextContent("2 个工具调用");
     expect(container.querySelectorAll(".tool-group-body .tool-row")).toHaveLength(2);
     expect(container.querySelector("article")).toHaveClass("turn-even");
-  });
 
-  it("keeps a lone tool block as a single row with streaming args", () => {
-    const blocks: StreamBlock[] = [block("tool", "t1", '{"comm', "bash")];
-    const { container } = renderStream(<LiveStream blocks={blocks} turn={0} />);
-    expect(container.querySelector(".tool-group")).toBeNull();
-    const row = container.querySelector(".tool-row");
+    // 孤立 tool：不成组、单行卡（running 态）
+    const loneBlocks: StreamBlock[] = [block("tool", "t1", '{"comm', "bash")];
+    const lone = renderStream(<LiveStream blocks={loneBlocks} turn={0} />).container;
+    expect(lone.querySelector(".tool-group")).toBeNull();
+    const row = lone.querySelector(".tool-row");
     expect(row).not.toBeNull();
     expect(row!.querySelector(".tool-row-name")).toHaveTextContent("bash");
   });

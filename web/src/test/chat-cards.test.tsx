@@ -92,20 +92,57 @@ describe("PermissionCard", () => {
 });
 
 describe("InteractionCard", () => {
-  it("single_select：选中后提交选项 id；未设 allowOther 不渲染「其他」", () => {
-    const onRespond = vi.fn();
-    const { getByText, getByLabelText, queryByText } = render(
+  it("single_select：提交选项 id；allowOther 的渲染、提交 other:<文本> 与空输入禁用", () => {
+    // single_select：选中后提交选项 id；未设 allowOther 不渲染「其他」
+    const plain = vi.fn();
+    const plainView = render(
       <InteractionCard
         item={interaction({ kind: "single_select", options: [{ id: "a", label: "方案 A" }, { id: "b", label: "方案 B", description: "推荐" }] })}
-        onRespond={onRespond}
+        onRespond={plain}
       />,
     );
-    expect(getByText("提交回答")).toBeDisabled();
+    expect(plainView.getByText("提交回答")).toBeDisabled();
     // allowOther 未设置：不渲染「其他」入口
-    expect(queryByText("其他")).toBeNull();
-    fireEvent.click(getByLabelText(/方案 B/));
-    fireEvent.click(getByText("提交回答"));
-    expect(onRespond).toHaveBeenCalledWith("b");
+    expect(plainView.queryByText("其他")).toBeNull();
+    fireEvent.click(plainView.getByLabelText(/方案 B/));
+    fireEvent.click(plainView.getByText("提交回答"));
+    expect(plain).toHaveBeenCalledWith("b");
+    plainView.unmount();
+
+    // allowOther：single_select 渲染「其他」选项，选中并输入后提交 other:<文本>
+    const other = vi.fn();
+    const otherView = render(
+      <InteractionCard
+        item={interaction({ kind: "single_select", allowOther: true, options: [{ id: "a", label: "方案 A" }] })}
+        onRespond={other}
+      />,
+    );
+    // 未选中「其他」时输入框禁用
+    expect(otherView.getByLabelText("其他回答")).toBeDisabled();
+    fireEvent.click(otherView.getByLabelText("其他"));
+    fireEvent.change(otherView.getByLabelText("其他回答"), { target: { value: "自定义方案" } });
+    fireEvent.click(otherView.getByText("提交回答"));
+    expect(other).toHaveBeenCalledWith("other:自定义方案");
+    otherView.unmount();
+
+    // allowOther：选中「其他」但未输入时不可提交；取消选中后输入框恢复禁用
+    const empty = vi.fn();
+    const emptyView = render(
+      <InteractionCard
+        item={interaction({ kind: "multi_select", allowOther: true, options: [{ id: "a", label: "方案 A" }] })}
+        onRespond={empty}
+      />,
+    );
+    fireEvent.click(emptyView.getByLabelText("其他"));
+    expect(emptyView.getByText("提交回答")).toBeDisabled();
+    // 另有常规选项被选即可提交（空 other 项由服务端忽略）
+    fireEvent.click(emptyView.getByLabelText(/方案 A/));
+    expect(emptyView.getByText("提交回答")).toBeEnabled();
+    // 取消「其他」后输入框禁用，提交仅含常规选项
+    fireEvent.click(emptyView.getByLabelText("其他"));
+    expect(emptyView.getByLabelText("其他回答")).toBeDisabled();
+    fireEvent.click(emptyView.getByText("提交回答"));
+    expect(empty).toHaveBeenCalledWith(["a"]);
   });
 
   it("text：输入后提交文本；空文本不可提交", () => {
@@ -127,70 +164,35 @@ describe("InteractionCard", () => {
     fireEvent.click(getByText("取消"));
     expect(onRespond).toHaveBeenCalledWith(false);
   });
-
-  it("allowOther：single_select 渲染「其他」选项，选中并输入后提交 other:<文本>", () => {
-    const onRespond = vi.fn();
-    const { getByText, getByLabelText } = render(
-      <InteractionCard
-        item={interaction({ kind: "single_select", allowOther: true, options: [{ id: "a", label: "方案 A" }] })}
-        onRespond={onRespond}
-      />,
-    );
-    // 未选中「其他」时输入框禁用
-    expect(getByLabelText("其他回答")).toBeDisabled();
-    fireEvent.click(getByLabelText("其他"));
-    fireEvent.change(getByLabelText("其他回答"), { target: { value: "自定义方案" } });
-    fireEvent.click(getByText("提交回答"));
-    expect(onRespond).toHaveBeenCalledWith("other:自定义方案");
-  });
-
-  it("allowOther：选中「其他」但未输入时不可提交；取消选中后输入框恢复禁用", () => {
-    const onRespond = vi.fn();
-    const { getByText, getByLabelText } = render(
-      <InteractionCard
-        item={interaction({ kind: "multi_select", allowOther: true, options: [{ id: "a", label: "方案 A" }] })}
-        onRespond={onRespond}
-      />,
-    );
-    fireEvent.click(getByLabelText("其他"));
-    expect(getByText("提交回答")).toBeDisabled();
-    // 另有常规选项被选即可提交（空 other 项由服务端忽略）
-    fireEvent.click(getByLabelText(/方案 A/));
-    expect(getByText("提交回答")).toBeEnabled();
-    // 取消「其他」后输入框禁用，提交仅含常规选项
-    fireEvent.click(getByLabelText("其他"));
-    expect(getByLabelText("其他回答")).toBeDisabled();
-    fireEvent.click(getByText("提交回答"));
-    expect(onRespond).toHaveBeenCalledWith(["a"]);
-  });
 });
 
 describe("PlanApprovalCard", () => {
   const item = interaction({ kind: "plan_approval", prompt: "1. 第一步\n2. 第二步" });
 
-  it("批准执行回 {decision: approve}", () => {
-    const onRespond = vi.fn();
-    const { getByText } = render(<PlanApprovalCard item={item} onRespond={onRespond} />);
-    fireEvent.click(getByText("批准执行"));
-    expect(onRespond).toHaveBeenCalledWith({ decision: "approve" });
-  });
+  it("批准执行/编辑后批准/拒绝分别回对应 decision", () => {
+    // 批准执行
+    const approve = vi.fn();
+    const approveView = render(<PlanApprovalCard item={item} onRespond={approve} />);
+    fireEvent.click(approveView.getByText("批准执行"));
+    expect(approve).toHaveBeenCalledWith({ decision: "approve" });
+    approveView.unmount();
 
-  it("编辑后批准回 {decision: edit, plan}", () => {
-    const onRespond = vi.fn();
-    const { getByText, getByLabelText } = render(<PlanApprovalCard item={item} onRespond={onRespond} />);
-    fireEvent.click(getByText("编辑后批准"));
-    fireEvent.change(getByLabelText("编辑计划"), { target: { value: "改过的计划" } });
-    fireEvent.click(getByText("提交修改并批准"));
-    expect(onRespond).toHaveBeenCalledWith({ decision: "edit", plan: "改过的计划" });
-  });
+    // 编辑后批准
+    const edit = vi.fn();
+    const editView = render(<PlanApprovalCard item={item} onRespond={edit} />);
+    fireEvent.click(editView.getByText("编辑后批准"));
+    fireEvent.change(editView.getByLabelText("编辑计划"), { target: { value: "改过的计划" } });
+    fireEvent.click(editView.getByText("提交修改并批准"));
+    expect(edit).toHaveBeenCalledWith({ decision: "edit", plan: "改过的计划" });
+    editView.unmount();
 
-  it("拒绝回 {decision: reject, feedback}", () => {
-    const onRespond = vi.fn();
-    const { getByText, getByLabelText } = render(<PlanApprovalCard item={item} onRespond={onRespond} />);
-    fireEvent.click(getByText("拒绝"));
-    fireEvent.change(getByLabelText("拒绝意见"), { target: { value: "再想想" } });
-    fireEvent.click(getByText("确认拒绝"));
-    expect(onRespond).toHaveBeenCalledWith({ decision: "reject", feedback: "再想想" });
+    // 拒绝
+    const reject = vi.fn();
+    const rejectView = render(<PlanApprovalCard item={item} onRespond={reject} />);
+    fireEvent.click(rejectView.getByText("拒绝"));
+    fireEvent.change(rejectView.getByLabelText("拒绝意见"), { target: { value: "再想想" } });
+    fireEvent.click(rejectView.getByText("确认拒绝"));
+    expect(reject).toHaveBeenCalledWith({ decision: "reject", feedback: "再想想" });
   });
 });
 
@@ -225,18 +227,16 @@ describe("RunErrorCard", () => {
 });
 
 describe("LiveActivityBar", () => {
-  it("展示状态文案、当前工具与并行计数", () => {
+  it("执行中渲染状态文案与并行计数；空闲/终态不渲染", () => {
     const { getByText, container } = render(
       <LiveActivityBar activity={{ state: "executing_tools", currentTool: "bash", toolCount: 2 }} />,
     );
     expect(container.querySelector(".live-activity")).not.toBeNull();
     expect(getByText("执行工具")).toBeInTheDocument();
     expect(getByText("bash 等 2 项")).toBeInTheDocument();
-  });
 
-  it("空闲/终态时不渲染", () => {
-    const { container } = render(<LiveActivityBar activity={{ state: "completed", toolCount: 0 }} />);
-    expect(container.firstChild).toBeNull();
+    const idle = render(<LiveActivityBar activity={{ state: "completed", toolCount: 0 }} />);
+    expect(idle.container.firstChild).toBeNull();
   });
 });
 

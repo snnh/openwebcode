@@ -63,7 +63,8 @@ describe("WebUI static hosting", () => {
 });
 
 describe("Metrics memory stats", () => {
-  it("core.stats 可用时透传 rssBytes，无宿主时 extensionHost 为 null", async () => {
+  it("metrics.memory：core.stats 透传与失败降级", async () => {
+    // core.stats 可用时透传 rssBytes，无宿主时 extensionHost 为 null
     const root = await tempRoot("owc-metrics-mem-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
@@ -89,33 +90,32 @@ describe("Metrics memory stats", () => {
     expect(metrics.memory.core).toEqual({ rssBytes: 4 * 1024 * 1024 });
     expect(metrics.memory.extensionHost).toBeNull();
     expect(metrics.memory.node.rss).toBeGreaterThan(0);
-  });
 
-  it("core.stats 抛错时降级为 null（不阻断 metrics）", async () => {
-    const root = await tempRoot("owc-metrics-mem-fail-");
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const core = {
-      on() { return core; },
+    // core.stats 抛错时降级为 null（不阻断 metrics）
+    const failingRoot = await tempRoot("owc-metrics-mem-fail-");
+    const failingSessions = new SessionStore(path.join(failingRoot, "sessions"));
+    await failingSessions.initialize();
+    const failingPricing = new PricingCatalog(path.join(failingRoot, "pricing.json"));
+    await failingPricing.initialize();
+    const failingCore = {
+      on() { return failingCore; },
       async configureSession() { return {}; },
       async ping() { return { version: "test" }; },
       async stats() { throw new Error("core.stats unavailable"); },
     } as unknown as CoreClientLike;
-    const app = await buildServer({
-      core,
-      sessions,
+    const failingApp = await buildServer({
+      core: failingCore,
+      sessions: failingSessions,
       agent: { isRunning: () => false } as AgentRunner,
       events: new EventBus(),
       providers: new ProviderRegistry(),
-      pricing,
-      webDist: path.join(root, "web"),
+      pricing: failingPricing,
+      webDist: path.join(failingRoot, "web"),
     });
-    apps.push(app as never);
-    const metrics = (await app.inject({ method: "GET", url: "/api/metrics" })).json();
-    expect(metrics.memory.core).toBeNull();
-    expect(metrics.memory.node.rss).toBeGreaterThan(0);
+    apps.push(failingApp as never);
+    const degraded = (await failingApp.inject({ method: "GET", url: "/api/metrics" })).json();
+    expect(degraded.memory.core).toBeNull();
+    expect(degraded.memory.node.rss).toBeGreaterThan(0);
   });
 });
 
@@ -152,17 +152,14 @@ async function setupPerfApi() {
 }
 
 describe("性能采样 REST 契约（0.5.0 Phase 2d）", () => {
-  it("GET /api/sessions/:id/perf 无记录时返回空数组", async () => {
+  it("GET perf：空记录 200 与未知会话 404", async () => {
     const { app, session } = await setupPerfApi();
-    const response = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/perf` });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ records: [] });
-  });
+    const empty = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/perf` });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json()).toEqual({ records: [] });
 
-  it("GET /api/sessions/:id/perf 不存在的会话返回 404", async () => {
-    const { app } = await setupPerfApi();
-    const response = await app.inject({ method: "GET", url: "/api/sessions/00000000-0000-4000-8000-000000000000/perf" });
-    expect(response.statusCode).toBe(404);
+    const missing = await app.inject({ method: "GET", url: "/api/sessions/00000000-0000-4000-8000-000000000000/perf" });
+    expect(missing.statusCode).toBe(404);
   });
 });
 

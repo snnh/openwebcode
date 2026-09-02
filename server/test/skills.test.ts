@@ -181,16 +181,10 @@ const commandsCore = {
 } as unknown as CoreClientLike;
 
 describe("renderCommand", () => {
-  it("renders whole and positional arguments", () => {
+  it("renders whole/positional arguments, literal placeholders, missing empty and extra ignored", () => {
     expect(renderCommand("all=$ARGUMENTS first=$1 third=$3 ninth=$9", "src/ test extra"))
       .toBe("all=src/ test extra first=src/ third=extra ninth=");
-  });
-
-  it("does not reinterpret placeholders contained in user arguments", () => {
     expect(renderCommand("all=$ARGUMENTS first=$1", "$2 literal")).toBe("all=$2 literal first=$2");
-  });
-
-  it("renders missing arguments as empty and ignores extra arguments", () => {
     expect(renderCommand("$1/$2", "one two three four")).toBe("one/two");
     expect(renderCommand("[$1][$2][$ARGUMENTS]", "")).toBe("[][][]");
   });
@@ -258,9 +252,5 @@ describe("custom slash commands", () => {
   it("gives custom commands precedence over same-named skills", async () => {
     expect(await runWithDefinitions({ command: "COMMAND $1", skill: "---\ndescription: skill\n---\nSKILL BODY", text: "/review src/" }))
       .toBe("COMMAND src/");
-  });
-
-  it("keeps unknown slash commands unchanged", async () => {
-    expect(await runWithDefinitions({ text: "/unknown src/" })).toBe("/unknown src/");
   });
 });

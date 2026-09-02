@@ -195,7 +195,8 @@ describe("OpenAIResponsesProvider streaming", () => {
     expect(bodies[1]?.reasoning).not.toHaveProperty("effort");
   });
 
-  it("aggregates function_call argument deltas into a single tool_call", async () => {
+  it("function_call 事件产出：参数 delta 聚合；无 delta 时从 completed output 恢复", async () => {
+    // 逐片参数 delta → 单条 tool_call
     const payload = sse([
       {
         type: "response.output_item.added", output_index: 0,
@@ -217,10 +218,9 @@ describe("OpenAIResponsesProvider streaming", () => {
       { type: "tool_call", id: "call_1", itemId: "fc_1", name: "bash", input: { cmd: "ls" } },
     ]);
     expect(events.at(-1)).toEqual({ type: "done", stopReason: "tool_use" });
-  });
 
-  it("recovers function calls from response.completed output when deltas were not streamed", async () => {
-    const payload = sse([
+    // 无 delta 流：response.completed output 兜底恢复
+    const recoveredPayload = sse([
       {
         type: "response.completed",
         response: {
@@ -229,11 +229,11 @@ describe("OpenAIResponsesProvider streaming", () => {
         },
       },
     ]);
-    const events = await collect(makeProvider(sseFetch([], payload)).streamChat(request()));
-    expect(events.filter((event) => event.type === "tool_call")).toEqual([
+    const recovered = await collect(makeProvider(sseFetch([], recoveredPayload)).streamChat(request()));
+    expect(recovered.filter((event) => event.type === "tool_call")).toEqual([
       { type: "tool_call", id: "call_9", itemId: "fc_9", name: "read_file", input: { path: "a.ts" } },
     ]);
-    expect(events.at(-1)).toEqual({ type: "done", stopReason: "tool_use" });
+    expect(recovered.at(-1)).toEqual({ type: "done", stopReason: "tool_use" });
   });
 
   it("maps incomplete/max_output_tokens to max_tokens and refusal to refusal", async () => {
@@ -354,7 +354,8 @@ describe("OpenAIResponsesProvider streaming", () => {
     expect(thinkingEnd?.text).toBe("想\n\n再想");
   });
 
-  it("message output_item.done 以权威文本兜底并发出 text_end（v1 textSignature）", async () => {
+  it("output_item.done 权威文本：补发缺失后缀、重复 delta 不重发；text_end 以权威为准", async () => {
+    // 权威文本比累积更长且前缀一致 → 只补发后缀 delta
     const payload = sse([
       { type: "response.output_item.added", output_index: 0, item: { id: "msg_1", type: "message" } },
       { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, delta: "你好" },
@@ -366,17 +367,15 @@ describe("OpenAIResponsesProvider streaming", () => {
       { type: "response.completed", response: { status: "completed", output: [], usage: { input_tokens: 10, output_tokens: 5 } } },
     ]);
     const events = await collect(makeProvider(sseFetch([], payload)).streamChat(request()));
-    // 权威文本比累积更长且前缀一致 → 只补发后缀 delta
     expect(events.filter((event) => event.type === "text_delta")).toEqual([
       { type: "text_delta", text: "你好" },
       { type: "text_delta", text: "世界" },
     ]);
     const textEnd = events.find((event) => event.type === "text_end") as { text: string; signature?: string } | undefined;
     expect(textEnd).toEqual({ type: "text_end", text: "你好世界", signature: JSON.stringify({ v: 1, id: "msg_1", phase: "final_answer" }) });
-  });
 
-  it("B7：accumulated 超出权威（端点重复下发 delta）时不重发完整文本，text_end 以权威为准", async () => {
-    const payload = sse([
+    // B7：accumulated 超出权威（端点重复下发 delta）时不重发完整文本，text_end 以权威为准
+    const duplicatedPayload = sse([
       { type: "response.output_item.added", output_index: 0, item: { id: "msg_1", type: "message" } },
       { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, delta: "你好世界" },
       // 端点重复下发同一段 delta（累积出现重复）
@@ -387,14 +386,14 @@ describe("OpenAIResponsesProvider streaming", () => {
       },
       { type: "response.completed", response: { status: "completed", output: [], usage: { input_tokens: 10, output_tokens: 5 } } },
     ]);
-    const events = await collect(makeProvider(sseFetch([], payload)).streamChat(request()));
+    const dedupeEvents = await collect(makeProvider(sseFetch([], duplicatedPayload)).streamChat(request()));
     // 重复 delta 不再被完整重发（旧行为会多出一次完整 "你好世界"）
-    expect(events.filter((event) => event.type === "text_delta")).toEqual([
+    expect(dedupeEvents.filter((event) => event.type === "text_delta")).toEqual([
       { type: "text_delta", text: "你好世界" },
       { type: "text_delta", text: "你好世界" },
     ]);
-    const textEnd = events.find((event) => event.type === "text_end") as { text: string; signature?: string } | undefined;
-    expect(textEnd).toEqual({ type: "text_end", text: "你好世界", signature: JSON.stringify({ v: 1, id: "msg_1", phase: "final_answer" }) });
+    const dedupeTextEnd = dedupeEvents.find((event) => event.type === "text_end") as { text: string; signature?: string } | undefined;
+    expect(dedupeTextEnd).toEqual({ type: "text_end", text: "你好世界", signature: JSON.stringify({ v: 1, id: "msg_1", phase: "final_answer" }) });
   });
 
   it("B3：completed output 携带 encrypted_content 而持久化签名缺失时补发第二次 thinking_end（合并密文）", async () => {
@@ -1031,13 +1030,13 @@ describe("provider reasoning parameters", () => {
 });
 
 describe("provider custom request body (extraBody)", () => {
-  it("compat：显式 maxTokens 仍映射为 max_tokens（缺省省略由跨 provider 组覆盖）", async () => {
+  it("compat 显式 maxTokens → max_tokens；anthropic 合并 extraBody 且 request 优先", async () => {
+    // compat：显式 maxTokens 仍映射为 max_tokens（缺省省略由跨 provider 组覆盖）
     const limited: Array<Record<string, unknown>> = [];
     await drain(makeCompat(reasoningSseFetch(limited), { maxTokens: 4096 }).streamChat(reasoningRequest()));
     expect(limited[0]).toMatchObject({ max_tokens: 4096 });
-  });
 
-  it("anthropic merges extraBody and lets extraBody.max_tokens override the default", async () => {
+    // anthropic：extraBody 合并，extraBody.max_tokens 覆盖 provider 默认
     const bodies: Array<Record<string, unknown>> = [];
     const provider = new AnthropicProvider({ apiKey: "test", extraBody: { temperature: 0.3, max_tokens: 128_000 } });
     injectMockStream(provider, bodies);
@@ -1146,31 +1145,30 @@ describe("SSE stream idle timeout", () => {
 });
 
 describe("provider 错误体截断", () => {
-  it("openai-compatible：超限错误体截断为 2000 字符 + …", async () => {
+  it("超限错误体截断为 2000 字符（两家 provider 口径一致）；未超限原样保留", async () => {
+    // openai-compatible：超限错误体截断为 2000 字符 + …
     const detail = `{"error":"${"x".repeat(5000)}"}`;
-    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(detail, 500) });
-    const error = await expectProviderError(provider.streamChat(errorRequest()));
-    expect(error.retryable).toBe(true);
-    expect(error.message).toContain("…");
-    expect(error.message.length).toBeLessThan(2_100);
-    expect(error.message).not.toContain(detail.slice(-20));
-  });
+    const compatProvider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(detail, 500) });
+    const compatError = await expectProviderError(compatProvider.streamChat(errorRequest()));
+    expect(compatError.retryable).toBe(true);
+    expect(compatError.message).toContain("…");
+    expect(compatError.message.length).toBeLessThan(2_100);
+    expect(compatError.message).not.toContain(detail.slice(-20));
 
-  it("openai-responses：超限错误体同样截断，两家口径一致", async () => {
-    const detail = `{"error":"${"y".repeat(5000)}"}`;
-    const provider = new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(detail, 400) });
-    const error = await expectProviderError(provider.streamChat(errorRequest()));
-    expect(error.kind).toBe("invalid_request");
-    expect(error.retryable).toBe(false);
-    expect(error.message).toContain("…");
-    expect(error.message.length).toBeLessThan(2_100);
-  });
+    // openai-responses：同口径截断
+    const responsesDetail = `{"error":"${"y".repeat(5000)}"}`;
+    const responsesProvider = new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(responsesDetail, 400) });
+    const responsesError = await expectProviderError(responsesProvider.streamChat(errorRequest()));
+    expect(responsesError.kind).toBe("invalid_request");
+    expect(responsesError.retryable).toBe(false);
+    expect(responsesError.message).toContain("…");
+    expect(responsesError.message.length).toBeLessThan(2_100);
 
-  it("未超限的错误体原样保留", async () => {
-    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith("short detail", 500) });
-    const error = await expectProviderError(provider.streamChat(errorRequest()));
-    expect(error.message).toContain("short detail");
-    expect(error.message).not.toContain("…");
+    // 未超限的错误体原样保留
+    const shortProvider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith("short detail", 500) });
+    const shortError = await expectProviderError(shortProvider.streamChat(errorRequest()));
+    expect(shortError.message).toContain("short detail");
+    expect(shortError.message).not.toContain("…");
   });
 });
 
@@ -1213,27 +1211,27 @@ describe("readSseData 边界", () => {
 });
 
 describe("工具参数 JSON 解析失败归不可重试", () => {
-  it("openai-compatible：流被 max_tokens 截断的参数 JSON → invalid_request（不可重试）", async () => {
+  it("截断的参数 JSON 归 invalid_request（不可重试）：openai-compatible 与 openai-responses 同判定", async () => {
+    // openai-compatible：流被 max_tokens 截断的参数 JSON
     const chunks = [
       { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "bash", arguments: "{\"cmd\":" } }] } }] },
       { choices: [{ finish_reason: "length", delta: {} }] },
     ];
     const body = chunks.map((value) => `data: ${JSON.stringify(value)}\n\n`).join("") + "data: [DONE]\n\n";
-    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(body) });
-    const error = await expectProviderError(provider.streamChat(errorRequest()));
-    expect(error.kind).toBe("invalid_request");
-    expect(error.retryable).toBe(false);
-  });
+    const compatProvider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(body) });
+    const compatError = await expectProviderError(compatProvider.streamChat(errorRequest()));
+    expect(compatError.kind).toBe("invalid_request");
+    expect(compatError.retryable).toBe(false);
 
-  it("openai-responses：function_call 参数截断 → invalid_request（不可重试）", async () => {
-    const body = [
+    // openai-responses：function_call 参数截断
+    const responsesBody = [
       { type: "response.output_item.done", item_id: "fc_1", item: { id: "fc_1", type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":" } },
       { type: "response.completed", response: { status: "completed", output: [], usage: { input_tokens: 1, output_tokens: 1 } } },
     ].map((value) => `data: ${JSON.stringify(value)}\n\n`).join("");
-    const provider = new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(body) });
-    const error = await expectProviderError(provider.streamChat(errorRequest()));
-    expect(error.kind).toBe("invalid_request");
-    expect(error.retryable).toBe(false);
+    const responsesProvider = new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(responsesBody) });
+    const responsesError = await expectProviderError(responsesProvider.streamChat(errorRequest()));
+    expect(responsesError.kind).toBe("invalid_request");
+    expect(responsesError.retryable).toBe(false);
   });
 });
 

@@ -99,7 +99,8 @@ describe("context management controls", () => {
     expect(content).toContain("read_artifact");
   });
 
-  it("image description tool results are exempt from automatic eviction", async () => {
+  it("image description 豁免：自动驱逐不碰、手动驱逐拒绝", async () => {
+    // 自动驱逐：describe_image 结果豁免，其余仍驱逐；视图保持全文
     const root = await tempRoot("owc-context-exempt-");
     const manager = new ContextManager(root);
     await updateEvictionPolicy(manager, { lag: 0 });
@@ -114,25 +115,23 @@ describe("context management controls", () => {
     ];
     const ledger = await evictContext(manager, root, messages);
     expect(ledger.entries.map((entry) => entry.messageId)).toEqual(["t-c2"]);
-    // 视图保持全文（不出现驱逐占位符）
     const view = await manager.buildView(messages);
     const describeBlock = view.messages.find((item) => item.id === "t-c1")!.content[0]!;
     expect(describeBlock).toMatchObject({ type: "tool_result", content: expect.stringContaining("TypeError") });
     const bashBlock = view.messages.find((item) => item.id === "t-c2")!.content[0]!;
     expect(bashBlock).toMatchObject({ type: "tool_result", content: expect.stringContaining("tool result evicted") });
-  });
 
-  it("image description tool results are exempt from manual eviction", async () => {
-    const root = await tempRoot("owc-context-exempt-manual-");
-    const manager = new ContextManager(root);
-    const messages: ChatMessage[] = [
+    // 手动驱逐同样豁免：拒绝并保持账本为空
+    const manualRoot = await tempRoot("owc-context-exempt-manual-");
+    const manualManager = new ContextManager(manualRoot);
+    const manualMessages: ChatMessage[] = [
       userText("look"),
       toolCall("c1", "ext__vision-tools__describe_image"),
       toolResult("c1", "描述内容 ".repeat(100)),
     ];
-    await expect(evictMessage(manager, root, messages, "t-c1")).rejects.toThrow(/exempt from eviction/);
-    const ledger = await manager.load();
-    expect(ledger.entries).toHaveLength(0);
+    await expect(evictMessage(manualManager, manualRoot, manualMessages, "t-c1")).rejects.toThrow(/exempt from eviction/);
+    const manualLedger = await manualManager.load();
+    expect(manualLedger.entries).toHaveLength(0);
   });
 
   it("default policy keeps the newest 10 rounds of tool results in full", async () => {
@@ -284,7 +283,8 @@ describe("ContextManager cost ledger", () => {
     expect(ledger.policy.maxSessionCost).toEqual({ currency: "CNY", microUnits: "2000000" });
   });
 
-  it("serializes round and usage writes for one session", async () => {
+  it("串行化单会话并发写：round+usage 互不覆盖、并发 usage 精确累计", async () => {
+    // round 与 usage 写入不互相覆盖
     const manager = new ContextManager(await tempRoot("owc-round-usage-"));
     await Promise.all([
       manager.advanceRound(),
@@ -296,9 +296,8 @@ describe("ContextManager cost ledger", () => {
     const ledger = await manager.load();
     expect(ledger.round).toBe(1);
     expect(ledger.usage.inputTokens).toBe(1);
-  });
 
-  it("serializes concurrent usage updates for one session", async () => {
+    // 并发 usage 更新无一丢失
     const root = await tempRoot("owc-concurrent-cost-");
     const left = new ContextManager(root);
     const right = new ContextManager(root);
@@ -307,11 +306,11 @@ describe("ContextManager cost ledger", () => {
         { inputTokens: 1, outputTokens: 0, cacheRead: 0, cacheWrite: 0 },
         { priced: true, usdMicroUnits: "5", cnyMicroUnits: "35" },
       )));
-    const ledger = await left.load();
-    expect(ledger.usage.inputTokens).toBe(20);
+    const costLedger = await left.load();
+    expect(costLedger.usage.inputTokens).toBe(20);
     // 精确整数累计（35 对浮点不友好，足以暴露 drift）
-    expect(ledger.cost.usdMicroUnits).toBe("100");
-    expect(ledger.cost.cnyMicroUnits).toBe("700");
+    expect(costLedger.cost.usdMicroUnits).toBe("100");
+    expect(costLedger.cost.cnyMicroUnits).toBe("700");
   });
 
   it("selects and persists stable cache breakpoints", async () => {

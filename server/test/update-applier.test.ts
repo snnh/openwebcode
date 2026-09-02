@@ -471,14 +471,11 @@ function githubResponse(tag: string): Response {
 }
 
 describe("semver helpers", () => {
-  it("compares versions numerically", () => {
+  it("semver 辅助：数值比较与前导 v 剥离", () => {
     expect(compareSemver("0.5.3", "0.5.2")).toBeGreaterThan(0);
     expect(compareSemver("0.5.2", "0.5.2")).toBe(0);
     expect(compareSemver("0.5.2", "0.6.0")).toBeLessThan(0);
     expect(compareSemver("1.0.0", "0.9.9")).toBeGreaterThan(0);
-  });
-
-  it("strips a leading v from tags", () => {
     expect(stripVersionPrefix("v0.5.2")).toBe("0.5.2");
     expect(stripVersionPrefix("0.5.2")).toBe("0.5.2");
   });

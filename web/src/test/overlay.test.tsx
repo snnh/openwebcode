@@ -40,8 +40,8 @@ describe("Overlay", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("Tab 在弹层内循环：末位 Tab 回首位，首位 Shift+Tab 回末位", () => {
-    renderOverlay();
+  it("Tab 焦点困在弹层内：末位回首位、弹层外按下收回首位", () => {
+    const firstView = renderOverlay();
     const first = screen.getByRole("button", { name: "第一个" });
     const last = screen.getByRole("button", { name: "第二个" });
 
@@ -52,9 +52,9 @@ describe("Overlay", () => {
     first.focus();
     fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
     expect(document.activeElement).toBe(last);
-  });
+    firstView.view.unmount();
 
-  it("焦点在弹层外时按 Tab 回收到弹层首位（不逃到遮罩下的页面）", () => {
+    // 焦点意外落在弹层外（如第三方代码抢焦点）时按 Tab 回收到首位（不逃到遮罩下的页面）
     render(
       <>
         <button type="button">外部按钮</button>
@@ -64,25 +64,23 @@ describe("Overlay", () => {
         </Overlay>
       </>,
     );
-    const first = screen.getByRole("button", { name: "第一个" });
+    const trapFirst = screen.getByRole("button", { name: "第一个" });
     const outside = screen.getByRole("button", { name: "外部按钮" });
-    // 模拟焦点意外落在弹层外（如第三方代码抢焦点）
     outside.focus();
     expect(document.activeElement).toBe(outside);
     fireEvent.keyDown(outside, { key: "Tab" });
-    expect(document.activeElement).toBe(first);
+    expect(document.activeElement).toBe(trapFirst);
   });
 
-  it("默认初始聚焦对话框本身；initialFocus 选择器命中时聚焦指定元素", () => {
+  it("焦点管理：默认/initialFocus 初始聚焦；关闭归还打开前元素", () => {
     const { view, dialog } = renderOverlay();
     expect(document.activeElement).toBe(dialog);
     view.unmount();
 
-    renderOverlay({ initialFocus: "[data-initial-focus]" });
+    const focused = renderOverlay({ initialFocus: "[data-initial-focus]" });
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "第二个" }));
-  });
+    focused.view.unmount();
 
-  it("关闭后焦点归还到打开前的元素", () => {
     function Host({ open }: { open: boolean }) {
       return (
         <>
@@ -93,16 +91,16 @@ describe("Overlay", () => {
         </>
       );
     }
-    const view = render(<Host open={false} />);
+    const hostView = render(<Host open={false} />);
     const trigger = screen.getByRole("button", { name: "打开前的按钮" });
     trigger.focus();
     expect(document.activeElement).toBe(trigger);
 
-    view.rerender(<Host open />);
+    hostView.rerender(<Host open />);
     // 打开后焦点进入弹层
     expect(document.activeElement).not.toBe(trigger);
 
-    view.rerender(<Host open={false} />);
+    hostView.rerender(<Host open={false} />);
     expect(document.activeElement).toBe(trigger);
   });
 

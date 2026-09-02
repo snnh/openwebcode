@@ -28,43 +28,37 @@ function openDialog(onConfirm = vi.fn()): { onConfirm: ReturnType<typeof vi.fn> 
 }
 
 describe("useConfirmDialog", () => {
-  it("ask() 弹出对话框：展示标题/正文/警示，确认按钮为危险样式", () => {
-    openDialog();
+  it("ask() 弹出（标题/正文/警示/初始焦点）；点确认回调并关闭", () => {
+    const { onConfirm } = openDialog();
     const dialog = screen.getByRole("dialog", { name: "删除文件" });
     expect(dialog).toBeInTheDocument();
     expect(screen.getByText("确定删除该文件？")).toBeInTheDocument();
     expect(screen.getByText("删除后不可恢复。")).toBeInTheDocument();
     // 初始焦点在「取消」（安全默认）
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "取消" }));
-  });
-
-  it("点确认：回调 onConfirm 且对话框关闭", () => {
-    const { onConfirm } = openDialog();
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("点取消：不回调 onConfirm，对话框关闭", () => {
+  it("取消三入口（按钮/Esc-close/背板点击）：不回调 onConfirm 并关闭", () => {
     const { onConfirm } = openDialog();
+    // 点取消按钮
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(onConfirm).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();
-  });
 
-  it("Esc（原生 dialog cancel → close 事件）视为取消：不回调 onConfirm，对话框关闭", () => {
-    const { onConfirm } = openDialog();
+    // Esc（原生 dialog cancel → close 事件）视为取消：jsdom 未实现原生 <dialog> 的
+    // Esc → cancel → close 行为链，这里直接派发 close 事件，覆盖组件侧 onClose={onCancel}
+    // 的接线（浏览器中 Esc 经原生行为触发同一入口）
+    fireEvent.click(screen.getByRole("button", { name: "发起确认" }));
     const dialog = screen.getByRole("dialog");
-    // jsdom 未实现原生 <dialog> 的 Esc → cancel → close 行为链，这里直接派发 close 事件，
-    // 覆盖组件侧 onClose={onCancel} 的接线（浏览器中 Esc 经原生行为触发同一入口）
     fireEvent(dialog, new Event("close"));
     expect(onConfirm).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();
-  });
 
-  it("点击背板视为取消：不回调 onConfirm，对话框关闭", () => {
-    const { onConfirm } = openDialog();
-    // 背板点击：事件 target 为 <dialog> 元素本身（内容区点击 target 是内部元素）
+    // 点击背板视为取消：事件 target 为 <dialog> 元素本身（内容区点击 target 是内部元素）
+    fireEvent.click(screen.getByRole("button", { name: "发起确认" }));
     fireEvent.click(screen.getByRole("dialog"));
     expect(onConfirm).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();

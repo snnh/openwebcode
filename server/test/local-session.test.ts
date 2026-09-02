@@ -12,7 +12,7 @@ import { makeTestApp } from "./helpers/test-app.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("local session (kind=local) store semantics", () => {
-  it("persists kind, sandboxMode=off, and widens fs roots to the filesystem root while keeping denyPaths", async () => {
+  it("local 会话 roots 放宽到盘根并保留 deny；常规会话保持 cwd 域", async () => {
     const root = await tempRoot("owc-local-store-");
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
@@ -36,16 +36,12 @@ describe("local session (kind=local) store semantics", () => {
     expect(detail?.kind).toBe("local");
     expect(detail?.sandboxMode).toBe("off");
     expect(detail?.sandbox?.readRoots).toEqual([fsRoot]);
-  });
 
-  it("keeps regular sessions on the cwd-scoped default policy", async () => {
-    const root = await tempRoot("owc-local-store-");
-    const store = new SessionStore(path.join(root, "sessions"));
-    await store.initialize();
-    const session = await store.create({ cwd: root, provider: "p", model: "m" });
-    expect(session.kind).toBeUndefined();
-    expect(session.sandbox?.readRoots).toEqual([root]);
-    expect(session.sandbox?.writeRoots).toEqual([root]);
+    // 常规会话保持 cwd 域默认策略，不做盘根宽放
+    const regular = await store.create({ cwd: root, provider: "p", model: "m" });
+    expect(regular.kind).toBeUndefined();
+    expect(regular.sandbox?.readRoots).toEqual([root]);
+    expect(regular.sandbox?.writeRoots).toEqual([root]);
   });
 
   it("normalizes imported local sessions: current HOME cwd, sandbox off, roots rebuilt, no workspace/snapshot preset", async () => {

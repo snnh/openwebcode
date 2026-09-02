@@ -136,8 +136,21 @@ describe("server settings API", () => {
     expect(setup.fastModel).toMatchObject({ configured: true, provider: "主服务", model: "fast-1" });
   });
 
-  it("persists overrides, reports source=file, and clears back to default with null", async () => {
+  it("override 持久化/清除语义（null 与写默认值等价）", async () => {
     const setup = await fixture();
+
+    // 无覆盖时写默认值 = 无操作：不持久化、不广播
+    const noop = await setup.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { overrides: { port: 3210 } },
+    });
+    expect(noop.statusCode).toBe(200);
+    expect(field(noop.json<SettingsView>(), "port").source).toBe("default");
+    expect(setup.events.filter((event) => event.type === "server.settings_updated")).toHaveLength(0);
+    await expect(readFile(path.join(setup.root, "server-settings.json"), "utf8")).rejects.toThrow();
+
+    // 覆盖经 PUT 写入文件并持久化，source=file；null 清回默认
     const put = await setup.app.inject({
       method: "PUT",
       url: "/api/settings",
@@ -162,20 +175,6 @@ describe("server settings API", () => {
     });
     expect(cleared.statusCode).toBe(200);
     expect(field(cleared.json<SettingsView>(), "defaultLanguage")).toMatchObject({ value: "zh-CN", source: "default" });
-  });
-
-  it("treats writing the default value as clearing the override", async () => {
-    const setup = await fixture();
-    // 无覆盖时写默认值 = 无操作：不持久化、不广播
-    const noop = await setup.app.inject({
-      method: "PUT",
-      url: "/api/settings",
-      payload: { overrides: { port: 3210 } },
-    });
-    expect(noop.statusCode).toBe(200);
-    expect(field(noop.json<SettingsView>(), "port").source).toBe("default");
-    expect(setup.events.filter((event) => event.type === "server.settings_updated")).toHaveLength(0);
-    await expect(readFile(path.join(setup.root, "server-settings.json"), "utf8")).rejects.toThrow();
 
     // 有覆盖时写回默认值 = 清除覆盖
     await setup.app.inject({
@@ -189,10 +188,10 @@ describe("server settings API", () => {
       payload: { overrides: { defaultLanguage: "zh-CN" } },
     });
     expect(field(back.json<SettingsView>(), "defaultLanguage").source).toBe("default");
-    const persisted = JSON.parse(await readFile(path.join(setup.root, "server-settings.json"), "utf8")) as {
+    const finalPersisted = JSON.parse(await readFile(path.join(setup.root, "server-settings.json"), "utf8")) as {
       overrides: Record<string, unknown>;
     };
-    expect("defaultLanguage" in persisted.overrides).toBe(false);
+    expect("defaultLanguage" in finalPersisted.overrides).toBe(false);
   });
 
   it("rejects writes to env-controlled keys with 400", async () => {
@@ -357,7 +356,7 @@ describe("server settings API", () => {
     expect(rejected.statusCode).toBe(400);
   });
 
-  it("设置分组重排：general 收窄为语言/货币/模式，defaults 与 context 拆出，offlineMode 归入 webSearch", async () => {
+  it("设置分组布局（general/defaults/context/webSearch/modelSelection/models）", async () => {
     const setup = await fixture();
     const view = (await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
     const groups = new Map(view.groups.map((group) => [group.id, group]));
@@ -369,6 +368,28 @@ describe("server settings API", () => {
     expect(groups.get("context")?.fields.map((item) => item.key)).toEqual(["compactionThresholdPercent", "compactMaxTokens", "agentMaxTurns", "subAgentMaxTurns"]);
     expect(groups.get("webSearch")?.label).toBe("联网");
     expect(groups.get("webSearch")?.fields.map((item) => item.key)).toEqual(["offlineMode", "webSearchMode"]);
+
+    const keyLists = new Map(view.groups.map((group) => [group.id, group.fields.map((item) => item.key)]));
+    expect(keyLists.get("modelSelection")).toEqual([
+      "defaultModel",
+      "roleModelPremium",
+      "roleModelBalanced",
+      "fastModel",
+      "fastModelThinking",
+      "fastModelEffort",
+      "fastModelTimeoutMs",
+      "roleModelCheap",
+    ]);
+    expect(keyLists.get("models")).toEqual(["catalogSyncUrl", "pricingSyncUrl", "syncIntervalMinutes"]);
+    for (const key of ["defaultModel", "roleModelPremium", "roleModelBalanced", "roleModelCheap"]) {
+      expect(field(view, key)).toMatchObject({
+        type: "select",
+        value: null,
+        nullable: true,
+        restartRequired: false,
+        options: [{ value: encodeFastModelSelection("主服务", "fast-1"), label: "fast-1【主服务】" }],
+      });
+    }
   });
 
   it("compactionThresholdPercent 默认 85，50/85/95/100 合法且热生效（100 = 关闭阈值型强制压缩）", async () => {
@@ -393,23 +414,26 @@ describe("server settings API", () => {
       .toMatchObject({ value: 100, source: "file" });
   });
 
-  it("env OWC_COMPACTION_THRESHOLD_PERCENT 越界 fail-fast，合法值锁定界面写入", async () => {
+  it.each([
+    { name: "OWC_COMPACTION_THRESHOLD_PERCENT", outOfRange: "40", error: />= 50/, valid: "70", value: 70, fieldKey: "compactionThresholdPercent", rejectedWrite: 80 },
+    { name: "OWC_COMPACT_MAX_TOKENS", outOfRange: "1023", error: />= 1024/, valid: "32768", value: 32768, fieldKey: "compactMaxTokens", rejectedWrite: 65536 },
+  ])("env $name 越界 fail-fast，合法值锁定界面写入", async ({ name, outOfRange, error, valid, value, fieldKey, rejectedWrite }) => {
     // 越界 env 在 loadConfig 直接抛错（与 boundedInteger 约定一致），服务不启动
-    await expect(fixture({ OWC_COMPACTION_THRESHOLD_PERCENT: "40" })).rejects.toThrow(/>= 50/);
+    await expect(fixture({ [name]: outOfRange })).rejects.toThrow(error);
 
-    const locked = await fixture({ OWC_COMPACTION_THRESHOLD_PERCENT: "70" });
+    const locked = await fixture({ [name]: valid });
     const lockedView = (await locked.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
-    expect(field(lockedView, "compactionThresholdPercent")).toMatchObject({ value: 70, source: "env", editable: false });
-    expect(locked.settings.effective().compactionThresholdPercent).toBe(70);
+    expect(field(lockedView, fieldKey)).toMatchObject({ value, source: "env", editable: false });
+    expect(locked.settings.effective()[fieldKey]).toBe(value);
     const rejected = await locked.app.inject({
       method: "PUT",
       url: "/api/settings",
-      payload: { overrides: { compactionThresholdPercent: 80 } },
+      payload: { overrides: { [fieldKey]: rejectedWrite } },
     });
     expect(rejected.statusCode).toBe(400);
   });
 
-  it("loads OWC_COMPACTION_THRESHOLD_PERCENT into ServerConfig（50–100 合法；越界/非法 fail-fast，与 boundedInteger 约定一致）", () => {
+  it("env→ServerConfig 映射：两个 boundedInteger + OWC_OFFLINE", () => {
     expect(loadConfig({}).compactionThresholdPercent).toBe(85);
     expect(loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "50" }).compactionThresholdPercent).toBe(50);
     expect(loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "70" }).compactionThresholdPercent).toBe(70);
@@ -420,6 +444,20 @@ describe("server settings API", () => {
     expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "101" })).toThrow(/100/);
     expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "85.5" })).toThrow(/positive integer/);
     expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "abc" })).toThrow(/positive integer/);
+
+    expect(loadConfig({}).compactMaxTokens).toBe(65536);
+    expect(loadConfig({ OWC_COMPACT_MAX_TOKENS: "1024" }).compactMaxTokens).toBe(1024);
+    expect(loadConfig({ OWC_COMPACT_MAX_TOKENS: "32768" }).compactMaxTokens).toBe(32768);
+    expect(loadConfig({ OWC_COMPACT_MAX_TOKENS: "256000" }).compactMaxTokens).toBe(256000);
+    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "1023" })).toThrow(/>= 1024/);
+    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "256001" })).toThrow(/256000/);
+    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "65536.5" })).toThrow(/positive integer/);
+    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "abc" })).toThrow(/positive integer/);
+
+    expect(loadConfig({}).offlineMode).toBe(false);
+    expect(loadConfig({ OWC_OFFLINE: "1" }).offlineMode).toBe(true);
+    expect(loadConfig({ OWC_OFFLINE: "true" }).offlineMode).toBe(true);
+    expect(loadConfig({ OWC_OFFLINE: "0" }).offlineMode).toBe(false);
   });
 
   it("compactMaxTokens 默认 65536，1024–256000 合法且热生效，0/负数/超界/非整数拒绝", async () => {
@@ -452,40 +490,6 @@ describe("server settings API", () => {
     expect(setup.settings.effective().compactMaxTokens).toBe(256000);
   });
 
-  it("env OWC_COMPACT_MAX_TOKENS 越界 fail-fast，合法值锁定界面写入", async () => {
-    // 越界 env 在 loadConfig 直接抛错（与 boundedInteger 约定一致），服务不启动
-    await expect(fixture({ OWC_COMPACT_MAX_TOKENS: "1023" })).rejects.toThrow(/>= 1024/);
-
-    const locked = await fixture({ OWC_COMPACT_MAX_TOKENS: "32768" });
-    const lockedView = (await locked.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
-    expect(field(lockedView, "compactMaxTokens")).toMatchObject({ value: 32768, source: "env", editable: false });
-    expect(locked.settings.effective().compactMaxTokens).toBe(32768);
-    const rejected = await locked.app.inject({
-      method: "PUT",
-      url: "/api/settings",
-      payload: { overrides: { compactMaxTokens: 65536 } },
-    });
-    expect(rejected.statusCode).toBe(400);
-  });
-
-  it("loads OWC_COMPACT_MAX_TOKENS into ServerConfig（1024–256000 合法；越界/非法 fail-fast）", () => {
-    expect(loadConfig({}).compactMaxTokens).toBe(65536);
-    expect(loadConfig({ OWC_COMPACT_MAX_TOKENS: "1024" }).compactMaxTokens).toBe(1024);
-    expect(loadConfig({ OWC_COMPACT_MAX_TOKENS: "32768" }).compactMaxTokens).toBe(32768);
-    expect(loadConfig({ OWC_COMPACT_MAX_TOKENS: "256000" }).compactMaxTokens).toBe(256000);
-    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "1023" })).toThrow(/>= 1024/);
-    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "256001" })).toThrow(/256000/);
-    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "65536.5" })).toThrow(/positive integer/);
-    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "abc" })).toThrow(/positive integer/);
-  });
-
-  it("loads OWC_OFFLINE into ServerConfig", () => {
-    expect(loadConfig({}).offlineMode).toBe(false);
-    expect(loadConfig({ OWC_OFFLINE: "1" }).offlineMode).toBe(true);
-    expect(loadConfig({ OWC_OFFLINE: "true" }).offlineMode).toBe(true);
-    expect(loadConfig({ OWC_OFFLINE: "0" }).offlineMode).toBe(false);
-  });
-
   it("离线模式下更新检查整体关闭（热生效把关）", async () => {
     const setup = await fixture();
     const put = (overrides: Record<string, unknown>) =>
@@ -513,32 +517,6 @@ describe("server settings API", () => {
 });
 
 describe("model selection settings (modelSelection group)", () => {
-  it("groups model-selection keys in order and keeps catalog sync keys under models", async () => {
-    const setup = await fixture();
-    const view = (await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
-    const groups = new Map(view.groups.map((group) => [group.id, group.fields.map((item) => item.key)]));
-    expect(groups.get("modelSelection")).toEqual([
-      "defaultModel",
-      "roleModelPremium",
-      "roleModelBalanced",
-      "fastModel",
-      "fastModelThinking",
-      "fastModelEffort",
-      "fastModelTimeoutMs",
-      "roleModelCheap",
-    ]);
-    expect(groups.get("models")).toEqual(["catalogSyncUrl", "pricingSyncUrl", "syncIntervalMinutes"]);
-    for (const key of ["defaultModel", "roleModelPremium", "roleModelBalanced", "roleModelCheap"]) {
-      expect(field(view, key)).toMatchObject({
-        type: "select",
-        value: null,
-        nullable: true,
-        restartRequired: false,
-        options: [{ value: encodeFastModelSelection("主服务", "fast-1"), label: "fast-1【主服务】" }],
-      });
-    }
-  });
-
   it("accepts encoded role/default selections, hot-applies them, and clears with null", async () => {
     const setup = await fixture();
     const selection = encodeFastModelSelection("主服务", "fast-1");
@@ -618,25 +596,22 @@ describe("install-dir defaults sync guard", () => {
 });
 
 describe("settings auto-combine (install default + user override)", () => {
-  it("serves install defaults when nothing is overridden", async () => {
+  it("install default + 用户覆盖合并", async () => {
     const root = await tempRoot("owc-defaults-");
     const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
+
     const view = settings.view();
     const port = defaultsField(view, "port");
     expect(port.source).toBe("default");
     expect(port.value).toBe(port.installDefault);
     expect(port.installDefault).toBe(3210);
-  });
 
-  it("keeps the user override and exposes the differing install default", async () => {
-    const root = await tempRoot("owc-defaults-");
-    const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
     await settings.update({ port: 9999 });
-    const view = settings.view();
-    const port = defaultsField(view, "port");
-    expect(port.source).toBe("file");
-    expect(port.value).toBe(9999);
-    expect(port.installDefault).toBe(3210);
+    const overridden = settings.view();
+    const overriddenPort = defaultsField(overridden, "port");
+    expect(overriddenPort.source).toBe("file");
+    expect(overriddenPort.value).toBe(9999);
+    expect(overriddenPort.installDefault).toBe(3210);
   });
 });
 
@@ -652,18 +627,14 @@ describe("defaultCorePath 平台感知", () => {
     expect(loadConfig({ OWC_CORE_PATH: "/custom/owc-exec" }).corePath).toBe("/custom/owc-exec");
   });
 
-  it("SettingsService 无覆盖时 effective/view 出当前平台默认", async () => {
+  it("SettingsService corePath：默认→文件覆盖", async () => {
     const root = await tempRoot("owc-corepath-");
     const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
     expect(settings.effective().corePath).toBe(defaultCorePath());
     const view = settings.view();
     const field = view.groups.flatMap((group) => group.fields).find((item) => item.key === "corePath");
     expect(field?.value).toBe(defaultCorePath());
-  });
 
-  it("SettingsService 文件覆盖优先于平台默认", async () => {
-    const root = await tempRoot("owc-corepath-");
-    const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
     await settings.update({ corePath: "/opt/owc/owc-exec" });
     expect(settings.effective().corePath).toBe("/opt/owc/owc-exec");
   });
@@ -675,15 +646,14 @@ const modeOf = async (target: string): Promise<number> => (await stat(target)).m
 
 // 权限位断言仅 POSIX 有意义；Windows 上这些调用一律 no-op，由其余用例覆盖功能路径。
 describe.skipIf(process.platform === "win32")("数据目录与敏感文件权限（POSIX）", () => {
-  it("ensureDirWithMode 创建并收紧目录为 0700", async () => {
+  it("敏感目录与文件 0700/0600（四类目标）", async () => {
+    // ensureDirWithMode 创建并收紧目录
     const root = await makePermsRoot();
     const dir = path.join(root, "nested", "data");
     await ensureDirWithMode(dir, 0o700);
     expect(await modeOf(dir)).toBe(0o700);
-  });
 
-  it("sessions 根目录 0700；会话目录 0700；meta.json/messages.jsonl 0600", async () => {
-    const root = await makePermsRoot();
+    // sessions 根目录 0700；会话目录 0700；meta.json/messages.jsonl 0600
     const sessionsRoot = path.join(root, "sessions");
     const store = new SessionStore(sessionsRoot);
     await store.initialize();
@@ -692,24 +662,20 @@ describe.skipIf(process.platform === "win32")("数据目录与敏感文件权限
     expect(await modeOf(path.join(sessionsRoot, meta.id))).toBe(0o700);
     expect(await modeOf(path.join(sessionsRoot, meta.id, "meta.json"))).toBe(0o600);
     expect(await modeOf(path.join(sessionsRoot, meta.id, "messages.jsonl"))).toBe(0o600);
-  });
 
-  it("server-settings.json 0600，所在目录 0700", async () => {
-    const root = await makePermsRoot();
-    const dir = path.join(root, "settings-dir");
-    const settings = await SettingsService.load({ env: {}, filePath: path.join(dir, "server-settings.json") });
+    // server-settings.json 0600，所在目录 0700
+    const settingsDir = path.join(root, "settings-dir");
+    const settings = await SettingsService.load({ env: {}, filePath: path.join(settingsDir, "server-settings.json") });
     await settings.update({ port: 4321 });
-    expect(await modeOf(dir)).toBe(0o700);
-    expect(await modeOf(path.join(dir, "server-settings.json"))).toBe(0o600);
-  });
+    expect(await modeOf(settingsDir)).toBe(0o700);
+    expect(await modeOf(path.join(settingsDir, "server-settings.json"))).toBe(0o600);
 
-  it("provider-profiles.json 0600，所在目录 0700", async () => {
-    const root = await makePermsRoot();
-    const dir = path.join(root, "profiles-dir");
-    const profiles = await ProviderProfilesService.load({ filePath: path.join(dir, "provider-profiles.json") });
+    // provider-profiles.json 0600，所在目录 0700
+    const profilesDir = path.join(root, "profiles-dir");
+    const profiles = await ProviderProfilesService.load({ filePath: path.join(profilesDir, "provider-profiles.json") });
     await profiles.upsertWeb(undefined, { id: "tavily-main", provider: "tavily", apiKey: "tvly-test-key" });
-    expect(await modeOf(dir)).toBe(0o700);
-    expect(await modeOf(path.join(dir, "provider-profiles.json"))).toBe(0o600);
+    expect(await modeOf(profilesDir)).toBe(0o700);
+    expect(await modeOf(path.join(profilesDir, "provider-profiles.json"))).toBe(0o600);
   });
 });
 

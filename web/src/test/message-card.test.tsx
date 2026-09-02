@@ -2,7 +2,7 @@ import { fireEvent, render, type RenderResult } from "@testing-library/react";
 import * as axeCore from "axe-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactElement } from "react";
-import { MemoMessageCard, MessageCard } from "../chat/MessageCard";
+import { MessageCard } from "../chat/MessageCard";
 import { groupCallsFromBlocks, ToolCallGroupRow, ToolCallListGroup, type ToolGroupCall } from "../chat/ToolCallGroups";
 import { CompactionRow } from "../chat/cards/CompactionRow";
 import { ChatActionsContext, type ChatActions } from "../chat/types";
@@ -168,26 +168,9 @@ describe("MessageCard", () => {
     expect(image).not.toBeNull();
     expect(image).toHaveAttribute("src", "data:image/png;base64,QUJD");
   });
-
-  it("MemoMessageCard skips rerender when a rebuilt message object is equal", () => {
-    const first = textMessage("assistant", ["回答"]);
-    const actions = makeChatActions();
-    const { container, rerender, queryByText } = render(
-      <ChatActionsContext.Provider value={actions}>
-        <MemoMessageCard message={first} turn={1} toolResults={{}} />
-      </ChatActionsContext.Provider>,
-    );
-    expect(container.querySelector(".markdown")).toHaveTextContent("回答");
-    // 事件重放重建的等值消息对象（引用不同、内容相同）不应改变渲染输出
-    rerender(
-      <ChatActionsContext.Provider value={actions}>
-        <MemoMessageCard message={textMessage("assistant", ["回答"])} turn={1} toolResults={{}} />
-      </ChatActionsContext.Provider>,
-    );
-    expect(container.querySelector(".markdown")).toHaveTextContent("回答");
-    expect(queryByText("分叉")).toBeNull();
-  });
 });
+
+// 等值消息对象重建不重复渲染的 memo 行为由 render-cache.test.tsx（Markdown 渲染计数）精确覆盖。
 
 function renderRow(node: ReactElement, actions: ChatActions = makeChatActions()) {
   const result = renderWithClient(<ChatActionsContext.Provider value={actions}>{node}</ChatActionsContext.Provider>);
@@ -199,7 +182,8 @@ function call(overrides: Partial<ToolGroupCall> = {}): ToolGroupCall {
 }
 
 describe("groupCallsFromBlocks", () => {
-  it("pairs tool_call with its tool_result and derives status from toolResults", () => {
+  it("groupCallsFromBlocks：配对/状态推导/错误孤儿/运行中判定", () => {
+    // 配对 + 状态推导
     const blocks: MessageContent[] = [
       { type: "tool_call", id: "c1", name: "bash", input: { command: "ls" } },
       { type: "tool_result", toolCallId: "c1", content: "out" },
@@ -208,24 +192,22 @@ describe("groupCallsFromBlocks", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ id: "c1", name: "bash", status: "done", summary: "ls" });
     expect(calls[0]!.result).toMatchObject({ error: false, body: "out" });
-  });
 
-  it("marks error status and keeps orphan results as standalone rows", () => {
-    const blocks: MessageContent[] = [
+    // 错误状态 + 孤儿结果独立成行
+    const orphanBlocks: MessageContent[] = [
       { type: "tool_call", id: "c1", name: "read_file", input: { path: "a.ts" } },
       { type: "tool_result", toolCallId: "orphan", content: "boom", isError: true },
     ];
-    const calls = groupCallsFromBlocks(blocks, { c1: true });
-    expect(calls).toHaveLength(2);
-    expect(calls[0]!.status).toBe("error");
-    expect(calls[1]).toMatchObject({ id: "orphan", name: "", status: "error" });
-    expect(calls[1]!.result?.body).toBe("boom");
-  });
+    const orphanCalls = groupCallsFromBlocks(orphanBlocks, { c1: true });
+    expect(orphanCalls).toHaveLength(2);
+    expect(orphanCalls[0]!.status).toBe("error");
+    expect(orphanCalls[1]).toMatchObject({ id: "orphan", name: "", status: "error" });
+    expect(orphanCalls[1]!.result?.body).toBe("boom");
 
-  it("treats calls without a paired result as running while the session runs", () => {
-    const blocks: MessageContent[] = [{ type: "tool_call", id: "c1", name: "bash", input: {} }];
-    expect(groupCallsFromBlocks(blocks, {}, true)[0]!.status).toBe("running");
-    expect(groupCallsFromBlocks(blocks, {}, false)[0]!.status).toBeUndefined();
+    // 无配对结果：会话运行中视为 running，否则无状态
+    const runningBlocks: MessageContent[] = [{ type: "tool_call", id: "c1", name: "bash", input: {} }];
+    expect(groupCallsFromBlocks(runningBlocks, {}, true)[0]!.status).toBe("running");
+    expect(groupCallsFromBlocks(runningBlocks, {}, false)[0]!.status).toBeUndefined();
   });
 });
 
@@ -267,28 +249,29 @@ describe("ToolCallGroupRow（单行形态）", () => {
 describe("ToolCallListGroup（聚合组形态）", () => {
   const calls = [call({ id: "c1" }), call({ id: "c2", name: "read_file", summary: "a.ts" })];
 
-  it("shows a collapsible header with call count and per-call rows", () => {
-    const { container, getByText } = renderRow(<ToolCallListGroup calls={calls} defaultOpen />);
-    expect(getByText("2 个工具调用")).toBeInTheDocument();
-    expect(container.querySelector(".tool-group.open")).not.toBeNull();
-    expect(container.querySelectorAll(".tool-group-body .tool-row")).toHaveLength(2);
+  it("聚合组：计数行/默认折叠/运行与错误态徽标", () => {
+    const view = renderRow(<ToolCallListGroup calls={calls} defaultOpen />);
+    expect(view.getByText("2 个工具调用")).toBeInTheDocument();
+    expect(view.container.querySelector(".tool-group.open")).not.toBeNull();
+    expect(view.container.querySelectorAll(".tool-group-body .tool-row")).toHaveLength(2);
     // 收起后行消失
-    fireEvent.click(container.querySelector(".tool-group-header")!);
-    expect(container.querySelector(".tool-group-body")).toBeNull();
-  });
+    fireEvent.click(view.container.querySelector(".tool-group-header")!);
+    expect(view.container.querySelector(".tool-group-body")).toBeNull();
+    view.unmount();
 
-  it("is collapsed by default and reflects running/error state in the header", () => {
-    const { container } = renderRow(<ToolCallListGroup calls={[call({ status: "running" }), call({ id: "c2" })]} />);
-    expect(container.querySelector(".tool-group.open")).toBeNull();
-    expect(container.querySelector(".tool-row-status.running .tool-row-dot")).not.toBeNull();
+    // 默认折叠 + 头部运行徽标
+    const collapsed = renderRow(<ToolCallListGroup calls={[call({ status: "running" }), call({ id: "c2" })]} />);
+    expect(collapsed.container.querySelector(".tool-group.open")).toBeNull();
+    expect(collapsed.container.querySelector(".tool-row-status.running .tool-row-dot")).not.toBeNull();
 
+    // 错误态整组标记
     const withError = renderRow(<ToolCallListGroup calls={[call({ status: "error" }), call({ id: "c2" })]} />);
     expect(withError.container.querySelector(".tool-group.error")).not.toBeNull();
   });
 });
 
 describe("文件提及链接（onOpenFile）", () => {
-  it("diffSpec 存在且提供 onOpenFile 时渲染文件链接，点击打开编辑器", () => {
+  it("diffSpec 文件链接：点击开编辑器；未提供 onOpenFile 降级不渲染", () => {
     const onOpenFile = vi.fn();
     const { container, actions } = renderRow(
       <ToolCallGroupRow call={call({ name: "edit_file", diffSpec: { source: "agent-edit", path: "src/b.ts", oldText: "a", newText: "b" } })} />,
@@ -300,14 +283,13 @@ describe("文件提及链接（onOpenFile）", () => {
     fireEvent.click(link);
     expect(onOpenFile).toHaveBeenCalledWith("src/b.ts");
     expect(actions.onOpenDiff).not.toHaveBeenCalled();
-  });
 
-  it("未提供 onOpenFile 时不渲染文件链接（降级）", () => {
-    const { container } = renderRow(
+    // 未提供 onOpenFile：不渲染文件链接（降级）
+    const fallback = renderRow(
       <ToolCallGroupRow call={call({ name: "write_file", diffSpec: { source: "agent-write", path: "src/a.ts", content: "x" } })} />,
     );
-    fireEvent.click(container.querySelector(".tool-row-header")!);
-    expect(container.querySelector(".tool-file-link")).toBeNull();
+    fireEvent.click(fallback.container.querySelector(".tool-row-header")!);
+    expect(fallback.container.querySelector(".tool-file-link")).toBeNull();
   });
 });
 
@@ -337,21 +319,21 @@ afterEach(() => {
 });
 
 describe("CompactionRow", () => {
-  it("运行中：spinner + 模式标注 + 强制徽标", () => {
-    const { getByRole, getByText } = renderCompactionRow(marker({ id: "compaction:live", uptoIndex: -1, status: "running", forced: true, mode: "vault" }));
-    expect(getByRole("status")).toBeTruthy();
-    expect(getByText(/正在压缩上下文/)).toBeTruthy();
-    expect(getByText(/档案库/)).toBeTruthy();
-    expect(getByText("强制 85%")).toBeTruthy();
-  });
+  it("CompactionRow：运行中占位与沉降行（无摘要不可展开）", () => {
+    const running = renderCompactionRow(marker({ id: "compaction:live", uptoIndex: -1, status: "running", forced: true, mode: "vault" }));
+    expect(running.getByRole("status")).toBeTruthy();
+    expect(running.getByText(/正在压缩上下文/)).toBeTruthy();
+    expect(running.getByText(/档案库/)).toBeTruthy();
+    expect(running.getByText("强制 85%")).toBeTruthy();
+    running.unmount();
 
-  it("沉降：徽标 + 被替换条数与 token 估算；无摘要不可展开", () => {
-    const { getByText, getByRole } = renderCompactionRow(marker({ replacedTokens: 1532 }));
-    expect(getByText("上下文已压缩")).toBeTruthy();
-    expect(getByText("手动")).toBeTruthy();
-    expect(getByText("概览")).toBeTruthy();
-    expect(getByText("压缩前 12 条消息 · 约 1.5k tokens")).toBeTruthy();
-    const head = getByRole("button");
+    // 沉降：徽标 + 被替换条数与 token 估算；无摘要不可展开
+    const settled = renderCompactionRow(marker({ replacedTokens: 1532 }));
+    expect(settled.getByText("上下文已压缩")).toBeTruthy();
+    expect(settled.getByText("手动")).toBeTruthy();
+    expect(settled.getByText("概览")).toBeTruthy();
+    expect(settled.getByText("压缩前 12 条消息 · 约 1.5k tokens")).toBeTruthy();
+    const head = settled.getByRole("button");
     expect(head.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(head);
     expect(head.getAttribute("aria-expanded")).toBeNull();

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
@@ -171,7 +171,8 @@ describe("EditorPane：plan 模式与截断文件", () => {
 });
 
 describe("EditorPane：面包屑", () => {
-  it("路径段 + 光标处符号；点符号跳转到定义行", async () => {
+  it("面包屑：路径段+光标符号跳转定义行；索引不可用无符号不阻塞", async () => {
+    // 路径段 + 光标处符号；点符号跳转到定义行
     const fake = createFakeMonaco();
     loadMonacoMock.mockResolvedValue(fake.monaco);
     const { view } = renderPane();
@@ -188,22 +189,23 @@ describe("EditorPane：面包屑", () => {
     expect(fake.editors[0].revealedLine).toBe(1);
     // 索引数据来自既有接口的 file 参数
     expect(fileSymbols).toHaveBeenCalledWith("s1", "src/a.ts");
-  });
 
-  it("索引不可用（501/409）→ 无符号面包屑，编辑器不受影响", async () => {
-    const fake = createFakeMonaco();
-    loadMonacoMock.mockResolvedValue(fake.monaco);
+    // 索引不可用（501/409）→ 无符号面包屑，编辑器不受影响（先卸载上一场景的编辑器）
+    cleanup();
+    const fake2 = createFakeMonaco();
+    loadMonacoMock.mockResolvedValue(fake2.monaco);
     fileSymbols.mockRejectedValue(new Error("Symbol index is not enabled"));
-    const { view } = renderPane();
-    await view.findByTestId("monaco-host");
-    await waitFor(() => expect(fake.editors).toHaveLength(1));
-    act(() => fake.editors[0].__emitCursor(2));
-    expect(view.queryByRole("button", { name: /foo/ })).toBeNull();
+    const { view: view2 } = renderPane();
+    await view2.findByTestId("monaco-host");
+    await waitFor(() => expect(fake2.editors).toHaveLength(1));
+    act(() => fake2.editors[0].__emitCursor(2));
+    expect(view2.queryByRole("button", { name: /foo/ })).toBeNull();
   });
 });
 
 describe("EditorPane：纯函数", () => {
-  it("symbolAtLine 取包含光标的最内层符号", () => {
+  it("纯函数：最内层符号命中与语言按扩展名映射", () => {
+    // symbolAtLine 取包含光标的最内层符号
     const symbols = [
       { name: "outer", startLine: 1, endLine: 20 },
       { name: "inner", startLine: 5, endLine: 8 },
@@ -211,9 +213,8 @@ describe("EditorPane：纯函数", () => {
     expect(symbolAtLine(symbols, 6)?.name).toBe("inner");
     expect(symbolAtLine(symbols, 2)?.name).toBe("outer");
     expect(symbolAtLine(symbols, 21)).toBeUndefined();
-  });
 
-  it("monacoLanguageForPath 按扩展名匹配，未知回退 plaintext", () => {
+    // monacoLanguageForPath 按扩展名匹配，未知回退 plaintext
     const fake = createFakeMonaco();
     expect(monacoLanguageForPath(fake.monaco, "src/a.ts")).toBe("typescript");
     expect(monacoLanguageForPath(fake.monaco, "README.md")).toBe("markdown");

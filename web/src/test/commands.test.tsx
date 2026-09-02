@@ -40,21 +40,15 @@ afterEach(() => {
 });
 
 describe("命令注册表", () => {
-  it("注册后可按 id 查找并执行", () => {
+  it("注册后可查找执行；注销移除且不破坏后来注册者", () => {
     const handler = vi.fn();
     registerCommand({ id: "test.a", title: { zh: "甲", en: "A" }, handler });
     expect(getCommand("test.a")?.title.en).toBe("A");
     expect(runCommand("test.a")).toBe(true);
     expect(handler).toHaveBeenCalledTimes(1);
     expect(runCommand("test.missing")).toBe(false);
-  });
 
-  it("重复 id 注册报错", () => {
-    registerCommand({ id: "test.dup", title: { zh: "甲", en: "A" }, handler: () => undefined });
-    expect(() => registerCommand({ id: "test.dup", title: { zh: "乙", en: "B" }, handler: () => undefined })).toThrow(/duplicate/);
-  });
-
-  it("注销函数移除命令；重复注销不破坏后来注册者", () => {
+    // 注销函数移除命令；重复注销不破坏后来注册者
     const dispose = registerCommand({ id: "test.x", title: { zh: "甲", en: "A" }, handler: () => undefined });
     dispose();
     expect(getCommand("test.x")).toBeUndefined();
@@ -63,15 +57,19 @@ describe("命令注册表", () => {
     expect(getCommand("test.x")?.title.en).toBe("B");
   });
 
-  it("when 条件：全部满足可用，! 前缀取反", () => {
+  it("重复 id 注册报错", () => {
+    registerCommand({ id: "test.dup", title: { zh: "甲", en: "A" }, handler: () => undefined });
+    expect(() => registerCommand({ id: "test.dup", title: { zh: "乙", en: "B" }, handler: () => undefined })).toThrow(/duplicate/);
+  });
+
+  it("when 条件求值（含 ! 取反）并作用于 listCommands/runCommand", () => {
     expect(evaluateWhen("sessionActive running", { sessionActive: true, running: true })).toBe(true);
     expect(evaluateWhen("sessionActive running", { sessionActive: true })).toBe(false);
     expect(evaluateWhen("!running", { running: false })).toBe(true);
     expect(evaluateWhen("!running", { running: true })).toBe(false);
     expect(evaluateWhen(undefined, {})).toBe(true);
-  });
 
-  it("listCommands 按上下文过滤；runCommand 拦截不满足 when 的命令", () => {
+    // listCommands 按上下文过滤；runCommand 拦截不满足 when 的命令
     const handler = vi.fn();
     registerCommand({ id: "test.gated", title: { zh: "甲", en: "A" }, when: "sessionActive", handler });
     registerCommand({ id: "test.free", title: { zh: "乙", en: "B" }, handler: () => undefined });
@@ -112,46 +110,41 @@ describe("CommandPalette", () => {
     expect(screen.getByText("贝塔操作")).toBeInTheDocument();
   });
 
-  it("Enter 执行选中命令并关闭", async () => {
+  it("键盘操作：方向键移动、Enter 执行并关闭、Esc 关闭", async () => {
     const { alpha } = setup();
     const onClose = vi.fn();
-    render(<CommandPalette open context={{}} onClose={onClose} />);
+    const enterView = render(<CommandPalette open context={{}} onClose={onClose} />);
     fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
     expect(onClose).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(alpha).toHaveBeenCalledTimes(1));
-  });
+    enterView.unmount();
 
-  it("方向键移动选中项，Esc 关闭", () => {
-    setup();
-    const onClose = vi.fn();
-    render(<CommandPalette open context={{ sessionActive: true }} onClose={onClose} />);
+    const escView = render(<CommandPalette open context={{ sessionActive: true }} onClose={onClose} />);
     const input = screen.getByRole("combobox");
     fireEvent.keyDown(input, { key: "ArrowDown" });
     expect(input).toHaveAttribute("aria-activedescendant", "command-option-1");
     fireEvent.keyDown(input, { key: "Escape" });
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(2);
+    escView.unmount();
   });
 });
 
 // ===== 以下 describe 合并自 command-coverage.test.ts =====
 
 describe("命令注册表覆盖审计（§10.2：每个 REST 动作可达）", () => {
-  it("审计表中的 api 动作都存在", () => {
+  it("审计表：api 动作存在、内建命令注册覆盖、双语标题与 handler", () => {
+    // 审计表中的 api 动作都存在
     for (const { action } of REST_ACTION_COMMANDS) {
       expect(typeof api[action], `api.${String(action)} 应为函数`).toBe("function");
     }
-  });
 
-  it("内建命令注册后覆盖审计表中全部 REST 动作", () => {
+    // 内建命令注册后覆盖审计表中全部 REST 动作
     const dispose = registerBuiltinCommands(() => stubActions());
     for (const { action, command } of REST_ACTION_COMMANDS) {
       expect(getCommand(command), `api.${String(action)} 对应命令 ${command} 应已注册`).toBeDefined();
     }
-    dispose();
-  });
 
-  it("审计表引用的命令都有双语标题与 handler", () => {
-    const dispose = registerBuiltinCommands(() => stubActions());
+    // 审计表引用的命令都有双语标题与 handler
     for (const { command } of REST_ACTION_COMMANDS) {
       const registered = getCommand(command)!;
       expect(registered.title.zh).toBeTruthy();
@@ -163,10 +156,15 @@ describe("命令注册表覆盖审计（§10.2：每个 REST 动作可达）", (
 });
 
 describe("内建命令注册", () => {
-  it("重复注册同一批内建命令报 duplicate（防止双重挂载）", () => {
+  it("内建注册：重复挂载报错，可与普通命令共存", () => {
     const dispose = registerBuiltinCommands(() => stubActions());
     expect(() => registerBuiltinCommands(() => stubActions())).toThrow(/duplicate/);
     dispose();
+
+    const again = registerBuiltinCommands(() => stubActions());
+    registerCommand({ id: "ext.demo", title: { zh: "演示", en: "Demo" }, handler: () => undefined });
+    expect(getCommand("ext.demo")).toBeDefined();
+    again();
   });
 
   it("handler 每次取最新 actions（惰性求值）", () => {
@@ -180,19 +178,12 @@ describe("内建命令注册", () => {
     expect(second.showCommands).toHaveBeenCalledTimes(1);
     dispose();
   });
-
-  it("注册表可与普通命令共存", () => {
-    const dispose = registerBuiltinCommands(() => stubActions());
-    registerCommand({ id: "ext.demo", title: { zh: "演示", en: "Demo" }, handler: () => undefined });
-    expect(getCommand("ext.demo")).toBeDefined();
-    dispose();
-  });
 });
 
 // ===== 以下 describe 合并自 commands-context.test.ts =====
 
 describe("buildWhenContext", () => {
-  it("从 store 推导 sessionActive/running/dialogOpen/editorOpen/diffOpen/permissionPending", () => {
+  it("buildWhenContext：store 推导与显式传入字段", () => {
     expect(buildWhenContext({ draftNonEmpty: false, multipleSessions: false })).toMatchObject({
       sessionActive: false,
       running: false,
@@ -215,9 +206,8 @@ describe("buildWhenContext", () => {
     expect(buildWhenContext({ draftNonEmpty: false, multipleSessions: false }).editorOpen).toBe(true);
     sessionMeta.upsertPermission({ requestId: "r1", tool: "bash", input: {} });
     expect(buildWhenContext({ draftNonEmpty: false, multipleSessions: false }).permissionPending).toBe(true);
-  });
 
-  it("draftNonEmpty/multipleSessions 由调用方显式传入", () => {
+    // draftNonEmpty/multipleSessions 由调用方显式传入
     expect(buildWhenContext({ draftNonEmpty: true, multipleSessions: true })).toMatchObject({
       draftNonEmpty: true,
       multipleSessions: true,
@@ -234,17 +224,16 @@ describe("cycleZone", () => {
       <div data-wb-zone="bottom" tabindex="-1"><button data-focus="bottom">b</button></div>`;
   }
 
-  it("从主区出发按序轮换到下一区域并聚焦其首个可聚焦元素", () => {
+  it("cycleZone：从当前/无焦点区域开始轮换聚焦", () => {
+    // 从主区出发按序轮换到下一区域并聚焦其首个可聚焦元素
     mountShell();
     document.querySelector<HTMLElement>('[data-focus="main"]')!.focus();
     cycleZone();
     expect(document.activeElement).toBe(document.querySelector('[data-focus="bottom"]'));
     cycleZone();
     expect(document.activeElement).toBe(document.querySelector('[data-focus="activity"]'));
-  });
 
-  it("无区域聚焦时从首个区域开始", () => {
-    mountShell();
+    // 无区域聚焦时从首个区域开始
     (document.activeElement as HTMLElement | null)?.blur?.();
     cycleZone();
     expect(document.activeElement).toBe(document.querySelector('[data-focus="activity"]'));
@@ -252,7 +241,8 @@ describe("cycleZone", () => {
 });
 
 describe("chatBridge 发送通路", () => {
-  it("sendDraft 命令（draftNonEmpty 时）经 App 动作面 → 桥调用 ChatView 注册的 submitDraft", () => {
+  it("sendDraft：经动作面走桥；桥未挂安全 no-op", () => {
+    // sendDraft 命令（draftNonEmpty 时）经 App 动作面 → 桥调用 ChatView 注册的 submitDraft
     const submitDraft = vi.fn();
     chatBridge.submitDraft = submitDraft;
     // App 侧动作面的真实实现（见 App.tsx actionsRef）：sendDraft 经桥路由
@@ -262,11 +252,9 @@ describe("chatBridge 发送通路", () => {
     expect(runCommand("session.send", { sessionActive: true, draftNonEmpty: true })).toBe(true);
     expect(submitDraft).toHaveBeenCalledTimes(1);
     cleanup();
-  });
 
-  it("桥未挂时 sendDraft 是安全 no-op", () => {
+    // 桥未挂时 sendDraft 是安全 no-op
     chatBridge.submitDraft = undefined;
-    const actions = stubActions({ sendDraft: () => chatBridge.submitDraft?.() });
     expect(() => actions.sendDraft()).not.toThrow();
   });
 });
@@ -278,15 +266,13 @@ function keyEvent(init: Partial<KeyboardEvent> & { target?: EventTarget | null }
 }
 
 describe("comboFromEvent", () => {
-  it("规范化修饰键与键名", () => {
+  it("comboFromEvent：规范化修饰键与键名；纯修饰键返回 undefined", () => {
     expect(comboFromEvent(keyEvent({ key: "P", ctrlKey: true, shiftKey: true }))).toBe("mod+shift+p");
     expect(comboFromEvent(keyEvent({ key: "`", metaKey: true }))).toBe("mod+`");
     expect(comboFromEvent(keyEvent({ key: "F6" }))).toBe("f6");
     expect(comboFromEvent(keyEvent({ key: "?", shiftKey: true }))).toBe("shift+?");
     expect(comboFromEvent(keyEvent({ key: " ", ctrlKey: true }))).toBe("mod+space");
-  });
 
-  it("纯修饰键返回 undefined", () => {
     expect(comboFromEvent(keyEvent({ key: "Control", ctrlKey: true }))).toBeUndefined();
     expect(comboFromEvent(keyEvent({ key: "Shift", shiftKey: true }))).toBeUndefined();
   });
@@ -309,35 +295,31 @@ describe("dispatchKeybinding", () => {
     return { palette, local, gated };
   }
 
-  it("匹配键位并执行命令", () => {
+  it("dispatchKeybinding：匹配执行命令、未匹配返回 undefined", () => {
     const { local } = registerAll();
-    const result = dispatchKeybinding(keyEvent({ key: "b", ctrlKey: true }), bindings, {});
-    expect(result).toEqual({ command: "app.local", handled: true });
+    expect(dispatchKeybinding(keyEvent({ key: "b", ctrlKey: true }), bindings, {})).toEqual({ command: "app.local", handled: true });
+    expect(local).toHaveBeenCalledTimes(1);
+
+    expect(dispatchKeybinding(keyEvent({ key: "z", ctrlKey: true }), bindings, {})).toBeUndefined();
     expect(local).toHaveBeenCalledTimes(1);
   });
 
-  it("未匹配返回 undefined", () => {
-    registerAll();
-    expect(dispatchKeybinding(keyEvent({ key: "z", ctrlKey: true }), bindings, {})).toBeUndefined();
-  });
-
-  it("输入框聚焦时不抢非 global 键，global 键仍然生效", () => {
+  it("输入框聚焦不抢非 global 键、global 键生效；已 preventDefault 不分发", () => {
     const { palette, local } = registerAll();
+    // 输入框聚焦：非 global 键不分发
     const input = document.createElement("input");
     expect(dispatchKeybinding(keyEvent({ key: "b", ctrlKey: true, target: input }), bindings, {})).toBeUndefined();
     expect(local).not.toHaveBeenCalled();
+    // global 键仍然生效
     const textarea = document.createElement("textarea");
     const result = dispatchKeybinding(keyEvent({ key: "p", ctrlKey: true, shiftKey: true, target: textarea }), bindings, {});
     expect(result?.command).toBe("app.palette");
     expect(palette).toHaveBeenCalledTimes(1);
-  });
 
-  it("组件已 preventDefault 的事件不再分发（Composer mod+p 循环模型场景）", () => {
-    const { palette } = registerAll();
-    const textarea = document.createElement("textarea");
-    const result = dispatchKeybinding(keyEvent({ key: "p", ctrlKey: true, shiftKey: true, target: textarea, defaultPrevented: true }), bindings, {});
-    expect(result).toBeUndefined();
-    expect(palette).not.toHaveBeenCalled();
+    // 组件已 preventDefault 的事件不再分发（Composer mod+p 循环模型场景）
+    const prevented = dispatchKeybinding(keyEvent({ key: "p", ctrlKey: true, shiftKey: true, target: textarea, defaultPrevented: true }), bindings, {});
+    expect(prevented).toBeUndefined();
+    expect(palette).toHaveBeenCalledTimes(1);
   });
 
   it("when 条件不满足时不执行（键位级与命令级）", () => {
@@ -368,17 +350,14 @@ describe("Esc 中断键位（session.abort）", () => {
 
   const runningContext = { sessionActive: true, running: true };
 
-  it("运行中按 Esc 触发中断", () => {
+  it("Esc 中断键位：运行中触发、非运行不触发", () => {
     const abort = registerAbort();
-    const result = dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, runningContext);
-    expect(result).toEqual({ command: "session.abort", handled: true });
+    expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, runningContext)).toEqual({ command: "session.abort", handled: true });
     expect(abort).toHaveBeenCalledTimes(1);
-  });
 
-  it("非运行状态不触发", () => {
-    const abort = registerAbort();
+    // 非运行状态不触发
     expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, { sessionActive: true, running: false })).toBeUndefined();
-    expect(abort).not.toHaveBeenCalled();
+    expect(abort).toHaveBeenCalledTimes(1);
   });
 
   it.each(["dialogOpen", "editorOpen", "diffOpen", "permissionPending"])("上下文 %s 打开/待决时不抢 Esc", (key) => {
@@ -402,26 +381,21 @@ describe("mergeKeybindings（自定义键位合并）", () => {
     { command: "c.cmd", key: "f6", global: true },
   ];
 
-  it("覆盖项替换 key 且保留默认 global/when", () => {
-    const merged = mergeKeybindings(defaults, { "a.cmd": "mod+alt+a" });
-    expect(merged).toEqual([
+  it("mergeKeybindings：覆盖保留默认属性/null 解绑/未知与空串忽略/空覆盖原样", () => {
+    // 覆盖项替换 key 且保留默认 global/when
+    expect(mergeKeybindings(defaults, { "a.cmd": "mod+alt+a" })).toEqual([
       { command: "a.cmd", key: "mod+alt+a", global: true },
       { command: "b.cmd", key: "mod+b", when: "sessionActive" },
       { command: "c.cmd", key: "f6", global: true },
     ]);
-  });
 
-  it("null 解除绑定：该命令从注册表移除", () => {
-    const merged = mergeKeybindings(defaults, { "b.cmd": null });
-    expect(merged.map((binding) => binding.command)).toEqual(["a.cmd", "c.cmd"]);
-  });
+    // null 解除绑定：该命令从注册表移除
+    expect(mergeKeybindings(defaults, { "b.cmd": null }).map((binding) => binding.command)).toEqual(["a.cmd", "c.cmd"]);
 
-  it("未知命令与空串覆盖不引入新条目", () => {
-    const merged = mergeKeybindings(defaults, { "ghost.cmd": "mod+g", "c.cmd": "" });
-    expect(merged.map((binding) => binding.command)).toEqual(["a.cmd", "b.cmd", "c.cmd"]);
-  });
+    // 未知命令与空串覆盖不引入新条目
+    expect(mergeKeybindings(defaults, { "ghost.cmd": "mod+g", "c.cmd": "" }).map((binding) => binding.command)).toEqual(["a.cmd", "b.cmd", "c.cmd"]);
 
-  it("空覆盖返回默认注册表", () => {
+    // 空覆盖返回默认注册表
     expect(mergeKeybindings(defaults, {})).toEqual(defaults);
   });
 

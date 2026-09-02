@@ -209,72 +209,52 @@ describe("POST /api/provider-profiles/test", () => {
     }
   });
 
-  it("401/403：分类为认证失败，提示检查 API Key", async () => {
+  type ProbeJson = { ok: boolean; error?: string; note?: string };
+  it.each<{ name: string; stub: () => void; assert: (body: ProbeJson) => void }>([
+    {
+      name: "401：认证失败",
+      stub: () => stubFetchStatus(401),
+      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("认证失败") }),
+    },
+    {
+      name: "403：提示检查 API Key",
+      stub: () => stubFetchStatus(403),
+      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("API Key") }),
+    },
+    {
+      name: "404：接口不存在，提示检查 Base URL",
+      stub: () => stubFetchStatus(404),
+      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("Base URL") }),
+    },
+    {
+      name: "429：服务可达但限流（ok + note 提示）",
+      stub: () => stubFetchStatus(429),
+      assert: (body) => {
+        expect(body.ok).toBe(true);
+        expect(body.note).toContain("429");
+      },
+    },
+    {
+      name: "3xx：不自动跟随，提示检查 Base URL",
+      stub: () => stubFetchStatus(302),
+      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("重定向") }),
+    },
+    {
+      name: "超时：连接超时",
+      stub: () => vi.stubGlobal("fetch", vi.fn(async () => { throw new DOMException("The operation timed out", "TimeoutError"); })),
+      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("超时") }),
+    },
+    {
+      name: "网络错误（ECONNREFUSED 等）：无法连接",
+      stub: () => vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("fetch failed"); })),
+      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("无法连接") }),
+    },
+  ])("探测结果分类矩阵（401/403/404/429/302/超时/网络错）：$name", async ({ stub, assert }) => {
     const { app } = await connectionFixture();
     try {
-      stubFetchStatus(401);
-      const unauthorized = await post(app, openaiBody);
-      expect(unauthorized.json()).toMatchObject({ ok: false, error: expect.stringContaining("认证失败") });
-      stubFetchStatus(403);
-      const forbidden = await post(app, openaiBody);
-      expect(forbidden.json()).toMatchObject({ ok: false, error: expect.stringContaining("API Key") });
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("404：分类为接口不存在，提示检查 Base URL", async () => {
-    const { app } = await connectionFixture();
-    try {
-      stubFetchStatus(404);
+      stub();
       const response = await post(app, openaiBody);
-      expect(response.json()).toMatchObject({ ok: false, error: expect.stringContaining("Base URL") });
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("429：服务可达但限流，按连接成功处理并附提示", async () => {
-    const { app } = await connectionFixture();
-    try {
-      stubFetchStatus(429);
-      const response = await post(app, openaiBody);
-      const body = response.json<{ ok: boolean; note?: string }>();
-      expect(body.ok).toBe(true);
-      expect(body.note).toContain("429");
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("3xx 重定向：不自动跟随，提示检查 Base URL", async () => {
-    const { app } = await connectionFixture();
-    try {
-      stubFetchStatus(302);
-      const response = await post(app, openaiBody);
-      expect(response.json()).toMatchObject({ ok: false, error: expect.stringContaining("重定向") });
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("超时：分类为连接超时", async () => {
-    const { app } = await connectionFixture();
-    try {
-      vi.stubGlobal("fetch", vi.fn(async () => { throw new DOMException("The operation timed out", "TimeoutError"); }));
-      const response = await post(app, openaiBody);
-      expect(response.json()).toMatchObject({ ok: false, error: expect.stringContaining("超时") });
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("网络错误（ECONNREFUSED 等）：分类为无法连接", async () => {
-    const { app } = await connectionFixture();
-    try {
-      vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("fetch failed"); }));
-      const response = await post(app, openaiBody);
-      expect(response.json()).toMatchObject({ ok: false, error: expect.stringContaining("无法连接") });
+      assert(response.json<ProbeJson>());
     } finally {
       await app.close();
     }

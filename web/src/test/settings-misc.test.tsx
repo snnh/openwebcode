@@ -194,44 +194,41 @@ function stubPromptApis(): void {
 }
 
 describe("PromptSection", () => {
-  it("默认全局作用域渲染七个配置面并加载全局值", async () => {
+  it("PromptSection：默认全局渲染七面；项目作用域切换与回切", async () => {
     stubPromptApis();
-    renderWithClient(<PromptSection sessionCwd="/work/demo" />);
-    await waitFor(() => expect(screen.getByLabelText("身份行")).toHaveValue("全局身份"));
-    expect(screen.getByLabelText("基线覆盖")).toHaveValue("全局基线");
-    expect(screen.getByLabelText("追加指令")).toHaveValue("全局追加");
-    expect(screen.getByLabelText("子代理附加指令")).toHaveValue("全局子代理");
-    expect(screen.getByLabelText("/init 提示词")).toHaveValue("全局 init");
-    expect(screen.getByLabelText("压缩提示词（概览）")).toHaveValue("");
-    expect(screen.getByLabelText("压缩提示词（工具调用）")).toHaveValue("");
-  });
+    const view = renderWithClient(<PromptSection sessionCwd="/work/demo" />);
+    // 默认全局作用域渲染七个配置面并加载全局值
+    await waitFor(() => expect(view.getByLabelText("身份行")).toHaveValue("全局身份"));
+    expect(view.getByLabelText("基线覆盖")).toHaveValue("全局基线");
+    expect(view.getByLabelText("追加指令")).toHaveValue("全局追加");
+    expect(view.getByLabelText("子代理附加指令")).toHaveValue("全局子代理");
+    expect(view.getByLabelText("/init 提示词")).toHaveValue("全局 init");
+    expect(view.getByLabelText("压缩提示词（概览）")).toHaveValue("");
+    expect(view.getByLabelText("压缩提示词（工具调用）")).toHaveValue("");
 
-  it("切换到当前项目作用域后按项目值渲染，切回全局恢复", async () => {
-    stubPromptApis();
-    renderWithClient(<PromptSection sessionCwd="/work/demo" />);
-    await waitFor(() => expect(screen.getByLabelText("基线覆盖")).toHaveValue("全局基线"));
-
-    fireEvent.click(screen.getByRole("button", { name: /当前项目/ }));
-    await waitFor(() => expect(screen.getByLabelText("基线覆盖")).toHaveValue("项目基线"));
+    // 切到当前项目作用域后按项目值渲染，切回全局恢复
+    fireEvent.click(view.getByRole("button", { name: /当前项目/ }));
+    await waitFor(() => expect(view.getByLabelText("基线覆盖")).toHaveValue("项目基线"));
     expect(api.promptOverride).toHaveBeenCalledWith({ scope: "project", cwd: "/work/demo" });
-    expect(screen.getByLabelText("身份行")).toHaveValue("");
-    expect(screen.getByLabelText("子代理附加指令")).toHaveValue("项目子代理");
+    expect(view.getByLabelText("身份行")).toHaveValue("");
+    expect(view.getByLabelText("子代理附加指令")).toHaveValue("项目子代理");
 
-    fireEvent.click(screen.getByRole("button", { name: "全局" }));
-    await waitFor(() => expect(screen.getByLabelText("基线覆盖")).toHaveValue("全局基线"));
+    fireEvent.click(view.getByRole("button", { name: "全局" }));
+    await waitFor(() => expect(view.getByLabelText("基线覆盖")).toHaveValue("全局基线"));
   });
 
-  it("保存按当前作用域提交七个面（空串转 null）并上报 dirty", async () => {
+  it("保存按当前作用域提交（空串转 null；项目携带 cwd）并上报 dirty", async () => {
+    // 全局作用域：七个面（空串转 null）并上报 dirty
     stubPromptApis();
     const onDirtyChange = vi.fn();
-    renderWithClient(<PromptSection sessionCwd="/work/demo" onDirtyChange={onDirtyChange} />);
-    await waitFor(() => expect(screen.getByLabelText("追加指令")).toHaveValue("全局追加"));
+    const global = renderWithClient(<PromptSection sessionCwd="/work/demo" onDirtyChange={onDirtyChange} />);
+    await waitFor(() => expect(global.getByLabelText("追加指令")).toHaveValue("全局追加"));
 
-    fireEvent.change(screen.getByLabelText("追加指令"), { target: { value: "改成新的追加" } });
-    fireEvent.change(screen.getByLabelText("压缩提示词（概览）"), { target: { value: "自定义概览压缩" } });
+    fireEvent.change(global.getByLabelText("追加指令"), { target: { value: "改成新的追加" } });
+    fireEvent.change(global.getByLabelText("压缩提示词（概览）"), { target: { value: "自定义概览压缩" } });
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
 
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(global.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(api.savePromptOverride).toHaveBeenCalledWith({
       scope: "global",
       identityOverride: "全局身份",
@@ -243,17 +240,17 @@ describe("PromptSection", () => {
       compactToolcallsOverride: null,
     }));
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
-  });
+    global.unmount();
 
-  it("项目作用域保存携带 cwd", async () => {
+    // 项目作用域：保存携带 cwd
     stubPromptApis();
-    renderWithClient(<PromptSection sessionCwd="/work/demo" />);
-    await waitFor(() => expect(screen.getByLabelText("基线覆盖")).toHaveValue("全局基线"));
-    fireEvent.click(screen.getByRole("button", { name: /当前项目/ }));
-    await waitFor(() => expect(screen.getByLabelText("基线覆盖")).toHaveValue("项目基线"));
+    const project = renderWithClient(<PromptSection sessionCwd="/work/demo" />);
+    await waitFor(() => expect(project.getByLabelText("基线覆盖")).toHaveValue("全局基线"));
+    fireEvent.click(project.getByRole("button", { name: /当前项目/ }));
+    await waitFor(() => expect(project.getByLabelText("基线覆盖")).toHaveValue("项目基线"));
 
-    fireEvent.change(screen.getByLabelText("身份行"), { target: { value: "项目身份" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.change(project.getByLabelText("身份行"), { target: { value: "项目身份" } });
+    fireEvent.click(project.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(api.savePromptOverride).toHaveBeenCalledWith({
       scope: "project",
       cwd: "/work/demo",
@@ -308,20 +305,18 @@ describe("桌面通知开关持久化", () => {
 });
 
 describe("desktopNotifyPermission / requestDesktopNotifyPermission", () => {
-  it("浏览器不支持 Notification 时返回 unsupported", () => {
-    // jsdom 无 Notification；确保全局干净
+  it("desktopNotifyPermission：unsupported/已拒·已允许如实返回/default 才发起授权请求", async () => {
+    // 浏览器不支持 Notification 时返回 unsupported（jsdom 无 Notification；确保全局干净）
     vi.stubGlobal("Notification", undefined);
     expect(desktopNotifyPermission()).toBe("unsupported");
-  });
 
-  it("已拒绝/已允许状态如实返回", () => {
+    // 已拒绝/已允许状态如实返回
     stubNotification("denied");
     expect(desktopNotifyPermission()).toBe("denied");
     stubNotification("granted");
     expect(desktopNotifyPermission()).toBe("granted");
-  });
 
-  it("仅 default 状态发起浏览器授权请求", async () => {
+    // 仅 default 状态发起浏览器授权请求
     stubNotification("granted");
     expect(await requestDesktopNotifyPermission()).toBe("granted");
     expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
@@ -334,24 +329,14 @@ describe("desktopNotifyPermission / requestDesktopNotifyPermission", () => {
 });
 
 describe("maybeDesktopNotify 失焦门控", () => {
-  it("开关关闭时不弹", () => {
-    stubNotification("granted");
-    vi.spyOn(document, "hidden", "get").mockReturnValue(true);
-    expect(maybeDesktopNotify(false, { title: "t", body: "b" })).toBe(false);
-    expect(FakeNotification.instances).toHaveLength(0);
-  });
-
-  it("页面可见（document.hidden=false）时不弹", () => {
-    stubNotification("granted");
-    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
-    expect(maybeDesktopNotify(true, { title: "t", body: "b" })).toBe(false);
-    expect(FakeNotification.instances).toHaveLength(0);
-  });
-
-  it("浏览器拒绝时不弹", () => {
-    stubNotification("denied");
-    vi.spyOn(document, "hidden", "get").mockReturnValue(true);
-    expect(maybeDesktopNotify(true, { title: "t", body: "b" })).toBe(false);
+  it.each<{ label: string; enabled: boolean; hidden: boolean; permission: NotificationPermission }>([
+    { label: "开关关", enabled: false, hidden: true, permission: "granted" },
+    { label: "页面可见", enabled: true, hidden: false, permission: "granted" },
+    { label: "浏览器拒绝", enabled: true, hidden: true, permission: "denied" },
+  ])("不弹：$label", ({ enabled, hidden, permission }) => {
+    stubNotification(permission);
+    vi.spyOn(document, "hidden", "get").mockReturnValue(hidden);
+    expect(maybeDesktopNotify(enabled, { title: "t", body: "b" })).toBe(false);
     expect(FakeNotification.instances).toHaveLength(0);
   });
 
@@ -385,23 +370,24 @@ describe("通用设置：桌面通知开关", () => {
     expect(view.getByRole("checkbox", { name: /页面在后台时弹出系统通知/ })).not.toBeChecked();
   });
 
-  it("开启时请求浏览器授权，授权通过后打开开关", async () => {
+  it("开启时请求授权：通过与拒绝两条路径", async () => {
+    // 授权通过后打开开关
     stubNotification("default");
     FakeNotification.requestPermission = vi.fn(async () => {
       FakeNotification.permission = "granted";
       return "granted" as NotificationPermission;
     });
-    const view = renderSection();
-    fireEvent.click(view.getByRole("checkbox", { name: /页面在后台时弹出系统通知/ }));
+    const granted = renderSection();
+    fireEvent.click(granted.getByRole("checkbox", { name: /页面在后台时弹出系统通知/ }));
     expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(getDesktopNotify()).toBe(true));
-  });
+    granted.unmount();
 
-  it("开启被拒：开关保持关闭", async () => {
+    // 开启被拒：开关保持关闭
     stubNotification("default");
     FakeNotification.requestPermission = vi.fn(async () => "denied" as NotificationPermission);
-    const view = renderSection();
-    fireEvent.click(view.getByRole("checkbox", { name: /页面在后台时弹出系统通知/ }));
+    const denied = renderSection();
+    fireEvent.click(denied.getByRole("checkbox", { name: /页面在后台时弹出系统通知/ }));
     await vi.waitFor(() => expect(FakeNotification.requestPermission).toHaveBeenCalled());
     expect(getDesktopNotify()).toBe(false);
   });
@@ -514,17 +500,18 @@ function stubBaseQueries(isNewer = true): void {
 }
 
 describe("设置：在线更新（update apply）", () => {
-  it("有新版本时显示「立即更新」按钮", async () => {
+  it("更新检查：有新版本显示按钮、已是最新不显示", async () => {
+    // 有新版本
     stubBaseQueries(true);
-    const view = renderWithClient(<ServerInfoSection />);
-    expect(await view.findByRole("button", { name: "立即更新" })).toBeInTheDocument();
-  });
+    const newer = renderWithClient(<ServerInfoSection />);
+    expect(await newer.findByRole("button", { name: "立即更新" })).toBeInTheDocument();
+    newer.unmount();
 
-  it("已是最新时不显示「立即更新」按钮", async () => {
+    // 已是最新
     stubBaseQueries(false);
-    const view = renderWithClient(<ServerInfoSection />);
-    expect(await view.findByText(/已是最新/)).toBeInTheDocument();
-    expect(view.queryByRole("button", { name: "立即更新" })).toBeNull();
+    const current = renderWithClient(<ServerInfoSection />);
+    expect(await current.findByText(/已是最新/)).toBeInTheDocument();
+    expect(current.queryByRole("button", { name: "立即更新" })).toBeNull();
   });
 
   it("点击后进入下载状态并展示进度", async () => {

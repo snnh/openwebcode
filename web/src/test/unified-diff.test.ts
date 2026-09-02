@@ -64,14 +64,14 @@ describe("parseUnifiedDiff", () => {
 describe("revertHunks", () => {
   const file = parseUnifiedDiff(SAMPLE)[0]!;
 
-  it("拒绝单个 hunk：新侧替换回旧侧", () => {
+  it("拒绝单个与多个 hunk：自底向上应用互不位移", () => {
+    // 单个 hunk：新侧替换回旧侧
     const next = revertHunks(CURRENT_A, file, [0]);
     expect(next).toBe(["line1", "line2", "line3", "line4", "x", "y", "z", "w", "line10", "line12"].join("\n"));
-  });
 
-  it("多个 hunk 自底向上应用，互不位移", () => {
-    const next = revertHunks(CURRENT_A, file, [0, 1]);
-    expect(next).toBe(["line1", "line2", "line3", "line4", "x", "y", "z", "w", "line10", "line11", "line12"].join("\n"));
+    // 多个 hunk 自底向上应用，互不位移
+    const both = revertHunks(CURRENT_A, file, [0, 1]);
+    expect(both).toBe(["line1", "line2", "line3", "line4", "x", "y", "z", "w", "line10", "line11", "line12"].join("\n"));
   });
 
   it("行号漂移：newStart 不符时按内容全文定位", () => {
@@ -81,7 +81,8 @@ describe("revertHunks", () => {
     expect(next).toBe(["inserted", "line1", "line2 changed", "line3", "line4", "line5 added", "x", "y", "z", "w", "line10", "line11", "line12"].join("\n"));
   });
 
-  it("内容与 hunk 不匹配时抛 HunkRevertError（code 供 UI 映射 i18n 文案，不静默写坏文件）", () => {
+  it("HunkRevertError：内容不匹配与无效下标分别带 code", () => {
+    // 内容与 hunk 不匹配（code 供 UI 映射 i18n 文案，不静默写坏文件）
     const tampered = CURRENT_A.replace("line2 changed", "something else");
     let caught: unknown;
     try {
@@ -93,17 +94,16 @@ describe("revertHunks", () => {
     expect((caught as HunkRevertError).code).toBe("hunk-content-mismatch");
     // message 只承载英文技术细节，不含上屏中文
     expect((caught as HunkRevertError).message).not.toMatch(/[一-鿿]/);
-  });
 
-  it("无效 hunk 下标抛 HunkRevertError（invalid-hunk-index）", () => {
-    let caught: unknown;
+    // 无效 hunk 下标
+    let caughtInvalid: unknown;
     try {
       revertHunks(CURRENT_A, file, [99]);
     } catch (error) {
-      caught = error;
+      caughtInvalid = error;
     }
-    expect(caught).toBeInstanceOf(HunkRevertError);
-    expect((caught as HunkRevertError).code).toBe("invalid-hunk-index");
+    expect(caughtInvalid).toBeInstanceOf(HunkRevertError);
+    expect((caughtInvalid as HunkRevertError).code).toBe("invalid-hunk-index");
   });
 
   it("reconstructOriginal 反推旧侧全文", () => {

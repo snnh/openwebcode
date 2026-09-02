@@ -37,30 +37,30 @@ describe("parseNoProxyList", () => {
 });
 
 describe("shouldBypassProxy", () => {
-  it("本机回环地址始终绕过", () => {
-    for (const host of ["localhost", "api.localhost", "127.0.0.1", "127.1.2.3", "::1", "[::1]"]) {
-      expect(shouldBypassProxy(host, []), host).toBe(true);
-    }
-  });
-
-  it("精确主机匹配", () => {
-    expect(shouldBypassProxy("internal.example.com", ["internal.example.com"])).toBe(true);
-    expect(shouldBypassProxy("other.example.com", ["internal.example.com"])).toBe(false);
-  });
-
-  it("后缀域名匹配（含前导点与 *. 写法），不误伤相似域名", () => {
-    expect(shouldBypassProxy("a.example.com", ["example.com"])).toBe(true);
-    expect(shouldBypassProxy("a.example.com", [".example.com"])).toBe(true);
-    expect(shouldBypassProxy("a.example.com", ["*.example.com"])).toBe(true);
-    expect(shouldBypassProxy("example.com", ["example.com"])).toBe(true);
-    expect(shouldBypassProxy("evil-example.com", ["example.com"])).toBe(false);
-    expect(shouldBypassProxy("notexample.com", ["example.com"])).toBe(false);
-    expect(shouldBypassProxy("a.b.example.com", ["b.example.com"])).toBe(true);
-  });
-
-  it("通配 * 全绕过；大小写不敏感", () => {
-    expect(shouldBypassProxy("anything.example.org", ["*"])).toBe(true);
-    expect(shouldBypassProxy("A.EXAMPLE.com", ["example.COM"])).toBe(true);
+  it.each<{ host: string; bypass: string[]; expected: boolean }>([
+    // 本机回环地址始终绕过
+    { host: "localhost", bypass: [], expected: true },
+    { host: "api.localhost", bypass: [], expected: true },
+    { host: "127.0.0.1", bypass: [], expected: true },
+    { host: "127.1.2.3", bypass: [], expected: true },
+    { host: "::1", bypass: [], expected: true },
+    { host: "[::1]", bypass: [], expected: true },
+    // 精确主机匹配
+    { host: "internal.example.com", bypass: ["internal.example.com"], expected: true },
+    { host: "other.example.com", bypass: ["internal.example.com"], expected: false },
+    // 后缀域名匹配（含前导点与 *. 写法），不误伤相似域名
+    { host: "a.example.com", bypass: ["example.com"], expected: true },
+    { host: "a.example.com", bypass: [".example.com"], expected: true },
+    { host: "a.example.com", bypass: ["*.example.com"], expected: true },
+    { host: "example.com", bypass: ["example.com"], expected: true },
+    { host: "evil-example.com", bypass: ["example.com"], expected: false },
+    { host: "notexample.com", bypass: ["example.com"], expected: false },
+    { host: "a.b.example.com", bypass: ["b.example.com"], expected: true },
+    // 通配 * 全绕过；大小写不敏感
+    { host: "anything.example.org", bypass: ["*"], expected: true },
+    { host: "A.EXAMPLE.com", bypass: ["example.COM"], expected: true },
+  ])("匹配矩阵（回环/精确/后缀/通配/大小写）：$host 与 $bypass → $expected", ({ host, bypass, expected }) => {
+    expect(shouldBypassProxy(host, bypass), host).toBe(expected);
   });
 });
 
@@ -73,19 +73,17 @@ describe("sanitizeProxyUrl", () => {
 });
 
 describe("applyProxyConfig（fake dispatcher 控制面）", () => {
-  it("off 模式安装 off dispatcher", () => {
-    const fake = fakeControl();
-    const result = applyProxyConfig({ mode: "off" }, fake.control);
+  it("off/env 模式安装对应 dispatcher", () => {
+    const off = fakeControl();
+    const result = applyProxyConfig({ mode: "off" }, off.control);
     expect(result.mode).toBe("off");
     expect(result.summary).toContain("直连");
-    expect(fake.installed).toEqual([{ kind: "off" }]);
-  });
+    expect(off.installed).toEqual([{ kind: "off" }]);
 
-  it("env 模式安装 env dispatcher", () => {
-    const fake = fakeControl();
-    const result = applyProxyConfig({ mode: "env" }, fake.control);
-    expect(result.mode).toBe("env");
-    expect(fake.installed).toEqual([{ kind: "env" }]);
+    const env = fakeControl();
+    const envResult = applyProxyConfig({ mode: "env" }, env.control);
+    expect(envResult.mode).toBe("env");
+    expect(env.installed).toEqual([{ kind: "env" }]);
   });
 
   it("custom 模式安装路由 dispatcher，按目标协议选代理", () => {

@@ -67,16 +67,16 @@ describe("登录门禁 AuthGate（TOTP 提交⑥）", () => {
     expect(await view.findByText("main-ui")).toBeInTheDocument();
   });
 
-  it("已认证或 TOTP 未启用：直接渲染主界面", async () => {
+  it("AuthGate：已认证或 TOTP 未启用时直接渲染主界面", async () => {
     vi.spyOn(api, "authStatus").mockResolvedValue(authStatus({ authenticated: true, terminalAvailable: true }));
-    const view = renderWithClient(<AuthGate><div>main-ui</div></AuthGate>);
-    expect(await view.findByText("main-ui")).toBeInTheDocument();
-    expect(view.queryByLabelText("动态码")).toBeNull();
-  });
+    const first = renderWithClient(<AuthGate><div>main-ui</div></AuthGate>);
+    expect(await first.findByText("main-ui")).toBeInTheDocument();
+    expect(first.queryByLabelText("动态码")).toBeNull();
+    first.unmount();
 
-  it("TOTP 未启用：authenticated 视为真，不出现登录页", async () => {
+    // TOTP 未启用：authenticated 视为真，不出现登录页
     vi.spyOn(api, "authStatus").mockResolvedValue(authStatus({ totpEnabled: false, authenticated: true, gateReasons: ["totp_disabled"] }));
-    const view = renderWithClient(<AuthGate><div>main-ui</div></AuthGate>);
-    expect(await view.findByText("main-ui")).toBeInTheDocument();
+    const second = renderWithClient(<AuthGate><div>main-ui</div></AuthGate>);
+    expect(await second.findByText("main-ui")).toBeInTheDocument();
   });
 });

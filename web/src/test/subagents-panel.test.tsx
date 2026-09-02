@@ -99,7 +99,7 @@ describe("SubagentsPanel", () => {
     expect(noSession.querySelector(".panel-empty")).toHaveTextContent("还没有子代理运行记录");
   });
 
-  it("tabActions.openSubagentTab 注册时在行/组头渲染「在标签中打开」并按 toolCallId 回调；未注册不渲染", () => {
+  it("「在标签中打开」：注册时行/组头渲染并按 toolCallId 回调；未注册不渲染", () => {
     const openSubagentTab = vi.fn();
     tabActions.openSubagentTab = openSubagentTab;
     seedLive("s-1", {
@@ -116,12 +116,12 @@ describe("SubagentsPanel", () => {
     expect(openSubagentTab).toHaveBeenCalledWith("call-2");
     fireEvent.click(buttons[1]!);
     expect(openSubagentTab).toHaveBeenCalledWith("call-1");
-  });
 
-  it("tabActions.openSubagentTab 未注册时不渲染「在标签中打开」", () => {
+    // 未注册时不渲染（复位注册，等价于单测间的 afterEach 隔离）
+    delete tabActions.openSubagentTab;
     seedLive("s-1", { "task-1": run({ status: "done" }) });
-    const { container } = renderWithClient(<SubagentsPanel sessionId="s-1" />);
-    expect(container.querySelector(".subagents-open-tab")).toBeNull();
+    const noAction = renderWithClient(<SubagentsPanel sessionId="s-1" />).container;
+    expect(noAction.querySelector(".subagents-open-tab")).toBeNull();
   });
 });
 
@@ -246,28 +246,27 @@ describe("mergeSubagentRuns", () => {
 });
 
 describe("capLiveSubagentRuns", () => {
-  it("evicts the oldest entries beyond the cap, keeping insertion order", () => {
+  it("capLiveSubagentRuns：超限逐出最旧、限量内原引用、默认 100", () => {
+    // 超限逐出最旧条目，保持插入顺序
     const runs: Record<string, LiveSubagentRun> = {};
     for (let i = 1; i <= 5; i += 1) runs[`task-${i}`] = run({ taskId: `task-${i}` });
 
     const capped = capLiveSubagentRuns(runs, 3);
 
     expect(Object.keys(capped)).toEqual(["task-3", "task-4", "task-5"]);
-  });
 
-  it("keeps the map unchanged when within the cap", () => {
-    const runs = { "task-1": run({}) };
-    expect(capLiveSubagentRuns(runs, 3)).toBe(runs);
-  });
+    // 限量内保持原引用不变
+    const few = { "task-1": run({}) };
+    expect(capLiveSubagentRuns(few, 3)).toBe(few);
 
-  it("default cap is LIVE_SUBAGENT_CAP (100)", () => {
-    const runs: Record<string, LiveSubagentRun> = {};
-    for (let i = 1; i <= LIVE_SUBAGENT_CAP + 2; i += 1) runs[`task-${i}`] = run({ taskId: `task-${i}` });
+    // 缺省上限为 LIVE_SUBAGENT_CAP (100)
+    const many: Record<string, LiveSubagentRun> = {};
+    for (let i = 1; i <= LIVE_SUBAGENT_CAP + 2; i += 1) many[`task-${i}`] = run({ taskId: `task-${i}` });
 
-    const capped = capLiveSubagentRuns(runs);
+    const defaultCapped = capLiveSubagentRuns(many);
 
-    expect(Object.keys(capped)).toHaveLength(LIVE_SUBAGENT_CAP);
-    expect(capped["task-1"]).toBeUndefined();
-    expect(capped[`task-${LIVE_SUBAGENT_CAP + 2}`]).toBeDefined();
+    expect(Object.keys(defaultCapped)).toHaveLength(LIVE_SUBAGENT_CAP);
+    expect(defaultCapped["task-1"]).toBeUndefined();
+    expect(defaultCapped[`task-${LIVE_SUBAGENT_CAP + 2}`]).toBeDefined();
   });
 });

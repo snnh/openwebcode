@@ -131,47 +131,53 @@ describe("normalizeHooksConfig", () => {
 });
 
 describe("HookRunner.run 语义", () => {
-  it("PreToolUse exit 0 -> 放行（返回 {}）", async () => {
+  it.each<{
+    name: string;
+    command: string;
+    check: (events: AppEvent[], outcome: Record<string, unknown>, elapsedMs?: number) => void;
+  }>([
+    {
+      name: "exit 0 -> 放行（返回 {}）",
+      command: CMD.exit0,
+      check: (_events, outcome) => {
+        expect(outcome).toEqual({});
+      },
+    },
+    {
+      name: "exit 2 -> {blocked:true, reason} 且 reason 含 stderr 文本",
+      command: CMD.exit2Stderr("denied-by-hook"),
+      check: (_events, outcome) => {
+        expect(outcome.blocked).toBe(true);
+        expect(outcome.reason).toContain("denied-by-hook");
+      },
+    },
+    {
+      name: "exit 1 -> 不阻断，发 hook.failed 事件",
+      command: CMD.exit1,
+      check: (events, outcome) => {
+        expect(outcome).toEqual({});
+        const failed = events.find((e) => e.type === "hook.failed");
+        expect(failed).toBeDefined();
+        expect((failed!.payload as { exitCode?: number }).exitCode).toBe(1);
+      },
+    },
+    {
+      name: "超时（慢命令）-> 不阻断，hook.failed payload 含 timeout:true",
+      command: CMD.timeout,
+      check: (events, outcome, elapsed) => {
+        expect(outcome).toEqual({});
+        const failed = events.find((e) => e.type === "hook.failed");
+        expect(failed).toBeDefined();
+        expect((failed!.payload as { timeout?: boolean }).timeout).toBe(true);
+        // HookRunner 内部 5s 超时
+        expect(elapsed).toBeGreaterThanOrEqual(4500);
+        expect(elapsed).toBeLessThan(15000);
+      },
+    },
+  ])("PreToolUse 退出码矩阵：$name", async ({ command, check }) => {
     const cwd = await tempRoot();
     await writeProjectHooks(cwd, {
-      PreToolUse: [{ matcher: "bash", command: CMD.exit0 }],
-    });
-    const runner = new HookRunner(path.join(cwd, "nonexistent-global.json"), new EventBus());
-    const outcome = await runner.run("PreToolUse", { sessionId: "s1", cwd, tool: "bash", input: {} });
-    expect(outcome).toEqual({});
-  });
-
-  it("PreToolUse exit 2 -> {blocked:true, reason} 且 reason 含 stderr 文本", async () => {
-    const cwd = await tempRoot();
-    await writeProjectHooks(cwd, {
-      PreToolUse: [{ matcher: "bash", command: CMD.exit2Stderr("denied-by-hook") }],
-    });
-    const runner = new HookRunner(path.join(cwd, "nonexistent-global.json"), new EventBus());
-    const outcome = await runner.run("PreToolUse", { sessionId: "s1", cwd, tool: "bash", input: {} });
-    expect(outcome.blocked).toBe(true);
-    expect(outcome.reason).toContain("denied-by-hook");
-  });
-
-  it("PreToolUse exit 1 -> 不阻断，发 hook.failed 事件", async () => {
-    const cwd = await tempRoot();
-    await writeProjectHooks(cwd, {
-      PreToolUse: [{ matcher: "bash", command: CMD.exit1 }],
-    });
-    const events = new EventBus();
-    const captured: AppEvent[] = [];
-    events.on("event", (e: AppEvent) => captured.push(e));
-    const runner = new HookRunner(path.join(cwd, "nonexistent-global.json"), events);
-    const outcome = await runner.run("PreToolUse", { sessionId: "s1", cwd, tool: "bash", input: {} });
-    expect(outcome).toEqual({});
-    const failed = captured.find((e) => e.type === "hook.failed");
-    expect(failed).toBeDefined();
-    expect((failed!.payload as { exitCode?: number }).exitCode).toBe(1);
-  });
-
-  it("超时（慢命令）-> 不阻断，hook.failed payload 含 timeout:true", { timeout: 30_000 }, async () => {
-    const cwd = await tempRoot();
-    await writeProjectHooks(cwd, {
-      PreToolUse: [{ matcher: "bash", command: CMD.timeout }],
+      PreToolUse: [{ matcher: "bash", command }],
     });
     const events = new EventBus();
     const captured: AppEvent[] = [];
@@ -180,14 +186,8 @@ describe("HookRunner.run 语义", () => {
     const start = Date.now();
     const outcome = await runner.run("PreToolUse", { sessionId: "s1", cwd, tool: "bash", input: {} });
     const elapsed = Date.now() - start;
-    expect(outcome).toEqual({});
-    const failed = captured.find((e) => e.type === "hook.failed");
-    expect(failed).toBeDefined();
-    expect((failed!.payload as { timeout?: boolean }).timeout).toBe(true);
-    // HookRunner 内部 5s 超时
-    expect(elapsed).toBeGreaterThanOrEqual(4500);
-    expect(elapsed).toBeLessThan(15000);
-  });
+    check(captured, outcome, elapsed);
+  }, 30_000);
 
   it("PostToolUse exit 2 -> 不否决（仅 PreToolUse 有 blocked 语义），返回 {}", async () => {
     const cwd = await tempRoot();

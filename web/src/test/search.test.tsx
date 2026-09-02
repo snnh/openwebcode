@@ -8,16 +8,16 @@ function msg(id: string, role: ChatMessage["role"], text: string): ChatMessage {
 }
 
 describe("findMatches", () => {
-  it("counts case-insensitive occurrences with per-message occurrence index", () => {
+  it("findMatches：大小写不敏感计数与逐消息序号；仅 user/assistant 文本块", () => {
+    // counts case-insensitive occurrences with per-message occurrence index
     const matches = findMatches([msg("m1", "user", "Hello hello HELLO")], "hello");
     expect(matches).toEqual([
       { messageId: "m1", occurrence: 0 },
       { messageId: "m1", occurrence: 1 },
       { messageId: "m1", occurrence: 2 },
     ]);
-  });
 
-  it("matches user and assistant text blocks, skips tool messages and empty queries", () => {
+    // matches user and assistant text blocks, skips tool messages and empty queries
     const messages = [
       msg("m1", "user", "目标"),
       msg("m2", "assistant", "回答里有目标"),
@@ -42,7 +42,8 @@ describe("highlightArticle / unwrapSearchMarks", () => {
     return article;
   }
 
-  it("wraps every hit in a mark and flags the active occurrence", () => {
+  it("highlightArticle/unwrapSearchMarks：命中标记与 active 标注、还原文本节点", () => {
+    // wraps every hit in a mark and flags the active occurrence
     const article = articleWith("foo bar Foo");
     highlightArticle(article, "foo", 1);
     const marks = article.querySelectorAll("mark.conv-search-hit");
@@ -50,17 +51,16 @@ describe("highlightArticle / unwrapSearchMarks", () => {
     expect(marks[0]).not.toHaveClass("active");
     expect(marks[1]).toHaveClass("active");
     expect(article.textContent).toBe("foo bar Foo");
-  });
 
-  it("unwrap restores the original text nodes", () => {
-    const article = articleWith("foo bar foo");
-    highlightArticle(article, "foo", -1);
-    expect(article.querySelectorAll("mark")).toHaveLength(2);
-    unwrapSearchMarks(article);
-    expect(article.querySelectorAll("mark")).toHaveLength(0);
-    expect(article.textContent).toBe("foo bar foo");
+    // unwrap restores the original text nodes
+    const plain = articleWith("foo bar foo");
+    highlightArticle(plain, "foo", -1);
+    expect(plain.querySelectorAll("mark")).toHaveLength(2);
+    unwrapSearchMarks(plain);
+    expect(plain.querySelectorAll("mark")).toHaveLength(0);
+    expect(plain.textContent).toBe("foo bar foo");
     // normalize 后被拆分的文本节点合并还原
-    expect(article.querySelector(".markdown")!.childNodes).toHaveLength(1);
+    expect(plain.querySelector(".markdown")!.childNodes).toHaveLength(1);
   });
 });
 
@@ -98,18 +98,14 @@ describe("ConversationSearchBar", () => {
     expect(props.onClose).toHaveBeenCalled();
   });
 
-  it("disables navigation when there are no matches and supports close", () => {
-    const { getByLabelText, props } = renderBar({ query: "目标", total: 0 });
+  it("无匹配态：导航禁用、显示无结果、可关闭", () => {
+    const { getByLabelText, getByText, props } = renderBar({ query: "目标", total: 0 });
     expect(getByLabelText("上一个")).toBeDisabled();
     expect(getByLabelText("下一个")).toBeDisabled();
     expect(props.onClose).not.toHaveBeenCalled();
+    expect(getByText("无结果")).toBeInTheDocument();
     fireEvent.click(getByLabelText("关闭"));
     expect(props.onClose).toHaveBeenCalled();
-  });
-
-  it("shows 无结果 for a query without matches", () => {
-    const { getByText } = renderBar({ query: "目标", total: 0 });
-    expect(getByText("无结果")).toBeInTheDocument();
   });
 
   it("focuses the input on mount / focusSignal bump", () => {

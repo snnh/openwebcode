@@ -56,9 +56,10 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
     expect(tasks.map((t) => t.id)).toEqual(expect.arrayContaining(["create-file", "use-grep", "multi-step"]));
   });
 
-  it("runTasks 执行全部任务并全部通过", async () => {
+  it("runTasks：全量/单个/未知 ID", async () => {
     const root = await tempRoot("owc-eval-");
     const evaluator = new EvalEvaluator(root, makeEvalCore());
+
     const report = await evaluator.runTasks();
     expect(report.summary.total).toBeGreaterThanOrEqual(3);
     expect(report.summary.passed).toBe(report.summary.total);
@@ -70,21 +71,13 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
       expect(result.assertions.every((a) => a.passed)).toBe(true);
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
     }
-  });
 
-  it("runTasks 指定单个任务执行", async () => {
-    const root = await tempRoot("owc-eval-");
-    const evaluator = new EvalEvaluator(root, makeEvalCore());
-    const report = await evaluator.runTasks(["create-file"]);
-    expect(report.summary.total).toBe(1);
-    expect(report.taskResults[0].taskId).toBe("create-file");
-    expect(report.taskResults[0].status).toBe("pass");
-    expect(report.taskResults[0].toolsUsed).toContain("write_file");
-  });
+    const single = await evaluator.runTasks(["create-file"]);
+    expect(single.summary.total).toBe(1);
+    expect(single.taskResults[0].taskId).toBe("create-file");
+    expect(single.taskResults[0].status).toBe("pass");
+    expect(single.taskResults[0].toolsUsed).toContain("write_file");
 
-  it("runTasks 未知任务 ID 抛错", async () => {
-    const root = await tempRoot("owc-eval-");
-    const evaluator = new EvalEvaluator(root, makeEvalCore());
     await expect(evaluator.runTasks(["nonexistent"])).rejects.toThrow("Unknown eval task");
   });
 

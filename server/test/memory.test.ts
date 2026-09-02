@@ -40,21 +40,20 @@ async function createRunner(root: string, provider: Provider, dataDir?: string) 
 }
 
 describe("appendMemory", () => {
-  it("creates a project memory file with header and appends bullets", async () => {
+  it("creates a memory file with a header and appends bullets (.owc project vs root global)", async () => {
     const root = await tempRoot("owc-memory-");
-    const file = path.join(root, ".owc", "memory.md");
-    const result = await appendMemory(file, ["用户偏好中文回复", " 构建命令是 npm run build "]);
+    // .owc 内：project 头 + 新建
+    const projectFile = path.join(root, ".owc", "memory.md");
+    const result = await appendMemory(projectFile, ["用户偏好中文回复", " 构建命令是 npm run build "]);
     expect(result).toEqual({ appended: 2 });
-    expect(await readFile(file, "utf8")).toBe("# Memory\n- 用户偏好中文回复\n- 构建命令是 npm run build\n");
-  });
+    expect(await readFile(projectFile, "utf8")).toBe("# Memory\n- 用户偏好中文回复\n- 构建命令是 npm run build\n");
 
-  it("uses the global header outside .owc and appends to an existing file", async () => {
-    const root = await tempRoot("owc-memory-");
-    const file = path.join(root, "memory.md");
-    await appendMemory(file, ["全局事实"]);
-    const result = await appendMemory(file, ["又一条"]);
-    expect(result).toEqual({ appended: 1 });
-    expect(await readFile(file, "utf8")).toBe("# Global Memory\n- 全局事实\n- 又一条\n");
+    // .owc 外：global 头 + 追加既有文件
+    const globalFile = path.join(root, "memory.md");
+    await appendMemory(globalFile, ["全局事实"]);
+    const globalResult = await appendMemory(globalFile, ["又一条"]);
+    expect(globalResult).toEqual({ appended: 1 });
+    expect(await readFile(globalFile, "utf8")).toBe("# Global Memory\n- 全局事实\n- 又一条\n");
   });
 
   it("deduplicates facts already present (trim-insensitive)", async () => {
@@ -80,7 +79,7 @@ describe("appendMemory", () => {
 });
 
 describe("parseSedimentSections", () => {
-  it("parses 关键发现 and 未决事项 bullets, skipping other sections", () => {
+  it("parses 关键发现/未决事项 bullets and skips other sections (bold/colon/blank/dup/absent variants)", () => {
     const summary = [
       "目标：",
       "- 实现记忆系统",
@@ -97,10 +96,9 @@ describe("parseSedimentSections", () => {
       "- 不要提交代码",
     ].join("\n");
     expect(parseSedimentSections(summary)).toEqual(["压缩入口共有三处", "数据根可注入 AgentRunner", "全局记忆 UI 未做"]);
-  });
 
-  it("handles bold headers, half-width colons, blanks and duplicates", () => {
-    const summary = [
+    // 加粗标题/半角冒号/空行/重复/非列表行不收录
+    const bold = [
       "**关键发现：**",
       "",
       "- 发现 A",
@@ -113,10 +111,9 @@ describe("parseSedimentSections", () => {
       "**用户明确指令**:",
       "- 指令不收录",
     ].join("\n");
-    expect(parseSedimentSections(summary)).toEqual(["发现 A", "发现 B", "待办 X"]);
-  });
+    expect(parseSedimentSections(bold)).toEqual(["发现 A", "发现 B", "待办 X"]);
 
-  it("returns an empty array when the sections are absent", () => {
+    // 无相关区块 → 空数组
     expect(parseSedimentSections("目标：\n- 无\n行动：\n- 无")).toEqual([]);
   });
 });
@@ -139,7 +136,8 @@ describe("remember via AgentRunner", () => {
     };
   }
 
-  it("writes project memory and is auto-approved under ask mode", async () => {
+  it("writes project or global memory by scope and auto-approves under ask mode", async () => {
+    // scope 缺省 → 项目记忆 (.owc/memory.md)，ask 模式自动放行
     const root = await tempRoot("owc-memory-");
     const cwd = path.join(root, "ws");
     await mkdir(cwd, { recursive: true });
@@ -166,22 +164,20 @@ describe("remember via AgentRunner", () => {
     // 会话缺省 ask 模式：remember 自动放行，不挂起、无 permission.request 事件
     expect(captured.some((event) => event.type === "permission.request")).toBe(false);
     expect(captured.some((event) => event.type === "agent.state" && (event.payload as { state?: string }).state === "waiting_permission")).toBe(false);
-  });
 
-  it("writes global memory to the data root when scope is global", async () => {
-    const root = await tempRoot("owc-memory-");
-    const cwd = path.join(root, "ws");
-    const dataDir = path.join(root, "data");
-    await mkdir(cwd, { recursive: true });
-    const requests: StreamChatRequest[] = [];
-    const { sessions, runner } = await createRunner(root, rememberProvider({ fact: "全局约定", scope: "global" }, requests), dataDir);
+    // scope=global → 数据根 memory.md，项目记忆不应被创建
+    const globalRoot = await tempRoot("owc-memory-");
+    const globalCwd = path.join(globalRoot, "ws");
+    const dataDir = path.join(globalRoot, "data");
+    await mkdir(globalCwd, { recursive: true });
+    const globalRequests: StreamChatRequest[] = [];
+    const { sessions: globalSessions, runner: globalRunner } = await createRunner(globalRoot, rememberProvider({ fact: "全局约定", scope: "global" }, globalRequests), dataDir);
 
-    const session = await sessions.create({ cwd, provider: "fake", model: "test-model" });
-    await runner.run(session.id, "全局记住");
+    const globalSession = await globalSessions.create({ cwd: globalCwd, provider: "fake", model: "test-model" });
+    await globalRunner.run(globalSession.id, "全局记住");
 
     expect(await readFile(path.join(dataDir, "memory.md"), "utf8")).toBe("# Global Memory\n- 全局约定\n");
-    // 项目记忆不应被创建
-    expect(await readProjectMemory(cwd)).toBe("");
+    expect(await readProjectMemory(globalCwd)).toBe("");
   });
 });
 
