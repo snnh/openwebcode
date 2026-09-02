@@ -46,55 +46,48 @@ function renderSettings(initialTab?: SettingsTab): ReturnType<typeof render> {
 }
 
 describe("SettingsDialog 深链 initialTab", () => {
-  it("不传 initialTab 时保持默认页签（外观）", async () => {
-    renderSettings();
-    await waitFor(() => expect(document.getElementById("settings-section-title")).toHaveTextContent("外观"));
-    expect(screen.getByRole("button", { name: /外观/ })).toHaveAttribute("aria-current", "page");
-  });
-
-  it("initialTab=models 时打开模型目录页签", async () => {
-    renderSettings("models");
-    await waitFor(() => expect(document.getElementById("settings-section-title")).toHaveTextContent("模型目录"));
-    expect(screen.getByRole("button", { name: /^模型目录$/ })).toHaveAttribute("aria-current", "page");
-  });
-
-  it("initialTab=modelSelection 时打开模型选择页签", async () => {
-    renderSettings("modelSelection");
-    await waitFor(() => expect(document.getElementById("settings-section-title")).toHaveTextContent("模型选择"));
-    expect(screen.getByRole("button", { name: /^模型选择$/ })).toHaveAttribute("aria-current", "page");
-  });
-
-  it("initialTab=web 时打开联网服务页签", async () => {
-    renderSettings("web");
-    await waitFor(() => expect(document.getElementById("settings-section-title")).toHaveTextContent("联网服务"));
-    expect(screen.getByRole("button", { name: /^联网服务$/ })).toHaveAttribute("aria-current", "page");
-    // 联网服务商分区随页签挂载（含 search/fetch 当前配置选择）
-    expect(await screen.findByRole("heading", { name: "联网服务商", level: 4 })).toBeInTheDocument();
-    expect(screen.getByLabelText("联网搜索")).toBeInTheDocument();
+  it.each<{ label: string; tab?: SettingsTab; title: string; button: RegExp; servicePane?: boolean }>([
+    { label: "不传（默认外观）", title: "外观", button: /外观/ },
+    { label: "models", tab: "models", title: "模型目录", button: /^模型目录$/ },
+    { label: "modelSelection", tab: "modelSelection", title: "模型选择", button: /^模型选择$/ },
+    { label: "web（含联网服务商分区挂载）", tab: "web", title: "联网服务", button: /^联网服务$/, servicePane: true },
+  ])("深链 initialTab=$label 打开对应页签", async ({ tab, title, button, servicePane }) => {
+    renderSettings(tab);
+    await waitFor(() => expect(document.getElementById("settings-section-title")).toHaveTextContent(title));
+    expect(screen.getByRole("button", { name: button })).toHaveAttribute("aria-current", "page");
+    if (servicePane) {
+      // 联网服务商分区随页签挂载（含 search/fetch 当前配置选择）
+      expect(await screen.findByRole("heading", { name: "联网服务商", level: 4 })).toBeInTheDocument();
+      expect(screen.getByLabelText("联网搜索")).toBeInTheDocument();
+    }
   });
 });
 
 describe("NewSessionDialog 引导跳转", () => {
-  it.each<{ label: string; providers: string[]; button: RegExp }>([
+  it.each<{ label: string; providers: string[]; button: RegExp | null }>([
     { label: "无 provider", providers: [], button: /前往配置/ },
     { label: "无模型", providers: ["test-stub"], button: /前往模型目录/ },
-  ])("$label 提示带跳转按钮，点击回调 models 页签", async ({ providers, button }) => {
+    { label: "未提供 onOpenSettings 纯文本", providers: [], button: null },
+  ])("引导：$label", async ({ providers, button }) => {
     stubCapabilitiesFetch();
     const onOpenSettings = vi.fn();
-    renderWithClient(
-      <NewSessionDialog open providers={providers} models={[]} onClose={() => undefined} onCreate={() => undefined} onOpenSettings={onOpenSettings} />,
+    const view = renderWithClient(
+      <NewSessionDialog
+        open
+        providers={providers}
+        models={[]}
+        onClose={() => undefined}
+        onCreate={() => undefined}
+        {...(button ? { onOpenSettings } : {})}
+      />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: button }));
-    expect(onOpenSettings).toHaveBeenCalledWith("models");
-  });
-
-  it("未提供 onOpenSettings 时提示保持纯文本", async () => {
-    stubCapabilitiesFetch();
-    renderWithClient(
-      <NewSessionDialog open providers={[]} models={[]} onClose={() => undefined} onCreate={() => undefined} />,
-    );
-    expect(await screen.findByText(/还没有可用的 Provider/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /前往配置/ })).not.toBeInTheDocument();
+    if (button) {
+      fireEvent.click(await view.findByRole("button", { name: button }));
+      expect(onOpenSettings).toHaveBeenCalledWith("models");
+    } else {
+      expect(await view.findByText(/还没有可用的 Provider/)).toBeInTheDocument();
+      expect(view.queryByRole("button", { name: /前往配置/ })).not.toBeInTheDocument();
+    }
   });
 });
 
@@ -151,21 +144,21 @@ describe("ModelProvidersSection 测试连接", () => {
     }));
   });
 
-  it("失败：展示服务端返回的中文错误", async () => {
+  it("测试连接非成功：错误展示与 429 视为可达提示", async () => {
     vi.spyOn(api, "testModelProvider").mockResolvedValue({ ok: false, error: "认证失败（401），请检查 API Key" });
-    const view = renderProfiles();
-    fireEvent.change(await view.findByPlaceholderText("服务商名称"), { target: { value: "测试服务" } });
-    fireEvent.click(view.getByRole("button", { name: "测试连接" }));
+    const failed = renderProfiles();
+    fireEvent.change(await failed.findByPlaceholderText("服务商名称"), { target: { value: "测试服务" } });
+    fireEvent.click(failed.getByRole("button", { name: "测试连接" }));
 
-    expect(await view.findByText("认证失败（401），请检查 API Key")).toBeInTheDocument();
-  });
+    expect(await failed.findByText("认证失败（401），请检查 API Key")).toBeInTheDocument();
+    failed.unmount();
 
-  it("429 限流：视为可达并显示提示", async () => {
+    // 429 限流：视为可达并显示提示
     vi.spyOn(api, "testModelProvider").mockResolvedValue({ ok: true, latencyMs: 42, note: "服务可达，但当前被限流（429）" });
-    const view = renderProfiles();
-    fireEvent.change(await view.findByPlaceholderText("服务商名称"), { target: { value: "测试服务" } });
-    fireEvent.click(view.getByRole("button", { name: "测试连接" }));
+    const limited = renderProfiles();
+    fireEvent.change(await limited.findByPlaceholderText("服务商名称"), { target: { value: "测试服务" } });
+    fireEvent.click(limited.getByRole("button", { name: "测试连接" }));
 
-    expect(await view.findByText(/服务可达，但当前被限流/)).toBeInTheDocument();
+    expect(await limited.findByText(/服务可达，但当前被限流/)).toBeInTheDocument();
   });
 });

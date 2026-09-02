@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
@@ -120,15 +120,16 @@ describe("NewSessionDialog Bind Link", () => {
 });
 
 describe("NewSessionDialog provider 引导", () => {
-  it("没有已配置 provider 时说明原因并禁用创建", async () => {
+  it("创建引导：无 provider 或无模型时说明原因并禁用创建", async () => {
+    // 没有已配置 provider
     stubFetch({ available: true });
     renderDialog({ providers: [] });
     expect(await screen.findByText(/还没有可用的 Provider/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "创建" })).toBeDisabled();
     expect(screen.getByLabelText("模型")).toBeDisabled();
-  });
 
-  it("provider 尚未有模型目录时不伪造模型并禁用创建", async () => {
+    // provider 尚未有模型目录：不伪造模型并禁用创建
+    cleanup();
     stubFetch({ available: true });
     renderDialog();
     expect(await screen.findByText(/已启用的服务商尚无可用模型/)).toBeInTheDocument();
@@ -187,7 +188,8 @@ describe("NewSessionDialog provider 引导", () => {
 });
 
 describe("NewSessionDialog 工具限制", () => {
-  it("填写白名单/黑名单后随创建提交 toolsAllow/toolsDeny（逗号分隔、逐项 trim、空项丢弃）", async () => {
+  it("工具限制：填写提交 trim 后数组；留空不提交字段", async () => {
+    // 填写白名单/黑名单：随创建提交 toolsAllow/toolsDeny（逗号分隔、逐项 trim、空项丢弃）
     stubFetch({ available: true });
     const onCreate = vi.fn();
     renderDialog({ models: [stubModel], onCreate });
@@ -198,18 +200,18 @@ describe("NewSessionDialog 工具限制", () => {
     fireEvent.click(screen.getByRole("button", { name: "创建" }));
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(onCreate.mock.calls[0]?.[0]).toMatchObject({ toolsAllow: ["read_file", "grep"], toolsDeny: ["bash"] });
-  });
 
-  it("留空 = 不限制：不提交 toolsAllow/toolsDeny 字段", async () => {
+    // 留空 = 不限制：不提交 toolsAllow/toolsDeny 字段
+    cleanup();
     stubFetch({ available: true });
-    const onCreate = vi.fn();
-    renderDialog({ models: [stubModel], onCreate });
+    const emptyOnCreate = vi.fn();
+    renderDialog({ models: [stubModel], onCreate: emptyOnCreate });
     fireEvent.change(await screen.findByLabelText("工作目录"), { target: { value: "D:\\work" } });
 
     fireEvent.click(screen.getByRole("button", { name: "创建" }));
-    await waitFor(() => expect(onCreate).toHaveBeenCalled());
-    expect(onCreate.mock.calls[0]?.[0]).not.toHaveProperty("toolsAllow");
-    expect(onCreate.mock.calls[0]?.[0]).not.toHaveProperty("toolsDeny");
+    await waitFor(() => expect(emptyOnCreate).toHaveBeenCalled());
+    expect(emptyOnCreate.mock.calls[0]?.[0]).not.toHaveProperty("toolsAllow");
+    expect(emptyOnCreate.mock.calls[0]?.[0]).not.toHaveProperty("toolsDeny");
   });
 });
 
@@ -235,7 +237,8 @@ describe("NewSessionDialog 备选模型", () => {
     expect(onCreate.mock.calls[0]?.[0]).toMatchObject({ fallbackModels: [{ provider: "test-stub", model: "m2" }] });
   });
 
-  it("未添加备选行：不提交 fallbackModels 字段", async () => {
+  it("fallbackModels 缺省不提交、与主模型重复时剔除", async () => {
+    // 未添加备选行：不提交 fallbackModels 字段
     stubFetch({ available: true });
     const onCreate = vi.fn();
     renderDialog({ models: [primary, backup], onCreate });
@@ -244,12 +247,12 @@ describe("NewSessionDialog 备选模型", () => {
     fireEvent.click(screen.getByRole("button", { name: "创建" }));
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(onCreate.mock.calls[0]?.[0]).not.toHaveProperty("fallbackModels");
-  });
 
-  it("备选行选成与主模型相同后，提交时剔除（不提交重复项）", async () => {
+    // 备选行选成与主模型相同后，提交时剔除（不提交重复项）
+    cleanup();
     stubFetch({ available: true });
-    const onCreate = vi.fn();
-    renderDialog({ models: [primary, backup], onCreate });
+    const duplicateOnCreate = vi.fn();
+    renderDialog({ models: [primary, backup], onCreate: duplicateOnCreate });
     fireEvent.change(await screen.findByLabelText("工作目录"), { target: { value: "D:\\work" } });
 
     fireEvent.click(await screen.findByRole("button", { name: "添加备选" }));
@@ -257,8 +260,8 @@ describe("NewSessionDialog 备选模型", () => {
     // 把主模型切到 m2（与已添加的备选行重复）
     fireEvent.change(screen.getByLabelText("模型"), { target: { value: JSON.stringify(["test-stub", "m2"]) } });
     fireEvent.click(screen.getByRole("button", { name: "创建" }));
-    await waitFor(() => expect(onCreate).toHaveBeenCalled());
-    expect(onCreate.mock.calls[0]?.[0]).not.toHaveProperty("fallbackModels");
+    await waitFor(() => expect(duplicateOnCreate).toHaveBeenCalled());
+    expect(duplicateOnCreate.mock.calls[0]?.[0]).not.toHaveProperty("fallbackModels");
     expect(rowSelect).toBeInTheDocument();
   });
 });

@@ -68,21 +68,20 @@ describe("extractInstructions", () => {
 });
 
 describe("validateCompactionOutput", () => {
-  it("复述型输出（含转录角色标记）各模式判失败", () => {
+  it("判定矩阵：复述各模式判失败、合规通过、未按格式判失败、长度兜底", () => {
+    // 复述型输出（含转录角色标记）各模式判失败
     expect(validateCompactionOutput("overview", "【user】\n消息 1\n【assistant】\n消息 2", 100)).toContain("复述");
     expect(validateCompactionOutput("toolcalls", "【system】\n工具结果原文", 100)).toContain("复述");
-  });
 
-  it("合规 overview / toolcalls 输出通过；未按格式判失败", () => {
+    // 合规 overview / toolcalls 输出通过；未按格式判失败
     expect(validateCompactionOutput("overview", "目标：\n- 压缩\n行动：\n- 执行\n关键发现：\n- 摘要", 100)).toBeUndefined();
     expect(validateCompactionOutput("toolcalls", "- [工具] bash → 完成\n- [用户] 要点", 100)).toBeUndefined();
     // 小节不足 3 个
     expect(validateCompactionOutput("overview", "目标：\n- 压缩\n行动：\n- 执行", 100)).toContain("格式");
     // 占位行不足半数
     expect(validateCompactionOutput("toolcalls", "- [工具] bash → 完成\n原文行 1\n原文行 2", 100)).toContain("格式");
-  });
 
-  it("长度兜底：转录 ≥ 4000 且摘要接近原文长度判未压缩；短转录不触发比率", () => {
+    // 长度兜底：转录 ≥ 4000 且摘要接近原文长度判未压缩；短转录不触发比率
     const sections = "目标：\n- a\n行动：\n- b\n关键发现：\n- c\n";
     // 转录 10_000 字符、摘要 8_500 字符（> 0.8 比率）→ 未压缩
     expect(validateCompactionOutput("overview", sections + "x".repeat(8_500), 10_000)).toContain("未压缩");
@@ -211,7 +210,8 @@ describe("Compactor", () => {
     expect(again.changed).toBe(false);
   });
 
-  it("forced overview without a fast model degrades to truncated and clears pins", async () => {
+  it("forced 降级三触发器：无快速模型清 pin、模型抛错、两次复述 → 均规则 truncated", async () => {
+    // 无快速模型：truncated + 清除 pin
     const root = await tempRoot("owc-compact-");
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
@@ -222,40 +222,70 @@ describe("Compactor", () => {
     ledger.entries.push({ messageId: "m", kind: "tool_result", artifactId: "a", state: "restored", createdRound: 0, pinnedUntilRound: 99 });
     await context.save(ledger);
 
-    const compactor = new Compactor(store, EMPTY_FAST_MODEL, {}, 10);
-    const result = await compactor.compact(id, "overview", { forced: true });
-    expect(result.mode).toBe("truncated");
+    const unconfiguredCompactor = new Compactor(store, EMPTY_FAST_MODEL, {}, 10);
+    const unconfiguredResult = await unconfiguredCompactor.compact(id, "overview", { forced: true });
+    expect(unconfiguredResult.mode).toBe("truncated");
     expect((await context.load()).entries[0]?.pinnedUntilRound).toBe(0);
-  });
 
-  it("forced 压缩时快速模型抛错 → 规则降级兜底（mode=truncated），压缩照常完成并写账本", async () => {
-    const root = await tempRoot("owc-compact-degrade-");
-    const store = new SessionStore(path.join(root, "sessions"));
-    await store.initialize();
-    const id = await sessionWithMessages(store, 15);
-    const compactor = new Compactor(store, makeThrowingFastModel(), {}, 10);
+    // 快速模型抛错 → 规则降级兜底，压缩照常完成并写账本
+    const degradeRoot = await tempRoot("owc-compact-degrade-");
+    const degradeStore = new SessionStore(path.join(degradeRoot, "sessions"));
+    await degradeStore.initialize();
+    const degradeId = await sessionWithMessages(degradeStore, 15);
+    const throwingCompactor = new Compactor(degradeStore, makeThrowingFastModel(), {}, 10);
 
-    const result = await compactor.compact(id, "overview", { forced: true });
-    expect(result).toMatchObject({ changed: true, mode: "truncated" });
-    expect(result.summary).toContain("[规则压缩]");
-    expect(result.uptoIndex).toBe(5);
+    const degradeResult = await throwingCompactor.compact(degradeId, "overview", { forced: true });
+    expect(degradeResult).toMatchObject({ changed: true, mode: "truncated" });
+    expect(degradeResult.summary).toContain("[规则压缩]");
+    expect(degradeResult.uptoIndex).toBe(5);
 
     // 规则摘要与降级 mode 写进账本（与返回结果同一条记录）
-    const ledger = await new ContextManager(store.contextRoot(id)).load();
-    expect(ledger.compacted).toMatchObject({ mode: "truncated", uptoIndex: 5, summary: result.summary });
+    const degradeLedger = await new ContextManager(degradeStore.contextRoot(degradeId)).load();
+    expect(degradeLedger.compacted).toMatchObject({ mode: "truncated", uptoIndex: 5, summary: degradeResult.summary });
+
+    // 两次复述 + forced → 规则降级 truncated（账本照常记录）
+    const retryRoot = await tempRoot("owc-compact-retry-force-");
+    const retryStore = new SessionStore(path.join(retryRoot, "sessions"));
+    await retryStore.initialize();
+    const retryId = await sessionWithMessages(retryStore, 15);
+    const calls: Array<{ system: string; prompt: string }> = [];
+    const verbatim = "【user】\n消息 1\n【assistant】\n消息 2";
+    const retryCompactor = new Compactor(retryStore, makeSequenceFastModel([verbatim, verbatim], calls), {}, 10);
+
+    const retryResult = await retryCompactor.compact(retryId, "overview", { forced: true });
+    expect(retryResult).toMatchObject({ changed: true, mode: "truncated", uptoIndex: 5 });
+    expect(retryResult.summary).toContain("[规则压缩]");
+    expect(calls).toHaveLength(2);
+    const retryLedger = await new ContextManager(retryStore.contextRoot(retryId)).load();
+    expect(retryLedger.compacted).toMatchObject({ mode: "truncated", uptoIndex: 5 });
   });
 
-  it("非 forced 压缩时快速模型抛错 → 维持抛错（手动 /compact 让用户知情），账本无记录", async () => {
+  it("非 forced 失败两态：模型抛错/两次复述均维持抛错，账本无记录", async () => {
+    // 快速模型抛错：非 forced 压缩维持抛错（手动 /compact 让用户知情）
     const root = await tempRoot("owc-compact-throw-");
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
     const id = await sessionWithMessages(store, 15);
-    const compactor = new Compactor(store, makeThrowingFastModel(), {}, 10);
+    const throwingCompactor = new Compactor(store, makeThrowingFastModel(), {}, 10);
 
-    await expect(compactor.compact(id, "overview")).rejects.toThrow("fast model unavailable");
-    await expect(compactor.compact(id, "toolcalls")).rejects.toThrow("fast model unavailable");
-    const ledger = await new ContextManager(store.contextRoot(id)).load();
-    expect(ledger.compacted).toBeUndefined();
+    await expect(throwingCompactor.compact(id, "overview")).rejects.toThrow("fast model unavailable");
+    await expect(throwingCompactor.compact(id, "toolcalls")).rejects.toThrow("fast model unavailable");
+    const emptyLedger = await new ContextManager(store.contextRoot(id)).load();
+    expect(emptyLedger.compacted).toBeUndefined();
+
+    // 两次复述 + 非 forced → 抛校验错误（账本无记录）
+    const retryRoot = await tempRoot("owc-compact-retry-throw-");
+    const retryStore = new SessionStore(path.join(retryRoot, "sessions"));
+    await retryStore.initialize();
+    const retryId = await sessionWithMessages(retryStore, 15);
+    const calls: Array<{ system: string; prompt: string }> = [];
+    const verbatim = "【user】\n消息 1\n【assistant】\n消息 2";
+    const retryCompactor = new Compactor(retryStore, makeSequenceFastModel([verbatim, verbatim], calls), {}, 10);
+
+    await expect(retryCompactor.compact(retryId, "overview")).rejects.toThrow(/未通过校验/);
+    expect(calls).toHaveLength(2);
+    const retryLedger = await new ContextManager(retryStore.contextRoot(retryId)).load();
+    expect(retryLedger.compacted).toBeUndefined();
   });
 
   it("首次输出复述原文 → 追加纠偏指令重试一次 → 合规摘要写账本", async () => {
@@ -280,38 +310,6 @@ describe("Compactor", () => {
     expect(ledger.compacted).toMatchObject({ mode: "overview", summary: good });
   });
 
-  it("两次都复述 + forced → 规则降级 truncated（账本照常记录）", async () => {
-    const root = await tempRoot("owc-compact-retry-force-");
-    const store = new SessionStore(path.join(root, "sessions"));
-    await store.initialize();
-    const id = await sessionWithMessages(store, 15);
-    const calls: Array<{ system: string; prompt: string }> = [];
-    const verbatim = "【user】\n消息 1\n【assistant】\n消息 2";
-    const compactor = new Compactor(store, makeSequenceFastModel([verbatim, verbatim], calls), {}, 10);
-
-    const result = await compactor.compact(id, "overview", { forced: true });
-    expect(result).toMatchObject({ changed: true, mode: "truncated", uptoIndex: 5 });
-    expect(result.summary).toContain("[规则压缩]");
-    expect(calls).toHaveLength(2);
-    const ledger = await new ContextManager(store.contextRoot(id)).load();
-    expect(ledger.compacted).toMatchObject({ mode: "truncated", uptoIndex: 5 });
-  });
-
-  it("两次都复述 + 非 forced → 抛错（账本无记录）", async () => {
-    const root = await tempRoot("owc-compact-retry-throw-");
-    const store = new SessionStore(path.join(root, "sessions"));
-    await store.initialize();
-    const id = await sessionWithMessages(store, 15);
-    const calls: Array<{ system: string; prompt: string }> = [];
-    const verbatim = "【user】\n消息 1\n【assistant】\n消息 2";
-    const compactor = new Compactor(store, makeSequenceFastModel([verbatim, verbatim], calls), {}, 10);
-
-    await expect(compactor.compact(id, "overview")).rejects.toThrow(/未通过校验/);
-    expect(calls).toHaveLength(2);
-    const ledger = await new ContextManager(store.contextRoot(id)).load();
-    expect(ledger.compacted).toBeUndefined();
-  });
-
   it("complete 收到注入 getter 的 maxTokens；改 getter 值后下次压缩用新值（热生效语义）", async () => {
     const root = await tempRoot("owc-compact-maxtokens-");
     const store = new SessionStore(path.join(root, "sessions"));
@@ -332,7 +330,8 @@ describe("Compactor", () => {
     expect(calls[1]?.maxTokens).toBe(128_000);
   });
 
-  it("promptOverrides 注入覆盖压缩系统提示词，缺省回退内置", async () => {
+  it("promptOverrides 注入覆盖压缩系统提示词（overview/toolcalls），缺省回退内置", async () => {
+    // overview：注入覆盖文本，缺省回退内置系统提示
     const root = await tempRoot("owc-compact-");
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
@@ -348,31 +347,30 @@ describe("Compactor", () => {
     await store.appendMessage(id, "user", [{ type: "text", text: "再来一条" }]);
     await compactor.compact(id, "overview", { promptOverrides: { overview: "自定义概览压缩指令" } });
     expect(calls.at(-1)?.system).toBe("自定义概览压缩指令");
-  });
 
-  it("toolcalls 模式的提示词覆盖只在配置了快速模型时生效", async () => {
-    const root = await tempRoot("owc-compact-");
-    const store = new SessionStore(path.join(root, "sessions"));
-    await store.initialize();
-    const session = await store.create({ cwd: os.tmpdir(), provider: "test-stub", title: "压缩样例" });
-    await store.appendMessage(session.id, "assistant", [
+    // toolcalls：注入覆盖生效；未注入回退内置（仅在配置了快速模型时走该路径）
+    const toolRoot = await tempRoot("owc-compact-");
+    const toolStore = new SessionStore(path.join(toolRoot, "sessions"));
+    await toolStore.initialize();
+    const session = await toolStore.create({ cwd: os.tmpdir(), provider: "test-stub", title: "压缩样例" });
+    await toolStore.appendMessage(session.id, "assistant", [
       { type: "tool_call", id: "t1", name: "bash", input: { cmd: "npm test" } },
     ]);
-    await store.appendMessage(session.id, "tool", [{ type: "tool_result", toolCallId: "t1", content: "ok" }]);
+    await toolStore.appendMessage(session.id, "tool", [{ type: "tool_result", toolCallId: "t1", content: "ok" }]);
     for (let index = 0; index < 15; index += 1) {
-      await store.appendMessage(session.id, index % 2 === 0 ? "user" : "assistant", [{ type: "text", text: `消息 ${index + 1}` }]);
+      await toolStore.appendMessage(session.id, index % 2 === 0 ? "user" : "assistant", [{ type: "text", text: `消息 ${index + 1}` }]);
     }
-    const calls: Array<{ system: string; prompt: string }> = [];
-    const compactor = new Compactor(store, makeFakeFastModel("- [工具] bash → 完成", calls), {}, 10);
+    const toolCalls: Array<{ system: string; prompt: string }> = [];
+    const toolCompactor = new Compactor(toolStore, makeFakeFastModel("- [工具] bash → 完成", toolCalls), {}, 10);
 
-    await compactor.compact(session.id, "toolcalls", { promptOverrides: { toolcalls: "自定义工具压缩指令" } });
-    expect(calls[0]?.system).toBe("自定义工具压缩指令");
+    await toolCompactor.compact(session.id, "toolcalls", { promptOverrides: { toolcalls: "自定义工具压缩指令" } });
+    expect(toolCalls[0]?.system).toBe("自定义工具压缩指令");
     // 未注入时回退内置
     for (let index = 0; index < 12; index += 1) {
-      await store.appendMessage(session.id, "user", [{ type: "text", text: `追加 ${index + 1}` }]);
+      await toolStore.appendMessage(session.id, "user", [{ type: "text", text: `追加 ${index + 1}` }]);
     }
-    await compactor.compact(session.id, "toolcalls");
-    expect(calls.at(-1)?.system).toBe(COMPACT_TOOLCALLS_SYSTEM);
+    await toolCompactor.compact(session.id, "toolcalls");
+    expect(toolCalls.at(-1)?.system).toBe(COMPACT_TOOLCALLS_SYSTEM);
   });
 });
 
@@ -429,36 +427,33 @@ describe("alignCompactionBoundary（F2 工具批次对齐）", () => {
   const call = (id: string, callId: string): ChatMessage => ({ id, role: "assistant", content: [{ type: "tool_call", id: callId, name: "bash", input: { cmd: "true" } }], createdAt: new Date(0).toISOString() });
   const result = (id: string, callId: string): ChatMessage => ({ id, role: "tool", content: [{ type: "tool_result", toolCallId: callId, content: "ok" }], createdAt: new Date(0).toISOString() });
 
-  it("无工具调用时边界不变；越界钳制到 [0, length]", () => {
-    const messages = [text("a"), text("b", "assistant"), text("c")];
-    expect(alignCompactionBoundary(messages, 2)).toBe(2);
-    expect(alignCompactionBoundary(messages, 99)).toBe(3);
-    expect(alignCompactionBoundary(messages, -1)).toBe(0);
-  });
+  it("align 矩阵：无工具不变/越界钳制、截断批次收缩、级联收缩、中断残留不跨界", () => {
+    // 无工具调用时边界不变；越界钳制到 [0, length]
+    const plain = [text("a"), text("b", "assistant"), text("c")];
+    expect(alignCompactionBoundary(plain, 2)).toBe(2);
+    expect(alignCompactionBoundary(plain, 99)).toBe(3);
+    expect(alignCompactionBoundary(plain, -1)).toBe(0);
 
-  it("边界截断批次（结果在界外）→ 收缩到调用之前", () => {
-    const messages = [text("u1"), call("a1", "t1"), result("r1", "t1"), text("u2")];
+    // 边界截断批次（结果在界外）→ 收缩到调用之前
+    const partial = [text("u1"), call("a1", "t1"), result("r1", "t1"), text("u2")];
     // uptoIndex=2 → 前缀含 a1 的调用（index 1）但 r1（index 2）在界外 → 收缩到 a1 之前
-    expect(alignCompactionBoundary(messages, 2)).toBe(1);
+    expect(alignCompactionBoundary(partial, 2)).toBe(1);
     // 边界含完整批次（调用与结果都在前缀内）→ 不变
-    expect(alignCompactionBoundary(messages, 3)).toBe(3);
-    expect(alignCompactionBoundary(messages, 4)).toBe(4);
-  });
+    expect(alignCompactionBoundary(partial, 3)).toBe(3);
+    expect(alignCompactionBoundary(partial, 4)).toBe(4);
 
-  it("级联收缩：收缩后暴露的更早跨界批次一并排除", () => {
-    // 两个调用集中在前、结果集中在后：任何落在结果之前的边界都会连环收缩
-    const messages = [call("a1", "t1"), call("a2", "t2"), result("r1", "t1"), result("r2", "t2"), text("u")];
+    // 级联收缩：收缩后暴露的更早跨界批次一并排除
+    const cascaded = [call("a1", "t1"), call("a2", "t2"), result("r1", "t1"), result("r2", "t2"), text("u")];
     // 前缀 [0,3) 含 t2 调用（index 1）但结果（index 3）在界外 → 收到 1；t1 结果（index 2）又 ≥ 1 → 收到 0
-    expect(alignCompactionBoundary(messages, 3)).toBe(0);
+    expect(alignCompactionBoundary(cascaded, 3)).toBe(0);
     // 前缀 [0,4) 含全部调用与结果 → 不变
-    expect(alignCompactionBoundary(messages, 4)).toBe(4);
-    expect(alignCompactionBoundary(messages, 5)).toBe(5);
-  });
+    expect(alignCompactionBoundary(cascaded, 4)).toBe(4);
+    expect(alignCompactionBoundary(cascaded, 5)).toBe(5);
 
-  it("调用无结果（中断轮残留）不算跨界，边界不变", () => {
-    const messages = [text("u1"), call("a1", "t1"), text("u2")];
-    expect(alignCompactionBoundary(messages, 3)).toBe(3);
-    expect(alignCompactionBoundary(messages, 2)).toBe(2);
+    // 调用无结果（中断轮残留）不算跨界，边界不变
+    const interrupted = [text("u1"), call("a1", "t1"), text("u2")];
+    expect(alignCompactionBoundary(interrupted, 3)).toBe(3);
+    expect(alignCompactionBoundary(interrupted, 2)).toBe(2);
   });
 });
 

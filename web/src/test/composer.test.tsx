@@ -77,17 +77,17 @@ function fileInput(container: HTMLElement): HTMLInputElement {
 }
 
 describe("Composer 渲染与发送", () => {
-  it("渲染输入框（id=composer-input）与发送键提示占位符", () => {
-    const { textarea } = renderComposer();
-    expect(textarea.id).toBe("composer-input");
-    expect(textarea.placeholder).toContain("Enter 发送");
-    expect(textarea.placeholder).toContain("Shift+Enter 换行");
-  });
+  it("渲染 composer-input；占位符随 sendKey（Enter/Ctrl+Enter）提示", () => {
+    const enter = renderComposer();
+    expect(enter.textarea.id).toBe("composer-input");
+    expect(enter.textarea.placeholder).toContain("Enter 发送");
+    expect(enter.textarea.placeholder).toContain("Shift+Enter 换行");
+    enter.unmount();
 
-  it("sendKey=ctrl-enter 时占位符切换提示", () => {
+    // sendKey=ctrl-enter 时占位符切换提示
     setSendKey("ctrl-enter");
-    const { textarea } = renderComposer();
-    expect(textarea.placeholder).toContain("Ctrl+Enter 发送");
+    const ctrlEnter = renderComposer();
+    expect(ctrlEnter.textarea.placeholder).toContain("Ctrl+Enter 发送");
   });
 
   it("sendKey=ctrl-enter 时：回车换行不发送，Ctrl+Enter 才发送（选项真实生效）", () => {
@@ -101,29 +101,32 @@ describe("Composer 渲染与发送", () => {
     expect(props.onSend).toHaveBeenCalledWith("start");
   });
 
-  it("输入后 Enter 触发 onSend('start')", () => {
-    const { props, textarea } = renderComposer();
-    fireEvent.change(textarea, { target: { value: "修个 bug" } });
-    fireEvent.keyDown(textarea, { key: "Enter" });
-    expect(props.onSend).toHaveBeenCalledTimes(1);
-    expect(props.onSend).toHaveBeenCalledWith("start");
-  });
+  it("输入后 Enter 或发送按钮触发 onSend('start')；Shift+Enter 换行不发送", () => {
+    // Enter 发送
+    const enter = renderComposer();
+    fireEvent.change(enter.textarea, { target: { value: "修个 bug" } });
+    fireEvent.keyDown(enter.textarea, { key: "Enter" });
+    expect(enter.props.onSend).toHaveBeenCalledTimes(1);
+    expect(enter.props.onSend).toHaveBeenCalledWith("start");
+    enter.unmount();
+    clearComposerState("s1");
 
-  it("输入后点击发送按钮触发 onSend('start')", () => {
-    const { props, textarea } = renderComposer();
+    // 点发送按钮
+    const button = renderComposer();
     const sendButton = screen.getByRole("button", { name: "发送" });
     expect(sendButton).toBeDisabled();
-    fireEvent.change(textarea, { target: { value: "跑一下测试" } });
+    fireEvent.change(button.textarea, { target: { value: "跑一下测试" } });
     expect(sendButton).toBeEnabled();
     fireEvent.click(sendButton);
-    expect(props.onSend).toHaveBeenCalledWith("start");
-  });
+    expect(button.props.onSend).toHaveBeenCalledWith("start");
+    button.unmount();
+    clearComposerState("s1");
 
-  it("Shift+Enter 不发送（换行）", () => {
-    const { props, textarea } = renderComposer();
-    fireEvent.change(textarea, { target: { value: "多行" } });
-    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
-    expect(props.onSend).not.toHaveBeenCalled();
+    // Shift+Enter 不发送（换行）
+    const shift = renderComposer();
+    fireEvent.change(shift.textarea, { target: { value: "多行" } });
+    fireEvent.keyDown(shift.textarea, { key: "Enter", shiftKey: true });
+    expect(shift.props.onSend).not.toHaveBeenCalled();
   });
 
   it("运行中不再显示状态文本（统一由会话头状态指示），发送行为推导为 steer", () => {
@@ -139,8 +142,8 @@ describe("Composer 渲染与发送", () => {
 });
 
 describe("Composer 队列分段单选", () => {
-  it("运行中默认「补充」，切到「续跑」后发送 follow_up", () => {
-    const { props, textarea } = renderComposer({ running: true });
+  it("运行中队列分段：默认补充、切续跑发 follow_up；未运行不渲染", () => {
+    const running = renderComposer({ running: true });
     expect(screen.getByRole("radiogroup", { name: "运行中消息行为" })).toBeInTheDocument();
     const steer = screen.getByRole("radio", { name: "补充" });
     const follow = screen.getByRole("radio", { name: "续跑" });
@@ -150,12 +153,12 @@ describe("Composer 队列分段单选", () => {
     expect(steer).toHaveAttribute("aria-checked", "false");
     // 选中「续跑」后发送按钮语义同步，回车发送下发 follow_up
     expect(screen.getByRole("button", { name: "完成后续跑" })).toBeInTheDocument();
-    fireEvent.change(textarea, { target: { value: "跑完再做" } });
-    fireEvent.keyDown(textarea, { key: "Enter" });
-    expect(props.onSend).toHaveBeenCalledWith("follow_up");
-  });
+    fireEvent.change(running.textarea, { target: { value: "跑完再做" } });
+    fireEvent.keyDown(running.textarea, { key: "Enter" });
+    expect(running.props.onSend).toHaveBeenCalledWith("follow_up");
+    running.unmount();
 
-  it("未运行时不渲染队列分段", () => {
+    // 未运行时不渲染队列分段
     renderComposer();
     expect(screen.queryByRole("radiogroup", { name: "运行中消息行为" })).not.toBeInTheDocument();
   });
@@ -173,39 +176,41 @@ describe("Composer 移动端形态", () => {
     expect(props.onSend).toHaveBeenCalledWith("start");
   });
 
-  it("折叠后隐藏工具栏但保留发送按钮，展开恢复", () => {
+  it("折叠按钮仅移动端渲染并隐藏工具栏", () => {
     stubMatchMedia(true);
-    const { container, textarea } = renderComposer();
-    fireEvent.change(textarea, { target: { value: "折叠也能发" } });
+    const mobile = renderComposer();
+    fireEvent.change(mobile.textarea, { target: { value: "折叠也能发" } });
     fireEvent.click(screen.getByRole("button", { name: "折叠输入栏" }));
-    expect(container.querySelector(".composer-toolbar")).toBeNull();
+    expect(mobile.container.querySelector(".composer-toolbar")).toBeNull();
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "展开输入栏" }));
-    expect(container.querySelector(".composer-toolbar")).not.toBeNull();
-  });
+    expect(mobile.container.querySelector(".composer-toolbar")).not.toBeNull();
+    mobile.unmount();
 
-  it("桌面端不渲染折叠按钮", () => {
+    // 桌面端不渲染折叠按钮
+    stubMatchMedia(false);
     renderComposer();
     expect(screen.queryByRole("button", { name: /折叠输入栏|展开输入栏/ })).not.toBeInTheDocument();
   });
 });
 
 describe("Composer 附件", () => {
-  it("经文件选择添加图片附件并可移除", async () => {
-    const { container, client } = renderComposer();
-    await waitModelsLoaded(client);
-    fireEvent.change(fileInput(container), { target: { files: [png("a.png"), png("b.png")] } });
+  it("经文件选择或粘贴添加图片附件并可移除", async () => {
+    const picked = renderComposer();
+    await waitModelsLoaded(picked.client);
+    fireEvent.change(fileInput(picked.container), { target: { files: [png("a.png"), png("b.png")] } });
     expect(await screen.findByLabelText("移除附件 1")).toBeInTheDocument();
     expect(await screen.findByLabelText("移除附件 2")).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("移除附件 1"));
     await waitFor(() => expect(screen.queryByLabelText("移除附件 2")).not.toBeInTheDocument());
     expect(screen.getByLabelText("移除附件 1")).toBeInTheDocument();
-  });
+    picked.unmount();
+    clearComposerState("s1");
 
-  it("粘贴图片同样进入附件列表", async () => {
-    const { textarea, client } = renderComposer();
-    await waitModelsLoaded(client);
-    fireEvent.paste(textarea, { clipboardData: { files: [png("clip.png")], getData: () => "" } });
+    // 粘贴图片同样进入附件列表
+    const pasted = renderComposer();
+    await waitModelsLoaded(pasted.client);
+    fireEvent.paste(pasted.textarea, { clipboardData: { files: [png("clip.png")], getData: () => "" } });
     expect(await screen.findByLabelText("移除附件 1")).toBeInTheDocument();
   });
 
@@ -243,19 +248,19 @@ describe("Composer 附件", () => {
 });
 
 describe("Composer 编辑重发", () => {
-  it("显示横幅（含附件提示），按钮与 Esc 均可取消", () => {
+  it("编辑重发横幅（附件提示），按钮与 Esc 取消；无附件不显示提示", () => {
     const onCancelEdit = vi.fn();
-    const { textarea } = renderComposer({ editingMessage: { messageId: "m1", hadAttachments: true }, onCancelEdit });
+    const withAttachments = renderComposer({ editingMessage: { messageId: "m1", hadAttachments: true }, onCancelEdit });
     expect(screen.getByText(/正在编辑早前消息/)).toBeInTheDocument();
     expect(screen.getByText(/原消息的附件不会重发/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重发" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(onCancelEdit).toHaveBeenCalledTimes(1);
-    fireEvent.keyDown(textarea, { key: "Escape" });
+    fireEvent.keyDown(withAttachments.textarea, { key: "Escape" });
     expect(onCancelEdit).toHaveBeenCalledTimes(2);
-  });
+    withAttachments.unmount();
 
-  it("无附件的原消息不显示附件提示", () => {
+    // 无附件的原消息不显示附件提示
     renderComposer({ editingMessage: { messageId: "m2", hadAttachments: false } });
     expect(screen.getByText(/正在编辑早前消息/)).toBeInTheDocument();
     expect(screen.queryByText(/原消息的附件不会重发/)).not.toBeInTheDocument();
@@ -296,9 +301,9 @@ describe("PermissionModeMenu", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("选择 yolo 先弹风险确认：勾选后才可确认，确认才切换", () => {
+  it("yolo 风险确认：勾选才可确认、取消不切换、已是 yolo 重选不弹", () => {
     const onChange = vi.fn();
-    render(<PermissionModeMenu value="ask" disabled={false} onChange={onChange} />);
+    const view = render(<PermissionModeMenu value="ask" disabled={false} onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: "权限模式" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /完全自主/ }));
     // 弹层关闭、对话框打开，未勾选前确认禁用且不触发 onChange
@@ -316,18 +321,16 @@ describe("PermissionModeMenu", () => {
     fireEvent.click(confirm);
     expect(onChange).toHaveBeenCalledWith("yolo");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  });
+    onChange.mockClear();
 
-  it("yolo 确认框取消：不切换；已是 yolo 时重选不再弹确认", () => {
-    const onChange = vi.fn();
-    const { rerender } = render(<PermissionModeMenu value="ask" disabled={false} onChange={onChange} />);
+    // 确认框取消：不切换；已是 yolo 时重选不再弹确认
     fireEvent.click(screen.getByRole("button", { name: "权限模式" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /完全自主/ }));
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     // 已是 yolo：再次选择当前值直接走原路径（仍是 yolo，不重复弹确认）
-    rerender(<PermissionModeMenu value="yolo" disabled={false} onChange={onChange} />);
+    view.rerender(<PermissionModeMenu value="yolo" disabled={false} onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: "权限模式" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /完全自主/ }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -351,9 +354,9 @@ describe("PermissionModeMenu", () => {
 });
 
 describe("AgentModeMenu", () => {
-  it("计划/目标写入互斥的 agentMode，Swarm 写独立开关", () => {
+  it("模式菜单：互斥写入 agentMode/Swarm 独立、徽标回显与点击清除", () => {
     const onConfig = vi.fn();
-    render(<AgentModeMenu agentMode={undefined} swarmEnabled={false} disabled={false} onConfig={onConfig} />);
+    const write = render(<AgentModeMenu agentMode={undefined} swarmEnabled={false} disabled={false} onConfig={onConfig} />);
     fireEvent.click(screen.getByRole("button", { name: "模式" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "计划" }));
     expect(onConfig).toHaveBeenCalledWith({ agentMode: "plan" });
@@ -361,11 +364,10 @@ describe("AgentModeMenu", () => {
     expect(onConfig).toHaveBeenCalledWith({ swarmEnabled: true });
     fireEvent.click(screen.getByRole("checkbox", { name: "目标" }));
     expect(onConfig).toHaveBeenCalledWith({ agentMode: "goal" });
-  });
+    write.unmount();
 
-  it("已激活的模式在按钮徽标与开关态上体现，再次点击计划清除", () => {
-    const onConfig = vi.fn();
-    render(<AgentModeMenu agentMode="plan" swarmEnabled disabled={false} onConfig={onConfig} />);
+    // 已激活模式在按钮徽标与开关态上体现，再次点击计划清除
+    const echo = render(<AgentModeMenu agentMode="plan" swarmEnabled disabled={false} onConfig={onConfig} />);
     const trigger = screen.getByRole("button", { name: "模式" });
     expect(trigger).toHaveTextContent("计划");
     expect(trigger).toHaveTextContent("Swarm");
@@ -375,6 +377,7 @@ describe("AgentModeMenu", () => {
     expect(screen.getByRole("checkbox", { name: "目标" })).not.toBeChecked();
     fireEvent.click(screen.getByRole("checkbox", { name: "计划" }));
     expect(onConfig).toHaveBeenCalledWith({ agentMode: null });
+    echo.unmount();
   });
 });
 
@@ -429,28 +432,30 @@ describe("ModelMenu", () => {
     expect(props.onConfig).toHaveBeenCalledWith({ thinking: null, effort: "medium" });
   });
 
-  it("未声明 effort 的模型：滑块默认五档（不含 minimal/ultra）", async () => {    // renderComposer 默认模型 IMAGE_CAPS 的 effort 为空 → 走 EFFORT_DEFAULT_ALL 回退（无 ultra）
-    const { container, client } = renderComposer();
-    await waitModelsLoaded(client);
+  it("effort 滑块：未声明回退五档、声明档位按规范序渲染", async () => {
+    // 未声明 effort 的模型：滑块默认五档（不含 minimal/ultra）
+    // renderComposer 默认模型 IMAGE_CAPS 的 effort 为空 → 走 EFFORT_DEFAULT_ALL 回退（无 ultra）
+    const fallback = renderComposer();
+    await waitModelsLoaded(fallback.client);
     fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
-    const cells = container.querySelectorAll(".thinking-cell");
+    let cells = fallback.container.querySelectorAll(".thinking-cell");
     // [默认, 低, 中, 高, 极高, max] = 6 个格子（5 档 effort + 左端点默认）
     expect(cells).toHaveLength(6);
-    const labels = Array.from(cells).map((el) => el.getAttribute("aria-label"));
+    let labels = Array.from(cells).map((el) => el.getAttribute("aria-label"));
     // W6：aria-label 断言依赖测试环境默认 zh-CN locale（i18n 缺省中文）；若切 en 环境需同步调整
     expect(labels).toEqual(["默认", "低", "中", "高", "极高", "max"]);
     expect(screen.queryByRole("button", { name: "最低" })).not.toBeInTheDocument();
-  });
+    fallback.unmount();
 
-  it("模型声明 effort [low, minimal]：滑块按强度顺序只显示 minimal/low 两档", async () => {
+    // 模型声明 effort [low, minimal]：滑块按强度顺序只显示 minimal/low 两档
     stubApi([makeModelProfile({ capabilities: { thinking: [], effort: ["low", "minimal"], modalities: ["text"], imageOutput: false, tools: true } })]);
-    const { container, client } = renderComposer();
-    await waitModelsLoaded(client);
+    const declared = renderComposer();
+    await waitModelsLoaded(declared.client);
     fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
-    const cells = container.querySelectorAll(".thinking-cell");
+    cells = declared.container.querySelectorAll(".thinking-cell");
     // 声明顺序 low→minimal 被打乱，滑块必须按规范序 [minimal, low]（左端点默认在前）
     expect(cells).toHaveLength(3);
-    const labels = Array.from(cells).map((el) => el.getAttribute("aria-label"));
+    labels = Array.from(cells).map((el) => el.getAttribute("aria-label"));
     // W6：同上，依赖 zh-CN locale
     expect(labels).toEqual(["默认", "最低", "低"]);
     expect(screen.queryByRole("button", { name: "中" })).not.toBeInTheDocument();

@@ -69,37 +69,35 @@ afterEach(() => {
 });
 
 describe("ContextPanel 选择性上下文", () => {
-  it("展示按段归因、pin/排除清单，并支持添加与移除", async () => {
+  it("选择性上下文：按段归因、pin/排除清单添加与移除", async () => {
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: ["m-1"], excludes: ["**/*.log"] }));
     const update = vi.spyOn(api, "updateContextSelection").mockResolvedValue({ pins: ["m-1", "src/a.ts"], excludes: ["**/*.log"] });
-
-    renderPanel();
+    const view = renderWithClient(<ContextPanel sessionId={session.id} running={false} />);
 
     // 按段 token 归因与构建诊断
-    expect(await screen.findByText("按段 token 归因")).toBeInTheDocument();
-    expect(screen.getByText("工具调用")).toBeInTheDocument();
-    expect(screen.getByText(/增量复用/)).toBeInTheDocument();
+    expect(await view.findByText("按段 token 归因")).toBeInTheDocument();
+    expect(view.getByText("工具调用")).toBeInTheDocument();
+    expect(view.getByText(/增量复用/)).toBeInTheDocument();
     // 排除不是安全边界的提示
-    expect(screen.getByText(/排除不是安全边界/)).toBeInTheDocument();
+    expect(view.getByText(/排除不是安全边界/)).toBeInTheDocument();
     // 现有清单
-    expect(screen.getByText("m-1")).toBeInTheDocument();
-    expect(screen.getByText("**/*.log")).toBeInTheDocument();
+    expect(view.getByText("m-1")).toBeInTheDocument();
+    expect(view.getByText("**/*.log")).toBeInTheDocument();
 
     // 添加 pin
-    fireEvent.change(screen.getByLabelText("新增 pin"), { target: { value: "src/a.ts" } });
-    fireEvent.click(screen.getByRole("button", { name: "添加 pin" }));
+    fireEvent.change(view.getByLabelText("新增 pin"), { target: { value: "src/a.ts" } });
+    fireEvent.click(view.getByRole("button", { name: "添加 pin" }));
     await waitFor(() => expect(update).toHaveBeenCalledWith(session.id, { pins: ["m-1", "src/a.ts"], excludes: ["**/*.log"] }));
-  });
+    view.unmount();
 
-  it("移除排除路径", async () => {
+    // 移除排除路径
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: ["**/*.log", "docs/**"] }));
-    const update = vi.spyOn(api, "updateContextSelection").mockResolvedValue({ pins: [], excludes: ["docs/**"] });
-
-    renderPanel();
-    expect(await screen.findByText("**/*.log")).toBeInTheDocument();
-    const row = screen.getByText("**/*.log").closest(".context-entry")!;
+    const updateRemove = vi.spyOn(api, "updateContextSelection").mockResolvedValue({ pins: [], excludes: ["docs/**"] });
+    const removeView = renderWithClient(<ContextPanel sessionId={session.id} running={false} />);
+    expect(await removeView.findByText("**/*.log")).toBeInTheDocument();
+    const row = removeView.getByText("**/*.log").closest(".context-entry")!;
     fireEvent.click(row.querySelector("button")!);
-    await waitFor(() => expect(update).toHaveBeenCalledWith(session.id, { pins: [], excludes: ["docs/**"] }));
+    await waitFor(() => expect(updateRemove).toHaveBeenCalledWith(session.id, { pins: [], excludes: ["docs/**"] }));
   });
 });
 
@@ -179,44 +177,40 @@ describe("ContextPanel 缓存命中", () => {
     return { ...view, ledger: { ...view.ledger, usage } };
   }
 
-  it("展示本轮与累计缓存命中行", async () => {
+  it("缓存行：本轮+累计渲染、全 0 不渲染、仅累计回退", async () => {
+    // 本轮与累计命中行
     // 累计 74k / (26k + 74k) = 74%
     vi.spyOn(api, "context").mockResolvedValue(contextViewWithUsage({ inputTokens: 26_000, outputTokens: 100, cacheRead: 74_000, cacheWrite: 8_000 }));
     setWatermark(windowUsage);
     // 本轮 98k / (21k + 98k) ≈ 82%
     sessionMeta.setUsage(session.id, { inputTokens: 21_000, outputTokens: 500, cacheRead: 98_000, cacheWrite: 12_000 });
+    const full = renderWithClient(<ContextPanel sessionId={session.id} running={false} />);
 
-    renderPanel();
-
-    const row = await screen.findByTestId("ctx-cache");
+    const row = await full.findByTestId("ctx-cache");
     expect(row.textContent).toContain("本轮 82%");
     expect(row.querySelector(".pill")!.getAttribute("title")).toContain("本轮缓存命中 82");
     expect(row.querySelector(".pill")!.getAttribute("title")).toContain("写入 12k");
     // 累计 pill 带命中率分档 data-tone（74% → good 不标色）
     expect(row.querySelectorAll(".pill")[1]!.getAttribute("data-tone")).toBe("good");
     expect(row.textContent).toContain("累计 74%");
-  });
+    full.unmount();
 
-  it("本轮与累计读写全为 0 时不渲染缓存行", async () => {
+    // 本轮与累计读写全为 0 时不渲染缓存行
     vi.spyOn(api, "context").mockResolvedValue(contextViewWithUsage({ inputTokens: 10, outputTokens: 5, cacheRead: 0, cacheWrite: 0 }));
-    setWatermark(windowUsage);
     sessionMeta.setUsage(session.id, { inputTokens: 10, outputTokens: 5, cacheRead: 0, cacheWrite: 0 });
+    const zero = renderWithClient(<ContextPanel sessionId={session.id} running={false} />);
+    await zero.findByText("上下文窗口");
+    expect(zero.queryByTestId("ctx-cache")).toBeNull();
+    zero.unmount();
+    sessionStore.set({ watermarks: {}, usages: {} });
 
-    renderPanel();
-
-    await screen.findByText("上下文窗口");
-    expect(screen.queryByTestId("ctx-cache")).toBeNull();
-  });
-
-  it("无本轮事件但累计有缓存活动时只显示累计行", async () => {
-    vi.spyOn(api, "context").mockResolvedValue(contextViewWithUsage({ inputTokens: 26_000, outputTokens: 100, cacheRead: 74_000, cacheWrite: 8_000 }));
+    // 无本轮事件但累计有缓存活动时只显示累计行
     setWatermark(windowUsage);
-
-    renderPanel();
-
-    const row = await screen.findByTestId("ctx-cache");
-    expect(row.textContent).not.toContain("本轮");
-    expect(row.textContent).toContain("累计 74%");
+    vi.spyOn(api, "context").mockResolvedValue(contextViewWithUsage({ inputTokens: 26_000, outputTokens: 100, cacheRead: 74_000, cacheWrite: 8_000 }));
+    const cumulativeOnly = renderWithClient(<ContextPanel sessionId={session.id} running={false} />);
+    const onlyRow = await cumulativeOnly.findByTestId("ctx-cache");
+    expect(onlyRow.textContent).not.toContain("本轮");
+    expect(onlyRow.textContent).toContain("累计 74%");
   });
 });
 
@@ -228,32 +222,31 @@ describe("ContextPanel 空态", () => {
 });
 
 describe("ContextPanel context-saver 扩展门控", () => {
-  it("扩展开启时渲染驱逐策略、选择性上下文与上下文条目，压缩区同在", async () => {
+  it("context-saver 扩展门控：开启渲染 saver 段落、关闭保留压缩区", async () => {
+    // 扩展开启时渲染驱逐策略、选择性上下文与上下文条目，压缩区同在
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
+    const enabled = renderWithClient(<ContextPanel sessionId={session.id} running={false} />);
 
-    renderPanel();
-
-    expect(await screen.findByText("驱逐策略")).toBeInTheDocument();
-    expect(screen.getByText(/选择性上下文/)).toBeInTheDocument();
-    expect(screen.getByText("上下文条目")).toBeInTheDocument();
+    expect(await enabled.findByText("驱逐策略")).toBeInTheDocument();
+    expect(enabled.getByText(/选择性上下文/)).toBeInTheDocument();
+    expect(enabled.getByText("上下文条目")).toBeInTheDocument();
     // 手动压缩是核心能力，不随扩展开关
-    expect(screen.getByText("压缩")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "压缩工具调用" })).toBeInTheDocument();
-  });
+    expect(enabled.getByText("压缩")).toBeInTheDocument();
+    expect(enabled.getByRole("button", { name: "压缩工具调用" })).toBeInTheDocument();
+    enabled.unmount();
 
-  it("扩展关闭时不渲染 saver 段落，但压缩区保留", async () => {
+    // 扩展关闭时不渲染 saver 段落，但压缩区保留
     vi.spyOn(api, "extensions").mockResolvedValue([saverExtension(false)]);
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
-
-    renderPanel();
+    const disabled = renderWithClient(<ContextPanel sessionId={session.id} running={false} />);
 
     // 等核心段落就绪后再断言 saver 段落默认
-    expect(await screen.findByText("压缩")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "压缩工具调用" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "概览压缩" })).toBeInTheDocument();
-    expect(screen.queryByText("驱逐策略")).toBeNull();
-    expect(screen.queryByText(/选择性上下文/)).toBeNull();
-    expect(screen.queryByText("上下文条目")).toBeNull();
+    expect(await disabled.findByText("压缩")).toBeInTheDocument();
+    expect(disabled.getByRole("button", { name: "压缩工具调用" })).toBeInTheDocument();
+    expect(disabled.getByRole("button", { name: "概览压缩" })).toBeInTheDocument();
+    expect(disabled.queryByText("驱逐策略")).toBeNull();
+    expect(disabled.queryByText(/选择性上下文/)).toBeNull();
+    expect(disabled.queryByText("上下文条目")).toBeNull();
   });
 });
 
@@ -327,52 +320,49 @@ const watermark: ContextWatermark = {
 };
 
 describe("deriveWindowInfo", () => {
-  it("优先使用 WS 实时水位", () => {
-    const info = deriveWindowInfo(watermark, stats, model);
-    expect(info?.estimatedTokens).toBe(45_000);
-    expect(info?.contextWindow).toBe(128_000);
-    expect(info?.utilization).toBeCloseTo(0.375);
-  });
+  it("deriveWindowInfo：水位优先/stats 播种/窗口未知仅 tokens/全缺失 undefined", () => {
+    // 优先使用 WS 实时水位
+    const live = deriveWindowInfo(watermark, stats, model);
+    expect(live?.estimatedTokens).toBe(45_000);
+    expect(live?.contextWindow).toBe(128_000);
+    expect(live?.utilization).toBeCloseTo(0.375);
 
-  it("无水位时由 REST stats + 模型档案播种（workingBudget = 上下文窗口）", () => {
-    const info = deriveWindowInfo(undefined, stats, model);
-    expect(info?.estimatedTokens).toBe(48_000);
-    expect(info?.contextWindow).toBe(128_000);
-    expect(info?.workingBudget).toBe(128_000);
-    expect(info?.utilization).toBeCloseTo(0.375);
-    expect(info?.pinnedTokens).toBe(500);
-  });
+    // 无水位时由 REST stats + 模型档案播种（workingBudget = 上下文窗口）
+    const seeded = deriveWindowInfo(undefined, stats, model);
+    expect(seeded?.estimatedTokens).toBe(48_000);
+    expect(seeded?.contextWindow).toBe(128_000);
+    expect(seeded?.workingBudget).toBe(128_000);
+    expect(seeded?.utilization).toBeCloseTo(0.375);
+    expect(seeded?.pinnedTokens).toBe(500);
 
-  it("模型窗口未知时仅返回 tokens，不给百分比", () => {
-    const info = deriveWindowInfo(undefined, stats, undefined);
-    expect(info?.estimatedTokens).toBe(48_000);
-    expect(info?.contextWindow).toBeUndefined();
-    expect(info?.utilization).toBeUndefined();
-  });
+    // 模型窗口未知时仅返回 tokens，不给百分比
+    const partial = deriveWindowInfo(undefined, stats, undefined);
+    expect(partial?.estimatedTokens).toBe(48_000);
+    expect(partial?.contextWindow).toBeUndefined();
+    expect(partial?.utilization).toBeUndefined();
 
-  it("水位与 stats 都缺失时返回 undefined", () => {
+    // 水位与 stats 都缺失时返回 undefined
     expect(deriveWindowInfo(undefined, undefined, model)).toBeUndefined();
   });
 });
 
 describe("windowLevel", () => {
-  it("按 0.7 / 0.85 阈值分级", () => {
+  it("windowLevel：0.7/0.85 默认档与自定义阈值精确边界", () => {
+    // 默认档
     expect(windowLevel(undefined)).toBe("normal");
     expect(windowLevel(0.35)).toBe("normal");
     expect(windowLevel(0.7)).toBe("warn");
     expect(windowLevel(0.84)).toBe("warn");
     expect(windowLevel(0.85)).toBe("danger");
     expect(windowLevel(1.1)).toBe("danger");
-  });
 
-  it("默认阈值参数与旧硬编码 0.85/0.7 行为一致", () => {
+    // 默认阈值参数与旧硬编码 0.85/0.7 行为一致
     for (const utilization of [0.54, 0.7, 0.8499, 0.85, 1]) {
       expect(windowLevel(utilization)).toBe(windowLevel(utilization, 85));
     }
     expect(windowLevel(undefined, 70)).toBe("normal");
-  });
 
-  it("自定义阈值：danger = threshold/100，warn = (threshold−15)/100，精确边界", () => {
+    // 自定义阈值：danger = threshold/100，warn = (threshold−15)/100，精确边界
     // threshold = 70 → danger >= 0.70，warn >= 0.55
     expect(windowLevel(0.54, 70)).toBe("normal");
     expect(windowLevel(0.55, 70)).toBe("warn");
@@ -411,14 +401,11 @@ describe("compactionThresholdPercent", () => {
     expect(compactionThresholdPercent(settingsWith(100))).toBe(100);
   });
 
-  it("设置缺失/字段缺失时回落 85", () => {
+  it("设置缺失/越界回落 85", () => {
     expect(compactionThresholdPercent(undefined)).toBe(85);
     expect(compactionThresholdPercent({ groups: [] })).toBe(85);
     expect(compactionThresholdPercent(settingsWith(undefined))).toBe(85);
     expect(compactionThresholdPercent(settingsWith(null))).toBe(85);
-  });
-
-  it("越界/非数值回落 85", () => {
     expect(compactionThresholdPercent(settingsWith(49))).toBe(85);
     expect(compactionThresholdPercent(settingsWith(101))).toBe(85);
     expect(compactionThresholdPercent(settingsWith("70"))).toBe(85);

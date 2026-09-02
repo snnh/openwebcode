@@ -159,7 +159,8 @@ describe("session model config", () => {
       expect(disposedShells).toHaveLength(4);
     });
 
-    it("在途 shell 命令时沙盒变更默认 409（SHELL_PENDING），force: true 放行并回收", async () => {
+    it("在途 shell 门控：沙盒变更默认 409、force 放行；force 非法 400、无关字段放行", async () => {
+      // 在途 shell 命令时沙盒变更默认 409（SHELL_PENDING），force: true 放行并回收
       const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
       shellPending = true;
       // 409：不落盘、不回收，由前端二次确认后带 force 重发
@@ -174,17 +175,17 @@ describe("session model config", () => {
       expect(forced.statusCode).toBe(200);
       expect(disposedShells).toEqual([session.id]);
       expect(await sessions.get(session.id)).toMatchObject({ sandboxMode: "off" });
-    });
 
-    it("force 非 boolean 一律 400；无关配置变更不受在途 shell 门控", async () => {
-      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
-      const badForce = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", force: "yes" } });
+      // force 非 boolean 一律 400；无关配置变更不受在途 shell 门控
+      disposedShells.length = 0;
+      const other = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
+      const badForce = await app.inject({ method: "PUT", url: `/api/sessions/${other.id}/config`, payload: { sandboxMode: "off", force: "yes" } });
       expect(badForce.statusCode).toBe(400);
       expect(badForce.json().error).toBe("force must be a boolean");
-      expect((await sessions.get(session.id))?.sandboxMode).toBe(process.platform === "win32" ? "appcontainer" : "bubblewrap");
+      expect((await sessions.get(other.id))?.sandboxMode).toBe(process.platform === "win32" ? "appcontainer" : "bubblewrap");
       // 快照模式不触及沙盒/环境：即使有在途 shell 也直接放行、不回收
       shellPending = true;
-      const unrelated = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { snapshotMode: "manual" } });
+      const unrelated = await app.inject({ method: "PUT", url: `/api/sessions/${other.id}/config`, payload: { snapshotMode: "manual" } });
       expect(unrelated.statusCode).toBe(200);
       expect(disposedShells).toEqual([]);
     });
@@ -251,30 +252,30 @@ async function defaultsFixture(env: NodeJS.ProcessEnv = {}) {
 }
 
 describe("新建会话套用全局默认（defaultEffort / defaultSnapshotMode）", () => {
-  it("设置非缺省时：新会话带上 effort 与 snapshotMode", async () => {
-    const setup = await defaultsFixture({ OWC_DEFAULT_EFFORT: "high", OWC_DEFAULT_SNAPSHOT_MODE: "manual" });
+  it("设置非缺省时新会话套用 effort/snapshotMode；缺省则不带", async () => {
+    // 非缺省：新会话带上 effort 与 snapshotMode
+    const set = await defaultsFixture({ OWC_DEFAULT_EFFORT: "high", OWC_DEFAULT_SNAPSHOT_MODE: "manual" });
     try {
-      const response = await setup.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: setup.root, provider: "stub", model: "m" } });
+      const response = await set.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: set.root, provider: "stub", model: "m" } });
       expect(response.statusCode, response.body).toBe(201);
       expect(response.json()).toMatchObject({ effort: "high", snapshotMode: "manual" });
       // 事件与落盘 meta 一致
-      const meta = await setup.sessions.get(response.json<{ id: string }>().id);
+      const meta = await set.sessions.get(response.json<{ id: string }>().id);
       expect(meta).toMatchObject({ effort: "high", snapshotMode: "manual" });
     } finally {
-      await setup.app.close();
+      await set.app.close();
     }
-  });
 
-  it("缺省（none/auto）：新会话不带 effort 与 snapshotMode", async () => {
-    const setup = await defaultsFixture();
+    // 缺省（none/auto）：新会话不带 effort 与 snapshotMode
+    const unset = await defaultsFixture();
     try {
-      const response = await setup.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: setup.root, provider: "stub", model: "m" } });
+      const response = await unset.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: unset.root, provider: "stub", model: "m" } });
       expect(response.statusCode, response.body).toBe(201);
       const body = response.json<Record<string, unknown>>();
       expect(body.effort).toBeUndefined();
       expect(body.snapshotMode).toBeUndefined();
     } finally {
-      await setup.app.close();
+      await unset.app.close();
     }
   });
 
@@ -304,27 +305,27 @@ describe("新建会话套用全局默认（defaultEffort / defaultSnapshotMode�
 });
 
 describe("新建会话套用快照后端偏好（snapshotBackend）", () => {
-  it("git-shadow：直接预设，跳过探测链", async () => {
-    const setup = await defaultsFixture({ OWC_SNAPSHOT_BACKEND: "git-shadow" });
+  it("后端可用直接预设；平台不可用回落自动并告警", async () => {
+    // git-shadow：直接预设，跳过探测链
+    const preset = await defaultsFixture({ OWC_SNAPSHOT_BACKEND: "git-shadow" });
     try {
-      const response = await setup.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: setup.root, provider: "stub", model: "m" } });
+      const response = await preset.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: preset.root, provider: "stub", model: "m" } });
       expect(response.statusCode, response.body).toBe(201);
       expect(response.json()).toMatchObject({ snapshotBackend: "git-shadow" });
     } finally {
-      await setup.app.close();
+      await preset.app.close();
     }
-  });
 
-  it("指定后端在当前平台不可用（win32 指定 btrfs）：回落自动并告警，不阻断创建", async () => {
-    const setup = await defaultsFixture({ OWC_SNAPSHOT_BACKEND: "btrfs" });
+    // 指定后端在当前平台不可用（win32 指定 btrfs）：回落自动并告警，不阻断创建
+    const fallback = await defaultsFixture({ OWC_SNAPSHOT_BACKEND: "btrfs" });
     try {
-      const response = await setup.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: setup.root, provider: "stub", model: "m" } });
+      const response = await fallback.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: fallback.root, provider: "stub", model: "m" } });
       expect(response.statusCode, response.body).toBe(201);
       expect(response.json<Record<string, unknown>>().snapshotBackend).toBeUndefined();
-      const fallback = setup.observed.find((event) => event.type === "snapshot.backend_fallback");
-      expect(fallback).toMatchObject({ payload: { preferred: "btrfs" } });
+      const event = fallback.observed.find((item) => item.type === "snapshot.backend_fallback");
+      expect(event).toMatchObject({ payload: { preferred: "btrfs" } });
     } finally {
-      await setup.app.close();
+      await fallback.app.close();
     }
   });
 });
@@ -345,9 +346,10 @@ async function displaySetup() {
 }
 
 describe("PATCH /api/sessions/:id（重命名与置顶）", () => {
-  it("设置与清除标题覆盖；置顶开关往返；列表响应携带 pinned", async () => {
+  it("标题覆盖/清除回落、空会话默认标题、置顶往返且不更新 updatedAt", async () => {
     const { root, sessions, app } = await displaySetup();
     try {
+      // 设置与清除标题覆盖；置顶开关往返；列表响应携带 pinned
       const session = await sessions.create({ cwd: "/tmp", provider: "test", model: "m" });
       await sessions.appendMessage(session.id, "user", [{ type: "text", text: "帮我修一个 failing test" }]);
 
@@ -373,18 +375,20 @@ describe("PATCH /api/sessions/:id（重命名与置顶）", () => {
       // 空串清除覆盖 → 回落到首条用户消息的派生标题
       expect(cleared.json().title).toBe("帮我修一个 failing test");
       expect(cleared.json()).not.toHaveProperty("pinned");
-    } finally {
-      await app.close();
-    }
-  });
 
-  it("空会话清除标题回落到默认标题", async () => {
-    const { sessions, app } = await displaySetup();
-    try {
-      const session = await sessions.create({ cwd: "/tmp", provider: "test", model: "m", title: "自定义" });
-      const response = await app.inject({ method: "PATCH", url: `/api/sessions/${session.id}`, payload: { title: "   " } });
-      expect(response.statusCode).toBe(200);
-      expect(response.json().title).toBe("New session");
+      // 空会话（无消息可派生）清除标题 → 默认标题
+      const empty = await sessions.create({ cwd: "/tmp", provider: "test", model: "m", title: "自定义" });
+      const emptyCleared = await app.inject({ method: "PATCH", url: `/api/sessions/${empty.id}`, payload: { title: "   " } });
+      expect(emptyCleared.statusCode).toBe(200);
+      expect(emptyCleared.json().title).toBe("New session");
+
+      // 重命名/置顶不更新 updatedAt（纯展示属性不应改变列表排序）
+      const display = await sessions.create({ cwd: "/tmp", provider: "test", model: "m" });
+      const displayRenamed = await app.inject({ method: "PATCH", url: `/api/sessions/${display.id}`, payload: { title: "新标题", pinned: true } });
+      expect(displayRenamed.statusCode).toBe(200);
+      expect(displayRenamed.json().updatedAt).toBe(display.updatedAt);
+      const persisted = await sessions.get(display.id);
+      expect(persisted?.updatedAt).toBe(display.updatedAt);
     } finally {
       await app.close();
     }
@@ -406,20 +410,6 @@ describe("PATCH /api/sessions/:id（重命名与置顶）", () => {
       expect(missing.statusCode).toBe(404);
       // 校验失败后原值不变
       expect(await sessions.get(session.id)).not.toHaveProperty("pinned");
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("重命名/置顶不更新 updatedAt（纯展示属性不应改变列表排序）", async () => {
-    const { sessions, app } = await displaySetup();
-    try {
-      const session = await sessions.create({ cwd: "/tmp", provider: "test", model: "m" });
-      const renamed = await app.inject({ method: "PATCH", url: `/api/sessions/${session.id}`, payload: { title: "新标题", pinned: true } });
-      expect(renamed.statusCode).toBe(200);
-      expect(renamed.json().updatedAt).toBe(session.updatedAt);
-      const persisted = await sessions.get(session.id);
-      expect(persisted?.updatedAt).toBe(session.updatedAt);
     } finally {
       await app.close();
     }

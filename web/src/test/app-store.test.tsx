@@ -15,7 +15,8 @@ import { setupStubWebSocket } from "./helpers/stub-websocket";
 import { renderWithClient } from "./helpers/with-client";
 
 describe("createStore", () => {
-  it("get/set/subscribe：浅合并更新并通知订阅者", () => {
+  it("createStore：浅合并通知订阅者；useStore 选择器引用稳定", () => {
+    // get/set/subscribe：浅合并更新并通知订阅者
     const store = createStore({ a: 1, b: "x" });
     const seen: number[] = [];
     const unsubscribe = store.subscribe(() => seen.push(store.get().a));
@@ -27,13 +28,12 @@ describe("createStore", () => {
     unsubscribe();
     store.set({ a: 9 });
     expect(seen).toHaveLength(2);
-  });
 
-  it("useStore：选择器订阅切片，未触碰字段引用稳定", () => {
-    const store = createStore({ a: 1, nested: { v: "keep" } });
-    const { result, rerender } = renderHook(() => useStore(store, (state) => state.nested));
+    // useStore：选择器订阅切片，未触碰字段引用稳定
+    const sliceStore = createStore({ a: 1, nested: { v: "keep" } });
+    const { result, rerender } = renderHook(() => useStore(sliceStore, (state) => state.nested));
     const first = result.current;
-    store.set({ a: 2 });
+    sliceStore.set({ a: 2 });
     rerender();
     expect(result.current).toBe(first);
   });

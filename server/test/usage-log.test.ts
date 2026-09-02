@@ -236,49 +236,51 @@ describe("usage log cleanup (prune)", () => {
     return { root, log };
   }
 
-  it("off 模式不清理任何事件", async () => {
+  it.each<{
+    mode: "off" | "deleted-after-days" | "all-after-days" | "deleted-immediate-live-timeout" | "deleted-immediate-only";
+    removed: number;
+    checkKept: (kept: UsageEventRecord[]) => void;
+  }>([
+    { mode: "off", removed: 0, checkKept: (kept) => { expect(kept).toHaveLength(4); } },
+    {
+      mode: "deleted-after-days",
+      removed: 1, // s2 的 30 天前事件
+      checkKept: (kept) => {
+        // 保留：s1 今天、s1 30 天前（未删除会话不按时间清）、s2 今天（已删除但未超时）
+        expect(kept.map((event) => event.sessionId).sort()).toEqual(["s1", "s1", "s2"]);
+        expect(kept.find((event) => event.sessionId === "s2")!.at.slice(0, 10))
+          .toBe(new Date().toISOString().slice(0, 10));
+      },
+    },
+    {
+      mode: "all-after-days",
+      removed: 2, // s1、s2 各一条 30 天前
+      checkKept: (kept) => {
+        expect(kept).toHaveLength(2);
+        for (const event of kept) expect(event.sessionId).toBeDefined();
+      },
+    },
+    {
+      mode: "deleted-immediate-live-timeout",
+      removed: 3, // s2 两条立即全清 + s1 的 30 天前超时清理
+      checkKept: (kept) => {
+        // 精确断言：只保留 s1 今天
+        expect(kept).toHaveLength(1);
+        expect(kept[0]!.sessionId).toBe("s1");
+      },
+    },
+    {
+      mode: "deleted-immediate-only",
+      removed: 2, // s2 两条全部清理
+      checkKept: (kept) => {
+        expect(kept.map((event) => event.sessionId)).toEqual(["s1", "s1"]);
+      },
+    },
+  ])("prune 模式 $mode：removed 数与保留集合符合语义", async ({ mode, removed, checkKept }) => {
     const { log } = await fixture();
-    const removed = await log.prune({ mode: "off", retentionDays: 7 });
-    expect(removed).toBe(0);
-    expect(await log.readAll()).toHaveLength(4);
-  });
-
-  it("deleted-after-days：仅清理已删除会话超过保留天数的旧事件", async () => {
-    const { log } = await fixture();
-    const removed = await log.prune({ mode: "deleted-after-days", retentionDays: 7 });
-    expect(removed).toBe(1); // s2 的 30 天前事件
-    const kept = await log.readAll();
-    // 保留：s1 今天、s1 30 天前（未删除会话不按时间清）、s2 今天（已删除但未超时）
-    expect(kept.map((event) => event.sessionId).sort()).toEqual(["s1", "s1", "s2"]);
-    expect(kept.find((event) => event.sessionId === "s2")!.at.slice(0, 10))
-      .toBe(new Date().toISOString().slice(0, 10));
-  });
-
-  it("all-after-days：所有会话超过保留天数的事件都清理", async () => {
-    const { log } = await fixture();
-    const removed = await log.prune({ mode: "all-after-days", retentionDays: 7 });
-    expect(removed).toBe(2); // s1、s2 各一条 30 天前
-    const kept = await log.readAll();
-    expect(kept).toHaveLength(2);
-    for (const event of kept) expect(event.sessionId).toBeDefined();
-  });
-
-  it("deleted-immediate-live-timeout：已删除会话立即清理，未删除超时清理", async () => {
-    const { log } = await fixture();
-    const removed = await log.prune({ mode: "deleted-immediate-live-timeout", retentionDays: 7 });
-    expect(removed).toBe(3); // s2 两条立即全清 + s1 的 30 天前超时清理
-    // 精确断言：只保留 s1 今天
-    const kept = await log.readAll();
-    expect(kept).toHaveLength(1);
-    expect(kept[0]!.sessionId).toBe("s1");
-  });
-
-  it("deleted-immediate-only：已删除会话立即清理，未删除全部保留", async () => {
-    const { log } = await fixture();
-    const removed = await log.prune({ mode: "deleted-immediate-only", retentionDays: 7 });
-    expect(removed).toBe(2); // s2 两条全部清理
-    const kept = await log.readAll();
-    expect(kept.map((event) => event.sessionId)).toEqual(["s1", "s1"]);
+    const removedCount = await log.prune({ mode, retentionDays: 7 });
+    expect(removedCount).toBe(removed);
+    checkKept(await log.readAll());
   });
 
   it("自定义 sessionExists 判定可注入（默认按 <dataDir>/sessions/<id> 目录）", async () => {
@@ -355,19 +357,14 @@ describe("PricingCatalog", () => {
     expect(catalog.get("deepseek", "deepseek-chat")?.input).toBe(1_000_000n);
   });
 
-  it("rejects normalized but nonexistent calendar dates", async () => {
-    const root = await tempRoot("owc-pricing-");
-    const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
-    await catalog.initialize();
-    await expect(catalog.replace(document([entry("anthropic", "x", "2026-02-30")]))).rejects.toThrow("valid YYYY-MM-DD");
-  });
-
-  it("rejects overlapping intervals without replacing the active catalog", async () => {
+  it("定价文档日期/区间校验拒绝且不落地", async () => {
     const root = await tempRoot("owc-pricing-");
     const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
     await catalog.initialize();
     const before = catalog.list();
 
+    await expect(catalog.replace(document([entry("anthropic", "x", "2026-02-30")])))
+      .rejects.toThrow("valid YYYY-MM-DD");
     await expect(catalog.replace(document([
       entry("anthropic", "x", "2026-01-01", "2026-10-01"),
       entry("anthropic", "x", "2026-09-01"),

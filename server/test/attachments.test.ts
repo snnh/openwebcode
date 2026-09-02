@@ -244,30 +244,23 @@ describe("GET /api/sessions/:id/complete-path", () => {
 });
 
 describe("POST /messages attachments - validation", () => {
-  it("rejects more than 10 attachments", async () => {
-    const { session, app } = await setup({ title: "Att too many" });
+  it("attachments 校验：>10 与空 path 均 400", async () => {
+    const { session, app } = await setup({ title: "Att validation" });
     try {
-      const res = await app.inject({
+      const tooMany = await app.inject({
         method: "POST",
         url: `/api/sessions/${session.id}/messages`,
         payload: { content: "x", attachments: Array.from({ length: 11 }, (_, i) => ({ path: `f${i}.ts` })) },
       });
-      expect(res.statusCode).toBe(400);
-      expect(res.json<{ error: string }>().error).toContain("attachments");
-    } finally {
-      await app.close();
-    }
-  });
+      expect(tooMany.statusCode).toBe(400);
+      expect(tooMany.json<{ error: string }>().error).toContain("attachments");
 
-  it("rejects empty path strings", async () => {
-    const { session, app } = await setup({ title: "Att empty path" });
-    try {
-      const res = await app.inject({
+      const emptyPath = await app.inject({
         method: "POST",
         url: `/api/sessions/${session.id}/messages`,
         payload: { content: "x", attachments: [{ path: "   " }] },
       });
-      expect(res.statusCode).toBe(400);
+      expect(emptyPath.statusCode).toBe(400);
     } finally {
       await app.close();
     }

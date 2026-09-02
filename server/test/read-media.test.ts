@@ -27,7 +27,7 @@ function withHeader(bytes: number[], tailPad = 32): Uint8Array {
 const ascii = (text: string): number[] => [...text].map((c) => c.charCodeAt(0));
 
 describe("sniffMedia：魔数权威 + 扩展名仅视频兜底", () => {
-  it("图片魔数：PNG/JPEG/GIF/WEBP；视频魔数：ftyp 系/EBML/AVI/FLV/MPEG-PS/Ts", () => {
+  it("sniffMedia 全矩阵：魔数命中、avif/未知、扩展名兜底且不覆盖魔数", () => {
     const cases: Array<[Uint8Array, string]> = [
       [withHeader([0x89, ...ascii("PNG"), 0x0d, 0x0a, 0x1a, 0x0a]), "image/png"],
       [withHeader([0xff, 0xd8, 0xff, 0xe0]), "image/jpeg"],
@@ -47,9 +47,8 @@ describe("sniffMedia：魔数权威 + 扩展名仅视频兜底", () => {
     const ts = new Uint8Array(400); // 188 字节定长包：3 个同步字校验
     ts[0] = 0x47; ts[188] = 0x47; ts[376] = 0x47;
     expect(sniffMedia(ts)?.mediaType).toBe("video/mp2t");
-  });
 
-  it("约束与冲突：avif/heic 按未知处理；未知 return undefined；扩展名仅兜底视频且不覆盖魔数", () => {
+    // 约束与冲突：avif/heic 按未知处理；未知 return undefined；扩展名仅兜底视频且不覆盖魔数
     expect(sniffMedia(withHeader([0, 0, 0, 32, ...ascii("ftyp"), ...ascii("avif")]))).toBeUndefined();
     expect(sniffMedia(withHeader(ascii("not media content")))).toBeUndefined();
     expect(sniffMedia(withHeader(ascii("random bytes")), "clip.mpg")?.mediaType).toBe("video/mpeg");

@@ -358,11 +358,9 @@ describe("access-token store", () => {
 
 describe("buildAccessUrls", () => {
   const token = "t".repeat(64);
-  it("具体地址直接拼接；IPv6 加方括号", () => {
+  it("buildAccessUrls：地址/通配展开/IPv6", () => {
     expect(buildAccessUrls("192.168.1.5", 3000, [], token)).toEqual([`http://192.168.1.5:3000/?token=${token}`]);
     expect(buildAccessUrls("fd00::1", 3000, [], token)).toEqual([`http://[fd00::1]:3000/?token=${token}`]);
-  });
-  it("通配监听用 LAN 地址展开；枚举不到回退通配符本身", () => {
     expect(buildAccessUrls("0.0.0.0", 3000, ["10.0.0.2", "192.168.1.5"], token)).toEqual([
       `http://10.0.0.2:3000/?token=${token}`,
       `http://192.168.1.5:3000/?token=${token}`,

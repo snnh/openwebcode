@@ -69,9 +69,9 @@ afterEach(() => {
 });
 
 describe("ChatView 压缩占位自愈", () => {
-  it("REST 刷新完成且无活跃 run：滞留的「运行中」占位被清掉，已沉降标记保留", () => {
-    // 服务端 run 已结束（无 agentState/currentRun），但 compacted 事件曾因 WS 缺口丢失：
-    // 消息流里残留 running 占位 + 一个更早的已沉降标记
+  it("ChatView 渲染后占位自愈：无活跃 run 清除、busy 保留并随终态清除", () => {
+    // 场景 1：REST 刷新完成且无活跃 run —— 服务端 run 已结束（无 agentState/currentRun），
+    // 但 compacted 事件曾因 WS 缺口丢失：消息流里残留 running 占位 + 一个更早的已沉降标记
     live.applyCompactionEvent({ source: "agent", type: "context.compacted", sessionId: "s1", payload: { mode: "overview", uptoIndex: 3, createdAt: "2026-08-12T01:00:00.000Z" } } as never);
     live.applyCompactionEvent({ source: "agent", type: "context.compacting", sessionId: "s1", payload: { mode: "overview" } } as never);
     expect(liveStore.get().compactions["s1"]!.map((marker) => marker.status)).toEqual(["settled", "running"]);
@@ -80,9 +80,13 @@ describe("ChatView 压缩占位自愈", () => {
     const list = liveStore.get().compactions["s1"]!;
     expect(list).toHaveLength(1);
     expect(list[0]!.status).toBe("settled");
-  });
 
-  it("agent run busy（压缩可能正在进行）时保留「运行中」占位", () => {
+    // 场景 2：agent run busy（压缩可能正在进行）——复位 store 恢复每场景独立基线
+    act(() => {
+      liveStore.set({ subagents: {}, activities: {}, compactions: {} });
+      sessionStore.set({ agentStates: {}, watermarks: {}, usages: {}, runFailures: {}, problemsBadges: {}, pendingPermissions: [] });
+      uiStore.set({ sessionId: undefined, newSessionOpen: false, settingsOpen: false, paletteOpen: false, quickOpen: false });
+    });
     sessionMeta.setAgentState("s1", "preparing_context");
     live.applyCompactionEvent({ source: "agent", type: "context.compacting", sessionId: "s1", payload: { mode: "overview" } } as never);
 

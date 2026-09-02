@@ -93,27 +93,20 @@ describe("GET /api/sessions/:id/export.html", () => {
     }
   });
 
-  it("会话为空 -> 200 且含空态提示", async () => {
+  it("空会话 200：中文空态 + lang=en 英文页", async () => {
     const harness = await setup();
     try {
       const res = await harness.app.inject({ method: "GET", url: `/api/sessions/${harness.session.id}/export.html` });
       expect(res.statusCode, res.body).toBe(200);
       expect(res.headers["content-disposition"]).toContain("attachment");
       expect(res.body).toContain("暂无消息");
-    } finally {
-      await harness.app.close();
-    }
-  });
 
-  it("lang=en 生成英文分享页", async () => {
-    const harness = await setup();
-    try {
-      const res = await harness.app.inject({ method: "GET", url: `/api/sessions/${harness.session.id}/export.html?lang=en` });
-      expect(res.statusCode, res.body).toBe(200);
-      expect(res.body).toContain('<html lang="en">');
-      expect(res.body).toContain("No messages");
-      expect(res.body).toContain("OpenWebCode session export");
-      expect(res.body).toContain("Exported by OpenWebCode");
+      const english = await harness.app.inject({ method: "GET", url: `/api/sessions/${harness.session.id}/export.html?lang=en` });
+      expect(english.statusCode, english.body).toBe(200);
+      expect(english.body).toContain('<html lang="en">');
+      expect(english.body).toContain("No messages");
+      expect(english.body).toContain("OpenWebCode session export");
+      expect(english.body).toContain("Exported by OpenWebCode");
     } finally {
       await harness.app.close();
     }

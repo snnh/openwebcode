@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { I18nProvider } from "../i18n";
 import { ShortcutsTable } from "../dialogs/ShortcutsTable";
@@ -29,7 +29,8 @@ function renderTable() {
 const SIDEBAR_TITLE = "Toggle Primary Side Bar Visibility";
 
 describe("ShortcutsTable 自定义键位录制", () => {
-  it("展示默认注册表；点击键位后录制组合键生效并落盘", () => {
+  it("键位录制：组合键生效落盘并显示恢复默认；Esc 取消不写入", () => {
+    // 录制 mod+alt+s：生效、落盘，表格显示新 combo 与「恢复默认」
     renderTable();
     const row = screen.getByText(SIDEBAR_TITLE, { exact: false }).closest("tr");
     expect(row).not.toBeNull();
@@ -44,12 +45,14 @@ describe("ShortcutsTable 自定义键位录制", () => {
     // 表格显示新 combo 与「恢复默认」
     expect(screen.getByText("Reset")).toBeInTheDocument();
     expect(screen.getByText("Ctrl+Alt+S", { exact: false })).toBeInTheDocument();
-  });
 
-  it("Esc 取消录制，不写入覆盖", () => {
+    // Esc 取消录制：不写入覆盖（复位上一场景的录制结果后从默认键位重录）
+    cleanup();
+    resetAllKeybindings();
+    window.localStorage.removeItem("owc-keybindings");
     renderTable();
-    const row = screen.getByText(SIDEBAR_TITLE, { exact: false }).closest("tr");
-    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: /ctrl|⌘/i }));
+    const cancelRow = screen.getByText(SIDEBAR_TITLE, { exact: false }).closest("tr");
+    fireEvent.click(within(cancelRow as HTMLElement).getByRole("button", { name: /ctrl|⌘/i }));
     fireEvent.keyDown(window, { key: "Escape" });
     expect(getKeybindingOverrides()).toEqual({});
     expect(screen.queryByText("Reset")).not.toBeInTheDocument();

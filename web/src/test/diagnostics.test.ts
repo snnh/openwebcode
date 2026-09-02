@@ -16,12 +16,9 @@ const failure = (partial: Partial<DiagnosticFailure>): DiagnosticFailure => ({
 });
 
 describe("severityOf", () => {
-  it("测试失败归为 error", () => {
+  it("severityOf：失败含 error 语义归 error、仅 warning 归 warning", () => {
     expect(severityOf(failure({ name: "login 用例", message: "expected 200, got 500" }))).toBe("error");
     expect(severityOf(failure({ message: "warning: deprecated but also error later" }))).toBe("error");
-  });
-
-  it("仅含 warning 语义的归为 warning", () => {
     expect(severityOf(failure({ message: "warning: unused variable" }))).toBe("warning");
   });
 });
@@ -51,40 +48,37 @@ describe("filterGroupsBySeverity", () => {
   };
   const groups = groupFailuresByFile(set.failures);
 
-  it("all 返回全部分组", () => {
+  it("filterGroupsBySeverity：all/error/warning 过滤（空组移除）与 countBySeverity 统计", () => {
     expect(filterGroupsBySeverity(groups, "all")).toHaveLength(2);
-  });
 
-  it("error 过滤后仅剩含 error 的组", () => {
+    // error 过滤后仅剩含 error 的组
     const filtered = filterGroupsBySeverity(groups, "error");
     expect(filtered).toHaveLength(1);
     expect(filtered[0]!.items.map((item) => item.name)).toEqual(["boom"]);
-  });
 
-  it("warning 过滤后移除空组", () => {
-    const filtered = filterGroupsBySeverity(groups, "warning");
-    expect(filtered.map((group) => group.file)).toEqual(["a.ts", "b.ts"]);
-    expect(filtered[0]!.items.map((item) => item.name)).toEqual(["lint"]);
-  });
+    // warning 过滤后移除空组
+    const warningFiltered = filterGroupsBySeverity(groups, "warning");
+    expect(warningFiltered.map((group) => group.file)).toEqual(["a.ts", "b.ts"]);
+    expect(warningFiltered[0]!.items.map((item) => item.name)).toEqual(["lint"]);
 
-  it("countBySeverity 统计两档数量", () => {
+    // countBySeverity 统计两档数量
     expect(countBySeverity(set)).toEqual({ error: 1, warning: 2 });
     expect(countBySeverity(undefined)).toEqual({ error: 0, warning: 0 });
   });
 });
 
 describe("diagnostics.updated 角标逻辑", () => {
-  it("到达时把该会话角标设为最新失败数（绝对值，不累加）", () => {
+  it("diagnostics.updated：角标取最新失败数，0 清除该会话", () => {
+    // 到达时把该会话角标设为最新失败数（绝对值，不累加）
     let badges: Record<string, number> = {};
     badges = applyDiagnosticsBadgeUpdate(badges, "s1", 3);
     badges = applyDiagnosticsBadgeUpdate(badges, "s1", 5);
     badges = applyDiagnosticsBadgeUpdate(badges, "s2", 1);
     expect(badges).toEqual({ s1: 5, s2: 1 });
-  });
 
-  it("failed 为 0 时清除该会话角标，不影响其他会话", () => {
-    const badges = applyDiagnosticsBadgeUpdate({ s1: 4, s2: 2 }, "s1", 0);
-    expect(badges).toEqual({ s2: 2 });
+    // failed 为 0 时清除该会话角标，不影响其他会话
+    const cleared = applyDiagnosticsBadgeUpdate({ s1: 4, s2: 2 }, "s1", 0);
+    expect(cleared).toEqual({ s2: 2 });
   });
 
   it("clearDiagnosticsBadge 清除指定会话；无变化时返回原引用", () => {

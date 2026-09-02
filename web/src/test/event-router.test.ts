@@ -197,21 +197,19 @@ describe("createEventRouter", () => {
     expect(deps.applyCompactionEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "context.compact_failed", sessionId: "s1" }));
   });
 
-  it.each(["context.compacted", "context.cleared", "context.evicted", "context.restored"] as const)(
-    "%s：清除实时水位（显示回落到 REST stats）并失效 context 查询",
-    (type) => {
+  it("context 水位：compacted/cleared/evicted/restored 清除、usage/budget_updated 不误清", () => {
+    // 清除型事件：清掉压缩/清空前的旧水位，deriveWindowInfo 回落到 REST stats，并失效 context 查询
+    for (const type of ["context.compacted", "context.cleared", "context.evicted", "context.restored"] as const) {
       const { queryClient, router } = setup("s1");
       const invalidate = vi.spyOn(queryClient, "invalidateQueries");
       sessionMeta.setWatermark("s1", watermarkFixture);
       router.route(makeEvent({ type, sessionId: "s1", payload: { mode: "overview" } }));
-      // 旧水位是压缩/清空前的数值：必须被清掉，deriveWindowInfo 才能回落到 REST stats 分支
       expect(sessionStore.get().watermarks.s1).toBeUndefined();
       expect(deriveWindowInfo(sessionStore.get().watermarks.s1, statsFixture, modelFixture)?.estimatedTokens).toBe(48_000);
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ["context", "s1"] });
-    },
-  );
+    }
 
-  it("context.usage / context.budget_updated：不改账本，保留实时水位（不误清）", () => {
+    // usage / budget_updated：不改账本，保留实时水位（不误清）
     const { router } = setup("s1");
     sessionMeta.setWatermark("s1", watermarkFixture);
     router.route(makeEvent({ type: "context.usage", sessionId: "s1", payload: { inputTokens: 1 } }));

@@ -76,19 +76,19 @@ describe("SessionHeader", () => {
     expect(meter.getAttribute("data-level")).toBe("normal");
   });
 
-  it("busy 时渲染中断按钮并回调 onAbort；空闲时不渲染", () => {
+  it("中断按钮：busy 渲染并可回调 onAbort；空闲不渲染", () => {
     const onAbort = vi.fn();
     renderHeader({ agentState: "executing_tools", onAbort });
     fireEvent.click(screen.getByRole("button", { name: "中断" }));
     expect(onAbort).toHaveBeenCalledTimes(1);
-  });
 
-  it("空闲时不渲染中断按钮", () => {
+    // 空闲态不渲染中断按钮
+    cleanup();
     renderHeader({ agentState: "idle" });
     expect(screen.queryByRole("button", { name: "中断" })).toBeNull();
   });
 
-  it("托管工作区渲染手动快照按钮并回调 onCreateCheckpoint", () => {
+  it("手动快照按钮：托管工作区渲染并回调；非托管不渲染", () => {
     const onCreateCheckpoint = vi.fn();
     renderHeader({
       session: makeSession({ workspace: { mode: "managed", backend: "vhdx", originCwd: "D:/work/demo", image: "D:/img.vhdx", mountPoint: "D:/mnt" } }),
@@ -96,9 +96,9 @@ describe("SessionHeader", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "创建虚拟磁盘快照" }));
     expect(onCreateCheckpoint).toHaveBeenCalledTimes(1);
-  });
 
-  it("非托管工作区不渲染手动快照按钮", () => {
+    // 非托管工作区不渲染手动快照按钮
+    cleanup();
     renderHeader();
     expect(screen.queryByRole("button", { name: "创建虚拟磁盘快照" })).toBeNull();
   });
@@ -110,14 +110,16 @@ describe("SessionHeader", () => {
     expect(onConfig).toHaveBeenCalledWith({ sandboxMode: "jobobject" });
   });
 
-  it("linux 未设置沙盒模式：默认选中 bubblewrap（内部默认 appcontainer 的 POSIX 显示映射）", async () => {
-    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } });
+  it("linux 沙盒模式显示映射：未设置按 bubblewrap、存量 jobobject 按 landlock", async () => {
+    const capabilities = { platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } };
+    // 未设置沙盒模式：默认选中 bubblewrap（内部默认 appcontainer 的 POSIX 显示映射）
+    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue(capabilities);
     renderHeader();
     await waitFor(() => expect(screen.getByLabelText("沙盒模式")).toHaveValue("bubblewrap"));
-  });
 
-  it("linux 存量 jobobject 会话按 landlock 显示（兼容映射）", async () => {
-    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } });
+    // 存量 jobobject 会话按 landlock 显示（兼容映射）
+    cleanup();
+    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue(capabilities);
     renderHeader({ session: makeSession({ sandboxMode: "jobobject" }) });
     await waitFor(() => expect(screen.getByLabelText("沙盒模式")).toHaveValue("landlock"));
   });

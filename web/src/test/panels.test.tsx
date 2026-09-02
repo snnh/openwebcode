@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { api, ApiError } from "../lib/api";
-import type { Checkpoint, DiagnosticSet, FileEntry, ScmDiff, ScmStatus, ScmWorktree, SessionDetail, SessionTimeline, SnapshotCapabilityInfo } from "../lib/contracts";
+import type { Checkpoint, DiagnosticSet, FileEntry, SandboxMode, ScmDiff, ScmStatus, ScmWorktree, SessionDetail, SessionTimeline, SnapshotCapabilityInfo } from "../lib/contracts";
 import { auxViewsStore } from "../workbench/aux-views";
 import { uiStore } from "../app/ui-store";
 import { FilesView } from "../workbench/sidebar/FilesView";
@@ -60,16 +60,24 @@ describe("FilesView", () => {
     expect(await screen.findByText("（空目录）")).toBeInTheDocument();
   });
 
-  it("点击文件显示文本预览；「在编辑器中打开」跳编辑器分栏", async () => {
+  it("文本预览与关闭；「在编辑器中打开」写 auxViews", async () => {
     vi.spyOn(api, "listFiles").mockResolvedValue({ entries: [entry("main.ts", "file")], truncated: false });
     vi.spyOn(api, "readFile").mockResolvedValue({ content: "const a = 1;", encoding: "utf-8", truncated: false, revision: "r1" });
-    renderFilesView("s1");
+    const view = renderFilesView("s1");
 
-    fireEvent.click(await screen.findByText("main.ts"));
-    expect(await screen.findByText("const a = 1;")).toBeInTheDocument();
+    fireEvent.click(await view.findByText("main.ts"));
+    expect(await view.findByText("const a = 1;")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "在编辑器中打开 main.ts" }));
+    fireEvent.click(view.getByRole("button", { name: "在编辑器中打开 main.ts" }));
     expect(auxViewsStore.get().editor).toEqual({ path: "main.ts" });
+    view.unmount();
+
+    // 关闭预览按钮收起预览区
+    vi.spyOn(api, "readFile").mockResolvedValue({ content: "x", encoding: "utf-8", truncated: false, revision: "r1" });
+    const close = renderFilesView("s1");
+    fireEvent.click(await close.findByText("main.ts"));
+    fireEvent.click(await close.findByRole("button", { name: "关闭预览" }));
+    expect(close.queryByRole("button", { name: "关闭预览" })).toBeNull();
   });
 
   it("文本预览读取失败显示错误；非 UTF-8 给出二进制提示", async () => {
@@ -102,15 +110,6 @@ describe("FilesView", () => {
     fireEvent.click(await screen.findByRole("button", { name: "加载更多" }));
     await waitFor(() => expect(readFile).toHaveBeenCalledWith("s1", "big.log", { offset: 1, limit: 2000 }));
     expect(await screen.findByText(/second/)).toBeInTheDocument();
-  });
-
-  it("关闭预览按钮收起预览区", async () => {
-    vi.spyOn(api, "listFiles").mockResolvedValue({ entries: [entry("main.ts", "file")], truncated: false });
-    vi.spyOn(api, "readFile").mockResolvedValue({ content: "x", encoding: "utf-8", truncated: false, revision: "r1" });
-    renderFilesView("s1");
-    fireEvent.click(await screen.findByText("main.ts"));
-    fireEvent.click(await screen.findByRole("button", { name: "关闭预览" }));
-    expect(screen.queryByRole("button", { name: "关闭预览" })).toBeNull();
   });
 });
 
@@ -154,16 +153,17 @@ describe("ProblemsView", () => {
     expect(screen.getByText("src/parser.test.ts").parentElement?.textContent).toContain("2");
   });
 
-  it("404（无诊断记录）按空态处理", async () => {
+  it("诊断加载失败：404 按空态、其余行内错误", async () => {
+    // 404（无诊断记录）按空态处理
     vi.spyOn(api, "latestDiagnostics").mockRejectedValue(new ApiError(404, "not found"));
-    renderProblemsView("s1");
-    expect(await screen.findByText(/暂无问题/)).toBeInTheDocument();
-  });
+    const notFound = renderProblemsView("s1");
+    expect(await notFound.findByText(/暂无问题/)).toBeInTheDocument();
+    notFound.unmount();
 
-  it("非 404 错误显示行内错误（role=alert）", async () => {
+    // 非 404 错误显示行内错误（role=alert）
     vi.spyOn(api, "latestDiagnostics").mockRejectedValue(new ApiError(500, "服务异常"));
-    renderProblemsView("s1");
-    const alert = await screen.findByRole("alert");
+    const failed = renderProblemsView("s1");
+    const alert = await failed.findByRole("alert");
     expect(alert).toHaveTextContent("无法读取诊断结果：服务异常");
   });
 
@@ -184,22 +184,21 @@ describe("ProblemsView", () => {
     expect(screen.getByText("lint style")).toBeInTheDocument();
   });
 
-  it("点击条目在编辑器分栏打开对应文件行列（auxViews.openEditor）", async () => {
+  it("点击条目在编辑器分栏打开行列；未定位文件条目禁用", async () => {
     vi.spyOn(api, "latestDiagnostics").mockResolvedValue(diagnostics);
-    renderProblemsView("s1");
+    const first = renderProblemsView("s1");
 
-    fireEvent.click(await screen.findByText("renders header"));
+    fireEvent.click(await first.findByText("renders header"));
     expect(auxViewsStore.get().editor).toEqual({ path: "src/app.test.ts", line: 12, column: 5 });
 
-    fireEvent.click(screen.getByText("parses output"));
+    fireEvent.click(first.getByText("parses output"));
     expect(auxViewsStore.get().editor).toEqual({ path: "src/parser.test.ts", line: 40 });
-  });
+    first.unmount();
+    auxViewsStore.set({ editor: undefined, diff: undefined, codeOverlay: undefined });
 
-  it("未定位到文件的条目不可点击", async () => {
-    vi.spyOn(api, "latestDiagnostics").mockResolvedValue(diagnostics);
-    renderProblemsView("s1");
-
-    const item = (await screen.findByText("suite setup")).closest("button")!;
+    // 未定位到文件的条目不可点击
+    const second = renderProblemsView("s1");
+    const item = (await second.findByText("suite setup")).closest("button")!;
     expect(item).toBeDisabled();
     fireEvent.click(item);
     expect(auxViewsStore.get().editor).toBeUndefined();
@@ -223,58 +222,40 @@ function renderSandboxPanel(detail: SessionDetail = sandboxSession): void {
 }
 
 describe("SandboxPanel 平台适配", () => {
-  it("win32：默认档（未设置）模式显示 AppContainer 文案", async () => {
-    renderSandboxPanel();
-    await waitFor(() => expect(screen.getByText("应用容器（AppContainer）")).toBeInTheDocument());
-  });
-
-  it("linux：存量 jobobject 会话按 landlock 显示（兼容映射）", async () => {
-    vi.mocked(api.sandboxCapabilities).mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } });
-    renderSandboxPanel({ ...sandboxSession, sandboxMode: "jobobject" });
-    await waitFor(() => expect(screen.getByText("强制模式（Landlock）")).toBeInTheDocument());
-    expect(screen.queryByText(/Job Object/)).not.toBeInTheDocument();
-  });
-
-  it("linux：未设置沙盒模式按 bubblewrap 显示（内部默认 appcontainer 的 POSIX 显示映射）", async () => {
-    vi.mocked(api.sandboxCapabilities).mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } });
-    renderSandboxPanel();
-    await waitFor(() => expect(screen.getByText("隔离模式（bubblewrap）")).toBeInTheDocument());
-  });
-
-  it("linux：bubblewrap 会话显示隔离模式文案", async () => {
-    vi.mocked(api.sandboxCapabilities).mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } });
-    renderSandboxPanel({ ...sandboxSession, sandboxMode: "bubblewrap" });
-    await waitFor(() => expect(screen.getByText("隔离模式（bubblewrap）")).toBeInTheDocument());
+  it.each<{ label: string; sandboxMode?: SandboxMode; expected: string; linuxCaps?: boolean; absent?: RegExp }>([
+    { label: "win32 默认（未设置）", expected: "应用容器（AppContainer）" },
+    { label: "linux 存量 jobobject", sandboxMode: "jobobject", expected: "强制模式（Landlock）", linuxCaps: true, absent: /Job Object/ },
+    { label: "linux 未设置", expected: "隔离模式（bubblewrap）", linuxCaps: true },
+    { label: "linux bubblewrap", sandboxMode: "bubblewrap", expected: "隔离模式（bubblewrap）", linuxCaps: true },
+  ])("平台能力→模式文案映射（$label）", async ({ sandboxMode, expected, linuxCaps, absent }) => {
+    if (linuxCaps) {
+      vi.mocked(api.sandboxCapabilities).mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } });
+    }
+    renderSandboxPanel({ ...sandboxSession, ...(sandboxMode ? { sandboxMode } : {}) });
+    await waitFor(() => expect(screen.getByText(expected)).toBeInTheDocument());
+    if (absent) expect(screen.queryByText(absent)).not.toBeInTheDocument();
   });
 });
 
 describe("SandboxPanel 执行级别", () => {
-  it("enforced：渲染 ok 徽标与原因文本", async () => {
-    vi.mocked(api.sessionSandboxStatus).mockResolvedValue({ sandboxCapability: "enforced", sandboxReason: "Job Object 已应用" });
+  it.each<{ label: string; status: Record<string, string>; pill?: string; pillClass?: string; reason?: string; noRecord?: boolean }>([
+    { label: "enforced", status: { sandboxCapability: "enforced", sandboxReason: "Job Object 已应用" }, pill: "已强制", pillClass: "ok", reason: "Job Object 已应用" },
+    { label: "partial", status: { sandboxCapability: "partial" }, pill: "部分生效", pillClass: "amber" },
+    { label: "advisory", status: { sandboxCapability: "advisory", sandboxReason: "核心不支持" }, pill: "仅提示", pillClass: "danger", reason: "核心不支持" },
+    { label: "无记录", status: {}, noRecord: true },
+  ])("执行级别 $label 徽标渲染", async ({ status, pill, pillClass, reason, noRecord }) => {
+    vi.mocked(api.sessionSandboxStatus).mockResolvedValue(status as never);
     renderSandboxPanel();
 
-    const pill = await screen.findByText("已强制");
-    expect(pill).toHaveClass("pill", "ok");
-    expect(screen.getByText("Job Object 已应用")).toBeInTheDocument();
-  });
-
-  it("partial：渲染 amber 徽标", async () => {
-    vi.mocked(api.sessionSandboxStatus).mockResolvedValue({ sandboxCapability: "partial" });
-    renderSandboxPanel();
-    expect(await screen.findByText("部分生效")).toHaveClass("pill", "amber");
-  });
-
-  it("advisory：渲染 danger 徽标", async () => {
-    vi.mocked(api.sessionSandboxStatus).mockResolvedValue({ sandboxCapability: "advisory", sandboxReason: "核心不支持" });
-    renderSandboxPanel();
-    expect(await screen.findByText("仅提示")).toHaveClass("pill", "danger");
-    expect(screen.getByText("核心不支持")).toBeInTheDocument();
-  });
-
-  it("无记录时显示 —", async () => {
-    renderSandboxPanel();
-    await waitFor(() => expect(api.sessionSandboxStatus).toHaveBeenCalledWith("session-1"));
-    expect(screen.getByText("执行级别").nextElementSibling?.textContent).toBe("—");
+    if (noRecord) {
+      // 无记录时显示 —
+      await waitFor(() => expect(api.sessionSandboxStatus).toHaveBeenCalledWith("session-1"));
+      expect(screen.getByText("执行级别").nextElementSibling?.textContent).toBe("—");
+    } else {
+      const el = await screen.findByText(pill!);
+      expect(el).toHaveClass("pill", pillClass!);
+      if (reason) expect(screen.getByText(reason)).toBeInTheDocument();
+    }
   });
 });
 
@@ -286,12 +267,11 @@ describe("SandboxPanel 网络策略", () => {
 });
 
 describe("SandboxPanel 空态", () => {
-  it("sessionId 为 undefined 时显示引导空态", () => {
+  it("空态：无会话引导；无沙盒配置提示", async () => {
     renderWithClient(<SandboxPanel />);
     expect(screen.getByText("选择会话以查看沙盒策略。")).toBeInTheDocument();
-  });
 
-  it("会话无沙盒配置时显示未配置", async () => {
+    // 会话无沙盒配置
     renderSandboxPanel({ ...sandboxSession, sandbox: undefined });
     expect(await screen.findByText("未配置沙盒策略。")).toBeInTheDocument();
   });
@@ -394,26 +374,24 @@ describe("ScmView", () => {
     await waitFor(() => expect(discard).toHaveBeenCalledWith("s1", ["src/dirty.ts"], false));
   });
 
-  it("点击变更项展示只读 diff；「在 diff 视图中打开」写入 auxViews", async () => {
+  it("点击变更项：diff/未跟踪文件内容预览并支持写入 auxViews", async () => {
     vi.spyOn(api, "scmStatus").mockResolvedValue(dirtyStatus);
     vi.spyOn(api, "scmWorktrees").mockResolvedValue([]);
     vi.spyOn(api, "scmDiff").mockResolvedValue(scmDiff);
-    renderScmView("s1");
+    const first = renderScmView("s1");
 
+    // 已跟踪变更：只读 diff + 「在 diff 视图中打开」写入 auxViews
     fireEvent.click(await screen.findByText("src/dirty.ts"));
     expect(await screen.findByText("-old")).toBeInTheDocument();
     expect(screen.getByText("+new")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "在 diff 视图中打开（支持 hunk 接受/拒绝）" }));
     expect(auxViewsStore.get().diff).toEqual({ source: "scm", path: "src/dirty.ts", staged: false });
-  });
+    first.unmount();
 
-  it("未跟踪文件点击后读取文件内容预览", async () => {
-    vi.spyOn(api, "scmStatus").mockResolvedValue(dirtyStatus);
-    vi.spyOn(api, "scmWorktrees").mockResolvedValue([]);
+    // 未跟踪文件点击后读取文件内容预览
     const readFile = vi.spyOn(api, "readFile").mockResolvedValue({ content: "草稿内容", encoding: "utf-8", truncated: false, revision: "r1" });
     renderScmView("s1");
-
     fireEvent.click(await screen.findByText("notes.txt"));
     await waitFor(() => expect(readFile).toHaveBeenCalledWith("s1", "notes.txt"));
     expect(await screen.findByText("草稿内容")).toBeInTheDocument();
@@ -447,13 +425,13 @@ describe("ScmView", () => {
     expect(screen.getByText("abcdef1")).toBeInTheDocument();
   });
 
-  it("worktree：创建、清理（二次确认）、合回成功提示", async () => {
+  it("worktree：创建/清理/合回成功提示与冲突文件列表", async () => {
     vi.spyOn(api, "scmStatus").mockResolvedValue(cleanStatus);
     vi.spyOn(api, "scmWorktrees").mockResolvedValue([worktree]);
     const create = vi.spyOn(api, "scmCreateWorktree").mockResolvedValue(worktree);
     const remove = vi.spyOn(api, "scmDeleteWorktree").mockResolvedValue({ removed: true, name: "wt-1" });
     const merge = vi.spyOn(api, "scmMergeWorktree").mockResolvedValue({ merged: true, conflicts: [], strategy: "merge", branch: "main" });
-    renderScmView("s1");
+    const first = renderScmView("s1");
 
     expect(await screen.findByText("wt-1")).toBeInTheDocument();
 
@@ -468,14 +446,11 @@ describe("ScmView", () => {
     fireEvent.click(screen.getByRole("button", { name: "合回 worktree wt-1" }));
     await waitFor(() => expect(merge).toHaveBeenCalledWith("s1", "wt-1"));
     await waitFor(() => expect(uiStore.get().notice?.text).toBe("已将 wt-1 合回 main。"));
-  });
+    first.unmount();
 
-  it("worktree 合回冲突：展示冲突文件列表", async () => {
-    vi.spyOn(api, "scmStatus").mockResolvedValue(cleanStatus);
-    vi.spyOn(api, "scmWorktrees").mockResolvedValue([worktree]);
-    vi.spyOn(api, "scmMergeWorktree").mockResolvedValue({ merged: false, conflicts: ["src/a.ts"], strategy: "merge", branch: "main" });
+    // 合回冲突：展示冲突文件列表
+    vi.mocked(api.scmMergeWorktree).mockResolvedValue({ merged: false, conflicts: ["src/a.ts"], strategy: "merge", branch: "main" });
     renderScmView("s1");
-
     fireEvent.click(await screen.findByRole("button", { name: "合回 worktree wt-1" }));
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("合回 wt-1 的冲突文件（1）");
@@ -514,9 +489,14 @@ afterEach(() => {
 });
 
 describe("TimelinePanel", () => {
-  it("无会话时显示引导空态", () => {
+  it("Timeline 空态：无会话引导与无检查点提示", async () => {
     renderWithClient(<TimelinePanel running={false} />);
     expect(screen.getByText("选择会话以查看检查点。")).toBeInTheDocument();
+
+    // 无检查点（有会话）
+    vi.mocked(api.checkpoints).mockResolvedValue([]);
+    renderWithClient(<TimelinePanel sessionId="s-1" running={false} />);
+    expect(await screen.findByText("暂无检查点。")).toBeInTheDocument();
   });
 
   it("展示会话树、后端徽标与检查点列表；当前叶节点标记且不可检出", async () => {
@@ -587,11 +567,5 @@ describe("TimelinePanel", () => {
     vi.mocked(api.snapshotCapability).mockResolvedValue({ backend: "overlayfs", costHint: "instant", requiresAdmin: false });
     renderWithClient(<TimelinePanel sessionId="s-1" running={false} />);
     expect(await screen.findByText(/源目录只读/)).toBeInTheDocument();
-  });
-
-  it("无检查点时显示空态", async () => {
-    vi.mocked(api.checkpoints).mockResolvedValue([]);
-    renderWithClient(<TimelinePanel sessionId="s-1" running={false} />);
-    expect(await screen.findByText("暂无检查点。")).toBeInTheDocument();
   });
 });

@@ -381,20 +381,18 @@ describe("FrameDecoder", () => {
     expect(messages).toEqual([{ text: "你好" }, { value: 2 }]);
   });
 
-  it("rejects duplicate Content-Length headers", () => {
-    const decoder = new FrameDecoder();
-    const errors: Error[] = [];
-    decoder.on("error", (error) => errors.push(error));
-    decoder.push(Buffer.from("Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}"));
-    expect(errors[0]?.message).toContain("Duplicate");
-  });
+  it("FrameDecoder：畸形 header（重复 Content-Length / 超长行）拒绝", () => {
+    const duplicate = new FrameDecoder();
+    const duplicateErrors: Error[] = [];
+    duplicate.on("error", (error) => duplicateErrors.push(error));
+    duplicate.push(Buffer.from("Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}"));
+    expect(duplicateErrors[0]?.message).toContain("Duplicate");
 
-  it("rejects a complete oversized header", () => {
-    const decoder = new FrameDecoder();
-    const errors: Error[] = [];
-    decoder.on("error", (error) => errors.push(error));
-    decoder.push(Buffer.from(`X-Fill: ${"x".repeat(8192)}\r\nContent-Length: 2\r\n\r\n{}`));
-    expect(errors[0]?.message).toContain("header exceeds");
+    const oversized = new FrameDecoder();
+    const oversizedErrors: Error[] = [];
+    oversized.on("error", (error) => oversizedErrors.push(error));
+    oversized.push(Buffer.from(`X-Fill: ${"x".repeat(8192)}\r\nContent-Length: 2\r\n\r\n{}`));
+    expect(oversizedErrors[0]?.message).toContain("header exceeds");
   });
 
   it("keeps the 32 MiB core frame boundary and rejects larger declarations", () => {
@@ -458,11 +456,8 @@ describe("CoreGateway", () => {
     expect(ping).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects an incompatible protocol instead of falling back to probe calls", () => {
+  it("negotiate 拒绝：协议不兼容与 records 不完整", () => {
     expect(() => negotiate(coreInfo({ protocolVersion: "0.9" }))).toThrow(CoreProtocolError);
-  });
-
-  it("rejects incomplete limits and feature records", () => {
     expect(() => negotiate(coreInfo({ features: { ...coreInfo().features!, fsWatch: undefined as never } }))).toThrow("features.fsWatch");
     expect(() => negotiate(coreInfo({ limits: { ...coreInfo().limits!, maxConcurrentJobs: 0 } }))).toThrow("limits.maxConcurrentJobs");
   });
@@ -545,7 +540,7 @@ describe("CoreLogArchive", () => {
     });
   });
 
-  it("超过阈值的 core.log 在 initialize 时轮转为 core.log.1（只保留一代）", async () => {
+  it("core.log 轮转：超阈值一代轮转 / 未超不轮转", async () => {
     const root = await coreLogRoot();
     const logDir = path.join(root, "logs");
     const archive = new CoreLogArchive(logDir, 16);
@@ -559,17 +554,16 @@ describe("CoreLogArchive", () => {
     await vi.waitFor(async () => {
       expect(await readFile(path.join(logDir, "core.log"), "utf8")).toBe("fresh\n");
     });
-  });
 
-  it("未超阈值不轮转", async () => {
-    const root = await coreLogRoot();
-    const logDir = path.join(root, "logs");
-    const archive = new CoreLogArchive(logDir, 1024);
-    await archive.initialize();
-    await writeFile(path.join(logDir, "core.log"), "small\n", "utf8");
-    await archive.initialize();
-    expect(await readFile(path.join(logDir, "core.log"), "utf8")).toBe("small\n");
-    await expect(stat(path.join(logDir, "core.log.1"))).rejects.toMatchObject({ code: "ENOENT" });
+    // 未超阈值：core.log 保持原内容，不产生 core.log.1
+    const quietRoot = await coreLogRoot();
+    const quietLogDir = path.join(quietRoot, "logs");
+    const quietArchive = new CoreLogArchive(quietLogDir, 1024);
+    await quietArchive.initialize();
+    await writeFile(path.join(quietLogDir, "core.log"), "small\n", "utf8");
+    await quietArchive.initialize();
+    expect(await readFile(path.join(quietLogDir, "core.log"), "utf8")).toBe("small\n");
+    await expect(stat(path.join(quietLogDir, "core.log.1"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("append 失败静默吞掉（未 initialize 目录不存在也不抛错）", async () => {

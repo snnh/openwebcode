@@ -337,7 +337,8 @@ async function transferStoreAt(root: string): Promise<SessionStore> {
 }
 
 describe("session export/import", () => {
-  it("round-trips meta and messages, keeping the id when free", async () => {
+  it("export/import round-trips meta and messages, keeping the id when free and assigning a new id when taken", async () => {
+    // id 空闲：原样往返
     const source = await transferStoreAt(await tempRoot("owc-transfer-"));
     const created = await source.create({ cwd: os.tmpdir(), provider: "test-stub", model: "deterministic-tool-loop", title: "迁移样例" });
     await source.appendMessage(created.id, "user", [{ type: "text", text: "你好" }]);
@@ -356,15 +357,14 @@ describe("session export/import", () => {
     expect(detail?.title).toBe("迁移样例");
     expect(detail?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(detail?.messages[1]?.content[0]).toMatchObject({ type: "text", text: "收到" });
-  });
 
-  it("assigns a new id when the original is taken", async () => {
+    // id 被占用：分配新 id
     const store = await transferStoreAt(await tempRoot("owc-transfer-"));
-    const created = await store.create({ cwd: os.tmpdir(), provider: "test-stub", model: "deterministic-tool-loop", title: "冲突样例" });
-    await store.appendMessage(created.id, "user", [{ type: "text", text: "hi" }]);
-    const jsonl = (await store.exportJsonl(created.id))!;
-    const again = await store.importJsonl(jsonl);
-    expect(again.id).not.toBe(created.id);
+    const occupant = await store.create({ cwd: os.tmpdir(), provider: "test-stub", model: "deterministic-tool-loop", title: "冲突样例" });
+    await store.appendMessage(occupant.id, "user", [{ type: "text", text: "hi" }]);
+    const occupiedJsonl = (await store.exportJsonl(occupant.id))!;
+    const again = await store.importJsonl(occupiedJsonl);
+    expect(again.id).not.toBe(occupant.id);
     expect((await store.get(again.id))?.messages).toHaveLength(1);
   });
 
@@ -434,7 +434,8 @@ describe("storage GC", () => {
     return filePath;
   }
 
-  it("removes oldest artifacts until under the cap", async () => {
+  it("超限删最旧到上限内、未超限 no-op + setMaxBytes、缺根容忍", async () => {
+    // 超限：removes oldest artifacts until under the cap
     const root = await tempRoot("owc-transfer-");
     const oldest = await artifact(root, "s1", "old.txt", 600, 10_000);
     const middle = await artifact(root, "s1", "mid.txt", 600, 5_000);
@@ -448,26 +449,24 @@ describe("storage GC", () => {
     await expect(stat(oldest)).rejects.toThrow();
     await expect(stat(middle)).rejects.toThrow();
     await expect(stat(newest)).resolves.toBeDefined();
-  });
 
-  it("is a no-op under the cap and honors setMaxBytes", async () => {
-    const root = await tempRoot("owc-transfer-");
-    const only = await artifact(root, "s1", "a.txt", 500, 1_000);
-    const gc = new StorageGC(path.join(root, "sessions"), 1_000);
-    const report = await gc.collect();
-    expect(report).toMatchObject({ removed: 0, totalBytes: 500 });
+    // 未超限：no-op；setMaxBytes 下调后按新上限回收
+    const smallRoot = await tempRoot("owc-transfer-");
+    const only = await artifact(smallRoot, "s1", "a.txt", 500, 1_000);
+    const smallGc = new StorageGC(path.join(smallRoot, "sessions"), 1_000);
+    const noop = await smallGc.collect();
+    expect(noop).toMatchObject({ removed: 0, totalBytes: 500 });
     await expect(stat(only)).resolves.toBeDefined();
 
-    gc.setMaxBytes(100);
-    expect(gc.limit).toBe(100);
-    const second = await gc.collect();
-    expect(second.removed).toBe(1);
-    expect((await readdir(path.join(root, "sessions", "s1", "artifacts"))).length).toBe(0);
-  });
+    smallGc.setMaxBytes(100);
+    expect(smallGc.limit).toBe(100);
+    const shrunk = await smallGc.collect();
+    expect(shrunk.removed).toBe(1);
+    expect((await readdir(path.join(smallRoot, "sessions", "s1", "artifacts"))).length).toBe(0);
 
-  it("tolerates a missing sessions root", async () => {
-    const gc = new StorageGC(path.join(await tempRoot("owc-transfer-"), "nonexistent"), 100);
-    await expect(gc.collect()).resolves.toMatchObject({ removed: 0, totalBytes: 0 });
+    // 缺 sessions 根：容忍
+    const missingGc = new StorageGC(path.join(await tempRoot("owc-transfer-"), "nonexistent"), 100);
+    await expect(missingGc.collect()).resolves.toMatchObject({ removed: 0, totalBytes: 0 });
   });
 });
 
