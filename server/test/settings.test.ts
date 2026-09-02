@@ -85,7 +85,7 @@ describe("server settings API", () => {
     const view = response.json<SettingsView>();
     expect(view.groups.map((group) => group.id)).toEqual(["models", "modelSelection", "general", "defaults", "context", "executor", "service", "network", "proxy", "webSearch", "exchangeRate", "updateCheck"]);
     const fields = view.groups.flatMap((group) => group.fields);
-    expect(fields).toHaveLength(47);
+    expect(fields).toHaveLength(48);
     for (const item of fields) {
       expect(item.source).toBe("default");
       expect(item.editable).toBe(true);
@@ -131,6 +131,7 @@ describe("server settings API", () => {
       model: "fast-1",
       thinking: "enabled",
       effort: "high",
+      timeoutMs: 60_000,
     });
     expect(setup.fastModel).toMatchObject({ configured: true, provider: "主服务", model: "fast-1" });
   });
@@ -523,6 +524,7 @@ describe("model selection settings (modelSelection group)", () => {
       "fastModel",
       "fastModelThinking",
       "fastModelEffort",
+      "fastModelTimeoutMs",
       "roleModelCheap",
     ]);
     expect(groups.get("models")).toEqual(["catalogSyncUrl", "pricingSyncUrl", "syncIntervalMinutes"]);

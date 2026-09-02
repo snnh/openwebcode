@@ -10,6 +10,7 @@ import type { EventBus } from "./events/event-bus.js";
 import type { ProviderRegistry } from "./providers/provider.js";
 import type { StorageGC } from "./storage-gc.js";
 import type { FastModelClient } from "./fast-model.js";
+import { DEFAULT_FAST_MODEL_TIMEOUT_MS } from "./fast-model.js";
 import type { UsageLogCleanupMode } from "./usage-log.js";
 import { USAGE_LOG_CLEANUP_MODES } from "./usage-log.js";
 import type { ProviderProfilesService } from "./provider-profiles.js";
@@ -236,6 +237,12 @@ function requireCompactionThresholdPercent(value: SettingValue): void {
   }
 }
 
+function requireFastModelTimeoutMs(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1000 || value > 900_000) {
+    throw new SettingsValidationError("快速模型超时需为 1000–900000 的整数毫秒（1s–15min）");
+  }
+}
+
 function requireCompactMaxTokens(value: SettingValue): void {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1024 || value > 256_000) {
     throw new SettingsValidationError("压缩输出上限需为 1024–256000 的整数 tokens");
@@ -263,6 +270,11 @@ function envNumber(raw: string): SettingValue | undefined {
 function envCompactionThresholdPercent(raw: string): SettingValue | undefined {
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) && parsed >= 50 && parsed <= 100 ? parsed : undefined;
+}
+
+function envFastModelTimeoutMs(raw: string): SettingValue | undefined {
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 1000 && parsed <= 900_000 ? parsed : undefined;
 }
 
 function envCompactMaxTokens(raw: string): SettingValue | undefined {
@@ -325,6 +337,7 @@ const FIELDS: FieldSpec[] = [
   { key: "fastModel", group: "modelSelection", label: "快速模型", type: "select", env: "OWC_FAST_MODEL", defaultValue: null, restartRequired: false, description: "用于上下文压缩和内容透镜，同时作为子代理 fast（快速）角色；模型来自已启用服务商的统一模型目录" },
   { key: "fastModelThinking", group: "modelSelection", label: "思考", type: "select", env: "OWC_FAST_MODEL_THINKING", defaultValue: "disabled", restartRequired: false, options: THINKING_OPTIONS },
   { key: "fastModelEffort", group: "modelSelection", label: "力度", type: "select", env: "OWC_FAST_MODEL_EFFORT", defaultValue: "none", restartRequired: false, options: EFFORT_OPTIONS },
+  { key: "fastModelTimeoutMs", group: "modelSelection", label: "快速模型超时（毫秒）", type: "number", env: "OWC_FAST_MODEL_TIMEOUT_MS", defaultValue: DEFAULT_FAST_MODEL_TIMEOUT_MS, restartRequired: false, fromEnv: envFastModelTimeoutMs, validate: requireFastModelTimeoutMs, description: "快速模型单次请求的超时上限（1000–900000，默认 60000）；压缩/内容透镜等超时后按失败重试，思考型快速模型较慢时可调大" },
   { key: "roleModelCheap", group: "modelSelection", label: "廉价档模型", type: "select", env: "OWC_ROLE_MODEL_CHEAP", defaultValue: null, restartRequired: false, description: "子代理 cheap（廉价）角色使用的模型：批量、低风险的分发任务；未配置时回落平衡档" },
   // 通用（热生效）
   { key: "defaultLanguage", group: "general", label: "默认语言", type: "select", env: "OWC_DEFAULT_LANGUAGE", defaultValue: "zh-CN", restartRequired: false, options: LANGUAGE_OPTIONS },
@@ -641,6 +654,8 @@ export class SettingsService {
               ...(fastModelEffort === "low" || fastModelEffort === "medium" || fastModelEffort === "high" || fastModelEffort === "xhigh" || fastModelEffort === "max" || fastModelEffort === "ultra"
                 ? { effort: fastModelEffort }
                 : {}),
+              // 单次尝试超时（设置项 fastModelTimeoutMs，热生效；见 FastModelConfig.timeoutMs）
+              timeoutMs: value("fastModelTimeoutMs") as number,
             },
         }
         : {}),

@@ -71,6 +71,7 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   fastModel: { label: "Fast model", description: "Used for context compaction and Content Lens, and as the fast sub-agent role; models come from the unified catalog of enabled providers" },
   fastModelThinking: { label: "Thinking" },
   fastModelEffort: { label: "Effort" },
+  fastModelTimeoutMs: { label: "Fast model timeout (ms)", description: "Per-attempt timeout for fast model requests (1000-900000, default 60000); raise it for slow thinking models — a timeout retries as a failure" },
   defaultModel: { label: "Session default model", description: "Default provider and model for new sessions; leave empty to fall back to the first catalog model of the first enabled provider" },
   roleModelPremium: { label: "Premium tier model", description: "Model for the premium sub-agent role: hard reasoning and deep review; falls back to the balanced tier when unset" },
   roleModelBalanced: { label: "Balanced tier model", description: "Model for the balanced sub-agent role: the default quality/cost trade-off; sub-agents default to this tier when no role is given, falling back to the session default when unset" },

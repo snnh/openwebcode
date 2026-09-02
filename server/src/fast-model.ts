@@ -9,7 +9,13 @@ export interface FastModelConfig {
   model: string;
   thinking?: ThinkingMode;
   effort?: EffortLevel;
+  /** 单次模型尝试的超时上限（毫秒）；缺省 60s（见 DEFAULT_FAST_MODEL_TIMEOUT_MS）。
+   * 由设置项 fastModelTimeoutMs 驱动（热生效），慢速思考型模型可调大。 */
+  timeoutMs?: number;
 }
+
+/** 快速模型单次尝试的默认超时（60s）：设置项 fastModelTimeoutMs 缺省值，单一来源。 */
+export const DEFAULT_FAST_MODEL_TIMEOUT_MS = 60_000;
 
 interface FastModelCompletion {
   text: string;
@@ -99,7 +105,7 @@ export class FastModelClient {
         }],
         tools: [],
         maxTokens: input.maxTokens,
-        signal: withTimeout(undefined, 60_000),
+        signal: withTimeout(undefined, config.timeoutMs ?? DEFAULT_FAST_MODEL_TIMEOUT_MS),
       }, { maxAttempts: 2 });
       for (const event of turn.events) {
         if (event.type === "text_delta") text += event.text;
