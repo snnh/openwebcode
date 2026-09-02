@@ -231,8 +231,8 @@ function requireSubAgentMaxTurns(value: SettingValue): void {
 }
 
 function requireCompactionThresholdPercent(value: SettingValue): void {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 50 || value > 95) {
-    throw new SettingsValidationError("自动压缩水位需为 50–95 的整数百分比");
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 50 || value > 100) {
+    throw new SettingsValidationError("自动压缩水位需为 50–100 的整数百分比（100 表示关闭阈值型强制压缩）");
   }
 }
 
@@ -262,7 +262,7 @@ function envNumber(raw: string): SettingValue | undefined {
 
 function envCompactionThresholdPercent(raw: string): SettingValue | undefined {
   const parsed = Number(raw);
-  return Number.isSafeInteger(parsed) && parsed >= 50 && parsed <= 95 ? parsed : undefined;
+  return Number.isSafeInteger(parsed) && parsed >= 50 && parsed <= 100 ? parsed : undefined;
 }
 
 function envCompactMaxTokens(raw: string): SettingValue | undefined {
@@ -340,7 +340,7 @@ const FIELDS: FieldSpec[] = [
   { key: "defaultSnapshotMode", group: "defaults", label: "默认快照方式", type: "select", env: "OWC_DEFAULT_SNAPSHOT_MODE", defaultValue: "auto", restartRequired: false, options: ["auto", "manual"], description: "新建会话的检查点创建方式：auto = 每轮用户消息前自动创建；manual = 仅手动创建" },
   { key: "snapshotBackend", group: "defaults", label: "快照后端", type: "select", env: "OWC_SNAPSHOT_BACKEND", defaultValue: "auto", restartRequired: false, options: ["auto", ...SNAPSHOT_BACKENDS], description: "新建会话的快照后端偏好；auto = 按探测链自动选择（btrfs/zfs/overlayfs → git-shadow）；指定后端在当前工作区不可用时回落自动并告警" },
   // 上下文与运行（热生效）
-  { key: "compactionThresholdPercent", group: "context", label: "自动压缩水位（%）", type: "number", env: "OWC_COMPACTION_THRESHOLD_PERCENT", defaultValue: 85, restartRequired: false, fromEnv: envCompactionThresholdPercent, validate: requireCompactionThresholdPercent, description: "上下文占用达到该水位时自动压缩（50–95）；建议压缩水位为该值减 15 个百分点。核心安全网，不随 context-saver 扩展开关" },
+  { key: "compactionThresholdPercent", group: "context", label: "自动压缩水位（%）", type: "number", env: "OWC_COMPACTION_THRESHOLD_PERCENT", defaultValue: 85, restartRequired: false, fromEnv: envCompactionThresholdPercent, validate: requireCompactionThresholdPercent, description: "上下文占用达到该水位时自动压缩（50–100）；建议压缩水位为该值减 15 个百分点；100 表示关闭阈值型强制压缩（Provider 上下文溢出时仍会触发一次安全压缩）。核心安全网，不随 context-saver 扩展开关" },
   { key: "compactMaxTokens", group: "context", label: "压缩输出上限（tokens）", type: "number", env: "OWC_COMPACT_MAX_TOKENS", defaultValue: 65536, restartRequired: false, fromEnv: envCompactMaxTokens, validate: requireCompactMaxTokens, description: "上下文压缩时快速模型的输出上限（1024–256000）；思考型快速模型（fastModelThinking）需要较大余量，缺省 65536" },
   { key: "agentMaxTurns", group: "context", label: "单条消息最大轮次", type: "number", env: "OWC_AGENT_MAX_TURNS", defaultValue: 50, restartRequired: false, fromEnv: envNumber, validate: requireAgentMaxTurns, description: "每条用户消息允许的最大 agent 轮次，达到后当前任务以失败收尾；长任务可调大（1–1000）" },
   { key: "subAgentMaxTurns", group: "context", label: "子代理最大轮次", type: "number", env: "OWC_SUB_AGENT_MAX_TURNS", defaultValue: 100, restartRequired: false, fromEnv: envNumber, validate: requireSubAgentMaxTurns, description: "子代理（subagent / spawn_swarm / 手动启动）的默认最大轮次；subagent / spawn_swarm 可传 maxTurns 参数按次覆盖（1–1000）" },

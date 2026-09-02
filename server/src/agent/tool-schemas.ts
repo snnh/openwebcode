@@ -255,6 +255,38 @@ export const WEB_FETCH_TOOL: ProviderTool = {
   inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false },
 };
 
+/**
+ * read_media（read_file 的媒体对应物）：仅当当前模型声明 image/video 输入模态时下发
+ * （agent-runner 按轮门控）。描述按实际支持的模态生成——只支持其一的品种明确告知
+ * 另一类不可用，避免模型对不存在的半功能反复试错。
+ */
+export function readMediaTool(media: { image: boolean; video: boolean }): ProviderTool {
+  const kinds = media.image && media.video ? "an image or video" : media.image ? "an image" : "a video";
+  const limitation = media.image && !media.video
+    ? " Video files are not supported by the current model."
+    : !media.image && media.video
+      ? " Image files are not supported by the current model."
+      : "";
+  return {
+    name: "read_media",
+    description:
+      `Read ${kinds} file (a workspace path, or a public http/https URL) and attach it for the model to view. ` +
+      "The media type is detected from the file's actual bytes (magic bytes), not the file extension. " +
+      "Use this instead of read_file for images and videos: read_file only returns text." + limitation,
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Workspace path (relative to the session root, or absolute inside it), or a public http/https URL of the media file.",
+        },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  };
+}
+
 export const WEB_SEARCH_TOOL: ProviderTool = {
   name: "web_search",
   description: "Search the web using the configured search provider.",
@@ -301,7 +333,7 @@ const INTERACTION_TOOL_NAMES: ReadonlySet<string> = new Set(["ask_user", "exit_p
 
 /** 只读内置工具名单：`owc run --read-only` 的 toolsAllow 等价集（按本文件实际存在的工具维护）。 */
 export const READ_ONLY_TOOL_NAMES: readonly string[] = [
-  "read_file", "glob", "grep", "read_artifact", "repo_map", "code_search",
+  "read_file", "read_media", "glob", "grep", "read_artifact", "repo_map", "code_search",
   "git_status", "git_diff", "load_skill", "task_output",
 ];
 

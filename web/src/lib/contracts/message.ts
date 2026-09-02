@@ -1,5 +1,5 @@
 export interface MessageContent {
-  type: "text" | "thinking" | "tool_call" | "tool_result" | "image" | "web_search_call";
+  type: "text" | "thinking" | "tool_call" | "tool_result" | "image" | "video" | "web_search_call";
   text?: string;
   provider?: string;
   id?: string;
@@ -12,6 +12,8 @@ export interface MessageContent {
   data?: string;
   /** image 块引用形态（与 data 二选一）：uploads/|generated/ 相对路径，经 images 路由取字节。 */
   ref?: string;
+  /** tool_result 附带的媒体块（read_media）：data 为 base64 内联；展示侧可按需渲染。 */
+  media?: Array<{ type: "image" | "video"; mediaType: string; data?: string; ref?: string }>;
   /** subagent/spawn_swarm 工具结果携带的子代理转录 id 列表 */
   subagentTaskIds?: string[];
   /** subagent/spawn_swarm 逐项终态（index 显式对应 swarm item 序号）；优先于 isError 启发式 */

@@ -1,7 +1,7 @@
 // context-manager 的纯函数与常量（拆分自 context-manager.ts）：缓存键、保留集、
 // 驱逐占位/摘要/结构后处理、glob 排除、usage/cost 累加、账本清洗。行为与原实现逐字一致。
 import type { ChatMessage } from "../sessions/types.js";
-import { estimateTokens, IMAGE_TOKEN_ESTIMATE } from "./model-profile.js";
+import { estimateTokens, estimateMediaTokens } from "./model-profile.js";
 import type {
   ClearRecord,
   CompactionRecord,
@@ -62,8 +62,10 @@ export function buildFragment(message: ChatMessage, byMessage: Map<string, Ledge
       ...message,
       content: message.content.map((block) => {
         if (!evictResult || block.type !== "tool_result") return { ...block };
+        // 驱逐剥离附带媒体（media 内的 base64 本体）：否则被逐结果的大块二进制仍会随视图发给模型
+        const { media: _droppedMedia, ...rest } = block;
         return {
-          ...block,
+          ...rest,
           content: entry.excerpt ?? evictionPlaceholder(entry),
         };
       }),
@@ -100,15 +102,18 @@ export function measureFragment(message: ChatMessage): { tokens: number; segment
   let total = 4;
   segments[roleBucket] += 4;
   for (const block of message.content) {
-    if (block.type === "image") {
-      total += IMAGE_TOKEN_ESTIMATE;
-      segments[roleBucket] += IMAGE_TOKEN_ESTIMATE;
+    if (block.type === "image" || block.type === "video") {
+      const tokens = estimateMediaTokens(block);
+      total += tokens;
+      segments[roleBucket] += tokens;
     } else if (block.type === "tool_call") {
       const tokens = estimateTokens(JSON.stringify(block.input)) + 8;
       total += tokens;
       segments[message.role === "assistant" ? "toolCalls" : roleBucket] += tokens;
     } else if (block.type === "tool_result") {
-      const tokens = estimateTokens(block.content);
+      let tokens = estimateTokens(block.content);
+      // 附带媒体（read_media）与顶层媒体块同口径计入
+      for (const media of block.media ?? []) tokens += estimateMediaTokens(media);
       total += tokens;
       segments[message.role === "tool" ? "toolCalls" : roleBucket] += tokens;
     } else if (block.type === "text" || block.type === "thinking") {
@@ -265,6 +270,7 @@ function isCompaction(value: unknown): value is CompactionRecord {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<CompactionRecord>;
   return Number.isSafeInteger(record.uptoIndex) && (record.uptoIndex ?? -1) >= 0 &&
+    (record.uptoMessageId === undefined || typeof record.uptoMessageId === "string") &&
     typeof record.mode === "string" && ["toolcalls", "overview", "truncated", "vault"].includes(record.mode) &&
     typeof record.summary === "string" &&
     Array.isArray(record.instructions) &&
@@ -296,6 +302,21 @@ export function clearIndexIn(messages: ChatMessage[], cleared: ClearRecord): num
     if (index >= 0) return index + 1;
   }
   return Math.min(cleared.uptoIndex, messages.length);
+}
+
+/**
+ * 压缩边界在给定消息数组中的下标：优先按 uptoMessageId 定位（id 之后第一条消息的下标，
+ * 即 messages[0..result) 被压缩），自动适配活动路径/全量两个空间。与 clearIndexIn 的回退
+ * 语义不同：id 不在数组中通常是用户在边界之下分叉（边界消息离路径），此时 uptoIndex 下标
+ * 语义会把新分支内容错误地藏起来，因此不裁剪任何消息（返回 0，摘要从新区段重新累积）；
+ * 旧记录无 uptoMessageId 时回退 uptoIndex 下标语义（钳制到数组长度）。
+ */
+export function compactionIndexIn(messages: ChatMessage[], compacted: CompactionRecord): number {
+  if (compacted.uptoMessageId) {
+    const index = messages.findIndex((message) => message.id === compacted.uptoMessageId);
+    return index >= 0 ? index + 1 : 0;
+  }
+  return Math.min(compacted.uptoIndex, messages.length);
 }
 
 /** 注入视图的压缩文本：用户明确指令累积置顶（§7.4 overview 契约）。 */

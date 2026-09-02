@@ -126,7 +126,7 @@ export function assertSafeWebUrl(value: string): URL {
 }
 
 /** dns.lookup({all:true}) 的可注入形态：测试用 stub 避免真实 DNS。 */
-type LookupAll = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
+export type LookupAll = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
 
 const defaultLookup: LookupAll = (hostname) => dnsLookup(hostname, { all: true });
 
@@ -136,7 +136,7 @@ const defaultLookup: LookupAll = (hostname) => dnsLookup(hostname, { all: true }
  * TOCTOU 残余：解析完成到 TCP 连接建立之间记录仍可能再变，彻底闭环需要在连接层
  * 校验对端 IP；此处先兜住解析期即可判定的内网结果。
  */
-async function assertPublicHostname(url: URL, lookup: LookupAll): Promise<void> {
+export async function assertPublicHostname(url: URL, lookup: LookupAll = defaultLookup): Promise<void> {
   const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase().replace(/\.$/, "");
   if (isIP(hostname)) return; // IP 字面量已由 assertSafeWebUrl 筛查
   const addresses = await lookup(hostname);

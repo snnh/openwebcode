@@ -11,6 +11,7 @@ import { boundToolResult } from "../context/tool-result-budget.js";
 import { resolveSessionPersona } from "../sessions/extension-state.js";
 import { loadPromptOverride } from "../agent/prompts/prompt-overrides.js";
 import { isSessionUpgrading } from "../extensions/session-format-upgrade.js";
+import { MAX_IMAGE_BASE64_CHARS } from "../media-limits.js";
 import { isLoopbackOrLAN } from "../auth-totp.js";
 import { errorMessage } from "../error-utils.js";
 import {
@@ -88,7 +89,8 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
 
   const IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
   const MAX_IMAGES_PER_MESSAGE = 4;
-  const MAX_IMAGE_BASE64 = 7_000_000; // base64 字符数，约等于 5MB 原始字节
+  // base64 字符上限（≈5MB 原始字节）：单一来源在 media-limits.ts
+  const MAX_IMAGE_BASE64 = MAX_IMAGE_BASE64_CHARS;
   const MAX_ATTACHMENTS_PER_MESSAGE = 10;
   const isValidImage = (image: unknown): image is { mediaType: string; data: string } => {
     if (!image || typeof image !== "object") return false;

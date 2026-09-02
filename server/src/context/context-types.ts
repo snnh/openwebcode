@@ -68,6 +68,12 @@ export interface LedgerEntry {
 /** 压缩记录：messages[0..uptoIndex) 由 summary 取代注入视图；instructions 为用户明确指令跨段累积。 */
 export interface CompactionRecord {
   uptoIndex: number;
+  /**
+   * 边界锚点：压缩时刻最后一条被压缩消息（活动路径 uptoIndex-1）的 id，语义同 ClearRecord.uptoMessageId。
+   * buildView 优先按 id 定位边界；id 不在给定消息数组（用户在边界之下分叉，旧边界消息离路径）时
+   * 不裁剪任何消息（边界按 0 处理），避免下标错位把新分支内容藏起来。旧记录无此字段回退 uptoIndex。
+   */
+  uptoMessageId?: string;
   mode: "toolcalls" | "overview" | "truncated" | "vault";
   summary: string;
   instructions: string[];

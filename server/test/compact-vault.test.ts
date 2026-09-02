@@ -444,7 +444,7 @@ export function activate(api) {
       };
       providers.register(provider);
       const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
-      const tinyWindow = () => ({ contextWindow: 100, capabilities: { thinking: ["disabled"], effort: [] } }) as never;
+      const tinyWindow = () => ({ contextWindow: 100, capabilities: { modalities: ["text"], thinking: ["disabled"], effort: [] } }) as never;
       // compactor 缺失（第 13 参 undefined）：强制压缩由 vault 单独兜底
       const runner = new AgentRunner(env.sessions, providers, core, env.events, env.pricing, undefined, "zh-CN", 50, tinyWindow, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, env.manager);
       runner.setVaultService(env.vaultService);

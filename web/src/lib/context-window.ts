@@ -49,7 +49,7 @@ type WindowLevel = "normal" | "warn" | "danger";
 /** 从服务设置视图读取自动压缩水位（%）；未设置/越界回落默认 85。 */
 export function compactionThresholdPercent(settings: SettingsView | undefined): number {
   const field = settings?.groups.flatMap((group) => group.fields).find((item) => item.key === "compactionThresholdPercent");
-  return typeof field?.value === "number" && field.value >= 50 && field.value <= 95 ? field.value : 85;
+  return typeof field?.value === "number" && field.value >= 50 && field.value <= 100 ? field.value : 85;
 }
 
 /** 与服务端水位口径一致：>= threshold% 强制压缩（红），>= threshold−15% 建议压缩（黄）。 */

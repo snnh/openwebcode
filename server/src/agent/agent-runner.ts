@@ -5,6 +5,9 @@ import type { CoreClientLike, CoreEvent } from "../core-client.js";
 import { CoreGateway } from "../core-gateway.js";
 import type { EventBus } from "../events/event-bus.js";
 import { withTimeout } from "../http-utils.js";
+import { fetchMedia } from "../media-fetch.js";
+import { MAX_IMAGE_BASE64_CHARS, MAX_VIDEO_BYTES } from "../media-limits.js";
+import { sniffMedia } from "../media-sniff.js";
 import { ContextManager, selectCacheBreakpoints, type TurnLedger } from "../context/context-manager.js";
 import { evictContext } from "../extensions/context-saver/index.js";
 import type { Compactor, CompactResult } from "../context/compactor.js";
@@ -45,6 +48,7 @@ import {
   filterBuiltInTools,
   isSubagentToolName,
   READ_ARTIFACT_TOOL,
+  readMediaTool,
   REPO_MAP_TOOL,
   SUBAGENT_LEGACY_NAME,
   SUBAGENT_TOOL,
@@ -58,8 +62,9 @@ import { getSnapshotBackend } from "../snapshots/index.js";
 import { ToolAliasResolver } from "./tool-alias.js";
 
 /** 本机会话（kind=local）路径门覆盖的文件工具：HOME 外路径需人工允许或命中 allow 规则。
- * 直接由 FILE_TOOLS 派生，新增文件工具自动纳入。 */
-const LOCAL_PATH_GATED_TOOLS = new Set(FILE_TOOLS.map((tool) => tool.name));
+ * 由 FILE_TOOLS 派生 + read_media（本地路径读媒体与 read_file 同门；http(s) URL 在门内特判放行，
+ * URL 安全由 media-fetch 的 SSRF 链负责）。 */
+const LOCAL_PATH_GATED_TOOLS = new Set([...FILE_TOOLS.map((tool) => tool.name), "read_media"]);
 import { digestSwarmBoard, swarmBoardPath } from "./swarm-board.js";
 import type { MessageContent, NodeEnv, PythonEnv, SessionMeta, WebSearchCallContent } from "../sessions/types.js";
 import { replaceThinkingBlockById } from "../providers/thinking-merge.js";
@@ -142,6 +147,18 @@ function parseMaxTurns(raw: unknown): number | undefined {
     throw new Error(`maxTurns must be an integer between 1 and 1000 (got ${String(raw)})`);
   }
   return raw;
+}
+
+/**
+ * Provider 上下文溢出判定（F4 一次性安全恢复的触发条件）：仅 invalid_request（HTTP 400/409/422）
+ * 且消息命中已知上下文长度签名才视为溢出。其他 400（参数非法、模型不存在等）绝不触发压缩恢复，
+ * 避免把真实配置错误掩盖成一轮又一轮的无效压缩。签名保持紧凑：误伤面只可能是「消息里恰好
+ * 提到 context length 的其他 400」，代价是一次多余的压缩，可接受。
+ */
+const CONTEXT_OVERFLOW_MESSAGE = /context.?length|too many tokens|maximum context|prompt is too long/i;
+
+export function isContextOverflowError(error: unknown): boolean {
+  return error instanceof ProviderError && error.kind === "invalid_request" && CONTEXT_OVERFLOW_MESSAGE.test(error.message);
 }
 
 const GIT_STATUS_TOOL: ProviderTool = {
@@ -450,10 +467,13 @@ function builtInTools(options: {
   swarmEnabled: boolean;
   /** cron 定时任务（提交⑫）：调度器注入后下发 cron_create/cron_list/cron_delete。 */
   cronEnabled: boolean;
+  /** 当前模型的媒体输入模态（按轮从能力档案解析）：两者皆无时不下发 read_media。 */
+  media: { image: boolean; video: boolean };
 }): ProviderTool[] {
   return [
     bashTool(options.backgroundTasksEnabled, options.shell, options.pythonEnv),
     ...FILE_TOOLS,
+    ...(options.media.image || options.media.video ? [readMediaTool(options.media)] : []),
     READ_ARTIFACT_TOOL,
     REPO_MAP_TOOL,
     CODE_SEARCH_TOOL,
@@ -480,7 +500,7 @@ function builtInTools(options: {
 /** Scheduling metadata is product-side only; Provider schemas remain unchanged. */
 type ToolExecutionClass = "read_only" | "workspace_write" | "process" | "external";
 const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
-  read_file: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only", repo_map: "read_only", code_search: "read_only",
+  read_file: "read_only", read_media: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only", repo_map: "read_only", code_search: "read_only",
   git_status: "read_only", git_diff: "read_only", ask_user: "read_only", exit_plan_mode: "read_only",
   web_fetch: "external", web_search: "external", write_file: "workspace_write", edit_file: "workspace_write",
   bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", subagent: "process", [SUBAGENT_LEGACY_NAME]: "process", spawn_swarm: "process", test_runner: "process",
@@ -778,6 +798,8 @@ export class AgentRunner {
 
   private searchProvider: SearchProvider | undefined;
   private webFetchProvider: WebFetchProvider | undefined;
+  /** read_media URL 抓取的 fetch 注入点（测试用 stub；缺省 globalThis.fetch）。 */
+  private readonly fetchImpl: typeof fetch | undefined;
   private readonly pythonEnvManager = new UvPythonEnvironments();
   private getPythonEnvDefault: () => PythonEnv = () => "global";
   private readonly nodeEnvManager = new NodeEnvManagers();
@@ -809,6 +831,48 @@ export class AgentRunner {
     this.compactionThresholdPercent = get;
   }
 
+  /**
+   * 强制压缩统一入口（水位触发 + Provider overflow 一次性恢复共用）：
+   * 发布 compacting/compacted 事件（overflow 恢复带 reason:"overflow_recovery" 明确标记）；
+   * compact-vault 扩展启用时走档案库压缩（与手动 /compact 同口径），否则 Compactor overview。
+   * protectFromMessageId 为本 run 触发消息：压缩区段不得包含它（见 Compactor）。
+   * 返回压缩结果（changed:false 由调用方决策）；压缩异常原样抛出。
+   */
+  private async runForcedCompaction(
+    sessionId: string,
+    session: SessionMeta,
+    vaultForce: boolean,
+    protectFromMessageId: string,
+    reason?: "overflow_recovery",
+  ): Promise<CompactResult> {
+    // 开始事件：压缩可能耗时（vault 多次快速模型调用），先给 UI 即时反馈
+    this.events.publish({ source: "agent", type: "context.compacting", sessionId, payload: { forced: true, mode: vaultForce ? "vault" : "overview", ...(reason ? { reason } : {}) } });
+    let compacted: CompactResult;
+    if (vaultForce) {
+      const config = this.extensions?.list().find((item) => item.id === "compact-vault")?.config ?? {};
+      compacted = await this.vaultService!.compact(sessionId, {
+        ...(Number.isSafeInteger(config.keepTail) ? { keepTail: config.keepTail as number } : {}),
+        ...(Number.isSafeInteger(config.chunkSize) ? { chunkSize: config.chunkSize as number } : {}),
+      });
+    } else {
+      // 压缩提示词优先级：用户覆盖 > env-sim persona > 内置；用户覆盖与主提示词覆盖共用 promptOverrideCache
+      let override = this.promptOverrideCache.get(session.cwd);
+      if (!override && this.dataDir) {
+        override = await loadPromptOverride(this.dataDir, session.cwd);
+        this.promptOverrideCache.set(session.cwd, override);
+      }
+      const persona = this.extensions
+        ? await this.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session))
+        : null;
+      const overviewPrompt = override?.compactOverviewOverride ?? persona?.compactOverviewPrompt;
+      compacted = await this.compactor!.compact(sessionId, "overview", { forced: true, protectFromMessageId, ...(overviewPrompt ? { promptOverrides: { overview: overviewPrompt } } : {}) });
+    }
+    if (compacted.changed) {
+      this.events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: compacted.mode, uptoIndex: compacted.uptoIndex ?? 0, forced: true, ...(compacted.createdAt ? { createdAt: compacted.createdAt } : {}), ...(reason ? { reason } : {}) } });
+    }
+    return compacted;
+  }
+
   constructor(
     private readonly sessions: SessionStore,
     private readonly providers: ProviderRegistry,
@@ -827,7 +891,7 @@ export class AgentRunner {
     private readonly agents?: AgentRegistry,
     private readonly commands?: CommandRegistry,
     search?: SearchProvider,
-    _fetchImpl?: typeof fetch,
+    fetchImpl?: typeof fetch,
     private readonly backgroundTasks?: BackgroundTaskRegistry,
     private readonly hooks?: HookRunner,
     private readonly extensions?: ExtensionManager,
@@ -848,6 +912,7 @@ export class AgentRunner {
     this.toolAliases = new ToolAliasResolver();
     this.repoMap = new RepoMapGenerator(core);
     this.searchProvider = search;
+    this.fetchImpl = fetchImpl;
     this.webFetchProvider = webFetchProvider;
     core.on("event", (event: CoreEvent) => {
       // core 崩溃自动重启重新握手后能力快照失效：下次用到时重新协商（崩溃期间的
@@ -1023,6 +1088,10 @@ export class AgentRunner {
       await this.state(sessionId, "preparing_context");
       // 85% 水位强制概览压缩（§7.3 处理链⑤）：每次运行只触发一次
       let forceCompacted = false;
+      // Provider 上下文溢出的一次性安全恢复（F4）：与水位 forceCompacted 相互独立——
+      // 水位是预防（阈值 100 可关），溢出恢复是兜底（恒开）；各每 run 至多一次。
+      // 水位压缩已发生仍溢出时恢复仍可触发一次；恢复后再次溢出则按原错误失败。
+      let overflowRecovered = false;
       // 会话级模型 fallback（仅主循环）：主模型在 collectProviderTurn 重试耗尽后仍抛
       // 可恢复 ProviderError 时，切到 fallbackModels 链下一个未尝试的候选重建本轮。
       // 每个候选每 run 只尝试一次；链穷尽按原 agent.error 路径结束。切换只影响
@@ -1143,44 +1212,32 @@ export class AgentRunner {
         }
         // 增量构建的 token 估算与 estimateMessageTokens 同规则；等价性由 server 测试断言。
         const estimatedTokens = view.stats.totalTokens;
-        const workingBudget = Math.max(1, profile.contextWindow);
+        // 输出预留：主循环不给 provider 请求下发 maxTokens（provider 用各自默认/端点默认），
+        // 水位按窗口的 1/8 预留输出空间（与 extended thinking 为正文留 1/8 余量同口径），
+        // 避免估算顶到窗口上限才触发压缩。
+        const outputReserve = Math.max(1, Math.floor(profile.contextWindow / 8));
+        // 工作预算扣除系统侧占用与输出预留（F3）：repo map 段已计入 segments.system（上方归因），
+        // 且必须在其之后计算水位，保证顺序一致。
+        const workingBudget = Math.max(1, profile.contextWindow - view.stats.segments.system - outputReserve);
         const utilization = estimatedTokens / workingBudget;
-        // 自动压缩水位（设置页可调，热生效）：强制 = threshold%，建议 = threshold−15%
-        const compactionThreshold = this.compactionThresholdPercent() / 100;
-        const compactionRecommend = (this.compactionThresholdPercent() - 15) / 100;
+        // 自动压缩水位（设置页可调，热生效）：强制 = threshold%，建议 = threshold−15%；
+        // 100 = 关闭阈值型强制压缩（Provider overflow 的一次性安全恢复不受影响，见 catch 段）
+        const thresholdPercent = this.compactionThresholdPercent();
+        const forcedCompactionEnabled = thresholdPercent < 100;
+        const compactionThreshold = thresholdPercent / 100;
+        const compactionRecommend = (thresholdPercent - 15) / 100;
         // pin 占用如实上报：超预算时给明确警告，不悄悄驱逐 pin 的消息。
         const pinWarning = view.stats.pinnedTokens >= workingBudget ? "pins_over_budget" : undefined;
-        this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, workingBudget, utilization, warning: utilization >= compactionThreshold ? "force_compact" : utilization >= compactionRecommend ? "compact_recommended" : undefined, segments: view.stats.segments, pinnedTokens: view.stats.pinnedTokens, buildMs: view.stats.buildMs, incremental: view.stats.incremental, ...(pinWarning ? { pinWarning } : {}) } });
+        this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, workingBudget, utilization, warning: forcedCompactionEnabled && utilization >= compactionThreshold ? "force_compact" : utilization >= compactionRecommend ? "compact_recommended" : undefined, segments: view.stats.segments, pinnedTokens: view.stats.pinnedTokens, buildMs: view.stats.buildMs, incremental: view.stats.incremental, ...(pinWarning ? { pinWarning } : {}) } });
         // 水位强制压缩（核心安全网，不随 context-saver 扩展开关）：压缩成功后重建视图（消耗一个 turn 防止死循环）。
         // compact-vault 扩展启用时走档案库压缩（与手动 /compact 同口径）；compactor 缺失时 vault 单独兜底。
         const vaultForce = this.vaultService !== undefined && this.extensions?.isEnabled("compact-vault") === true;
-        if (utilization >= compactionThreshold && (this.compactor || vaultForce) && !forceCompacted) {
+        if (forcedCompactionEnabled && utilization >= compactionThreshold && (this.compactor || vaultForce) && !forceCompacted) {
           forceCompacted = true;
-          // 开始事件：压缩可能耗时（vault 多次快速模型调用），先给 UI 即时反馈
-          this.events.publish({ source: "agent", type: "context.compacting", sessionId, payload: { forced: true, mode: vaultForce ? "vault" : "overview" } });
           try {
-            let compacted: CompactResult;
-            if (vaultForce) {
-              const config = this.extensions?.list().find((item) => item.id === "compact-vault")?.config ?? {};
-              compacted = await this.vaultService!.compact(sessionId, {
-                ...(Number.isSafeInteger(config.keepTail) ? { keepTail: config.keepTail as number } : {}),
-                ...(Number.isSafeInteger(config.chunkSize) ? { chunkSize: config.chunkSize as number } : {}),
-              });
-            } else {
-              // 压缩提示词优先级：用户覆盖 > env-sim persona > 内置；用户覆盖与主提示词覆盖共用 promptOverrideCache
-              let override = this.promptOverrideCache.get(session.cwd);
-              if (!override && this.dataDir) {
-                override = await loadPromptOverride(this.dataDir, session.cwd);
-                this.promptOverrideCache.set(session.cwd, override);
-              }
-              const persona = this.extensions
-                ? await this.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session))
-                : null;
-              const overviewPrompt = override?.compactOverviewOverride ?? persona?.compactOverviewPrompt;
-              compacted = await this.compactor!.compact(sessionId, "overview", { forced: true, ...(overviewPrompt ? { promptOverrides: { overview: overviewPrompt } } : {}) });
-            }
+            // 本轮触发用户消息受保护：压缩区段到触发消息之前为止（见 Compactor protectFromMessageId）
+            const compacted = await this.runForcedCompaction(sessionId, session, vaultForce, triggerMessage.id);
             if (compacted.changed) {
-              this.events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: compacted.mode, uptoIndex: compacted.uptoIndex ?? 0, forced: true, ...(compacted.createdAt ? { createdAt: compacted.createdAt } : {}) } });
               // 压缩自身已落盘；commitTurn 检测到外部落盘会把本轮断点变更重放到最新账本
               await context.commitTurn(turnLedger);
               activeTurn = undefined;
@@ -1245,6 +1302,11 @@ export class AgentRunner {
           pythonEnv: effectivePythonEnv(session.pythonEnv, this.getPythonEnvDefault()),
           swarmEnabled: session.swarmEnabled === true,
           cronEnabled: Boolean(this.cronScheduler),
+          // read_media 按当前模型的媒体输入模态门控（fallback 切换后下一轮自动跟随）
+          media: {
+            image: profile.capabilities.modalities.includes("image"),
+            video: profile.capabilities.modalities.includes("video"),
+          },
         }), session.toolsAllow, session.toolsDeny);
         const shaping = toolsEnabled && this.extensions
           ? await this.extensions.activeToolShaping(builtIns.map((tool) => tool.name), resolveSessionPersona(session))
@@ -1453,6 +1515,27 @@ export class AgentRunner {
             },
           );
         } catch (error) {
+          // Provider 上下文溢出的一次性安全恢复（F4；AGENTS.md：关闭阈值型 auto compact 后
+          // overflow 仍可触发一次明确标记的安全恢复——threshold=100 只关水位、不关本路径）。
+          // 与水位 forceCompacted 独立：水位已压过仍溢出时这里再兜底一次；反之恢复后水位
+          // 标志保持已置位（同 run 内不再重复水位压缩）。恢复后换一轮重建视图重试 provider；
+          // 再次溢出（overflowRecovered 已置位）不再进入此分支，按原错误走下方失败路径。
+          if (!controller.signal.aborted && !overflowRecovered && isContextOverflowError(error) && (this.compactor || vaultForce)) {
+            overflowRecovered = true;
+            let recovered: CompactResult | undefined;
+            try {
+              recovered = await this.runForcedCompaction(sessionId, session, vaultForce, triggerMessage.id, "overflow_recovery");
+            } catch (compactError) {
+              // 压缩本身失败：记录后以可行动的溢出错误结束本轮（不吞原始错误）
+              this.events.publish({ source: "agent", type: "context.compact_failed", sessionId, payload: { message: errorMessage(compactError) } });
+            }
+            if (recovered?.changed) {
+              await context.commitTurn(turnLedger);
+              activeTurn = undefined;
+              continue;
+            }
+            throw new Error(`上下文超出模型上下文窗口，自动安全压缩后仍无可裁减区段（最近消息与本轮触发消息受保护）。请用 /clear 清空上下文、压缩范围后重试，或开启新会话。原始错误：${errorMessage(error)}`);
+          }
           // 模型 fallback：可恢复 provider 错误（retryable：overloaded/rate_limit/network/
           // stream_interrupted 等）经重试耗尽后仍失败 → 切到 fallbackModels 链下一个未尝试
           // 且 provider 已配置的候选，重建本轮（消耗一个 turn 序号，上下文/工具按新模型重组）。
@@ -1651,7 +1734,12 @@ export class AgentRunner {
                       : undefined;
                     result = outcome?.blocked
                       ? { type: "tool_result", toolCallId: call.id, content: outcome.reason ?? "Blocked by hook", isError: true }
-                      : await this.executeTool(sessionId, call.name, call.id, effectiveInput, controller.signal);
+                      : await this.executeTool(sessionId, call.name, call.id, effectiveInput, controller.signal, {
+                        // read_media 执行期门控：本轮有效模型的媒体模态 + provider 接口形态
+                        image: profile.capabilities.modalities.includes("image"),
+                        video: profile.capabilities.modalities.includes("video"),
+                        providerInterface: provider.interfaceType,
+                      });
                   }
                 }
               }
@@ -2142,6 +2230,73 @@ export class AgentRunner {
   }
 
   /** FILE_TOOLS 各分支共用的 core 调用分发（主循环与 general 子代理共用）。 */
+  /**
+   * read_media 执行（仅主循环）：本地路径走 core fs.readBase64（路径策略/沙盒在 core 强制），
+   * http(s) URL 走 media-fetch（SSRF 链 + content-type 白名单 + 魔数确认）。
+   * 媒体本体经 tool_result.media 附带（投递由各 provider 适配层按端点能力完成），
+   * 文本 content 是模型可见的说明行（来源/mime/大小）。错误一律抛给调用方转 isError。
+   */
+  private async executeReadMedia(
+    sessionId: string,
+    toolCallId: string,
+    input: Record<string, unknown>,
+    mediaCapability: { image: boolean; video: boolean; providerInterface?: Provider["interfaceType"] },
+    signal: AbortSignal,
+  ): Promise<{ result: MessageContent & { type: "tool_result" }; eventResult: Record<string, unknown> }> {
+    const requested = typeof input.path === "string" ? input.path.trim() : "";
+    if (!requested) throw new Error("read_media requires a non-empty path");
+    let bytes: Uint8Array;
+    let base64: string;
+    let label = requested;
+    let sniffHint = requested;
+    if (/^https?:\/\//i.test(requested)) {
+      const fetched = await fetchMedia(requested, { ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}), signal });
+      bytes = fetched.bytes;
+      base64 = Buffer.from(bytes).toString("base64");
+      label = fetched.finalUrl;
+      sniffHint = fetched.finalUrl;
+    } else {
+      if (!this.core.readFileBase64) throw new Error("The core executor does not support binary media reads (fs.readBase64); upgrade the core binary.");
+      const read = await this.core.readFileBase64({ sessionId, path: requested });
+      if (read.truncated) {
+        throw new Error(`Media file exceeds the ${MAX_VIDEO_BYTES / (1024 * 1024)} MiB read limit: ${requested}. Downscale or trim the file first, then retry.`);
+      }
+      bytes = Buffer.from(read.base64, "base64");
+      base64 = read.base64;
+    }
+    // 魔数权威（扩展名仅视频兜底）：伪装/错配的扩展名不改变实际投递类型
+    const sniffed = sniffMedia(bytes, sniffHint);
+    if (!sniffed) throw new Error(`Unrecognized media format (not a supported image or video): ${requested}`);
+    if (sniffed.kind === "image" && !mediaCapability.image) {
+      throw new Error("The current model does not declare image input. Switch to a vision-capable model, or enable the vision-tools extension.");
+    }
+    if (sniffed.kind === "video" && !mediaCapability.video) {
+      throw new Error("The current model does not declare video input. Switch to a video-capable model, or enable the vision-tools extension.");
+    }
+    // 视频仅 openai 兼容（chat/completions）端点可投递（video_url data URL）；其余端点无视频形态
+    if (sniffed.kind === "video" && mediaCapability.providerInterface !== "openai-chat-completions") {
+      throw new Error("Video tool results can only be delivered to OpenAI-compatible (chat/completions) providers. Switch to such a provider, or extract frames and read them as images.");
+    }
+    if (sniffed.kind === "image" && base64.length > MAX_IMAGE_BASE64_CHARS) {
+      throw new Error(`Image is too large to attach (${Math.round(bytes.length / 1024)} KB; the limit is about 5 MB). Downscale or crop the image first, then retry.`);
+    }
+    if (sniffed.kind === "video" && bytes.length > MAX_VIDEO_BYTES) {
+      throw new Error(`Video exceeds the ${MAX_VIDEO_BYTES / (1024 * 1024)} MiB limit (${Math.round(bytes.length / (1024 * 1024))} MiB). Trim or transcode the file first, then retry.`);
+    }
+    const sizeNote = `~${Math.max(1, Math.round(bytes.length / 1024))} KB`;
+    const note = `[${sniffed.kind}] ${label} (${sniffed.mediaType}, ${sizeNote}) — attached for the model to view`;
+    return {
+      result: {
+        type: "tool_result",
+        toolCallId,
+        content: note,
+        isError: false,
+        media: [{ type: sniffed.kind, mediaType: sniffed.mediaType, data: base64 }],
+      },
+      eventResult: { kind: sniffed.kind, mediaType: sniffed.mediaType, sizeBytes: bytes.length },
+    };
+  }
+
   private async callCoreFileTool(sessionId: string, name: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
     // glob/grep 的 path 可选（schema 未列入 required），缺省从会话根开始；
     // read/write/edit 必须显式给出文件路径。
@@ -2394,7 +2549,7 @@ export class AgentRunner {
     // 工具形态别名按原内置工具的权限类处理（不降级为 external）
     tool = this.toolAliases.resolveBuiltinToolName(sessionId, tool);
     // Plan 模式门禁：只读工具放行，其余一律拦截
-    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "subagent", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "exit_plan_mode", "cron_list"]);
+    const PLAN_READONLY = new Set(["read_file", "read_media", "glob", "grep", "read_artifact", "load_skill", "subagent", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "exit_plan_mode", "cron_list"]);
     if (session.agentMode === "plan") {
       if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 code 模式执行。` };
       if (tool.startsWith("ext__")) return { allowed: false, reason: `Plan 模式为只读：扩展工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 code 模式执行。` };
@@ -2407,7 +2562,9 @@ export class AgentRunner {
     // 与权限模式无关（read_file 在 needsApproval 白名单中本免批，HOME 外读同样要人批）。
     // 门通过后直接放行，不再走下方 needsApproval（避免 write/edit 在 ask 模式重复确认）；
     // HOME 内路径不拦截，维持原权限链语义。
-    if (session.kind === "local" && LOCAL_PATH_GATED_TOOLS.has(tool)) {
+    // read_media 的 http(s) URL 不是本地路径：跳过 HOME 路径门（URL 安全由 media-fetch 的 SSRF 链负责）
+    const mediaUrlInput = tool === "read_media" && typeof input.path === "string" && /^https?:\/\//i.test(input.path);
+    if (session.kind === "local" && LOCAL_PATH_GATED_TOOLS.has(tool) && !mediaUrlInput) {
       let rawPath = typeof input.path === "string" && input.path ? input.path : ".";
       try {
         if (this.core.normalizePath) {
@@ -2597,6 +2754,8 @@ export class AgentRunner {
     toolCallId: string,
     input: Record<string, unknown>,
     signal: AbortSignal,
+    /** 本轮有效模型的媒体输入模态与 provider 接口形态（read_media 执行期门控用）。 */
+    mediaCapability: { image: boolean; video: boolean; providerInterface?: Provider["interfaceType"] } = { image: false, video: false },
   ): Promise<MessageContent & { type: "tool_result" }> {
     // 工具形态别名回调到内置实现：权限分级/事件/分发统一按内置名。
     name = this.toolAliases.resolveBuiltinToolName(sessionId, name);
@@ -3305,6 +3464,20 @@ export class AgentRunner {
         const content = error instanceof IndexUnavailableError
           ? `${error.message} Fall back to grep/glob for navigation.`
           : errorMessage(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+    if (name === "read_media") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
+      this.state(sessionId, "tool_running");
+      try {
+        const { result, eventResult } = await this.executeReadMedia(sessionId, toolCallId, input, mediaCapability, signal);
+        // 事件只带元数据（媒体本体随持久化 tool_result 走，不进 WS 帧）
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: eventResult } });
+        return result;
+      } catch (error) {
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }

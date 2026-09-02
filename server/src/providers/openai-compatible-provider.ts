@@ -2,6 +2,7 @@ import type { ChatMessage, ImageContent, ThinkingContent, ToolCallContent } from
 import type { ThinkingMode, ThinkingStyle } from "../context/model-profile.js";
 import { normalizeProviderError, ProviderError } from "./provider-error.js";
 import { collectToolOutputs, parseArguments, providerRequestHeaders, requireResponseBody } from "./shared.js";
+import { collectToolMedia, openaiCompatibleMediaMessage, type ToolMediaItem } from "./tool-result-media.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
 interface OpenAICompatibleProviderOptions {
@@ -55,6 +56,7 @@ export const MAX_SSE_EVENT_BYTES = 8 * 1024 * 1024;
 
 export class OpenAICompatibleProvider implements Provider {
   readonly name: string;
+  readonly interfaceType = "openai-chat-completions" as const;
   private readonly fetch: typeof fetch;
   private readonly maxTokens: number | undefined;
 
@@ -263,6 +265,7 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
   // 结果未落盘、压缩边界裁掉 assistant 留结果。先收集 tool_result 映射，tool_call 发出后
   // 立即内联对应 tool 消息（缺失补占位），tool 角色消息不再单独输出（游离结果丢弃）。
   const outputs = collectToolOutputs(messages);
+  const toolMedia = collectToolMedia(messages);
   const result: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   const emitted = new Set<string>();
   for (const message of messages) {
@@ -310,14 +313,19 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
         ...(reasoning ? { reasoning_content: reasoning } : {}),
         ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
       });
-      // 每个 tool_call 立即跟对应 tool 消息；结果缺失（中断未落盘）补占位，保证配对
+      // 每个 tool_call 立即跟对应 tool 消息；结果缺失（中断未落盘）补占位，保证配对。
+      // 附带媒体（read_media）抽出为工具批次结束后的**一条**合成 user 消息（多条 tool 消息
+      // 之间不能插 user——端点要求 tool 消息紧跟各自 assistant 且连续；批量合并保持结构合法）。
+      const batchMedia: ToolMediaItem[] = [];
       for (const call of toolCalls) {
         result.push({
           role: "tool",
           tool_call_id: call.id,
           content: outputs.get(call.id) ?? "The run was interrupted before this tool finished; no result was produced.",
         });
+        batchMedia.push(...(toolMedia.get(call.id) ?? []));
       }
+      if (batchMedia.length > 0) result.push(openaiCompatibleMediaMessage(batchMedia));
     }
     // tool 角色消息的 tool_result 已内联到对应 assistant 之后，游离者丢弃（见上文）
   }

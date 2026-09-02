@@ -74,6 +74,9 @@ export interface Provider {
   readonly name: string;
   /** 显式 prompt cache 断点是否启用；undefined 表示该 Provider 无显式断点能力（如自动缓存）。 */
   readonly promptCaching?: boolean | undefined;
+  /** 端点接口形态（装配侧已知；与 provider-profiles 的 interfaceType 同词汇表）。
+   * 消费方（如 read_media 的视频投递门）按它区分端点能力；未声明（测试 stub 等）按未知处理。 */
+  readonly interfaceType?: "anthropic-messages" | "openai-chat-completions" | "openai-responses" | undefined;
   streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent>;
 }
 

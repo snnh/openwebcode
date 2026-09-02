@@ -30,6 +30,8 @@ function renderBlock(block: MessageContent): string {
     }
     case "image":
       return `[图片：${block.mediaType}]`;
+    case "video":
+      return `[视频：${block.mediaType}]`;
     case "web_search_call":
       return "### 联网搜索\n";
   }

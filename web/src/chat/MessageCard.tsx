@@ -28,6 +28,21 @@ export function ThinkingBlock({ text, streaming = false }: { text: string; strea
   );
 }
 
+/** 工具结果附带的媒体（read_media）：折叠行展开区内渲染缩略图/播放器；缺 data 的块跳过。 */
+export function ToolResultMedia({ media }: { media: NonNullable<MessageContent["media"]> | undefined }): ReactElement | null {
+  const { t } = useI18n();
+  if (!media || media.length === 0) return null;
+  const items = media.filter((item) => typeof item.data === "string" && item.data.length > 0);
+  if (items.length === 0) return null;
+  return (
+    <div className="tool-result-media">
+      {items.map((item, index) => item.type === "image"
+        ? <img key={index} className="tool-media-img" loading="lazy" src={`data:${item.mediaType ?? "image/png"};base64,${item.data}`} alt={t("工具结果图片", "Tool result image")} />
+        : <video key={index} className="tool-media-video" controls preload="metadata" src={`data:${item.mediaType};base64,${item.data}`} />)}
+    </div>
+  );
+}
+
 /** 孤立 tool_result（无配对调用成组时）：单行折叠结果卡；携带子代理转录时展开区内附转录查看器 */
 function ToolResultCard({ block, sessionId }: { block: MessageContent; sessionId: string }): ReactElement {
   const { t } = useI18n();
@@ -63,6 +78,7 @@ function ToolResultCard({ block, sessionId }: { block: MessageContent; sessionId
       {open && (
         <div className="tool-row-body">
           <pre className="mono">{body || summary || content}</pre>
+          <ToolResultMedia media={block.media} />
           {block.subagentTaskIds && block.subagentTaskIds.length > 0 && (
             <div className="subagent-transcripts">
               {block.subagentTaskIds.map((taskId, index) => (
@@ -102,6 +118,10 @@ function ContentBlock({ block, toolResults, liveSubagents }: {
       return <ToolResultCard block={block} sessionId={sessionId} />;
     case "image":
       return <img className="message-image" src={`data:${block.mediaType ?? "image/png"};base64,${block.data ?? ""}`} alt={t("用户上传的图片", "User-uploaded image")} />;
+    case "video":
+      return typeof block.data === "string" && block.data.length > 0
+        ? <video className="message-video" controls preload="metadata" src={`data:${block.mediaType};base64,${block.data}`} />
+        : null;
     case "web_search_call":
       // 服务端联网搜索（模型服务端执行）：不可展开，复用 tool-row 单行外观（tool-row-static 无指针态）
       return (

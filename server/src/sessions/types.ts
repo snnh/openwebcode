@@ -38,6 +38,10 @@ export interface ToolResultContent {
   subagentTaskIds?: string[];
   /** subagent/spawn_swarm 逐项终态（index 显式对应 swarm item 序号，subagent 恒为 0）；部分失败/中断后刷新仍可还原每项状态。 */
   subagentTasks?: Array<{ taskId: string; index: number; status: "done" | "failed"; error?: string }>;
+  /** 工具结果附带的媒体块（read_media）：并非所有 provider 都能在 tool 角色内携带媒体，
+   * 进 provider 前由各适配层按端点能力投递（anthropic 内联进 tool_result；openai 系拆出
+   * 合成 user 消息；见 providers/tool-result-media.ts）。 */
+  media?: Array<ImageContent | VideoContent>;
 }
 
 /**
@@ -48,6 +52,17 @@ export interface ToolResultContent {
  */
 export interface ImageContent {
   type: "image";
+  mediaType: string;
+  data?: string;
+  ref?: string;
+}
+
+/**
+ * 视频块（与 ImageContent 同构；当前仅由 read_media 工具结果携带，见 ToolResultContent.media）。
+ * data 为 base64 内联；ref 为 sessionDir 相对落盘路径（进 provider 前由调用方内联为 data）。
+ */
+export interface VideoContent {
+  type: "video";
   mediaType: string;
   data?: string;
   ref?: string;
@@ -66,7 +81,7 @@ export interface WebSearchCallContent {
   provider?: string;
 }
 
-export type MessageContent = TextContent | ThinkingContent | ToolCallContent | ToolResultContent | ImageContent | WebSearchCallContent;
+export type MessageContent = TextContent | ThinkingContent | ToolCallContent | ToolResultContent | ImageContent | VideoContent | WebSearchCallContent;
 
 export interface ChatMessage {
   id: string;

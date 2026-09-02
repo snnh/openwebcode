@@ -70,6 +70,36 @@ describe("MessageCard", () => {
     expect(container.querySelector(".tool-row-name")).toHaveTextContent("执行结果");
   });
 
+  it("renders tool-result attached media as images/videos inside the expanded row", () => {
+    const { container } = renderWithActions(
+      <MessageCard
+        message={message("tool", [{
+          type: "tool_result",
+          toolCallId: "c1",
+          content: "[image] a.png (image/png, ~1 KB)",
+          media: [
+            { type: "image", mediaType: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" },
+            { type: "video", mediaType: "video/mp4", data: "AAAA" },
+          ],
+        }])}
+        turn={1}
+        toolResults={{ c1: false }}
+      />,
+    );
+    // 默认折叠时媒体不渲染；展开后出现缩略图与视频控件
+    expect(container.querySelector(".tool-result-media")).toBeNull();
+    fireEvent.click(container.querySelector(".tool-row-header")!);
+    expect(container.querySelector("img.tool-media-img")).not.toBeNull();
+    expect(container.querySelector("video.tool-media-video")).not.toBeNull();
+  });
+
+  it("renders video content blocks defensively", () => {
+    const { container } = renderWithActions(
+      <MessageCard message={message("user", [{ type: "video", mediaType: "video/mp4", data: "AAAA" }])} turn={1} toolResults={{}} />,
+    );
+    expect(container.querySelector("video.message-video")).not.toBeNull();
+  });
+
   it("renders thinking blocks collapsed as a details element", () => {
     const { container } = renderWithActions(
       <MessageCard message={message("assistant", [{ type: "thinking", text: "先想想" }, { type: "text", text: "结论" }])} turn={0} toolResults={{}} />,
