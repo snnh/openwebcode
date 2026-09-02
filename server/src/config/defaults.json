@@ -8,6 +8,7 @@
   "fastModel": null,
   "fastModelThinking": "disabled",
   "fastModelEffort": "none",
+  "fastModelTimeoutMs": 60000,
   "roleModelCheap": null,
   "defaultLanguage": "zh-CN",
   "defaultCurrency": "CNY",
