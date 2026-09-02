@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { ChatMessage, ToolResultContent } from "../sessions/types.js";
 import { getUserAgent } from "../user-agent.js";
 import { normalizeProviderError } from "./provider-error.js";
+import { anthropicToolResultContent, collectToolMedia } from "./tool-result-media.js";
 import type { Provider, ProviderEvent, ProviderTool, StreamChatRequest } from "./provider.js";
 
 interface AnthropicProviderOptions {
@@ -21,6 +22,7 @@ export class AnthropicProvider implements Provider {
   private readonly maxTokens: number;
   private readonly extraBody: Record<string, unknown> | undefined;
   readonly promptCaching: boolean;
+  readonly interfaceType = "anthropic-messages" as const;
 
   constructor(options: AnthropicProviderOptions = {}) {
     this.name = options.name ?? "anthropic";
@@ -231,6 +233,7 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
   // 否则端点 400（"unexpected tool_use_id" / "tool_use ids were found without tool_result"）。
   // 孤儿来源：!shell 直写 shell-* tool_result（无 assistant tool_use）、中断/崩溃时结果未落盘、
   // 压缩边界裁掉 assistant 留结果。游离 tool_result 丢弃；缺失结果在随后 user 消息补占位。
+  const toolMedia = collectToolMedia(messages);
   const outputs = new Map<string, { content: string; isError?: boolean }>();
   const knownCallIds = new Set<string>();
   for (const message of messages) {
@@ -248,7 +251,8 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
       return {
         type: "tool_result" as const,
         tool_use_id: id,
-        content: output?.content ?? "The run was interrupted before this tool finished; no result was produced.",
+        // 附带媒体（read_media）内联进 tool_result：image 走 base64 source，视频降级占位文本
+        content: anthropicToolResultContent(output?.content ?? "The run was interrupted before this tool finished; no result was produced.", output ? toolMedia.get(id) : undefined) as NonNullable<Anthropic.ToolResultBlockParam["content"]>,
         ...(output?.isError ? { is_error: true } : {}),
       };
     });
@@ -274,7 +278,7 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
         .map((block) => ({
           type: "tool_result" as const,
           tool_use_id: block.toolCallId,
-          content: block.content,
+          content: anthropicToolResultContent(block.content, toolMedia.get(block.toolCallId)) as NonNullable<Anthropic.ToolResultBlockParam["content"]>,
           ...(block.isError ? { is_error: true } : {}),
         }));
       // 该批次缺失结果的 tool_use 补占位（同一 assistant 批次的 tool 消息可能多条）

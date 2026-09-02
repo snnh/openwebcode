@@ -6,7 +6,7 @@ import type {
 } from "../lib/contracts";
 import { agentErrorToastText } from "../lib/agent-error";
 import { compactionModeText } from "../lib/compaction";
-import { isBusyState } from "../lib/agent-state";
+import { INACTIVE_STATES, isBusyState } from "../lib/agent-state";
 import type { NotificationKind, NotificationTarget } from "../lib/notifications";
 import { qk } from "./queries";
 import { sessionMeta } from "./session-store";
@@ -27,6 +27,8 @@ export interface EventRouterDeps {
   applySubagentEvent(event: AppEvent): void;
   /** 压缩检查点标记写入（live-store.applyCompactionEvent 的装配注入） */
   applyCompactionEvent(event: AppEvent): void;
+  /** 清除某会话「运行中」压缩占位（live-store.clearRunningCompaction 的装配注入；终态/自愈路径用） */
+  clearRunningCompaction(sessionId: string): void;
   stream: StreamBuffer;
   /** resync 命中当前会话时的附加清理（分页缓存等，由聊天视图装配注入） */
   onResyncCurrent?(sessionId: string): void;
@@ -84,10 +86,14 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
           .then((run) => {
             queryClient.setQueryData(qk.run(reconcileId), run);
             sessionMeta.setAgentState(reconcileId, run.state);
+            // 服务端 run 已是终态：该会话不可能仍在压缩，清除滞留的运行中占位
+            if (INACTIVE_STATES.has(run.state)) deps.clearRunningCompaction(reconcileId);
           })
           .catch(() => {
             queryClient.setQueryData(qk.run(reconcileId), undefined);
             sessionMeta.clearAgentStateIfIdle(reconcileId);
+            // 服务端无活跃 run（404/重启）：压缩必然已终止，清除滞留的运行中占位
+            deps.clearRunningCompaction(reconcileId);
           });
       }
       return;
@@ -107,10 +113,20 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
           );
         }
         sessionMeta.setAgentState(event.sessionId, state);
+        // 终态/空闲：run 已结束，压缩不可能仍在进行——清掉错过 context.compacted/
+        // compact_failed 事件留下的「运行中」占位（WS 缺口自愈；跨会话同样生效）
+        if (INACTIVE_STATES.has(state)) deps.clearRunningCompaction(event.sessionId);
         if (state === "thinking" || state === "starting" || state === "preparing_context") {
           sessionMeta.clearRunFailure(event.sessionId);
         }
       }
+    }
+
+    // run 终态事件（completed/failed/aborted，先于兼容用的 agent.state idle 发布）：
+    // 同上自愈——压缩只可能发生在 run 内或 /compact POST 期间，run 已终态即不可能再有
+    // 进行中的压缩，清掉滞留占位。跨会话生效（任意会话的终态都清）。
+    if (event.sessionId && (event.type === "run.completed" || event.type === "run.failed" || event.type === "run.aborted")) {
+      deps.clearRunningCompaction(event.sessionId);
     }
 
     // 桌面通知：页面失焦时，权限待批/交互待答/run 终态弹系统通知（跨会话）

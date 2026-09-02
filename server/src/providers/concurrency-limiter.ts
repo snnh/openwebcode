@@ -35,6 +35,10 @@ export class ConcurrencyLimitedProvider implements Provider {
     return this.inner.promptCaching;
   }
 
+  get interfaceType(): Provider["interfaceType"] {
+    return this.inner.interfaceType;
+  }
+
   async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
     await this.acquire(request.signal);
     try {

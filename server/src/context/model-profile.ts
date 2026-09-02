@@ -102,13 +102,27 @@ export function estimateTokens(value: string): number {
 /** 图片按固定定额计入水位估算（典型 ~1.2k tokens/张），而非 base64 长度。 */
 export const IMAGE_TOKEN_ESTIMATE = 1200;
 
+/**
+ * 媒体块（顶层 image/video 块或 tool_result.media 内嵌项）的水位估算：
+ * 图片按固定定额；视频各端点按帧率/时长计费差异巨大，按 ~1 token / KB 原始字节
+ * （base64 长度 ×3/4 还原）给一个保守量级，下限 256（短视频帧抽取也有基础开销）。
+ */
+export function estimateMediaTokens(media: { type: "image" | "video"; data?: string }): number {
+  if (media.type === "image") return IMAGE_TOKEN_ESTIMATE;
+  return Math.max(256, Math.ceil(((media.data?.length ?? 0) * 3) / 4 / 1024));
+}
+
 export function estimateMessageTokens(messages: ChatMessage[]): number {
   let total = 0;
   for (const message of messages) {
     for (const block of message.content) {
-      if (block.type === "image") total += IMAGE_TOKEN_ESTIMATE;
+      if (block.type === "image" || block.type === "video") total += estimateMediaTokens(block);
       else if (block.type === "tool_call") total += estimateTokens(JSON.stringify(block.input)) + 8;
-      else if (block.type === "tool_result") total += estimateTokens(block.content);
+      else if (block.type === "tool_result") {
+        total += estimateTokens(block.content);
+        // 附带媒体（read_media）与顶层媒体块同口径计入水位
+        for (const media of block.media ?? []) total += estimateMediaTokens(media);
+      }
       else if (block.type === "text" || block.type === "thinking") total += estimateTokens(block.text);
       // web_search_call：仅回放元数据（服务端原始 item），按小定额计入水位
       else if (block.type === "web_search_call") total += estimateTokens(block.signature);

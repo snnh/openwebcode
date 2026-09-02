@@ -31,6 +31,7 @@ import {
   aggregateEvicted,
   applyUsage,
   clearIndexIn,
+  compactionIndexIn,
   renderCompaction,
   enforceImageBudget,
   estimateFragmentTokens,
@@ -143,7 +144,10 @@ export class ContextManager {
     const selection: ContextSelection = { pins: options?.selection?.pins ?? [], excludes: options?.selection?.excludes ?? [] };
     const pinnedIds = new Set(selection.pins);
     const compacted = ledger.compacted;
-    const compactedIndex = compacted ? Math.min(compacted.uptoIndex, messages.length) : 0;
+    // 压缩边界优先按消息 id 锚定（同清空边界的双空间定位）；边界消息离活动路径
+    // （用户在边界之下分叉）时不裁剪任何消息——按 uptoIndex 下标会把新分支内容错误地藏起来；
+    // 旧记录无 uptoMessageId 时回退 uptoIndex 下标语义（compactionIndexIn 内部处理）。
+    const compactedIndex = compacted ? compactionIndexIn(messages, compacted) : 0;
     // 清空边界优先按消息 id 锚定：buildView 的输入数组既可能是活动路径（agent 主循环）
     // 也可能是全量 JSONL（REST context 视图），id 定位自动适配两个空间；边界消息不在
     // 数组中（罕见：消息被外部截断）或旧 ledger 无 id 时回退 uptoIndex 下标语义。
@@ -206,7 +210,9 @@ export class ContextManager {
     if (!fragments) {
       const byMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
       fragments = messages.slice(uptoIndex).map((message) => buildFragment(message, byMessage, pinnedIds));
-      if (compacted && (!ledger.cleared || compactedIndex > clearedIndex)) {
+      // compactedIndex=0（分叉后边界消息离路径，见 compactionIndexIn）时不注入摘要头：
+      // 摘要描述的消息此刻全部可见，再注入只会误导模型
+      if (compacted && compactedIndex > 0 && (!ledger.cleared || compactedIndex > clearedIndex)) {
         header = {
           message: {
             id: `compaction:${compacted.createdAt}`,
@@ -517,5 +523,5 @@ export class ContextManager {
 
 // 对外 API：纯函数与类型经本文件重导出，既有 import 点不变。
 export { estimateFragmentTokens };
-export { isPathExcluded, recordCompaction, selectCacheBreakpoints } from "./context-ledger-ops.js";
+export { isPathExcluded, recordCompaction, selectCacheBreakpoints, compactionIndexIn } from "./context-ledger-ops.js";
 export type { BudgetUpdate, TurnLedger, CompactionRecord } from "./context-types.js";

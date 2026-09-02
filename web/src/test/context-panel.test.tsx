@@ -405,10 +405,10 @@ describe("compactionThresholdPercent", () => {
     };
   }
 
-  it("读取合法字段值（50–95）", () => {
+  it("读取合法字段值（50–100）", () => {
     expect(compactionThresholdPercent(settingsWith(50))).toBe(50);
     expect(compactionThresholdPercent(settingsWith(70))).toBe(70);
-    expect(compactionThresholdPercent(settingsWith(95))).toBe(95);
+    expect(compactionThresholdPercent(settingsWith(100))).toBe(100);
   });
 
   it("设置缺失/字段缺失时回落 85", () => {
@@ -420,7 +420,7 @@ describe("compactionThresholdPercent", () => {
 
   it("越界/非数值回落 85", () => {
     expect(compactionThresholdPercent(settingsWith(49))).toBe(85);
-    expect(compactionThresholdPercent(settingsWith(96))).toBe(85);
+    expect(compactionThresholdPercent(settingsWith(101))).toBe(85);
     expect(compactionThresholdPercent(settingsWith("70"))).toBe(85);
   });
 });

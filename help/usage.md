@@ -341,7 +341,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 - 子代理（`subagent`/`spawn_swarm`）自动继承会话的工具限制
 - `PUT config` 传 `null` 或空数组清除限制；工具限制是提示面约束（模型看不到的工具即不可用），不替代沙盒与权限链
 
-CLI 等价写法：`owc run "..." --tools read_file,glob,grep`（= `toolsAllow`）、`--exclude-tools bash`（= `toolsDeny`）、`--read-only`（便捷旗标，等价于 `--tools` 只读集：read_file/glob/grep/read_artifact/repo_map/code_search/git_status/git_diff/load_skill/task_output；与 `--tools` 互斥，同给报错退出码 1）。
+CLI 等价写法：`owc run "..." --tools read_file,glob,grep`（= `toolsAllow`）、`--exclude-tools bash`（= `toolsDeny`）、`--read-only`（便捷旗标，等价于 `--tools` 只读集：read_file/read_media/glob/grep/read_artifact/repo_map/code_search/git_status/git_diff/load_skill/task_output；与 `--tools` 互斥，同给报错退出码 1）。
 
 ## 配置文件位置
 
@@ -441,6 +441,7 @@ OWC_BROWSE_ROOTS=/home/me/projects:/home/me/repos
 - `env-sim`（环境模拟）：默认关闭；启用并选择预设后，系统提示词切换为该产品风格（身份行 + 工作方式），内置工具以该产品的命名/描述呈现（如 `Read`/`Bash`/`Edit`），底层仍走原工具实现与权限链。内置 `claude-code`/`kimi-code`/`zcode`/`codex`/`dsh-minimal` 五档预设。`dsh-minimal`（DSH 极简模式，1.7.8 起）复刻 DeepSeek Harness 极简模式：persona 提示词与 `bash`/`str_replace_editor` 双工具的描述和参数形态照搬 DSH 原文；首轮形态覆盖整个第一条用户消息——系统提示词为极简形态（只保留 persona 基础提示词与工具表，跳过安全边界、项目上下文、技能段、自定义指令、尾注、后台通知），同一回合内的多轮工具调用循环也保持双工具，用户发出第二条消息才恢复保留形态；第二轮起仅保留 web 搜索（`web_search`/`web_fetch`）与子代理（`subagent`）等少数工具，`read_artifact` 随驱逐联动注入。把自制预设 JSON（必填 `id`/`name`/`identity`/`basePrompt`，可选 `productSections`/`hideBuiltIns`/`aliases`/`firstTurnOnlyTools`）放入 `<业务数据目录>/env-sim/personas/` 即可添加并与他人分享，一个文件一个预设。**内置预设也可自定义**：`id` 与内置相同时即覆盖该内置（只覆盖填写的字段，工具形态、命令拟态等其余部分自动继承内置；UI 中显示「已自定义」标记），删除覆盖文件（UI「还原内置预设」）即恢复官方内置
 - `compact-vault`（上下文档案库）：默认关闭；启用且已配置快速模型后，`/compact` 从默认概览压缩切换为档案库压缩——完整上下文归档到会话目录 `compact/segments/`（真实内容全保留），主模型上下文只注入目录式索引（不保留任何工具调用细节）；快速模型两遍整理（分块提取条目 + 合并去重/删除过时内容）后生成索引。主模型可按索引里的 `key` 调用 `recall_memory` 工具，经快速模型按需提炼召回对应归档片段；`keepTail`/`chunkSize`/`recallMaxTokens` 可在扩展设置中调整。水位强制自动压缩（默认 85%）同样走档案库路径；若档案库压缩未启用时被默认压缩覆盖了索引，目录索引会自动回注，`recall_memory` 始终可用
 - `vision-tools`（视觉工具）：默认关闭；主模型不支持视觉时，把图片交给配置的视觉模型处理——`describe` 模式自动生成图片描述并注入上下文；`toolCall` 模式以 `[图片 #N]` 占位符注入并注册 `describe_image` 工具，主模型按需向视觉模型提问（省主模型 token，图片内容按需获取）。支持视觉的主模型不受影响
+- `read_media`（内置媒体读取，1.10.1 起）：当前模型声明图片/视频输入模态时自动注入；`read_file` 只读文本，看图/看视频请用 `read_media`——支持工作区相对/绝对路径与公共 http(s) URL，媒体类型按文件魔数识别（扩展名仅作裸流视频兜底），URL 走与 `web_fetch` 相同的 SSRF 防护链；图片 ≤5 MB、视频 ≤20 MiB，超限会报错并指引压缩/裁剪后重试；视频仅在 OpenAI 兼容 provider（如 kimi/qwen/ernie 系）且模型声明 `video` 模态时可用
 
 第三方扩展目录需包含 `manifest.json`（`apiVersion: "1"`）；入口默认为 `index.js`，可在 manifest 的 `entry` 字段另行指定。在设置页输入本地绝对路径即可安装。v1 扩展是可信代码，安装即信任其声明权限；单个钩子运行超时 5 秒会被跳过并记录日志。第三方扩展可用的 API 面与官方扩展看齐：注册工具、`sessions`/`context`/`events` 访问（`context.readVaultFile` 可只读会话 `compact/` 归档目录）、提示词与上下文钩子、私有存储（`<数据目录>/extensions-data/<id>/`，单文件 1 MiB、总量 50 MiB）、REST 路由注册（`/api/ext/<id>/*`，需 `http:route` 权限）、模型调用通道（`model:fast` 权限）、提示词与工具塑形（`prompt:shape`/`tools:shaping` 权限）、会话级扩展状态（extensionState）。完整字段与权限语义见 `help/development.md` 的扩展开发章节，可运行的示例在 `examples/extensions/demo/`。
 

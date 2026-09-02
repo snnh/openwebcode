@@ -18,6 +18,7 @@ import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
 import { setSimulatedUserAgent } from "../user-agent.js";
 import { BUILTIN_PERSONAS, getPersona, listPersonas, resolvePersona, personasDir, saveUserPreset, deleteUserPreset, type PersonaDetail, type PersonaPreset, type PersonaSummary } from "./env-sim/index.js";
 import type { CompactVaultService } from "./compact-vault.js";
+import { MAX_IMAGE_BASE64_CHARS } from "../media-limits.js";
 
 /** activeToolShaping 聚合结果：hideBuiltIns 按内置名隐藏，aliases 以新名（as）为键。 */
 export interface ActiveToolShaping {
@@ -41,8 +42,7 @@ const STORAGE_TOTAL_LIMIT = 50 * 1024 * 1024;
 const MODEL_PROMPT_LIMIT = 32 * 1024;
 const MODEL_MAX_TOKENS_LIMIT = 4096;
 const MODEL_DEFAULT_MAX_TOKENS = 1024;
-/** context.readImageFile 图片 base64 上限（≈5MB 原始字节，与消息带图同口径）。 */
-const MAX_IMAGE_BASE64_CHARS = 7_000_000;
+/** context.readImageFile 图片 base64 上限（≈5MB 原始字节，与消息带图同口径）：见 media-limits.ts。 */
 
 interface StoredConfig { version: 1; extensions: Record<string, ExtensionState> }
 type DiscoveredManifest = ExtensionManifest & { directory?: string };

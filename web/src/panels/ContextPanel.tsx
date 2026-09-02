@@ -83,7 +83,7 @@ function WindowSection({ info, latestUsage, cumulativeUsage, evicted, thresholdP
       <p
         className="ctx-window-label"
         title={info.workingBudget !== undefined
-          ? t(`工作预算 ${formatTokens(info.workingBudget)} tokens（等于上下文窗口）`, `Working budget ${formatTokens(info.workingBudget)} tokens (equals context window)`)
+          ? t(`工作预算 ${formatTokens(info.workingBudget)} tokens（上下文窗口扣除系统侧占用与输出预留）`, `Working budget ${formatTokens(info.workingBudget)} tokens (context window minus system-side usage and output reserve)`)
           : undefined}
       >
         {info.contextWindow !== undefined && pct !== undefined

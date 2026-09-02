@@ -6,6 +6,7 @@ import { CodeBlock } from "../components/Markdown";
 import { useI18n } from "../i18n";
 import { useChatActions, type DiffSpec } from "./types";
 import type { ToolCallStatus } from "./MessageCard";
+import { ToolResultMedia } from "./MessageCard";
 
 /** 组内一行的归一化视图：历史（参数 JSON + 配对结果）与流式（参数增量原文）共用。 */
 export interface ToolGroupCall {
@@ -21,14 +22,14 @@ export interface ToolGroupCall {
   /** write_file/edit_file 的文件变化规格，经 ChatActions.onOpenDiff 在统一 diff 视图打开 */
   diffSpec?: DiffSpec | undefined;
   /** 配对的 tool_result（按 toolCallId 合并到同一行） */
-  result?: { error: boolean; summary?: string | undefined; body: string } | undefined;
+  result?: { error: boolean; summary?: string | undefined; body: string; media?: NonNullable<MessageContent["media"]> } | undefined;
 }
 
 function resultViewOf(block: MessageContent): NonNullable<ToolGroupCall["result"]> {
   const error = Boolean(block.isError);
   const content = block.content ?? "";
   const formatted = error ? undefined : formatToolContent(content);
-  return { error, summary: formatted?.summary, body: formatted ? formatted.body : content };
+  return { error, summary: formatted?.summary, body: formatted ? formatted.body : content, media: block.media };
 }
 
 /**
@@ -153,6 +154,7 @@ export function ToolCallGroupRow({ call }: { call: ToolGroupCall }): ReactElemen
                 {call.result.summary ? ` · ${call.result.summary}` : ""}
               </p>
               {call.result.body && <pre className="mono">{call.result.body}</pre>}
+              <ToolResultMedia media={call.result.media} />
             </div>
           )}
         </div>

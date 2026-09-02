@@ -226,7 +226,7 @@ describe("server settings API", () => {
       { fastModelEffort: "extreme" },
       { coreRequestTimeoutMs: -5 },
       { compactionThresholdPercent: 49 },
-      { compactionThresholdPercent: 96 },
+      { compactionThresholdPercent: 101 },
       { compactionThresholdPercent: 85.5 },
       { exchangeRateUrl: "ftp://example.com" },
       { catalogSyncUrl: "ftp://example.com" },
@@ -370,7 +370,7 @@ describe("server settings API", () => {
     expect(groups.get("webSearch")?.fields.map((item) => item.key)).toEqual(["offlineMode", "webSearchMode"]);
   });
 
-  it("compactionThresholdPercent 默认 85，50/85/95 合法且热生效", async () => {
+  it("compactionThresholdPercent 默认 85，50/85/95/100 合法且热生效（100 = 关闭阈值型强制压缩）", async () => {
     const setup = await fixture();
     const view = (await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
     expect(field(view, "compactionThresholdPercent")).toMatchObject({
@@ -378,7 +378,7 @@ describe("server settings API", () => {
     });
     expect(setup.settings.effective().compactionThresholdPercent).toBe(85);
 
-    for (const value of [50, 85, 95]) {
+    for (const value of [50, 85, 95, 100]) {
       const response = await setup.app.inject({
         method: "PUT",
         url: "/api/settings",
@@ -389,7 +389,7 @@ describe("server settings API", () => {
       expect(setup.settings.effective().compactionThresholdPercent).toBe(value);
     }
     expect(field((await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>(), "compactionThresholdPercent"))
-      .toMatchObject({ value: 95, source: "file" });
+      .toMatchObject({ value: 100, source: "file" });
   });
 
   it("env OWC_COMPACTION_THRESHOLD_PERCENT 越界 fail-fast，合法值锁定界面写入", async () => {
@@ -408,14 +408,15 @@ describe("server settings API", () => {
     expect(rejected.statusCode).toBe(400);
   });
 
-  it("loads OWC_COMPACTION_THRESHOLD_PERCENT into ServerConfig（50–95 合法；越界/非法 fail-fast，与 boundedInteger 约定一致）", () => {
+  it("loads OWC_COMPACTION_THRESHOLD_PERCENT into ServerConfig（50–100 合法；越界/非法 fail-fast，与 boundedInteger 约定一致）", () => {
     expect(loadConfig({}).compactionThresholdPercent).toBe(85);
     expect(loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "50" }).compactionThresholdPercent).toBe(50);
     expect(loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "70" }).compactionThresholdPercent).toBe(70);
     expect(loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "95" }).compactionThresholdPercent).toBe(95);
+    expect(loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "100" }).compactionThresholdPercent).toBe(100);
     // 越界与非法值一律抛错（与 agentMaxTurns 等数值环境变量的 boundedInteger 约定一致）
     expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "40" })).toThrow(/>= 50/);
-    expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "96" })).toThrow(/95/);
+    expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "101" })).toThrow(/100/);
     expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "85.5" })).toThrow(/positive integer/);
     expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "abc" })).toThrow(/positive integer/);
   });

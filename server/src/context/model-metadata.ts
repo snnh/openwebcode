@@ -53,9 +53,20 @@ const PREFIXES: Array<[string, ModelMetadata]> = [
   // kimi：k3 始终推理只认 reasoning_effort（low/high/max）；kimi-for-coding（K2.7-code）
   // 强制保留式思考、传 thinking 参数报错=fixed；其余（k2.6 等）thinking:{type} 开关。
   // 官方上下文：k2.5/k2.6/k2.7-code = 256K；k3 = 1M。
+  // k2.6/k2.7*/k3 为视频输入代（声明 video 模态，read_media 按此门控视频投递）。
   ["kimi-for-coding", { contextWindow: 256_000, capabilities: caps({ thinkingStyle: "fixed" }) }],
-  ["kimi-k3", { contextWindow: 1_000_000, capabilities: caps({ effort: ["low", "high", "max"], thinkingStyle: "effort_only" }) }],
+  ["kimi-k3", { contextWindow: 1_000_000, capabilities: caps({ modalities: ["text", "image", "video"], effort: ["low", "high", "max"], thinkingStyle: "effort_only" }) }],
+  ["kimi-k2.6", { contextWindow: 256_000, capabilities: caps({ modalities: ["text", "image", "video"], thinking: ["enabled", "disabled"], thinkingStyle: "thinking" }) }],
+  ["kimi-k2.7", { contextWindow: 256_000, capabilities: caps({ modalities: ["text", "image", "video"], thinking: ["enabled", "disabled"], thinkingStyle: "thinking" }) }],
   ["kimi", { contextWindow: 256_000, capabilities: caps({ thinking: ["enabled", "disabled"], thinkingStyle: "thinking" }) }],
+  // qwen-vl-max/plus 与 qwen3-vl 系列为视频输入代（其余 qwen 仅图片；vl 命名仍由
+  // withVisionIfNamed 兜底补 image 模态）。effort 档位按已知集合并集声明，值不设限原样透传。
+  ["qwen3-vl", { contextWindow: 256_000, capabilities: caps({ modalities: ["text", "image", "video"], thinking: ["enabled", "disabled"], effort: ["low", "medium", "high", "xhigh", "max"], thinkingStyle: "enable_thinking" }) }],
+  ["qwen-vl-max", { contextWindow: 256_000, capabilities: caps({ modalities: ["text", "image", "video"], thinking: ["enabled", "disabled"], effort: ["low", "medium", "high", "xhigh", "max"], thinkingStyle: "enable_thinking" }) }],
+  ["qwen-vl-plus", { contextWindow: 256_000, capabilities: caps({ modalities: ["text", "image", "video"], thinking: ["enabled", "disabled"], effort: ["low", "medium", "high", "xhigh", "max"], thinkingStyle: "enable_thinking" }) }],
+  // ernie-4.5-vl / ernie-5.0 系列为视频输入代；其余 ernie 未声明走 FALLBACK（未知模型保守纯文本）。
+  ["ernie-4.5-vl", { contextWindow: 256_000, capabilities: caps({ modalities: ["text", "image", "video"] }) }],
+  ["ernie-5.0", { contextWindow: 256_000, capabilities: caps({ modalities: ["text", "image", "video"] }) }],
   // qwen：顶层 enable_thinking 开关（阿里云 OpenAI 兼容）；effort 档位随模型（qwen3.8-max
   // 为 low/medium/xhigh 体系），按已知集合并集声明，值不设限原样透传
   ["qwen", { contextWindow: 256_000, capabilities: caps({ modalities: ["text", "image"], thinking: ["enabled", "disabled"], effort: ["low", "medium", "high", "xhigh", "max"], thinkingStyle: "enable_thinking" }) }],

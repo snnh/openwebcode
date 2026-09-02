@@ -3,6 +3,7 @@ import { readSseData, DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./openai-compatible
 import { normalizeProviderError, ProviderError } from "./provider-error.js";
 import { parseReasoningSignature, parseWebSearchCallSignature, encodeTextSignatureV1, parseTextSignature, deriveMessageItemId } from "./responses-replay.js";
 import { collectToolOutputs, parseArguments, providerRequestHeaders, requireResponseBody } from "./shared.js";
+import { collectToolMedia, openaiResponsesMediaMessage, type ToolMediaItem } from "./tool-result-media.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
 /** OpenAI Responses 拒绝低于 16 的 max_output_tokens（dsh 同口径）。 */
@@ -91,6 +92,7 @@ interface ReasoningAccumulator {
  */
 export class OpenAIResponsesProvider implements Provider {
   readonly name: string;
+  readonly interfaceType = "openai-responses" as const;
   private readonly fetch: typeof fetch;
   private readonly maxTokens: number | undefined;
 
@@ -566,6 +568,7 @@ function toResponsesInput(
   encrypted: boolean,
 ): Array<Record<string, unknown>> {
   const outputs = collectToolOutputs(messages);
+  const toolMedia = collectToolMedia(messages);
   const result: Array<Record<string, unknown>> = [];
   const emitted = new Set<string>();
   for (const message of messages) {
@@ -591,6 +594,9 @@ function toResponsesInput(
         // - tool_call 块：function_call 保留 fc_ item id（itemId 以 fc_ 开头时），随后内联
         //   function_call_output（结果缺失补 interrupted 占位）。
         let textBlockIndex = 0;
+        // 附带媒体（read_media）批量收集：本 assistant 消息内全部 function_call_output
+        // 之后合成**一条** user 消息投递（fc/fco 配对要求连续，中间插 user 会破配对校验）
+        const encryptedMediaBatch: ToolMediaItem[] = [];
         for (const block of message.content) {
           if (block.type === "thinking") {
             if (block.provider !== providerName) continue;
@@ -628,8 +634,10 @@ function toResponsesInput(
               call_id: block.id,
               output: sanitizeSurrogates(outputs.get(block.id) ?? INTERRUPTED_TOOL_OUTPUT),
             });
+            encryptedMediaBatch.push(...(toolMedia.get(block.id) ?? []));
           }
         }
+        if (encryptedMediaBatch.length > 0) result.push(openaiResponsesMediaMessage(encryptedMediaBatch));
       } else {
       // 规范序回放（DeepSeek Responses 官方规则 + 真机验证）：带 tools 的请求中，所有含
       // reasoning_text 的 reasoning item 必须回传，且位于其归属的 assistant 消息之前
@@ -720,6 +728,12 @@ function toResponsesInput(
           output: sanitizeSurrogates(outputs.get(call.id) ?? INTERRUPTED_TOOL_OUTPUT),
         });
       }
+      // 附带媒体（read_media）synthesized user 消息：整批 function_call_output 之后一次投递
+      const batchMedia: ToolMediaItem[] = [];
+      for (const call of toolCalls) {
+        batchMedia.push(...(toolMedia.get(call.id) ?? []));
+      }
+      if (batchMedia.length > 0) result.push(openaiResponsesMediaMessage(batchMedia));
       }
     }
     // tool 角色消息的 tool_result 已内联到对应 function_call 之后，游离者丢弃（见上文）

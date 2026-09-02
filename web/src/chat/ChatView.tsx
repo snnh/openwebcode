@@ -225,6 +225,15 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
     },
   });
 
+  // 「运行中」压缩占位自愈：本会话详情/上下文视图的 REST 刷新（切换会话/重连后重取）完成、
+  // 且无进行中的 run、无消息 POST 在途时，清掉滞留的占位——WS 缺口错过
+  // context.compacted/compact_failed 时 spinner 不再永驻。守卫：agent busy（压缩可能正在
+  // 进行）或 /compact 等同步压缩 POST 在途时不清理，事件正常到达时的原位沉降/失败不受影响。
+  useEffect(() => {
+    if (!sessionId || send.isPending || isBusyState(currentState)) return;
+    live.clearRunningCompaction(sessionId);
+  }, [sessionId, detail.data, contextView.data, currentState, send.isPending]);
+
   // Composer 发送与编辑重发共用的提交逻辑
   const submitDraft = useCallback((behavior?: "start" | "steer" | "follow_up"): void => {
     // 请求进行中（如 /compact 同步压缩可能耗时）防重复提交：避免二次压缩或 run 与压缩抢写账本

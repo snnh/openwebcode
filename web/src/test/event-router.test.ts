@@ -4,8 +4,9 @@ import { createEventRouter, type EventRouterDeps } from "../app/event-router";
 import { sessionMeta, sessionStore } from "../app/session-store";
 import { qk } from "../app/queries";
 import { deriveWindowInfo } from "../lib/context-window";
-import type { AppEvent, ContextBuildStats, ContextWatermark, ModelProfile, Session } from "../lib/contracts";
+import type { AgentRun, AppEvent, ContextBuildStats, ContextWatermark, ModelProfile, Session } from "../lib/contracts";
 import type { StreamBuffer } from "../chat/stream-buffer";
+import { api } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -68,6 +69,7 @@ function setup(currentSessionId = "s1") {
     applyActivityEvent: vi.fn(),
     applySubagentEvent: vi.fn(),
     applyCompactionEvent: vi.fn(),
+    clearRunningCompaction: vi.fn(),
     stream,
     onResyncCurrent: vi.fn(),
   };
@@ -221,6 +223,65 @@ describe("createEventRouter", () => {
     const { deps, router } = setup("s1");
     router.route(makeEvent({ type: "run.completed", sessionId: "s2", payload: {} }));
     expect(deps.desktopNotify).toHaveBeenCalledWith({ sessionId: "s2", title: "任务完成", body: "会话二" });
+  });
+
+  it("agent.state 终态/空闲清除「运行中」压缩占位（跨会话）；busy 不动", () => {
+    const { deps, router } = setup("s1");
+    router.route(makeEvent({ type: "agent.state", sessionId: "s2", payload: { state: "thinking" } }));
+    router.route(makeEvent({ type: "agent.state", sessionId: "s1", payload: { state: "executing_tools" } }));
+    expect(deps.clearRunningCompaction).not.toHaveBeenCalled();
+    router.route(makeEvent({ type: "agent.state", sessionId: "s2", payload: { state: "idle" } }));
+    router.route(makeEvent({ type: "agent.state", sessionId: "s1", payload: { state: "failed" } }));
+    router.route(makeEvent({ type: "agent.state", sessionId: "s1", payload: { state: "aborted" } }));
+    expect(deps.clearRunningCompaction).toHaveBeenNthCalledWith(1, "s2");
+    expect(deps.clearRunningCompaction).toHaveBeenNthCalledWith(2, "s1");
+    expect(deps.clearRunningCompaction).toHaveBeenNthCalledWith(3, "s1");
+  });
+
+  it.each(["run.completed", "run.failed", "run.aborted"] as const)(
+    "run 终态 %s 清除运行中压缩占位（跨会话）",
+    (type) => {
+      const { deps, router } = setup("s1");
+      router.route(makeEvent({ type, sessionId: "s3", payload: {} }));
+      expect(deps.clearRunningCompaction).toHaveBeenCalledWith("s3");
+    },
+  );
+
+  it("压缩事件正常到达不清占位（运行中→原位沉降/失败由 live-store 处理）", () => {
+    const { deps, router } = setup("s1");
+    router.route(makeEvent({ type: "context.compacting", sessionId: "s1", payload: { forced: true, mode: "vault" } }));
+    router.route(makeEvent({ type: "context.compacted", sessionId: "s1", payload: { mode: "vault", uptoIndex: 7 } }));
+    router.route(makeEvent({ type: "context.compact_failed", sessionId: "s1", payload: { message: "快速模型超时" } }));
+    expect(deps.clearRunningCompaction).not.toHaveBeenCalled();
+  });
+
+  it("resync：服务端无活跃 run（404）清除运行中压缩占位", async () => {
+    const { deps, router } = setup("s1");
+    router.route(makeEvent({ type: "resync.required", sessionId: "s1" }));
+    await vi.waitFor(() => expect(deps.clearRunningCompaction).toHaveBeenCalledWith("s1"));
+  });
+
+  it("resync：run 终态清除占位；run 活跃（压缩可能在进行）保留", async () => {
+    const { queryClient, deps, router } = setup("s1");
+    const runSnapshot = (state: AgentRun["state"]): AgentRun => ({
+      id: "r1",
+      sessionId: "s1",
+      triggerMessageId: "m1",
+      state,
+      turnIndex: 2,
+      startedAt: "2026-08-01T00:00:00.000Z",
+      since: "2026-08-01T00:00:00.000Z",
+    });
+    vi.mocked(api.run).mockResolvedValueOnce(runSnapshot("completed"));
+    router.route(makeEvent({ type: "resync.required", sessionId: "s1" }));
+    await vi.waitFor(() => expect(deps.clearRunningCompaction).toHaveBeenCalledTimes(1));
+    expect(sessionStore.get().agentStates.s1).toBe("completed");
+
+    vi.mocked(api.run).mockResolvedValueOnce(runSnapshot("executing_tools"));
+    router.route(makeEvent({ type: "resync.required", sessionId: "s1" }));
+    await vi.waitFor(() => expect(queryClient.getQueryData(qk.run("s1"))).toMatchObject({ state: "executing_tools" }));
+    // run 活跃：不新增清理调用（压缩可能仍在进行）
+    expect(deps.clearRunningCompaction).toHaveBeenCalledTimes(1);
   });
 });
 

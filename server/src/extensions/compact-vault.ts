@@ -7,7 +7,7 @@ import type { PricingCatalog } from "../cost/pricing-catalog.js";
 import type { FastModelClient } from "../fast-model.js";
 import type { HookRunner } from "../hooks.js";
 import { appendMemory, parseSedimentSections } from "../memory.js";
-import { ContextManager, estimateFragmentTokens, recordCompaction } from "../context/context-manager.js";
+import { ContextManager, compactionIndexIn, estimateFragmentTokens, recordCompaction } from "../context/context-manager.js";
 import { extractInstructions, mergeInstructions, type CompactResult } from "../context/compactor.js";
 import { withTimeout } from "../http-utils.js";
 import type { ProviderRegistry } from "../providers/provider.js";
@@ -186,9 +186,10 @@ export class CompactVaultService {
     if (!session) throw new Error("Session not found");
     const context = new ContextManager(this.sessions.contextRoot(sessionId));
     const ledger = await context.load();
-    // 区段边界与 Compactor 同纪律：按活动路径计算（含分叉时索引不错位）
+    // 区段边界与 Compactor 同纪律：按活动路径计算（含分叉时索引不错位）；
+    // 旧压缩边界优先按 uptoMessageId 锚定（分叉离路径时归 0，从新区段重新归档）
     const activeMessages = activePathMessages(session.messages, session.activeLeafId);
-    const compactedUpto = Math.min(ledger.compacted?.uptoIndex ?? 0, activeMessages.length);
+    const compactedUpto = ledger.compacted ? compactionIndexIn(activeMessages, ledger.compacted) : 0;
     const clearedUpto = Math.min(ledger.cleared?.uptoIndex ?? 0, activeMessages.length);
     const previousUpto = Math.max(compactedUpto, clearedUpto);
     const keepTail = Math.max(0, Math.floor(options.keepTail ?? 10));
@@ -251,6 +252,8 @@ export class CompactVaultService {
     await writeFile(path.join(compactDir, "index.json"), `${JSON.stringify(vaultIndex, null, 2)}\n`, "utf8");
     const record = {
       uptoIndex,
+      // 边界锚点（与 Compactor 同口径）：buildView 按 id 定位，分叉离路径时不靠下标误伤新分支
+      uptoMessageId: activeMessages[uptoIndex - 1]!.id,
       mode: "vault" as const,
       summary: indexText,
       instructions: mergedInstructions,
