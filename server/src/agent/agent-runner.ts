@@ -1464,7 +1464,7 @@ export class AgentRunner {
           // 首轮极简提示词：跳过尾注（Prompt version / Current date / Current working directory）
           ...(minimalPromptTurn ? { suppressTrailer: true } : {}),
         });
-        await this.state(sessionId, "streaming");
+        await this.state(sessionId, "streaming", true);
         const providerCallStart = performance.now();
         // thinking/effort 用户优先、不设限透传（1.9.5 起不做模型级白名单过滤；
         // 全局枚举合法性校验在路由层已完成；fallback 模型能力差异不影响此处）
@@ -1706,7 +1706,7 @@ export class AgentRunner {
           return;
         }
         if (toolCalls.length === 0) throw new Error("Provider stopped for tool use without a tool call");
-        await this.state(sessionId, "executing_tools");
+        await this.state(sessionId, "executing_tools", true);
         const toolExecStart = performance.now();
         // 同消息 subagent fan-out 并行：仅当设置并行数 ≥2 且本条消息全部为 subagent 类调用时启用
         // （模型一次发起多个子代理的典型形态）；其余形状——混入非子代理工具、并行数 1、单调用——
@@ -1800,7 +1800,7 @@ export class AgentRunner {
         }
         perfToolExecMs += performance.now() - toolExecStart;
         perfTurnCount++;
-        await this.state(sessionId, "advancing_turn");
+        await this.state(sessionId, "advancing_turn", true);
         await context.advanceRound(turnLedger);
         const afterTools = await this.sessions.get(sessionId);
         if (afterTools && saverOn) {
@@ -1825,8 +1825,12 @@ export class AgentRunner {
           await context.commitTurn(turnLedger);
           activeTurn = undefined;
         }
+        // 轮末统一落盘热路径被去抖的 run 状态（每轮 1 次替代 4 次瞬时写）；
+        // applySteering 之后可能紧跟下一轮 streaming/终态写，须先让本轮的
+        // advancing_turn 排入 runWrites 链，REST getRun 的等待语义才成立。
+        await this.flushRunState(sessionId);
         await this.runControl.applySteering(sessionId);
-        this.state(sessionId, "thinking");
+        this.state(sessionId, "thinking", true);
       }
       throw new Error(`Agent exceeded ${maxTurns} turns`);
     } catch (error) {
@@ -4054,8 +4058,15 @@ export class AgentRunner {
     }
   }
 
-  /** Map legacy transient names to the persisted Run state machine. */
-  private state(sessionId: string, requested: string): Promise<void> {
+  /** Map legacy transient names to the persisted Run state machine.
+   *
+   *  deferDisk=true 用于每工具轮热路径的瞬时状态（streaming/executing_tools/
+   *  advancing_turn/thinking）：只做内存赋值 + agent.state 事件发布，不排盘，
+   *  磁盘快照由 flushRunState() 在轮末统一补写（每轮 4 次瞬时写 → 1 次轮末写）。
+   *  低频状态（starting/settling/waiting_permission/snapshotting/budget_paused 等）
+   *  与终态保持即时落盘。崩溃时磁盘停留在上一轮末状态属预期：getRun 的 restarted
+   *  恢复路径对任何非终态一视同仁地标 failed，语义不因去抖改变。 */
+  private state(sessionId: string, requested: string, deferDisk = false): Promise<void> {
     const state: AgentRunState | undefined = ({
       thinking: "preparing_context",
       tool_running: "executing_tools",
@@ -4074,14 +4085,25 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "agent.state", sessionId, payload: { state: requested } });
       return Promise.resolve();
     }
-    // 状态未变则跳过落盘与事件：run.state 同步赋值后 writeRun 已 await 落盘，
-    // 相同状态必然已持久化；重复事件对消费方（web 端状态徽章/live-store、REST run 快照、
-    // 扩展白名单推送）只会重复触发同值写入与 invalidate，还让每轮多工具循环
+    // 状态未变则跳过事件与落盘：重复事件对消费方（web 端状态徽章/live-store、REST run
+    // 快照、扩展白名单推送）只会重复触发同值写入与 invalidate，还让每轮多工具循环
     // （tool_running 反复触发）多出 2×tmp+rename 原子写。turnIndex 变更由 setTurnIndex
     // 单独落盘，且跨轮状态序列相邻必不同，事件不会丢 turnIndex 信息。
     if (run.state === state) return Promise.resolve();
     run.state = state;
     run.since = new Date().toISOString();
+    if (deferDisk) {
+      // 去抖路径只发事件不落盘；内存态即 REST 快照源（getRun 活跃分支直接读 runs），
+      // 磁盘在 flushRunState 补写，终态写入总是先排入 runWrites 链才返回。
+      this.events.publish({
+        source: "agent",
+        type: "agent.state",
+        sessionId,
+        runId: run.id,
+        payload: { runId: run.id, state: run.state, turnIndex: run.turnIndex, since: run.since },
+      });
+      return Promise.resolve();
+    }
     const write = this.writeRun(sessionId, run, true);
     void write.catch((error) => {
       this.events.publish({
@@ -4093,6 +4115,15 @@ export class AgentRunner {
       });
     });
     return write;
+  }
+
+  /** 轮末补写 state(deferDisk) 去抖的 run 状态：每工具轮在 commitTurn 之后、
+   *  下一次 provider 调用之前统一落盘一次。事件已在 state() 内即时发布，
+   *  publishState=false 避免重复推送。 */
+  private async flushRunState(sessionId: string): Promise<void> {
+    const run = this.runs.get(sessionId);
+    if (!run) return;
+    await this.writeRun(sessionId, run, false);
   }
 
   private async finishRun(
