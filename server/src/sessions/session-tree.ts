@@ -1,6 +1,17 @@
 import type { ChatMessage } from "./types.js";
 
 /**
+ * 上下文注入消息（模式/日期引导，kimi-code 式 reminder）的 id 前缀。
+ * 消息以 user 角色落盘于活动路径，供模型消费；WebUI 面向服务端过滤（不可见）。
+ * 识别点：活动路径扫描（去重/节奏）、用户轮计数、前端消息接口过滤、标题派生排除。
+ */
+export const INJECTION_MESSAGE_ID_PREFIX = "inj:";
+
+export function isInjectionMessageId(id: string): boolean {
+  return id.startsWith(INJECTION_MESSAGE_ID_PREFIX);
+}
+
+/**
  * 会话消息树的活动路径：从 leaf 沿 parentId 走到根，返回根→leaf 顺序的数组。
  * leafId 缺失（legacy 线性会话）或 leaf 不在树中（悬挂）时回退整表，
  * 保持旧的线性行为；父链成环时防御性截断。

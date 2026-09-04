@@ -66,11 +66,11 @@ import { ToolAliasResolver } from "./tool-alias.js";
  * URL 安全由 media-fetch 的 SSRF 链负责）。 */
 const LOCAL_PATH_GATED_TOOLS = new Set([...FILE_TOOLS.map((tool) => tool.name), "read_media"]);
 import { digestSwarmBoard, swarmBoardPath } from "./swarm-board.js";
-import type { MessageContent, NodeEnv, PythonEnv, SessionMeta, WebSearchCallContent } from "../sessions/types.js";
+import type { ChatMessage, MessageContent, NodeEnv, PythonEnv, SessionMeta, WebSearchCallContent } from "../sessions/types.js";
 import { replaceThinkingBlockById } from "../providers/thinking-merge.js";
 import { effectivePythonEnv, UvPythonEnvironments, uvVenvDir, wrapCommandWithNote, wrapCommandWithVenv } from "../python-env.js";
 import { effectiveNodeEnv, NodeEnvManagers, wrapCommandWithNodeEnv } from "../node-env.js";
-import { activePathMessages } from "../sessions/session-tree.js";
+import { activePathMessages, INJECTION_MESSAGE_ID_PREFIX, isInjectionMessageId } from "../sessions/session-tree.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import { resolveSessionPersona } from "../sessions/extension-state.js";
@@ -87,7 +87,7 @@ import type { ExtensionManager } from "../extensions/extension-manager.js";
 import type { CompactVaultService } from "../extensions/compact-vault.js";
 import type { PromptHookResult } from "../extensions/types.js";
 import { decodeProcessOutputChunks } from "./output-decoder.js";
-import { buildSystemPrompt } from "./prompts/prompt-builder.js";
+import { buildSystemPrompt, isoDate } from "./prompts/prompt-builder.js";
 import { PI_BASE_SYSTEM_PROMPT } from "./prompts/pi-base.js";
 import { loadPromptOverride, type PromptOverride } from "./prompts/prompt-overrides.js";
 import { RunStore, type AgentRunSnapshot, type AgentRunState } from "./run-store.js";
@@ -342,7 +342,7 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
   inputSchema: {
     type: "object",
     properties: {
-      prompt_template: { type: "string", description: "Prompt template for every sub-agent; must contain the {{item}} placeholder where each item's task value is substituted. Each sub-agent cannot see this conversation, the project's convention files, or current session state, so make the template self-contained: include the task, relevant file paths to read, project conventions, expected language, and what to report back. If a sub-agent must read specific files, list them explicitly." },
+      prompt_template: { type: "string", description: "Prompt template for every sub-agent; must contain the {{item}} placeholder where each item's task value is substituted. Same self-contained requirements as subagent.prompt." },
       items: {
         type: "array",
         items: {
@@ -455,6 +455,37 @@ const TASK_STOP_TOOL: ProviderTool = {
   },
 };
 
+/** 会话 artifact id 恒为 artifact-<uuid>（context-manager.readArtifact 校验同款）。视图文本里
+ *  出现该 id 即说明存在可恢复的截断/驱逐产物：boundToolResult 截断标记（full output artifact:…）、
+ *  驱逐占位符与超级节省摘要均内嵌 id。id 由 randomUUID 生成，用户文本误命中概率可忽略，
+ *  即使误报也只会多注入一个无害的只读工具。 */
+const ARTIFACT_ID_PATTERN = /artifact-[0-9a-f-]{36}/;
+
+/** 当前视图是否含 artifact 引用（历史截断/驱逐占位遗留，或本轮大结果刚被截断进 artifact）。
+ *  read_artifact 按此按轮注册：无产物可恢复时该工具不常驻。 */
+function viewContainsArtifactReference(messages: readonly ChatMessage[]): boolean {
+  for (const message of messages) {
+    for (const block of message.content) {
+      switch (block.type) {
+        case "text":
+        case "thinking":
+          if (ARTIFACT_ID_PATTERN.test(block.text)) return true;
+          break;
+        case "tool_result":
+          if (ARTIFACT_ID_PATTERN.test(block.content)) return true;
+          break;
+        case "tool_call":
+          // read_artifact 自身的调用历史（入参含 artifactId）也算引用：分页未完时保持工具在场
+          if (ARTIFACT_ID_PATTERN.test(JSON.stringify(block.input))) return true;
+          break;
+        default:
+          break;
+      }
+    }
+  }
+  return false;
+}
+
 function builtInTools(options: {
   skillsAvailable: boolean;
   backgroundTasksEnabled: boolean;
@@ -474,7 +505,6 @@ function builtInTools(options: {
     bashTool(options.backgroundTasksEnabled, options.shell, options.pythonEnv),
     ...FILE_TOOLS,
     ...(options.media.image || options.media.video ? [readMediaTool(options.media)] : []),
-    READ_ARTIFACT_TOOL,
     REPO_MAP_TOOL,
     CODE_SEARCH_TOOL,
     TEST_RUNNER_TOOL,
@@ -590,7 +620,7 @@ function parsePlanApprovalDecision(answer: unknown): PlanApprovalDecision {
 function workDisciplineSection(toolNames: ReadonlySet<string>): string {
   if (toolNames.size === 0) return "";
   const lines = [
-    "\n\n## Work discipline",
+    "## Work discipline",
     "- Inspect relevant code and context before editing.",
   ];
   if (["read_file", "glob", "grep"].every((name) => toolNames.has(name))) {
@@ -606,33 +636,86 @@ function workDisciplineSection(toolNames: ReadonlySet<string>): string {
   return lines.join("\n");
 }
 
-function planModeSection(enabled: boolean): string {
+/**
+ * 模式引导注入文本（kimi-code 式上下文注入，不再进系统提示——system 保持跨模式字节稳定以保缓存）。
+ * 触发与节奏见 AgentRunner 的 run/注入决策；文本只随「模型是否支持工具」分两态。
+ */
+function planFullReminder(toolsEnabled: boolean): string {
   // 两分支都点名「写/执行工具仍列出但会被拒」：模型看到完整工具表时不再无效调用写工具。
   const rejection = " Write and exec tools remain listed but are rejected in plan mode — use only read-only tools.";
-  if (enabled) {
-    return "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, write a step-by-step implementation plan, then call exit_plan_mode exactly once with the full plan to request user approval. Only after approval may you execute it." + rejection;
+  if (toolsEnabled) {
+    return "You are in PLAN mode (read-only). Investigate with read-only tools, write a step-by-step implementation plan, then call exit_plan_mode exactly once with the full plan to request user approval. Only after approval may you execute it." + rejection;
   }
-  return "\n\nYou are in PLAN mode. Assess the available conversation context and output a step-by-step implementation plan for the user to review before execution." + rejection;
+  return "You are in PLAN mode. Assess the available conversation context and output a step-by-step implementation plan for the user to review before execution." + rejection;
 }
 
-/** goal 模式提示词段：全能力模式（无 plan 的只读门禁），融合 KimiCode /goal 自主推进语义，要求每轮末行输出目标自评标记。 */
-function goalModeSection(): string {
-  return [
-    "\n\n## Goal mode",
-    "You are in GOAL mode: the user is tracking a goal. Work through it end-to-end: plan internally, execute without pausing for confirmation between steps, and do not re-ask questions answerable from the codebase. Stop and report only on an unrecoverable blocker. Every turn must end with a self-assessment marker on its own final line: GOAL_COMPLETE when the goal is fully achieved, or GOAL_INCOMPLETE: <one sentence of remaining work> otherwise. Do not mention this mechanism anywhere else.",
-  ].join("\n");
+/** 长工具循环中的稀疏重申（距上次注入 ≥2 assistant 轮次时），防止只读规则在长探索中淡化。 */
+function planSparseReminder(): string {
+  return "Plan mode still active (full rules in the earlier reminder): investigate with read-only tools, then call exit_plan_mode exactly once with the finished plan. Write and exec tools remain rejected until the plan is approved.";
+}
+
+/** 模式关闭后的一次性提醒：历史里残留的 plan 引导不再生效，模型可正常执行写/执行工具。 */
+function planExitReminder(): string {
+  return "Plan mode is off. Write and exec tools are available again; you may execute the approved plan (or respond to the user) normally.";
+}
+
+/** goal 模式引导注入文本：全能力模式（无 plan 的只读门禁），融合 KimiCode /goal 自主推进语义，要求每轮末行输出目标自评标记。 */
+function goalModeReminder(): string {
+  return "You are in GOAL mode: the user is tracking a goal. Work through it end-to-end: plan internally, execute without pausing for confirmation between steps, and do not re-ask questions answerable from the codebase. Stop and report only on an unrecoverable blocker. Every turn must end with a self-assessment marker on its own final line: GOAL_COMPLETE when the goal is fully achieved, or GOAL_INCOMPLETE: <one sentence of remaining work> otherwise. Do not mention this mechanism anywhere else.";
+}
+
+// ===== 模式/日期上下文注入（kimi-code 式 reminder；不进系统提示，保持稳定前缀缓存连续）=====
+// 注入消息 = user 角色合成消息，落盘于触发用户消息之前（run 启动时）或工具循环轮次之间（刷新），
+// id 前缀 inj:<kind>:<variant>:<uuid>（前缀常量见 sessions/session-tree.ts）供活动路径扫描/
+// 用户轮计数/前端过滤识别；文本以 <system-reminder> 包裹自描述。UI 不展示（服务端面向 UI 的
+// 消息接口过滤）；messages.jsonl 权威保留。
+
+const INJECTION_ID_PREFIX = INJECTION_MESSAGE_ID_PREFIX;
+
+function injectionId(kind: "plan" | "goal" | "date", variant: string): string {
+  return `${INJECTION_ID_PREFIX}${kind}:${variant}:${randomUUID()}`;
+}
+
+/** date 注入 id 内嵌日期（YYYY-MM-DD，UTC；与原尾注 Current date 口径一致）。 */
+function dateVariantFromId(id: string): string | undefined {
+  const match = /^inj:date:([0-9-]{10}):/.exec(id);
+  return match?.[1];
+}
+
+function wrapSystemReminder(body: string): string {
+  return `<system-reminder>\n${body}\n</system-reminder>`;
+}
+
+/** 活动路径（根→叶子）上的消息数组。 */
+function activePathOf(session: { messages: ChatMessage[]; activeLeafId?: string | null }): ChatMessage[] {
+  return activePathMessages(session.messages, session.activeLeafId ?? session.messages.at(-1)?.id);
+}
+
+/** 活动路径上最后一次 kind=plan/date 的注入消息索引；无则 -1。 */
+function lastInjectionIndex(path: ChatMessage[], kind: "plan" | "goal" | "date"): number {
+  for (let index = path.length - 1; index >= 0; index -= 1) {
+    if (path[index]!.id.startsWith(`${INJECTION_ID_PREFIX}${kind}:`)) return index;
+  }
+  return -1;
+}
+
+/** plan 轮次刷新判定：距上次 plan 注入后 ≥5 个 assistant 轮次 → full；≥2 → sparse（kimi-code 节奏）。 */
+function planRefreshVariant(assistantTurnsSince: number): "full" | "sparse" | undefined {
+  if (assistantTurnsSince >= 5) return "full";
+  if (assistantTurnsSince >= 2) return "sparse";
+  return undefined;
 }
 
 function communicationSection(defaultLanguage: string): string {
   return [
-    "\n\n## Communication",
+    "## Communication",
     `- Reply in the user's language (default ${defaultLanguage}); keep Chinese terminology consistent in Chinese replies.`,
     "- Be brief and outcome-oriented; skip filler, placeholders, and unnecessary explanation.",
   ].join("\n");
 }
 
 const SAFETY_BOUNDARY_SECTION = [
-  "\n\n## Safety boundary",
+  "## Safety boundary",
   "- Stay within the workspace; do not access files outside it. Do not perform destructive or irreversible actions without the user's explicit approval.",
   "- Do not rewrite Git history, commit, push, send external messages, or otherwise change external systems without the user's explicit approval.",
 ].join("\n");
@@ -857,6 +940,7 @@ export class AgentRunner {
    * 返回压缩结果（changed:false 由调用方决策）；压缩异常原样抛出。
    */
   private async runForcedCompaction(
+
     sessionId: string,
     session: SessionMeta,
     vaultForce: boolean,
@@ -987,6 +1071,93 @@ export class AgentRunner {
     this.searchProvider = provider;
   }
 
+  /**
+   * run 启动时的上下文注入（触发用户消息写入前调用）：plan/goal 引导 full、plan 关闭后的
+   * exit 提醒、日期跨日提醒（kimi 原版：仅在本地日期变化时注入，新会话首轮不注入）。
+   * 判定基于磁盘活动路径（不含尚未写入的触发消息），注入消息依次落盘（自动父链：每条以上一条
+   * 为父，随后写入的触发消息以最后一条注入为父）。失败只降级不阻断（节奏机制会在后续轮次自愈）。
+   * UI 面向服务端过滤（inj: 前缀），消息流不可见。
+   */
+  private async injectAtRunStart(sessionId: string, session: { messages: ChatMessage[]; activeLeafId?: string | null; provider: string; model: string; agentMode?: string }): Promise<void> {
+    // 注入文本分「模型支持工具」两态；profile 解析失败按支持工具处理（full 只读分支）
+    let toolsEnabled = true;
+    try {
+      toolsEnabled = this.getProfile(session.model, session.provider).capabilities.tools;
+    } catch { /* 注入降级不影响 run */ }
+    const flags = { planFull: session.agentMode === "plan", planExit: session.agentMode !== "plan" && session.agentMode !== "goal", goalFull: session.agentMode === "goal", dateRefresh: true };
+    await this.writeInjectionsForSession(sessionId, session, flags, toolsEnabled);
+  }
+
+  /**
+   * 工具循环迭代间的刷新注入：plan 长循环按 kimi 节奏重申（≥5 assistant 轮 full / ≥2 sparse），
+   * 日期跨日（长时间运行跨过午夜）时补日期提醒。判定后若无需注入则不落盘。
+   */
+  private async refreshInjectionsMidLoop(sessionId: string, session: { messages: ChatMessage[]; activeLeafId?: string | null; agentMode?: string }, toolsEnabled: boolean): Promise<void> {
+    if (session.agentMode !== "plan") {
+      if (session.agentMode === "goal") return; // goal 引导按用户消息 full，轮内不刷新
+      await this.writeInjectionsForSession(sessionId, session, {}, toolsEnabled, { dateOnly: true });
+      return;
+    }
+    const path = activePathOf(session);
+    const lastPlan = lastInjectionIndex(path, "plan");
+    if (lastPlan < 0) return; // 本轮 full 注入缺失（降级）：下个 run 启动会重判
+    let assistantTurnsSince = 0;
+    for (let index = lastPlan + 1; index < path.length; index += 1) {
+      if (path[index]!.role === "assistant") assistantTurnsSince += 1;
+    }
+    const variant = planRefreshVariant(assistantTurnsSince);
+    if (variant === undefined) return;
+    await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: wrapSystemReminder(variant === "full" ? planFullReminder(toolsEnabled) : planSparseReminder()) }], {
+      id: injectionId("plan", variant),
+      internal: true,
+    }).catch(() => undefined);
+  }
+
+  /** 统一的注入决策与落盘：并发 append 各自以当前活动叶子为父——须按序 await（前一注入成为后一注入的父）。 */
+  private async writeInjectionsForSession(
+    sessionId: string,
+    session: { messages: ChatMessage[]; activeLeafId?: string | null },
+    flags: { planFull?: boolean; planExit?: boolean; goalFull?: boolean; dateRefresh?: boolean },
+    toolsEnabled: boolean,
+    limit?: { dateOnly?: boolean },
+  ): Promise<void> {
+    try {
+      const today = isoDate(new Date());
+      const path = activePathOf(session);
+      const queue: Array<{ kind: "plan" | "goal" | "date"; variant: string; text: string }> = [];
+      if (!limit?.dateOnly) {
+        if (flags.planFull) queue.push({ kind: "plan", variant: "full", text: planFullReminder(toolsEnabled) });
+        if (flags.goalFull) queue.push({ kind: "goal", variant: "full", text: goalModeReminder() });
+        if (flags.planExit) {
+          const lastPlan = lastInjectionIndex(path, "plan");
+          let exitAfter = false;
+          for (let index = lastPlan + 1; index < path.length; index += 1) {
+            if (path[index]!.id.startsWith(`${INJECTION_ID_PREFIX}plan:exit:`)) { exitAfter = true; break; }
+          }
+          // plan 曾开启（路径上有 plan 注入）且之后没有 exit 提醒 → 补一次
+          if (lastPlan >= 0 && !exitAfter) queue.push({ kind: "plan", variant: "exit", text: planExitReminder() });
+        }
+      }
+      if (flags.dateRefresh) {
+        // A2（kimi 原版）：日期只在「变化」时注入——新会话首轮不注入（同日模型无日期概念，
+        // 跨日后首轮自动获得锚点）。稳定前缀无日期行，跨日仅追加一条新消息，缓存不受影响。
+        const lastDate = lastInjectionIndex(path, "date");
+        if (lastDate >= 0 && dateVariantFromId(path[lastDate]!.id) !== today) {
+          queue.push({ kind: "date", variant: today, text: `Current date: ${today} (UTC).` });
+        }
+      }
+      // 顺序 await：每条 append 自动以当前叶子为父（前一条注入成为后一条的父，最后一条注入成为触发消息的父）
+      for (const injection of queue) {
+        await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: wrapSystemReminder(injection.text) }], {
+          id: injectionId(injection.kind, injection.variant),
+          internal: true,
+        });
+      }
+    } catch (error) {
+      process.stderr.write(`[agent] 上下文注入失败（已降级跳过）：${errorMessage(error)}\n`);
+    }
+  }
+
   async run(
     sessionId: string,
     text: string,
@@ -1053,6 +1224,10 @@ export class AgentRunner {
         )
         : undefined;
 
+      // 上下文注入（plan/goal 引导、plan 关闭 exit 提醒、日期锚点）在触发用户消息写入前落盘：
+      // 注入消息沿活动路径成为触发消息的父节点；system 前缀不随模式/日期变化（缓存连续性）。
+      // 注入失败不阻断（方法内部降级）；快照计数在注入前采样，回滚语义不受影响。
+      await this.injectAtRunStart(sessionId, configuredSession);
       // 一旦路由返回 202，用户输入优先于所有可失败的集成步骤（快照、Hook、Core、Provider）。
       const triggerMessage = await appendUserMessage(effectiveText);
       if (followUpQueueItemId) {
@@ -1130,6 +1305,10 @@ export class AgentRunner {
         // fallback 切换后的生效模型（未切换 = 会话主模型）；上下文窗口/能力按此重新解析
         const effectiveProvider = modelOverride?.provider ?? session.provider;
         const effectiveModel = modelOverride?.model ?? session.model;
+        // 模式引导刷新注入（plan 长工具循环节奏重申/日期跨日）在视图构建前落盘，本轮请求即包含。
+        let toolsEnabledEarly = true;
+        try { toolsEnabledEarly = this.getProfile(effectiveModel, effectiveProvider).capabilities.tools; } catch { /* 降级：按支持工具处理 */ }
+        await this.refreshInjectionsMidLoop(sessionId, session, toolsEnabledEarly);
         const context = new ContextManager(this.sessions.contextRoot(sessionId));
         // 轮级共享句柄：一轮 load 一次（克隆 1 次），本轮 budgetStatus/buildView/记账/驱逐共用，
         // 出口处 commitTurn 统一落盘（有变更才写）——替代过去每轮 ~6 次全量克隆 + 2 次落盘。
@@ -1155,7 +1334,7 @@ export class AgentRunner {
         // 扩展注入/改写的 user 消息不影响首轮形态判定；/clear 与压缩的视图裁剪仍生效
         //（clear 后重新计为首回合）。压缩摘要头（id 以 compaction: 开头的 user 角色占位
         // 消息）不计入——否则首回合工具循环内触发压缩会让形态在同一回合中途翻转。
-        const visibleUserTurns = view.messages.filter((message) => message.role === "user" && !message.id.startsWith("compaction:")).length;
+        const visibleUserTurns = view.messages.filter((message) => message.role === "user" && !message.id.startsWith("compaction:") && !isInjectionMessageId(message.id)).length;
         perfContextBuildMs += performance.now() - ctxBuildStart;
         if (this.extensions) {
           // transformContext 与 beforeSend 共用同一份 ledger 摘要：entries 的 O(n) 映射与
@@ -1355,17 +1534,22 @@ export class AgentRunner {
         // 基础提示词与工具表渲染——项目上下文、安全边界、技能段、自定义指令、尾注、后台
         // 通知等段落一律跳过，用户发出第二条消息后恢复完整形态。
         const minimalPromptTurn = isFirstTurn && firstTurnOnly !== undefined;
-        // 自动驱逐联动：驱逐把被逐出的消息替换为 artifact 占位符（占位符指引模型用
-        // read_artifact 恢复），若预设形态隐藏了 read_artifact 而会话驱逐策略开启
-        //（enabled 且非 off），强制放行 read_artifact——否则占位符成为死胡同。
-        // 会话 toolsDeny 显式禁止时仍尊重拒绝；ledger 缺失/损坏视为驱逐关闭；
-        // 首轮双工具形态（firstTurnOnlyTools）期间不联动，用户发第二条消息后生效。
-        // 驱逐是 context-saver 扩展能力：扩展关闭（saverOn=false）时不联动。
-        if (saverOn && (!firstTurnOnly || !isFirstTurn) && !shapedBuiltIns.some((tool) => tool.name === "read_artifact") && !(session.toolsDeny ?? []).includes("read_artifact")) {
+        // read_artifact 默认不注册（不在 builtInTools 常驻表），需要时按轮放行，触发二选一：
+        // - 会话驱逐策略开启（enabled 且非 off）：被逐结果以 artifact 占位符留在视图，占位符
+        //   指引模型用 read_artifact 恢复——不注入即成死胡同（驱逐是 context-saver 扩展能力，
+        //   扩展关闭即视为驱逐关闭）；
+        // - 当前视图文本含 artifact id：截断/驱逐占位遗留，或本轮大结果（read_file/bash 等）
+        //   刚被 boundToolResult 截断进 artifact，模型分页需要工具在场。
+        // 其余轮次不注入（省系统提示目录行 + provider schema/描述）。会话 toolsDeny 显式
+        // 禁止时仍尊重拒绝；首轮双工具形态（firstTurnOnlyTools）期间不联动，用户发第二条
+        // 消息后生效。渲染前的逐轮判定不缓存：视图含引用与否逐轮真实。
+        if ((!firstTurnOnly || !isFirstTurn) && !shapedBuiltIns.some((tool) => tool.name === "read_artifact") && !(session.toolsDeny ?? []).includes("read_artifact")) {
           // 驱逐策略直读本轮 beginTurn 的轮级句柄（同一磁盘账本的 working 副本），
           // 免去每轮二次 new ContextManager().load() 全量加载 ledger 只为读 policy。
-          const evictionOn = turnLedger.working.policy.enabled && turnLedger.working.policy.strategy !== "off";
-          if (evictionOn) shapedBuiltIns = [...shapedBuiltIns, READ_ARTIFACT_TOOL];
+          const evictionOn = saverOn && turnLedger.working.policy.enabled && turnLedger.working.policy.strategy !== "off";
+          if (evictionOn || viewContainsArtifactReference(view.messages)) {
+            shapedBuiltIns = [...shapedBuiltIns, READ_ARTIFACT_TOOL];
+          }
         }
         this.toolAliases.setShaping(sessionId, shapingApplication.aliasMap, shapingApplication.aliasArgMaps);
 
@@ -1380,18 +1564,19 @@ export class AgentRunner {
           : [];
         const availableToolNames = new Set(tools.map((tool) => tool.name));
         const skillSection = availableToolNames.has("load_skill")
-          ? `\n\nAvailable skills (load full text with the load_skill tool when relevant; the user can also trigger one with /name):\n${skillCatalog.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")}`
+          ? `Available skills (load full text with the load_skill tool when relevant; the user can also trigger one with /name):\n${skillCatalog.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")}`
           : "";
         const agentSection = (availableToolNames.has(SUBAGENT_TOOL) || availableToolNames.has(SUBAGENT_LEGACY_NAME)) && agentCatalog.length > 0
-          ? `\n\nAvailable sub-agents (pass agent=<name> to subagent; built-in types explore (default, read-only) and general (write-capable, via the session permission chain) are always available; the custom agents below are read-only):\n${agentCatalog.map((agent) => {
+          ? `Available sub-agents (pass agent=<name> to subagent; built-in types explore (default, read-only) and general (write-capable, via the session permission chain) are always available; the custom agents below are read-only):\n${agentCatalog.map((agent) => {
             const ignored = (agent.tools ?? []).filter((tool) => !(SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
             return `- ${agent.name}: ${agent.description}${ignored.length > 0 ? ` (unsupported tools ignored: ${ignored.join(", ")})` : ""}`;
-          }).join("\n")}\nSub-agents cannot see this conversation, the project's convention files, or current session state: make each task prompt self-contained (exact task, relevant file paths to read, project conventions, expected language, what to report back). If a sub-agent must read specific files, list them explicitly.`
+          }).join("\n")}`
           : "";
         // 子代理角色档映射段：动态构建、随 settings 热更新（resolver 每轮现读 effective()）；
         // 未配置的档标注回落目标，引导主模型按任务难度选档。
+        //（frontmatter provider:/model 覆盖规则不在此重复：subagent/spawn_swarm 的 role 参数描述承载。）
         const roleSection = (availableToolNames.has(SUBAGENT_TOOL) || availableToolNames.has(SUBAGENT_LEGACY_NAME)) && this.modelRoles
-          ? `\n\nSub-agent model roles (pass role=<tier> to subagent/spawn_swarm to route the sub-agent to the configured model tier; choose the tier that fits the task):\n${MODEL_ROLES.map((role) => {
+          ? `Sub-agent model roles (pass role=<tier> to subagent/spawn_swarm to route the sub-agent to the configured model tier; choose the tier that fits the task):\n${MODEL_ROLES.map((role) => {
             const selection = this.modelRoles!.resolve(role);
             const current = selection
               ? `${selection.model} [${selection.provider}]`
@@ -1399,7 +1584,7 @@ export class AgentRunner {
                 ? "not configured, falls back to the session model"
                 : "not configured, falls back to balanced";
             return `- ${role}: ${SUB_AGENT_ROLE_GUIDANCE[role]} (current: ${current})`;
-          }).join("\n")}\nAn explicit provider:/model: in a custom sub-agent's frontmatter overrides any role; without a role, sub-agents default to the balanced tier (falling back to the session model when balanced is not configured).`
+          }).join("\n")}`
           : "";
 
         // 长期记忆注入（§2.3/§7.5）：CLAUDE.md/AGENTS.md + 项目/全局 memory.md，每轮现读
@@ -1417,13 +1602,11 @@ export class AgentRunner {
         // 首轮极简提示词（minimalPromptTurn）不消费也不注入后台通知：通知保留到下一轮，
         // 避免首轮形态泄漏后台信息。
         const bgNotices = toolsEnabled && !minimalPromptTurn ? (this.backgroundTasks?.drainNotices(sessionId) ?? []) : [];
-        const bgNoticeSection = bgNotices.length > 0 ? `\n\n${bgNotices.join("\n")}` : "";
+        const bgNoticeSection = bgNotices.join("\n\n");
 
         const baseProductSections = [
           workDisciplineSection(availableToolNames),
           communicationSection(this.defaultLanguage),
-          session.agentMode === "plan" ? planModeSection(toolsEnabled) : "",
-          session.agentMode === "goal" ? goalModeSection() : "",
           availableToolNames.has("spawn_swarm")
             ? "## Parallel exploration\nspawn_swarm is enabled: when a task fans out into many independent subtasks of the same kind, launch them in one spawn_swarm call instead of serial subagent calls. Members of a swarm coordinate via the shared discussion board (swarm_board_post/swarm_board_read)."
             : "",
@@ -1455,13 +1638,13 @@ export class AgentRunner {
           // 首轮极简提示词：跳过安全边界段（finalConstraints），第二轮起恢复
           finalConstraints: minimalPromptTurn ? [] : [SAFETY_BOUNDARY_SECTION],
           // 首轮极简提示词：跳过技能/代理/角色段（skillsSection），第二轮起恢复
-          skillsSection: minimalPromptTurn ? "" : `${skillSection}${agentSection}${roleSection}`,
+          skillsSection: minimalPromptTurn ? "" : [skillSection, agentSection, roleSection].filter(Boolean).join("\n\n"),
           // 首轮极简提示词：跳过项目上下文段（project_instructions），第二轮起恢复
           projectContext: minimalPromptTurn ? [] : (memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : []),
           ...(effectiveBaseOverride ? { basePromptOverride: effectiveBaseOverride } : {}),
           // 首轮极简提示词：跳过用户自定义指令（customAppend），第二轮起恢复
           ...(promptOverride?.customAppend && !minimalPromptTurn ? { customAppend: promptOverride.customAppend } : {}),
-          // 首轮极简提示词：跳过尾注（Prompt version / Current date / Current working directory）
+          // 首轮极简提示词：跳过尾注（Prompt version / Current working directory）
           ...(minimalPromptTurn ? { suppressTrailer: true } : {}),
         });
         await this.state(sessionId, "streaming", true);

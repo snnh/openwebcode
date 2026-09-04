@@ -280,7 +280,7 @@ export class SessionStore {
     sessionId: string,
     role: MessageRole,
     content: MessageContent[],
-    lineage?: Pick<ChatMessage, "parentId" | "runId" | "turnId">,
+    lineage?: { id?: string; parentId?: string; runId?: string; turnId?: string; /** 内部消息（模式/日期上下文注入）：不派生会话标题、不计用户轮。 */ internal?: boolean },
   ): Promise<ChatMessage> {
     return serializeByKey(this.appendChains, sessionId, () => this.appendMessageSerialized(sessionId, role, content, lineage));
   }
@@ -289,14 +289,14 @@ export class SessionStore {
     sessionId: string,
     role: MessageRole,
     content: MessageContent[],
-    lineage?: Pick<ChatMessage, "parentId" | "runId" | "turnId">,
+    lineage?: { id?: string; parentId?: string; runId?: string; turnId?: string; internal?: boolean },
   ): Promise<ChatMessage> {
     const meta = await this.readMeta(sessionId);
     const existing = meta.activeLeafId ? undefined : await this.readMessages(sessionId);
     const parentId = lineage?.parentId ?? meta.activeLeafId ?? existing?.messages.at(-1)?.id;
     const now = monotonicTimestamp();
     const message: ChatMessage = {
-      id: randomUUID(),
+      id: lineage?.id ?? randomUUID(),
       role,
       content,
       createdAt: now,
@@ -312,7 +312,7 @@ export class SessionStore {
     meta.updatedAt = now;
     meta.activeLeafId = message.id;
     let titleDerived = false;
-    if (meta.title === "New session" && role === "user") {
+    if (meta.title === "New session" && role === "user" && lineage?.internal !== true) {
       const derived = titleFromContent(content);
       if (derived !== undefined) {
         meta.title = derived;
