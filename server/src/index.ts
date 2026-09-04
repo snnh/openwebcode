@@ -37,6 +37,7 @@ import { ModelRoleResolver } from "./model-roles.js";
 import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
+import { setCustomUserAgent } from "./user-agent.js";
 import { GITHUB_RELEASES_URL, getServerVersion, readServerVersion, setServerVersion } from "./version.js";
 import { UpdateChecker } from "./update-checker.js";
 import { UpdateApplier } from "./update-applier.js";
@@ -162,6 +163,10 @@ core.setNodeEnvDefault(() => settings.effective().nodeEnv);
 core.setPythonEnvDefault(() => settings.effective().pythonEnv, dataDir);
 agent.setMaxTurns(() => settings.effective().agentMaxTurns);
 agent.setSubAgentMaxTurns(() => settings.effective().subAgentMaxTurns);
+agent.setSubAgentConcurrency(() => settings.effective().subAgentConcurrency);
+agent.setSpawnSwarmConcurrency(() => settings.effective().spawnSwarmConcurrency);
+// 出站 User-Agent：启动装配一次；此后设置变更经 SettingsService.hotApply 热应用（env-sim 模拟优先于自定义）
+setCustomUserAgent(settings.effective().userAgent ?? null);
 agent.setCompactionThreshold(() => settings.effective().compactionThresholdPercent);
 compactor.setCompactMaxTokens(() => settings.effective().compactMaxTokens);
 agent.setWebSearchMode(() => settings.effective().webSearchMode ?? "local");
@@ -190,7 +195,10 @@ const cron = new CronScheduler({
   },
 });
 agent.setCronScheduler(cron);
-const providerProfilesRuntime = new ProviderProfilesRuntime(providerProfiles, providers, agent, models, events);
+const providerProfilesRuntime = new ProviderProfilesRuntime(providerProfiles, providers, agent, models, events, {
+  // SSE 流 idle 超时设置项现读（provider 注册时生效；env OWC_PROVIDER_STREAM_IDLE_MS 为回退）
+  streamIdleTimeoutMs: () => settings.effective().providerStreamIdleMs,
+});
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上。
 // overlayfs 托管经宿主机 core 的 overlay.* 原语挂载 merged 视图（仅 Linux）。
 const managed = new ManagedWorkspaceManager({ dataDir, core: sharedCore });

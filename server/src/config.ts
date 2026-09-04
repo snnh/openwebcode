@@ -34,6 +34,17 @@ export interface ServerConfig {
   agentMaxTurns: number;
   /** 子代理（subagent/spawn_swarm/手动启动）默认最大轮次；调用方可显式覆盖，设置页可调（热生效）。 */
   subAgentMaxTurns: number;
+  /** 同一 assistant 消息内连续 subagent 调用的最大并行数（设置 subAgentConcurrency / OWC_SUB_AGENT_CONCURRENCY，
+   *  热生效）：只限制同时运行数量，不限制子代理总数量；2 = 默认最多两个并行（2–16）。 */
+  subAgentConcurrency: number;
+  /** spawn_swarm 并发成员数（设置 spawnSwarmConcurrency / OWC_SPAWN_SWARM_CONCURRENCY，热生效）：2–16，默认 4。 */
+  spawnSwarmConcurrency: number;
+  /** 出站 User-Agent 自定义（设置 userAgent / OWC_USER_AGENT，热生效）：缺省官方 owc/openwebcode{version}；
+   *  env-sim 模拟优先于它；更新检查/更新应用链路恒走官方 UA。 */
+  userAgent?: string;
+  /** SSE/流 idle 超时覆盖（设置 providerStreamIdleMs / OWC_PROVIDER_STREAM_IDLE_MS）：0 = 关闭 idle 超时；
+   *  缺省由 provider 内置默认决定；provider 注册时读取（重启或 profile 变更生效）。 */
+  providerStreamIdleMs?: number;
   /** 自动压缩水位（百分比，50–100）：上下文占用达到该水位时强制压缩；建议水位为该值减 15；100 = 关闭阈值型强制压缩（Provider overflow 的一次性安全恢复不受影响）。核心安全网，不随扩展。 */
   compactionThresholdPercent: number;
   /** 上下文压缩时快速模型的输出上限（tokens，1024–256000，热生效）：思考型快速模型需要较大余量，缺省 65536。 */
@@ -177,6 +188,19 @@ function optionalHttpUrl(value: string | undefined, name: string): string | unde
   return value;
 }
 
+/** 可选的非负整数环境变量（允许 0；未设置返回 undefined）；超上限抛错。 */
+function nonNegativeInteger(value: string | undefined, maximum: number): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error("Expected a non-negative integer");
+  }
+  if (parsed > maximum) {
+    throw new Error(`Expected an integer <= ${maximum}`);
+  }
+  return parsed;
+}
+
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase();
   return normalized === "localhost" || normalized === "::1" || normalized === "[::1]" ||
@@ -188,22 +212,34 @@ export function defaultCorePath(platform: NodeJS.Platform = process.platform): s
   return platform === "win32" ? "../build/Debug/owc-exec.exe" : "../build/owc-exec";
 }
 
-function originList(value: string | undefined): string[] {
-  if (!value) return [];
+/**
+ * 逗号分隔的 http(s) origin 白名单解析（OWC_ALLOWED_ORIGINS 与设置项 allowedOrigins 共用）。
+ * 错误文案不含变量名前缀，由调用方按来源补充上下文（env 场景补 OWC_ALLOWED_ORIGINS）。
+ */
+export function parseOriginList(value: string): string[] {
   const origins = value.split(",").map((entry) => entry.trim()).filter(Boolean);
-  if (origins.length > 16) throw new Error("OWC_ALLOWED_ORIGINS accepts at most 16 origins");
+  if (origins.length > 16) throw new Error("accepts at most 16 origins");
   return origins.map((origin) => {
     let parsed: URL;
     try {
       parsed = new URL(origin);
     } catch {
-      throw new Error(`OWC_ALLOWED_ORIGINS contains an invalid origin: ${origin}`);
+      throw new Error(`contains an invalid origin: ${origin}`);
     }
     if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.pathname !== "/" || parsed.search || parsed.hash) {
-      throw new Error(`OWC_ALLOWED_ORIGINS entries must be http(s) origins: ${origin}`);
+      throw new Error(`entries must be http(s) origins: ${origin}`);
     }
     return parsed.origin;
   });
+}
+
+function originList(value: string | undefined): string[] {
+  if (!value) return [];
+  try {
+    return parseOriginList(value);
+  } catch (error) {
+    throw new Error(`OWC_ALLOWED_ORIGINS ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function pathList(value: string | undefined): string[] | undefined {
@@ -219,6 +255,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const allowPaths = pathList(env.OWC_SANDBOX_ALLOW_PATHS);
   const catalogSyncUrl = optionalHttpUrl(env.OWC_MODELS_CATALOG_SYNC_URL, "OWC_MODELS_CATALOG_SYNC_URL");
   const pricingSyncUrl = optionalHttpUrl(env.OWC_MODELS_PRICING_SYNC_URL, "OWC_MODELS_PRICING_SYNC_URL");
+  const userAgent = env.OWC_USER_AGENT?.trim() ? env.OWC_USER_AGENT.trim() : undefined;
+  if (userAgent && (userAgent.length > 200 || /[\r\n]/.test(userAgent))) {
+    throw new Error("OWC_USER_AGENT must be a single-line string of at most 200 characters");
+  }
+  const providerStreamIdleMs = nonNegativeInteger(env.OWC_PROVIDER_STREAM_IDLE_MS, 86_400_000);
   const host = env.OWC_HOST ?? "127.0.0.1";
   const accessToken = env.OWC_ACCESS_TOKEN?.trim() || undefined;
   const allowedOrigins = originList(env.OWC_ALLOWED_ORIGINS);
@@ -241,6 +282,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     usageLogRetentionDays: positiveInteger(env.OWC_USAGE_LOG_RETENTION_DAYS, 365),
     agentMaxTurns: boundedInteger(env.OWC_AGENT_MAX_TURNS, 1000) ?? 50,
     subAgentMaxTurns: boundedInteger(env.OWC_SUB_AGENT_MAX_TURNS, 1000) ?? 100,
+    subAgentConcurrency: boundedInteger(env.OWC_SUB_AGENT_CONCURRENCY, 16) ?? 2,
+    spawnSwarmConcurrency: (() => {
+      const parsed = boundedInteger(env.OWC_SPAWN_SWARM_CONCURRENCY, 16);
+      if (parsed !== undefined && parsed < 2) {
+        throw new Error(`Expected an integer >= 2, received ${env.OWC_SPAWN_SWARM_CONCURRENCY}`);
+      }
+      return parsed ?? 4;
+    })(),
+    ...(userAgent ? { userAgent } : {}),
+    ...(providerStreamIdleMs !== undefined ? { providerStreamIdleMs } : {}),
     compactionThresholdPercent: (() => { const parsed = boundedInteger(env.OWC_COMPACTION_THRESHOLD_PERCENT, 100); if (parsed !== undefined && parsed < 50) throw new Error(`Expected an integer >= 50, received ${env.OWC_COMPACTION_THRESHOLD_PERCENT}`); return parsed ?? 85; })(),
     compactMaxTokens: (() => { const parsed = boundedInteger(env.OWC_COMPACT_MAX_TOKENS, 256_000); if (parsed !== undefined && parsed < 1024) throw new Error(`Expected an integer >= 1024, received ${env.OWC_COMPACT_MAX_TOKENS}`); return parsed ?? 65_536; })(),
     defaultLanguage: env.OWC_DEFAULT_LANGUAGE ?? "zh-CN",

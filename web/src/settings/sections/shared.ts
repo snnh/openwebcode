@@ -68,6 +68,7 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   catalogSyncUrl: { label: "Remote model catalog URL", description: "Leave empty to disable remote model catalog sync" },
   pricingSyncUrl: { label: "Remote pricing catalog URL", description: "Leave empty to disable remote pricing sync" },
   syncIntervalMinutes: { label: "Remote sync interval (minutes)", description: "0 means manual sync only; a value above 0 enables periodic sync (maximum 35,791 minutes)" },
+  providerStreamIdleMs: { label: "Stream idle timeout (ms)", description: "SSE stream idle timeout (half-open connection fallback): 0 disables the idle timeout; blank uses the provider's built-in default. Applies at the next provider registration (restart or provider-profile change)" },
   fastModel: { label: "Fast model", description: "Used for context compaction and Content Lens, and as the fast sub-agent role; models come from the unified catalog of enabled providers" },
   fastModelThinking: { label: "Thinking" },
   fastModelEffort: { label: "Effort" },
@@ -79,7 +80,10 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   defaultLanguage: { label: "Default model language" },
   agentMaxTurns: { label: "Max turns per message", description: "Maximum agent turns allowed per user message; the task ends with a failure once reached. Increase for long tasks (1-1000)" },
   subAgentMaxTurns: { label: "Max sub-agent turns", description: "Default turn limit for sub-agents (subagent / spawn_swarm / manual launch); subagent / spawn_swarm accept a maxTurns argument to override per call (1-1000)" },
+  subAgentConcurrency: { label: "Sub-agent parallelism", description: "Maximum number of subagent calls that run at the same time within one message (1-16, default 2): this limits concurrency only, never the total number of sub-agents — calls beyond the limit queue and run in order. 1 = sequential; raise it (e.g. 4) so a multi-subagent fan-out runs in parallel. spawn_swarm member concurrency is controlled separately below" },
+  spawnSwarmConcurrency: { label: "spawn_swarm member concurrency", description: "How many swarm members run at once per spawn_swarm call (2-16, default 4); the total item cap stays 16. spawn_swarm is a parallel orchestration, so fewer than 2 members cannot form a swarm" },
   chatModeEnabled: { label: "Enable Chat mode", description: "Off by default; when enabled, the UI shows a Chat / Workbench mode toggle for the ChatGPT-style chat mode" },
+  userAgent: { label: "Outbound User-Agent", description: "Custom User-Agent for all outbound HTTP requests (web search/fetch, model APIs, MCP, etc.); blank = the official default owc/openwebcode{version}. Single line, up to 200 characters. An active env-sim persona still takes precedence" },
   compactionThresholdPercent: { label: "Auto-compaction threshold (%)", description: "The context is compacted automatically when usage reaches this percentage (50-100); the recommendation threshold is 15 points lower; 100 disables threshold-based forced compaction (a one-shot safety compaction still runs on provider context overflow). Core safety net, independent of the context-saver extension" },
   defaultCurrency: { label: "Default currency" },
   defaultEffort: { label: "Default thinking effort", description: "Thinking effort applied to new sessions; none means follow the model default; silently skipped when the model does not support the selected level" },
@@ -96,6 +100,7 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   usageLogRetentionDays: { label: "Usage log retention (days)", description: "Retention days used by the cleanup modes (1-3650); applies to the after-days / live-timeout branches" },
   host: { label: "Listen address" },
   port: { label: "Listen port" },
+  allowedOrigins: { label: "Allowed origins", description: "Comma-separated browser origin whitelist (e.g. https://a.example.com,https://b.example.com; up to 16; plain http(s) origins without a path). Blank = same-origin browsers are auto-allowed and the access token stays the only credential" },
   dataDir: { label: "Data directory" },
   exchangeRateUrl: { label: "Exchange-rate API URL" },
   exchangeRateTimeoutMs: { label: "Exchange-rate request timeout (ms)" },
@@ -112,5 +117,5 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
 
 export const MAX_SYNC_INTERVAL_MINUTES = 35_791;
 export const MAX_UPDATE_CHECK_INTERVAL_HOURS = 720;
-/** 允许填 0 的数值设置（0 表示仅手动）：远程同步间隔、更新检查间隔 */
-export const ZERO_ALLOWED_NUMBER_KEYS = new Set(["syncIntervalMinutes", "updateCheckIntervalHours"]);
+/** 允许填 0 的数值设置（0 表示仅手动/关闭）：远程同步间隔、更新检查间隔、流空闲超时 */
+export const ZERO_ALLOWED_NUMBER_KEYS = new Set(["syncIntervalMinutes", "updateCheckIntervalHours", "providerStreamIdleMs"]);

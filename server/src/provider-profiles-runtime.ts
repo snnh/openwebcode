@@ -15,6 +15,9 @@ export class ProviderProfilesRuntime {
   private unsubscribe: (() => void) | undefined;
   /** chat 执行引擎（可选）：注入后搜索/抓取服务商变更同步热更新到 chat 工具上下文 */
   private chatRunner: ChatRunner | undefined;
+  /** 流 idle 超时（ms）实时取值函数：设置项 providerStreamIdleMs 现读，缺省 undefined
+   *  （回落 OWC_PROVIDER_STREAM_IDLE_MS 环境变量，再缺省 provider 内置默认） */
+  private readonly streamIdleTimeoutMs: (() => number | undefined) | undefined;
 
   constructor(
     private readonly profiles: ProviderProfilesService,
@@ -22,7 +25,10 @@ export class ProviderProfilesRuntime {
     private readonly agent: AgentRunner,
     private readonly models: ModelRegistry | undefined,
     private readonly events: EventBus,
-  ) {}
+    options: { streamIdleTimeoutMs?: () => number | undefined } = {},
+  ) {
+    this.streamIdleTimeoutMs = options.streamIdleTimeoutMs;
+  }
 
   /** 装配顺序上 ChatRunner 晚于本对象创建，故以 setter 注入；注入即同步一次当前 web 服务商。 */
   setChatRunner(chatRunner: ChatRunner): void {
@@ -69,8 +75,8 @@ export class ProviderProfilesRuntime {
   private apply(): void {
     for (const id of this.managedProviders) this.providers.unregister(id);
     this.managedProviders.clear();
-    // SSE 流 idle 超时（半开连接兜底）：env 覆盖，缺省用 provider 内置 DEFAULT_STREAM_IDLE_TIMEOUT_MS
-    const streamIdleTimeoutMs = parseStreamIdleTimeout(process.env.OWC_PROVIDER_STREAM_IDLE_MS);
+    // SSE 流 idle 超时（半开连接兜底）：设置项 > env > provider 内置默认
+    const streamIdleTimeoutMs = this.streamIdleTimeoutMs?.() ?? parseStreamIdleTimeout(process.env.OWC_PROVIDER_STREAM_IDLE_MS);
     const idleOption = streamIdleTimeoutMs === undefined ? {} : { streamIdleTimeoutMs };
     for (const profile of this.profiles.modelProfiles()) {
       if (!profile.enabled) continue;
