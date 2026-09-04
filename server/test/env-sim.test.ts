@@ -163,7 +163,7 @@ describe("env-sim prompt.beforeBuild", () => {
     await withHarness({ enableEnvSim: true, persona: "claude-code" }, async ({ agent, session, requests }) => {
       await agent.run(session.id, "你好");
       const system = requests[0]!.system;
-      expect(system).toContain("You are Claude Code, Anthropic's agentic coding tool.");
+      expect(system).toContain("You are Claude Code, Anthropic's official CLI for Claude.");
       expect(system).not.toContain("You are OpenWebCode. The workspace");
       // 核心安全网不可被钩子移除
       expect(system).toContain("## Safety boundary");
@@ -223,7 +223,7 @@ describe("env-sim prompt.beforeBuild", () => {
       await sessions.updateConfig(session.id, { provider: "fake", model: "model", persona: "claude-code" });
       await agent.run(session.id, "你好");
       const system = requests[0]!.system;
-      expect(system).toContain("You are Claude Code, Anthropic's agentic coding tool.");
+      expect(system).toContain("You are Claude Code, Anthropic's official CLI for Claude.");
       const names = (requests[0]!.tools ?? []).map((tool) => tool.name);
       // 工具形态也跟随会话级 persona（cc 形态而非 codex 形态）
       expect(names).toContain("TodoWrite");
