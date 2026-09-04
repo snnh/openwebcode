@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { activePathMessages } from "../sessions/session-tree.js";
+import { activePathMessages, isInjectionMessageId } from "../sessions/session-tree.js";
 import { SessionTransferError } from "../sessions/session-transfer.js";
 import { renderSessionHtml } from "../export-html.js";
 import { renderSessionMarkdown } from "../export-markdown.js";
@@ -252,13 +252,16 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
       const limit = Math.max(1, Math.min(500, parseInt(limitParam, 10) || 100));
       const session = await sessions.getTail(request.params.id, limit);
       if (!session) return reply.code(404).send({ error: "Session not found" });
-      return session;
+      // 与全量分支同口径：上下文注入消息对 UI 不可见
+      return { ...session, messages: (session.messages ?? []).filter((message) => !isInjectionMessageId(message.id)) };
     }
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
     // 当前生效的 env-sim 人格预设（会话级覆盖优先：extensionState["env-sim"].persona > 旧 persona 字段；扩展未启用/未配置为 null）
     const activePersona = dependencies.extensions ? await dependencies.extensions.activeEnvSimPersona(resolveSessionPersona(session)) : null;
-    return { ...session, activePersona };
+    // 上下文注入消息（模式/日期引导）对 UI 不可见（inj: 前缀，见 session-tree.ts）：消息流/树操作以可见消息为锚。
+    const visible = { ...session, messages: (session.messages ?? []).filter((message) => !isInjectionMessageId(message.id)) };
+    return { ...visible, activePersona };
   });
   /** 会话显示属性：重命名（title ≤120 字符，空串清除覆盖回落派生标题）与置顶（pinned）。 */
   app.patch<{ Params: { id: string }; Body: { title?: string; pinned?: boolean } }>("/api/sessions/:id", async (request, reply) => {
@@ -292,7 +295,8 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     const limit = Math.max(1, Math.min(500, parseInt(request.query.limit ?? "100", 10) || 100));
     const page = await sessions.getMessagesBefore(request.params.id, before, limit);
     if (!page) return reply.code(404).send({ error: "Session not found" });
-    return page;
+    // 与 GET /:id 同口径：上下文注入消息对 UI 不可见
+    return { ...page, messages: page.messages.filter((message) => !isInjectionMessageId(message.id)) };
   });
   /** Read-only tree projection covering ALL nodes (including old branches after checkout/retry). Legacy sessions remain a single derived path. */
   app.get<{ Params: { id: string } }>("/api/sessions/:id/timeline", async (request, reply) => {
@@ -300,10 +304,11 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     if (!session) return reply.code(404).send({ error: "Session not found" });
     const activeLeafId = session.activeLeafId ?? session.messages.at(-1)?.id;
     // onActivePath 标记当前活动路径（根→活动叶子）上的节点；条目按时间排序（文件追加序本即时间序，稳定排序保持之）。
+    // 上下文注入消息（inj: 前缀）对 UI 不可见：不列条目（消息流/树面板以可见消息为锚）。
     const onPath = new Set(activePathMessages(session.messages, activeLeafId).map((message) => message.id));
     return {
       activeLeafId,
-      entries: [...session.messages].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((message) => ({
+      entries: [...session.messages].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).filter((message) => !isInjectionMessageId(message.id)).map((message) => ({
         id: message.id, parentId: message.parentId,
         runId: message.runId, turnId: message.turnId,
         role: message.role, createdAt: message.createdAt,

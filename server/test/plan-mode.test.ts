@@ -106,18 +106,31 @@ describe("plan mode — agent-runner level", () => {
     expect((toolResult as { content: string }).content).not.toContain("Plan 模式为只读");
   });
 
-  it("plan 模式 provider 收到的 system 含 PLAN mode 指令", async () => {
+  it("plan 模式：PLAN 指令不在 system，而以注入消息随触发消息下发", async () => {
     const { requests } = await setup("plan", [
-      { name: "read_file", id: "rf-2", input: { path: "a.txt" } },
+      { name: "read_file", id: "rf-2", input: { path: "a.txt" } } as { name: string; id: string; input: Record<string, unknown> },
     ]);
-    expect(requests[0]?.system).toContain("PLAN mode");
+    // system 保持跨模式字节稳定（缓存连续性）——PLAN 指令不在此
+    expect(requests[0]?.system).not.toContain("PLAN mode");
+    // 引导为 user 角色合成注入消息（id 前缀 inj:plan:full:），位于触发用户消息之前
+    const first = requests[0]?.messages[0];
+    expect(first?.id.startsWith("inj:plan:full:")).toBe(true);
+    expect(first?.role).toBe("user");
+    const text = (first!.content[0] as { type: "text"; text: string }).text;
+    expect(text).toContain("PLAN mode");
+    expect(text).toContain("<system-reminder>");
+    // 触发消息紧随其后，链上以其为父
+    expect(requests[0]?.messages[1]?.parentId).toBe(first?.id);
   });
 
-  it("code 模式 provider 收到的 system 不含 PLAN mode 指令", async () => {
+  it("code 模式：system 与消息流均无 PLAN 指令/注入", async () => {
     const { requests } = await setup("code", [
-      { name: "read_file", id: "rf-3", input: { path: "a.txt" } },
+      { name: "read_file", id: "rf-3", input: { path: "a.txt" } } as { name: string; id: string; input: Record<string, unknown> },
     ]);
     expect(requests[0]?.system).not.toContain("PLAN mode");
+    // 普通会话首轮无任何注入（日期也仅在跨日变化时注入）：第一条消息即用户原文
+    expect(requests[0]?.messages.some((message) => message.id.startsWith("inj:"))).toBe(false);
+    expect(requests[0]?.messages[0]?.role).toBe("user");
   });
 
   it("PUT config agentMode 非法值 → 400", async () => {

@@ -22,12 +22,12 @@ interface PromptBuilderOptions {
   projectContext?: readonly PromptContextFile[];
   skillsSection?: string;
   notices?: string;
-  date?: Date;
-  /** 跳过尾注（Prompt version / Current date / Current working directory）；首轮极简形态用。 */
+  /** 跳过尾注（Prompt version / Current working directory）；首轮极简形态用。 */
   suppressTrailer?: boolean;
 }
 
-function isoDate(date: Date): string {
+/** 日期以 YYYY-MM-DD（UTC，与原尾注口径一致）下发：date 注入消息与 id 编码共用。 */
+export function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
@@ -86,7 +86,9 @@ export function buildSystemPrompt(options: PromptBuilderOptions): string {
     ].join("\n\n"));
   }
   if (!options.suppressTrailer) {
-    sections.push(`Prompt version: ${PI_PROMPT_VERSION}`, `Current date: ${isoDate(options.date ?? new Date())}`, `Current working directory: ${options.cwd.replaceAll("\\", "/")}`);
+    // 单节尾注（行内 \n）：Current date 不进稳定前缀——作为 date 注入消息按需下发，
+    // 避免跨日或会话形态变化导致整条稳定前缀缓存失效。
+    sections.push(`Prompt version: ${PI_PROMPT_VERSION}\nCurrent working directory: ${options.cwd.replaceAll("\\", "/")}`);
   }
   return sections.join("\n\n");
 }
