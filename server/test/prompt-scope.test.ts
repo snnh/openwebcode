@@ -200,7 +200,7 @@ describe("identity 覆盖生效链路", () => {
       );
       await agent.run(session.id, "你好");
       const system = requests[0]!.system;
-      expect(system).toContain("You are Claude Code, Anthropic's agentic coding tool.");
+      expect(system).toContain("You are Claude Code, Anthropic's official CLI for Claude.");
       expect(system).not.toContain("You are a meticulous reviewer.");
     } finally {
       await manager.close();
