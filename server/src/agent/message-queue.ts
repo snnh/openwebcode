@@ -110,6 +110,10 @@ export class MessageQueue {
     return serializeByKey(this.writes, sessionId, async () => {
       const items = await this.read(sessionId);
       const result = change(items);
+      // 空操作短路：take/apply/requeue/cancel/update 未命中目标时 change 返回
+      // undefined，items 无任何变更，无需原子写（空队列每工具轮都会走到这里，
+      // 省去一次写文件 + 可能的 queue.json 创建）。
+      if (result === undefined) return result;
       await writeUtf8Atomically(this.pathFor(sessionId), `${JSON.stringify({ version: 1, items } satisfies QueueDocument, null, 2)}\n`);
       return result;
     });

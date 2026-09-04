@@ -15,6 +15,10 @@ import type { BindLinkSpec, ChatMessage, FallbackModelEntry, ManagedWorkspaceMet
 /** readMessages 整表缓存条数上限（与 message-reader 的索引缓存同一 LRU 纪律）。 */
 const MAX_CACHED_MESSAGE_LISTS = 32;
 
+/** readMeta 缓存条数上限。agent loop 每轮多次 readMeta（get/appendMessage 等），
+ * meta.json 小而稳定；写入侧不主动失效——指纹（size+mtime+ctime）自动失配。 */
+const MAX_CACHED_METAS = 64;
+
 /**
  * 单会话消息整表缓存：size+mtime+ctime 指纹校验（同 message-reader），
  * 命中时免去整份 messages.jsonl 的 read+全量 JSON.parse。
@@ -26,6 +30,14 @@ interface MessagesCacheEntry {
   ctimeMs: number;
   messages: ChatMessage[];
   recovery?: NonNullable<SessionMeta["recovery"]>;
+}
+
+/** readMeta 缓存条目：指纹命中时免去 meta.json 的 read+JSON.parse。 */
+interface MetaCacheEntry {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  meta: SessionMeta;
 }
 
 interface CreateSessionInput {
@@ -60,6 +72,9 @@ export class SessionStore {
 
   /** 按会话 id 的 LRU 消息整表缓存；agent loop 每轮 get() 不再整份重解析。 */
   private readonly messagesCache = new Map<string, MessagesCacheEntry>();
+
+  /** 按会话 id 的 LRU meta 缓存；指纹失效纪律同 messagesCache。 */
+  private readonly metaCache = new Map<string, MetaCacheEntry>();
 
   /** appendMessage 的每会话串行化链：并发追加大消息时底层多次 write 可能交织坏行。 */
   private readonly appendChains = new Map<string, Promise<void>>();
@@ -619,7 +634,17 @@ export class SessionStore {
   }
 
   private async readMeta(id: string): Promise<SessionMeta> {
-    const meta = JSON.parse(await readFile(this.metaPath(id), "utf8")) as SessionMeta;
+    const filePath = this.metaPath(id);
+    const info = await stat(filePath);
+    const cached = this.metaCache.get(id);
+    if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs && cached.ctimeMs === info.ctimeMs) {
+      this.touchMetaCache(id, cached);
+      // 深拷贝返回：调用方常就地改写 meta 再经 writeMeta 落盘（appendMessage/
+      // updateConfig/setActiveLeaf），缓存条目不得暴露可变引用（消息缓存按只读
+      // 语义浅拷贝即可，meta 则会被改写后写回）。
+      return structuredClone(cached.meta);
+    }
+    const meta = JSON.parse(await readFile(filePath, "utf8")) as SessionMeta;
     // 存量迁移（1.10.0 Windows 默认档 Job Object → AppContainer）：旧版本对显式选择
     // jobobject 的会话也按「删字段」存储，无法与默认选择区分；若把缺失解释为新默认
     // appcontainer，会把显式选过兼容档的存量会话静默改判。保守处理：Windows 上缺字段
@@ -629,7 +654,18 @@ export class SessionStore {
       meta.sandboxMode = "jobobject";
       await this.writeMeta(meta);
     }
+    // 存指纹对应的深拷贝：返回的是独立解析对象，调用方改写不影响缓存；
+    // 本类写入统一走 writeMeta，由其显式失效缓存条目；指纹兜底探测绕过
+    // SessionStore 的外部改动。
+    this.touchMetaCache(id, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, meta: structuredClone(meta) });
     return meta;
+  }
+
+  /** LRU 接触：移到最新位并逐出超限旧条目（同 touchMessagesCache 纪律）。 */
+  private touchMetaCache(id: string, entry: MetaCacheEntry): void {
+    this.metaCache.delete(id);
+    this.metaCache.set(id, entry);
+    while (this.metaCache.size > MAX_CACHED_METAS) this.metaCache.delete(this.metaCache.keys().next().value!);
   }
 
   /** Safe branch fallback: copy history into a separately selected workspace, never share a writable cwd. */
@@ -772,5 +808,9 @@ export class SessionStore {
     const target = this.metaPath(meta.id);
     // 紧凑序列化：meta.json 只被机器读取；读取侧 JSON.parse 兼容存量美化格式。
     await writeUtf8Atomically(target, `${JSON.stringify(meta)}\n`, { mode: 0o600 });
+    // 显式失效：meta.json 字段定长（uuid/ISO 时间戳），同尺寸原子写在同毫秒内
+    // 落地时 size+mtime+ctime 指纹可能不变（Windows ctime 还是创建时间），
+    // 若只靠指纹自动失配会误命中陈旧缓存（activeLeafId 落后）——写入侧必须主动删除。
+    this.metaCache.delete(meta.id);
   }
 }
