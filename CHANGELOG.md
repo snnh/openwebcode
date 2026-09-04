@@ -2,6 +2,17 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.10.3]
+
+### 变更
+
+- **提示词组装重构**：plan/goal 引导与当前日期改为按需的上下文注入消息（kimi-code 式：user 角色、`<system-reminder>` 包裹、消息 id 前缀 `inj:`、UI 与服务端可见接口过滤不可见）——plan 按 2/5 个 assistant 轮次稀疏/全量节奏刷新、goal 每用户消息下发、日期仅在跨日变化时注入（A2）；稳定 system 前缀跨模式、跨日字节不变，上下文缓存连续性更好；`read_artifact` 默认不注册，自动驱逐开启或视图出现 artifact 引用时按轮放行（toolsDeny 与首轮极简形态兼容），工具目录相应精简。
+
+### 新增
+
+- **环境模拟 0.1.6**：内置五档预设对齐上游当前版本（2026-09）——kimi-code 0.36.0 → 0.40.1（改用默认引擎 agent-core-v2 的系统提示词模板：Communicating / Tool use / Coding / Risky actions / Delivering work / Context management / Environment / Project information 小节，移除旧版 Research / Ultimate Reminders 等段落）；Codex 0.147.0 → 0.153.2（系统提示词切到现行 `codex-rs/models-manager/prompt.md`：新增 Personality / AGENTS.md spec / Preamble / Planning / Ambition vs. precision 等小节，apply_patch 与审批表述按 OWC 可执行形态适配）；Claude Code 2.1.232 → 2.1.260；ZCode 3.7.7 → 3.10.1（GLM-5.3 时代，Memory 小节按官方文档更新为逐轮后台萃取 + `MEMORY.md` 索引自动载入的项目级记忆）；DSH 0.1.0-rc.6 → 0.1.2-rc.1（persona 与工具描述上游未变，仅版本同步）。各档拟态 User-Agent 值同步更新。
+- **环境模拟 0.1.7**：两档预设改为按真逆向原文复刻——① zcode 按 ZCode Desktop 3.10.1 内置 agent 运行时逆向重写（Linux AppImage `resources/glm/zcode.cjs`，`.node-bundle-meta` source `apps/zcode-cli/packages/cli/dist/zcode.cjs`，运行时版本 0.13.3）：身份行改为官方 CLI 前缀「You are ZCode, an interactive coding agent」+ role 行；`# Harness` 规则（含「mid-conversation system turns」新版表述）、Communicating with the user / Coding style / Dynamic behavior / Context management / Memory / Session guidance 小节逐节对齐运行时 ContextBuilder 各构造器原文（Memory 为完整 canonical 指令：frontmatter 四类型、feedback/project 附 Why/How to apply、`MEMORY.md` 单行索引与召回经 `<system-reminder>` 注入需先验证再引用）；Environment Info / System Context(git) / Skills / Request User Context（`# agentsMd`）/ `# currentDate` 等动态节由宿主按会话注入，不复制；桌面专属 `::code-comment` 渲染指令（ZCode Desktop Context 节）不适用 OWC 故省略。② claude-code 按社区逆向的 Claude Code CLI 系统提示词重写（gist.github.com/agokrani，2026-08-19 更新，2.1.x 时代 CLI 主提示词形态）：身份行对齐官方「You are Claude Code, Anthropic's official CLI for Claude.」，Tone and style / Proactiveness / Following conventions / Code style / Task Management / Doing tasks / Tool usage policy / Code References 各节逐字保留；三处 OWC 适配（/help 与 anthropic 反馈句改通用、正文尾部 dump 作者仓库的运行时 git 快照样例裁剪、粘贴断行规整）。
+
 ## [1.10.2]
 
 ### 变更
@@ -15,8 +26,6 @@
 - **出站 User-Agent 可自定义**（设置 → 通用，`OWC_USER_AGENT`，热生效）：联网搜索/抓取、模型 API、MCP 等全部出站请求改用自定义 UA，留空用官方默认；更新检查与更新下载仍走官方 UA；env-sim 模拟开启时优先于自定义值。
 - **「允许来源列表」补进远程访问页**（对应 `OWC_ALLOWED_ORIGINS`，重启生效）：限定浏览器来源，留空放行与访问地址同源的请求。
 - **模型服务商流空闲超时可配置**（设置 → 模型目录，对应 `OWC_PROVIDER_STREAM_IDLE_MS`）：0 = 关闭 idle 超时，留空用服务商内置默认；下次注册（重启或服务商配置变更）生效。此前仅靠环境变量配置的运行时参数至此都有设置页入口。
-- **环境模拟 0.1.6**：内置五档预设对齐上游当前版本（2026-09）——kimi-code 0.36.0 → 0.40.1（改用默认引擎 agent-core-v2 的系统提示词模板：Communicating / Tool use / Coding / Risky actions / Delivering work / Context management / Environment / Project information 小节，移除旧版 Research / Ultimate Reminders 等段落）；Codex 0.147.0 → 0.153.2（系统提示词切到现行 `codex-rs/models-manager/prompt.md`：新增 Personality / AGENTS.md spec / Preamble / Planning / Ambition vs. precision 等小节，apply_patch 与审批表述按 OWC 可执行形态适配）；Claude Code 2.1.232 → 2.1.260；ZCode 3.7.7 → 3.10.1（GLM-5.3 时代，Memory 小节按官方文档更新为逐轮后台萃取 + `MEMORY.md` 索引自动载入的项目级记忆）；DSH 0.1.0-rc.6 → 0.1.2-rc.1（persona 与工具描述上游未变，仅版本同步）。各档拟态 User-Agent 值同步更新。
-- **环境模拟 0.1.7**：两档预设改为按真逆向原文复刻——① zcode 按 ZCode Desktop 3.10.1 内置 agent 运行时逆向重写（Linux AppImage `resources/glm/zcode.cjs`，`.node-bundle-meta` source `apps/zcode-cli/packages/cli/dist/zcode.cjs`，运行时版本 0.13.3）：身份行改为官方 CLI 前缀「You are ZCode, an interactive coding agent」+ role 行；`# Harness` 规则（含「mid-conversation system turns」新版表述）、Communicating with the user / Coding style / Dynamic behavior / Context management / Memory / Session guidance 小节逐节对齐运行时 ContextBuilder 各构造器原文（Memory 为完整 canonical 指令：frontmatter 四类型、feedback/project 附 Why/How to apply、`MEMORY.md` 单行索引与召回经 `<system-reminder>` 注入需先验证再引用）；Environment Info / System Context(git) / Skills / Request User Context（`# agentsMd`）/ `# currentDate` 等动态节由宿主按会话注入，不复制；桌面专属 `::code-comment` 渲染指令（ZCode Desktop Context 节）不适用 OWC 故省略。② claude-code 按社区逆向的 Claude Code CLI 系统提示词重写（gist.github.com/agokrani，2026-08-19 更新，2.1.x 时代 CLI 主提示词形态）：身份行对齐官方「You are Claude Code, Anthropic's official CLI for Claude.」，Tone and style / Proactiveness / Following conventions / Code style / Task Management / Doing tasks / Tool usage policy / Code References 各节逐字保留；三处 OWC 适配（/help 与 anthropic 反馈句改通用、正文尾部 dump 作者仓库的运行时 git 快照样例裁剪、粘贴断行规整）。
 
 ## [1.10.1]
 
@@ -1227,3 +1236,4 @@ Linux 体验与功能专项：快照新增 overlayfs 后端（原语下沉 core 
 - 支持 Skills、MCP、Hooks、自定义子代理、自定义斜杠命令和独立 Extension Host，并提供官方扩展体系。
 - 支持图片输入、Markdown/代码高亮/KaTeX、折叠思考内容、会话导入导出、可分享的自包含 HTML 页面和 `owc run` Headless CLI。
 - 提供 Windows MSI、Linux tar.gz 安装脚本和 GitHub Actions 发布流水线。
+
