@@ -12,7 +12,7 @@ import { useI18n } from "../i18n";
  */
 
 /** 通用弹层：透明遮罩点击 / Esc 关闭；菜单以触发按钮（父容器 .composer-menu）为锚 fixed 定位并 clamp 进视口。 */
-export function Popover({ open, onClose, children }: { open: boolean; onClose(): void; children: ReactNode }): ReactElement | null {
+function Popover({ open, onClose, children }: { open: boolean; onClose(): void; children: ReactNode }): ReactElement | null {
   const menuRef = useRef<HTMLDivElement>(null);
   // null = 尚未测量，首帧不可见（CSS visibility:hidden），测量后 fixed 定位
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);

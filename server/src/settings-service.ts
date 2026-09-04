@@ -3,7 +3,7 @@ import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
 import { ensureDirWithMode } from "./fs-utils.js";
 import type { AgentRunner } from "./agent/agent-runner.js";
-import { loadConfig, defaultCorePath, SNAPSHOT_BACKENDS, type ServerConfig, type SnapshotBackendName } from "./config.js";
+import { loadConfig, parseOriginList, defaultCorePath, SNAPSHOT_BACKENDS, type ServerConfig, type SnapshotBackendName } from "./config.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 import type { CoreClientLike } from "./core-client.js";
 import type { EventBus } from "./events/event-bus.js";
@@ -19,6 +19,7 @@ import type { UpdateChecker } from "./update-checker.js";
 import type { NodeEnv, PythonEnv } from "./sessions/types.js";
 import type { EffortLevel } from "./context/model-profile.js";
 import { applyProxyConfig, sanitizeProxyUrl, type ProxyApplyResult, type ProxyConfig, type ProxyMode } from "./proxy.js";
+import { setCustomUserAgent } from "./user-agent.js";
 import { GITHUB_RELEASES_URL } from "./version.js";
 import installDefaultsDocument from "./config/defaults.json" with { type: "json" };
 
@@ -99,6 +100,8 @@ interface RuntimeDependencies {
   sandboxProxy?: { refreshDenyFiles(): Promise<void> };
   /** usage-events 清理；usageLogCleanupMode/usageLogRetentionDays 变更时热触发一次 */
   usageLog?: { prune(options: { mode: UsageLogCleanupMode; retentionDays: number }): Promise<number> };
+  /** 出站 User-Agent 热应用；缺省 user-agent.ts 的模块级 setter，测试注入 fake 避免串模块状态 */
+  userAgentApplier?: (ua: string | null) => void;
 }
 
 const GROUPS = [
@@ -231,6 +234,41 @@ function requireSubAgentMaxTurns(value: SettingValue): void {
   }
 }
 
+function requireSubAgentConcurrency(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 16) {
+    throw new SettingsValidationError("子代理并行数需为 1–16 的整数");
+  }
+}
+
+function requireSpawnSwarmConcurrency(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 2 || value > 16) {
+    throw new SettingsValidationError("spawn_swarm 并发成员数需为 2–16 的整数（低于 2 无法构成并行 swarm）");
+  }
+}
+
+function requireUserAgent(value: SettingValue): void {
+  if (typeof value !== "string" || value.trim() === "" || value.length > 200 || /[\r\n]/.test(value)) {
+    throw new SettingsValidationError("User-Agent 需为不含换行的非空字符串（≤200 字符）");
+  }
+}
+
+function requireAllowedOrigins(value: SettingValue): void {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new SettingsValidationError("允许来源列表需为逗号分隔的 http(s) origin 列表");
+  }
+  try {
+    parseOriginList(value);
+  } catch (error) {
+    throw new SettingsValidationError(`允许来源列表无效：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function requireProviderStreamIdleMs(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 86_400_000) {
+    throw new SettingsValidationError("流空闲超时需为 0–86400000 的整数毫秒（0 表示关闭 idle 超时）");
+  }
+}
+
 function requireCompactionThresholdPercent(value: SettingValue): void {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 50 || value > 100) {
     throw new SettingsValidationError("自动压缩水位需为 50–100 的整数百分比（100 表示关闭阈值型强制压缩）");
@@ -265,6 +303,11 @@ function requireDomainList(value: SettingValue): void {
 function envNumber(raw: string): SettingValue | undefined {
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : undefined;
+}
+
+function envNonNegativeInteger(raw: string): SettingValue | undefined {
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function envCompactionThresholdPercent(raw: string): SettingValue | undefined {
@@ -328,6 +371,7 @@ const FIELDS: FieldSpec[] = [
   { key: "catalogSyncUrl", group: "models", label: "远程模型目录 URL", type: "text", env: "OWC_MODELS_CATALOG_SYNC_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空则不从远程链接同步模型目录" },
   { key: "pricingSyncUrl", group: "models", label: "远程定价目录 URL", type: "text", env: "OWC_MODELS_PRICING_SYNC_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空则不从远程链接同步模型定价" },
   { key: "syncIntervalMinutes", group: "models", label: "远程同步间隔（分钟）", type: "number", env: "OWC_MODELS_SYNC_INTERVAL_MINUTES", defaultValue: 0, restartRequired: false, fromEnv: envSyncIntervalMinutes, validate: requireSyncIntervalMinutes, description: `0 表示仅手动同步；大于 0 时按此间隔自动同步，最大 ${MAX_SYNC_INTERVAL_MINUTES} 分钟` },
+  { key: "providerStreamIdleMs", group: "models", label: "流空闲超时 (ms)", type: "number", env: "OWC_PROVIDER_STREAM_IDLE_MS", defaultValue: null, restartRequired: true, fromEnv: envNonNegativeInteger, validate: requireProviderStreamIdleMs, description: "SSE 流 idle 超时（半开连接兜底）：0 = 关闭 idle 超时；留空 = 由模型服务商内置默认决定。修改在下次 provider 注册时生效（重启或服务商配置变更）" },
   // 模型选择（modelSelection 组，顺序：会话默认 → 极致 → 平衡 → 快速 → 廉价）：
   // 值统一为 [provider, model] 编码串，全部热生效；快速档直接复用既有 fastModel 键。
   { key: "defaultModel", group: "modelSelection", label: "会话默认模型", type: "select", env: "OWC_DEFAULT_MODEL", defaultValue: null, restartRequired: false, description: "新建会话的默认服务商与模型；留空回落第一个已启用服务商的首个目录模型；模型来自已启用服务商的统一模型目录" },
@@ -344,6 +388,9 @@ const FIELDS: FieldSpec[] = [
   { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
   // Chat 模式开关（热生效）：web 侧据此显示 chat/workbench 切换，默认关闭
   { key: "chatModeEnabled", group: "general", label: "启用 Chat 模式", type: "boolean", env: "OWC_CHAT_MODE_ENABLED", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "默认关闭；开启后界面显示 Chat / Workbench 模式切换，可使用 ChatGPT 风格对话模式" },
+  // 出站 User-Agent（热生效）：留空使用官方默认 owc/openwebcode{version}；env-sim 扩展的拟态 UA 优先于自定义值；
+  // 更新检查/更新应用链路恒走官方 UA，不受此项影响
+  { key: "userAgent", group: "general", label: "出站 User-Agent", type: "text", env: "OWC_USER_AGENT", defaultValue: null, restartRequired: false, validate: requireUserAgent, description: "自定义所有出站 HTTP 请求的 User-Agent（联网搜索/抓取、模型 API、MCP 等）；留空 = 官方默认 owc/openwebcode{版本号}；不含换行、≤200 字符。环境模拟（env-sim）激活时以拟态值为准" },
   // 离线模式（热生效）：只关 server 自身的遥测/更新/同步类出站（更新检查、远程目录/定价后台同步、
   // 汇率在线刷新）；provider API、web_search/web_fetch、MCP 与扩展联网等用户/agent 主动网络行为不受影响。
   // 归联网组：Web 端在「联网服务」页签渲染。
@@ -357,6 +404,8 @@ const FIELDS: FieldSpec[] = [
   { key: "compactMaxTokens", group: "context", label: "压缩输出上限（tokens）", type: "number", env: "OWC_COMPACT_MAX_TOKENS", defaultValue: 65536, restartRequired: false, fromEnv: envCompactMaxTokens, validate: requireCompactMaxTokens, description: "上下文压缩时快速模型的输出上限（1024–256000）；思考型快速模型（fastModelThinking）需要较大余量，缺省 65536" },
   { key: "agentMaxTurns", group: "context", label: "单条消息最大轮次", type: "number", env: "OWC_AGENT_MAX_TURNS", defaultValue: 50, restartRequired: false, fromEnv: envNumber, validate: requireAgentMaxTurns, description: "每条用户消息允许的最大 agent 轮次，达到后当前任务以失败收尾；长任务可调大（1–1000）" },
   { key: "subAgentMaxTurns", group: "context", label: "子代理最大轮次", type: "number", env: "OWC_SUB_AGENT_MAX_TURNS", defaultValue: 100, restartRequired: false, fromEnv: envNumber, validate: requireSubAgentMaxTurns, description: "子代理（subagent / spawn_swarm / 手动启动）的默认最大轮次；subagent / spawn_swarm 可传 maxTurns 参数按次覆盖（1–1000）" },
+  { key: "subAgentConcurrency", group: "context", label: "子代理并行数", type: "number", env: "OWC_SUB_AGENT_CONCURRENCY", defaultValue: 2, restartRequired: false, fromEnv: envNumber, validate: requireSubAgentConcurrency, description: "同一消息内多个 subagent 调用同时运行的数量上限（1–16，默认 2）：只限制并行数、不限制总执行数量——超出上限的调用排队依次执行。1 = 逐条串行；调大后（如 4）同一消息里的多个子代理可同时运行。spawn_swarm 成员并发由下一项单独控制" },
+  { key: "spawnSwarmConcurrency", group: "context", label: "spawn_swarm 并发成员数", type: "number", env: "OWC_SPAWN_SWARM_CONCURRENCY", defaultValue: 4, restartRequired: false, fromEnv: envNumber, validate: requireSpawnSwarmConcurrency, description: "spawn_swarm 单次派发同时运行的成员数（2–16，默认 4）；成员总数上限仍为 16。spawn_swarm 是并行编排，低于 2 无法构成并行 swarm" },
   // 执行器
   { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", runtimeDefault: () => defaultCorePath(), restartRequired: true, validate: requireNonEmpty },
   { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: 130_000, restartRequired: false, fromEnv: envNumber },
@@ -377,6 +426,8 @@ const FIELDS: FieldSpec[] = [
   // 监听（重启生效）；Web 端归入"远程访问"页签
   { key: "host", group: "network", label: "监听地址", type: "text", env: "OWC_HOST", defaultValue: "127.0.0.1", restartRequired: true, validate: requireNonEmpty },
   { key: "port", group: "network", label: "监听端口", type: "number", env: "OWC_PORT", defaultValue: 3210, restartRequired: true, fromEnv: envNumber, validate: requirePort },
+  // 浏览器来源白名单（重启生效）：留空 = 同源自动放行；显式填写后维持严格列表
+  { key: "allowedOrigins", group: "network", label: "允许来源列表", type: "text", env: "OWC_ALLOWED_ORIGINS", defaultValue: null, restartRequired: true, validate: requireAllowedOrigins, description: "逗号分隔的浏览器来源白名单（如 https://a.example.com,https://b.example.com，≤16 个，纯 http(s) origin 不含路径）；留空 = 与请求 Host 同源的浏览器自动放行，访问令牌仍是唯一凭证" },
   {
     key: "dataDir",
     group: "service",
@@ -556,10 +607,19 @@ export class SettingsService {
     // The listener address is editable in persisted settings. The access token
     // stays environment-overridable but is auto-generated and persisted on
     // non-loopback startup (access-token.ts); allowed origins fall back to
-    // same-origin auto-allow unless set explicitly. Re-run their validation
-    // against the effective host so a saved remote address cannot bypass the
-    // startup guard in loadConfig().
-    const listenerSecurity = loadConfig({ ...this.env, OWC_HOST: host });
+    // same-origin auto-allow unless set explicitly (settings allowedOrigins or
+    // OWC_ALLOWED_ORIGINS env). Re-run their validation against the effective
+    // host so a saved remote address cannot bypass the startup guard in loadConfig().
+    const allowedOriginsText = value("allowedOrigins");
+    const listenerSecurity = loadConfig({
+      ...this.env,
+      OWC_HOST: host,
+      ...(typeof allowedOriginsText === "string" && allowedOriginsText.trim() !== "" ? { OWC_ALLOWED_ORIGINS: allowedOriginsText } : {}),
+    });
+    const userAgent = value("userAgent");
+    const providerStreamIdleMs = value("providerStreamIdleMs");
+    // userAgent 允许首尾空白由保存校验把关；此处再归一 trim 一次，防 env 直写携带空白进请求头
+    const normalizedUserAgent = typeof userAgent === "string" ? userAgent.trim() : null;
     return {
       host,
       port: value("port") as number,
@@ -574,6 +634,10 @@ export class SettingsService {
       usageLogRetentionDays: value("usageLogRetentionDays") as number,
       agentMaxTurns: value("agentMaxTurns") as number,
       subAgentMaxTurns: value("subAgentMaxTurns") as number,
+      subAgentConcurrency: value("subAgentConcurrency") as number,
+      spawnSwarmConcurrency: value("spawnSwarmConcurrency") as number,
+      ...(normalizedUserAgent ? { userAgent: normalizedUserAgent } : {}),
+      ...(typeof providerStreamIdleMs === "number" ? { providerStreamIdleMs } : {}),
       compactionThresholdPercent: value("compactionThresholdPercent") as number,
       compactMaxTokens: value("compactMaxTokens") as number,
       defaultLanguage: value("defaultLanguage") as string,
@@ -778,6 +842,12 @@ export class SettingsService {
         process.stderr.write(`[proxy] 代理配置应用失败：${error instanceof Error ? error.message : String(error)}\n`);
       }
     }
+    // 出站 User-Agent 热应用：模块级 setter（测试经 userAgentApplier 注入 fake 防串状态）
+    if (changed.includes("userAgent")) {
+      const apply = this.deps.userAgentApplier ?? setCustomUserAgent;
+      apply(this.effective().userAgent ?? null);
+    }
+    // 子代理并行/审核模型无需主动推送：AgentRunner 经惰性 getter 每次现读
     // filtered 拦截清单热生效：重写所有活跃 filtered 会话的 deny 文件（sidecar 按 mtime 自重读）
     if (changed.includes("sandboxProxyDenyList") && this.deps.sandboxProxy) {
       void this.deps.sandboxProxy.refreshDenyFiles().catch((error: unknown) => process.stderr.write(`[settings] 沙盒代理拦截清单热更新失败：${error instanceof Error ? error.message : String(error)}\n`));
@@ -809,11 +879,15 @@ export class SettingsService {
         }
         break;
       case "number":
-        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (field.key === "syncIntervalMinutes" ? 0 : 1) ||
+        if (typeof value !== "number" || !Number.isSafeInteger(value) ||
+            value < (field.key === "syncIntervalMinutes" || field.key === "providerStreamIdleMs" ? 0 : 1) ||
+            ((field.key === "syncIntervalMinutes" || field.key === "providerStreamIdleMs") && value > 86_400_000) ||
             (field.key === "syncIntervalMinutes" && value > MAX_SYNC_INTERVAL_MINUTES)) {
           throw new SettingsValidationError(field.key === "syncIntervalMinutes"
             ? `${field.label} 必须是 0–${MAX_SYNC_INTERVAL_MINUTES} 的整数`
-            : `${field.label} 必须是正整数`);
+            : field.key === "providerStreamIdleMs"
+              ? `${field.label} 必须是 0–86400000 的整数（0 表示关闭 idle 超时）`
+              : `${field.label} 必须是正整数`);
         }
         break;
       case "boolean":

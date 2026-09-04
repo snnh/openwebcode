@@ -123,8 +123,8 @@ export function RemoteAccessSection({ onDirtyChange }: { onDirtyChange?(dirty: b
       )}
       <ServerSettingsFields showGroup={(groupId) => groupId === NETWORK_SETTINGS_GROUP} onDirtyChange={onDirtyChange} />
       <p className="settings-note">{t(
-        "移动端/局域网访问：将上方监听地址改为 0.0.0.0 并重启服务即可——访问令牌自动生成，访问链接见上方（也可在服务端控制台查看）。如需固定令牌或限定浏览器来源，可用 OWC_ACCESS_TOKEN / OWC_ALLOWED_ORIGINS 环境变量显式覆盖。",
-        "Mobile/LAN access: set the listen address above to 0.0.0.0 and restart — the access token is auto-generated and the access links appear above (also printed to the server console). To pin a token or restrict browser origins, override with the OWC_ACCESS_TOKEN / OWC_ALLOWED_ORIGINS environment variables.",
+        "移动端/局域网访问：将上方监听地址改为 0.0.0.0 并重启服务即可——访问令牌自动生成，访问链接见上方（也可在服务端控制台查看）。如需固定令牌或限定浏览器来源，可用下方「允许来源列表」配置，或在启动环境中用 OWC_ACCESS_TOKEN / OWC_ALLOWED_ORIGINS 环境变量显式覆盖。",
+        "Mobile/LAN access: set the listen address above to 0.0.0.0 and restart — the access token is auto-generated and the access links appear above (also printed to the server console). To pin a token or restrict browser origins, use the Allowed origins field below, or override with the OWC_ACCESS_TOKEN / OWC_ALLOWED_ORIGINS environment variables at startup.",
       )}</p>
       <TotpSection />
     </>

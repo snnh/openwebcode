@@ -369,6 +369,143 @@ describe("subagent agent=general", () => {
   });
 });
 
+describe("子代理权限档默认模型审核、主 yolo 跟随", () => {
+  it("ask 会话下 general 子代理写文件经 main 审核 LOW 自动放行（不弹人工卡）", async () => {
+    const h = await setupRunner({ permissionMode: "ask" });
+    // 审核模型用 main（会话 provider 假桩回应 LOW）；fast 缺省不可用时兜底转人工由既有用例覆盖
+    await h.sessions.updateConfig(h.session.id, { provider: "fake", model: "test-model", reviewModel: "main" });
+    let mainTurn = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        // main 审核通道（reviewToolCall 的 completeWithProvider）：回应 LOW
+        if (request.system.includes("你是权限审核员")) {
+          yield { type: "text_delta", text: "LOW\n工作区内常规写文件" };
+          yield { type: "done", stopReason: "end_turn" };
+          return;
+        }
+        if (isSubRequest(request)) {
+          const last = request.messages.at(-1);
+          if (last?.role === "user") {
+            yield { type: "tool_call", id: "sub-write-1", name: "write_file", input: { path: "out.txt", content: "hello" } };
+            yield { type: "done", stopReason: "tool_use" };
+          } else {
+            yield { type: "text_delta", text: "文件已写入" };
+            yield { type: "done", stopReason: "end_turn" };
+          }
+          return;
+        }
+        if (mainTurn++ === 0) {
+          yield { type: "tool_call", id: "spawn-1", name: "subagent", input: { prompt: "写一个文件", agent: "general" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "完成" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const { runner } = makeRunner(h, provider);
+
+    await runner.run(h.session.id, "派生 general 子代理");
+
+    // 审核 LOW 自动放行：写文件真实执行、全程无人工 permission.request
+    expect(h.core.writeFileCalls).toHaveLength(1);
+    expect(h.captured.some((event) => event.type === "permission.request")).toBe(false);
+    const reviewed = h.captured.find((event) => event.type === "permission.reviewed");
+    expect(reviewed).toBeDefined();
+    expect(reviewed?.payload).toMatchObject({ tool: "write_file", verdict: "low" });
+  });
+
+  it("yolo 主档下子代理内部工具直接放行（无审核往返）", async () => {
+    const h = await setupRunner({ permissionMode: "yolo" });
+    await h.sessions.updateConfig(h.session.id, { provider: "fake", model: "test-model", reviewModel: "main" });
+    let mainTurn = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        if (isSubRequest(request)) {
+          const last = request.messages.at(-1);
+          if (last?.role === "user") {
+            yield { type: "tool_call", id: "sub-write-2", name: "write_file", input: { path: "out2.txt", content: "x" } };
+            yield { type: "done", stopReason: "tool_use" };
+          } else {
+            yield { type: "text_delta", text: "完成" };
+            yield { type: "done", stopReason: "end_turn" };
+          }
+          return;
+        }
+        if (mainTurn++ === 0) {
+          yield { type: "tool_call", id: "spawn-2", name: "subagent", input: { prompt: "写文件", agent: "general" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "完成" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const { runner } = makeRunner(h, provider);
+
+    await runner.run(h.session.id, "yolo 子代理");
+
+    expect(h.core.writeFileCalls).toHaveLength(1);
+    expect(h.captured.some((event) => event.type === "permission.reviewed")).toBe(false);
+  });
+});
+
+describe("同消息 subagent fan-out 并行（subAgentConcurrency>1）", () => {
+  it("两个 subagent 调用真并发执行，tool_result 仍按原调用顺序落盘", async () => {
+    const h = await setupRunner({ permissionMode: "yolo" });
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    let active = 0;
+    let overlapped = false;
+    let mainTurn = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        if (request.system.includes(EXPLORE_MARKER)) {
+          // 每个子代理的每轮请求都驻留一段窗口，记录是否有两个子代理同时活跃
+          active += 1;
+          if (active > 1) overlapped = true;
+          try {
+            await sleep(60);
+          } finally {
+            active -= 1;
+          }
+          const isFirstRound = request.messages.at(-1)?.role === "user";
+          if (isFirstRound) {
+            yield { type: "tool_call", id: `fan-${request.messages.length}`, name: "read_file", input: { path: "a.txt" } };
+            yield { type: "done", stopReason: "tool_use" };
+          } else {
+            yield { type: "text_delta", text: "explore 完成" };
+            yield { type: "done", stopReason: "end_turn" };
+          }
+          return;
+        }
+        if (mainTurn++ === 0) {
+          yield { type: "tool_call", id: "fan-1", name: "subagent", input: { prompt: "查任务 A" } };
+          yield { type: "tool_call", id: "fan-2", name: "subagent", input: { prompt: "查任务 B" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "完成" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const { runner } = makeRunner(h, provider);
+    runner.setSubAgentConcurrency(() => 2);
+
+    await runner.run(h.session.id, "并行派生两个子代理");
+
+    expect(overlapped).toBe(true);
+    const history = await h.sessions.get(h.session.id);
+    const toolResults = history?.messages.flatMap((message) => message.content ?? [])
+      .filter((block): block is { type: "tool_result"; toolCallId: string } => block.type === "tool_result")
+      .map((block) => block.toolCallId) ?? [];
+    expect(toolResults.filter((id) => id === "fan-1" || id === "fan-2")).toEqual(["fan-1", "fan-2"]);
+    expect(h.captured.filter((event) => event.type === "subagent.finished")).toHaveLength(2);
+  });
+});
+
 describe("spawn_swarm 逐项 general", () => {
   it("单项 agent=general 可写文件，默认项保持只读", async () => {
     const h = await setupRunner({ permissionMode: "yolo" });
@@ -427,6 +564,63 @@ describe("spawn_swarm 逐项 general", () => {
     const generalStarted = h.captured.find((event) =>
       event.type === "subagent.started" && (event.payload as { agent?: string }).agent === "general");
     expect(generalStarted).toBeDefined();
+  });
+
+  it("成员并发受 spawnSwarmConcurrency 配置约束（注入 2：同时活跃 ≤2，4 项全部执行）", async () => {
+    const h = await setupRunner({ permissionMode: "yolo" });
+    await h.sessions.updateConfig(h.session.id, { provider: "fake", model: "test-model", swarmEnabled: true });
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    let active = 0;
+    let maxActive = 0;
+    let mainTurn = 0;
+    let subRound = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        if (request.system.includes(EXPLORE_MARKER)) {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          try {
+            await sleep(40);
+          } finally {
+            active -= 1;
+          }
+          subRound += 1;
+          const isFirstRound = request.messages.at(-1)?.role === "user";
+          if (isFirstRound) {
+            yield { type: "tool_call", id: `member-read-${subRound}`, name: "read_file", input: { path: "b.txt" } };
+            yield { type: "done", stopReason: "tool_use" };
+          } else {
+            yield { type: "text_delta", text: "成员完成" };
+            yield { type: "done", stopReason: "end_turn" };
+          }
+          return;
+        }
+        if (mainTurn++ === 0) {
+          yield {
+            type: "tool_call",
+            id: "swarm-2",
+            name: "spawn_swarm",
+            input: { prompt_template: "处理 {{item}}", items: ["a", "b", "c", "d"] },
+          };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "完成" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const { runner } = makeRunner(h, provider);
+    runner.setSpawnSwarmConcurrency(() => 2);
+
+    await runner.run(h.session.id, "swarm");
+
+    // 池大小受配置约束：任一时刻活跃成员 ≤2（若仍用固定 4 并发则此处会到 4）
+    expect(maxActive).toBeGreaterThan(0);
+    expect(maxActive).toBeLessThanOrEqual(2);
+    expect(h.captured.filter((event) => event.type === "subagent.started")).toHaveLength(4);
+    const toolResult = toolResultOf(await h.sessions.get(h.session.id), "swarm-2");
+    expect(toolResult).toMatchObject({ isError: false });
   });
 });
 

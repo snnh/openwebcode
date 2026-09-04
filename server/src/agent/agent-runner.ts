@@ -295,8 +295,8 @@ const SPAWN_SUBAGENT_TOOL: ProviderTool = {
 
 /** swarm 单项数上限：低于 Kimi Code AgentSwarm 的 128，作为自托管部署的成本护栏。 */
 const SPAWN_SWARM_MAX_ITEMS = 16;
-/** 同时运行的子代理数；超出排队，与"launch 自动排队"语义一致。 */
-const SPAWN_SWARM_CONCURRENCY = 4;
+// spawn_swarm 并发成员数（原常量 4）已配置化：AgentRunner.spawnSwarmConcurrencyLimit 现读
+// 设置项 spawnSwarmConcurrency（2–16，默认 4），执行点在下方 worker 池。
 
 /** 系统提示中四档角色的一句话语义（引导主模型按任务选档）。 */
 const SUB_AGENT_ROLE_GUIDANCE: Record<ModelRole, string> = {
@@ -306,7 +306,7 @@ const SUB_AGENT_ROLE_GUIDANCE: Record<ModelRole, string> = {
   cheap: "lowest cost; use for bulk or low-stakes fan-out work",
 };
 
-/** 手动启动（REST）子代理的每会话并发上限：与 SPAWN_SWARM_CONCURRENCY 对齐，超出直接 429。 */
+/** 手动启动（REST）子代理的每会话并发上限，超出直接 429（独立于 subagent/spawn_swarm 并行配置；手动路径后续计划归档）。 */
 export const MAX_MANUAL_SUBAGENTS = 4;
 
 /** 手动子代理启动失败：REST 层按 code 映射 400/429。 */
@@ -821,6 +821,24 @@ export class AgentRunner {
   /** 注入子代理默认轮次上限的实时取值函数（index.ts 装配：settings.effective().subAgentMaxTurns）。 */
   setSubAgentMaxTurns(get: () => number): void {
     this.subAgentMaxTurnsLimit = get;
+  }
+
+  /** 同一消息内 subagent 类调用的最大并行数（index.ts 装配：settings.effective().subAgentConcurrency）。
+   *  默认 2（与设置默认一致）；1 = 逐条串行；>1 且整条消息全为 subagent 类调用时才并行。
+   *  只限制同时运行数量，不限制子代理总执行数量（超出的调用排队依次执行）。 */
+  private subAgentConcurrencyLimit: () => number = () => 2;
+
+  /** 注入同一消息 subagent 并行数的实时取值函数（index.ts 装配：settings.effective().subAgentConcurrency）。 */
+  setSubAgentConcurrency(get: () => number): void {
+    this.subAgentConcurrencyLimit = get;
+  }
+
+  /** spawn_swarm 并发成员数（index.ts 装配：settings.effective().spawnSwarmConcurrency）；设置校验保证 ≥2。 */
+  private spawnSwarmConcurrencyLimit: () => number = () => 4;
+
+  /** 注入 spawn_swarm 并发成员数的实时取值函数（index.ts 装配：settings.effective().spawnSwarmConcurrency）。 */
+  setSpawnSwarmConcurrency(get: () => number): void {
+    this.spawnSwarmConcurrencyLimit = get;
   }
 
   /** 自动压缩水位（百分比）取值函数：默认 85，setCompactionThreshold 注入后走设置热生效值。 */
@@ -1690,6 +1708,20 @@ export class AgentRunner {
         if (toolCalls.length === 0) throw new Error("Provider stopped for tool use without a tool call");
         await this.state(sessionId, "executing_tools");
         const toolExecStart = performance.now();
+        // 同消息 subagent fan-out 并行：仅当设置并行数 ≥2 且本条消息全部为 subagent 类调用时启用
+        // （模型一次发起多个子代理的典型形态）；其余形状——混入非子代理工具、并行数 1、单调用——
+        // 走下方串行 for 循环，行为与历史完全一致。
+        if (this.subAgentConcurrencyLimit() >= 2 && toolCalls.length >= 2 &&
+            toolCalls.every((call) => isSubagentToolName(call.name))) {
+          await this.executeSubagentFanOut(sessionId, toolCalls, {
+            session,
+            availableToolNames,
+            toolsEnabled,
+            controller,
+            profile,
+            provider,
+          });
+        } else {
         for (const call of toolCalls) {
           let effectiveInput = call.input;
           let result: Extract<MessageContent, { type: "tool_result" }>;
@@ -1764,6 +1796,7 @@ export class AgentRunner {
           if (!result.isError && ["write_file", "edit_file"].includes(this.toolAliases.resolveBuiltinToolName(sessionId, call.name))) {
             this.events.publish({ source: "agent", type: "scm.updated", sessionId, payload: { sessionId, reason: "file.write", ...(typeof effectiveInput.path === "string" ? { path: effectiveInput.path } : {}) } });
           }
+        }
         }
         perfToolExecMs += performance.now() - toolExecStart;
         perfTurnCount++;
@@ -2085,7 +2118,8 @@ export class AgentRunner {
         // 手动启动无显式参数：内置类型已带设置默认，自定义类型回落设置全局默认
         maxTurns: resolved.maxTurns ?? this.subAgentMaxTurnsLimit(),
         shell: resolveShell(session.shellBackend ?? "default"),
-        // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
+        // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）。
+        // 手动启动保持 authContext="main"：随会话权限档（手动路径后续计划归档，行为不变）
         ...(resolved.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
         core: this.core,
         sessionId,
@@ -2129,13 +2163,16 @@ export class AgentRunner {
   }
 
   /**
-   * general 子代理的工具执行入口：与主循环工具完全相同的权限链（authorizeTool：
+   * general 子代理的工具执行入口：与主循环工具相同的权限链（authorizeTool：
    * plan 只读门禁 + 权限模式/规则 + permission.request 挂起与 respond 恢复），
    * 执行复用主循环同一 core/沙盒配置。不发布 tool.start/end、不改变 run 状态——
    * 子代理进度只经 subagent.progress 暴露。
+   * authContext 区分权限档推导：主循环发起的 subagent / spawn_swarm 成员传 "subagent"
+   * （内部工具默认模型审核 review，主档 yolo 时跟随 yolo）；手动启动子代理保持 "main"
+   * （随会话档，行为不变——手动路径后续计划归档）。
    */
-  private async executeSubAgentTool(sessionId: string, name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<{ content: string; isError: boolean }> {
-    const permission = await this.authorizeTool(sessionId, name, input, signal);
+  private async executeSubAgentTool(sessionId: string, name: string, input: Record<string, unknown>, signal: AbortSignal, authContext: "main" | "subagent" = "main"): Promise<{ content: string; isError: boolean }> {
+    const permission = await this.authorizeTool(sessionId, name, input, signal, authContext);
     if (!permission.allowed) return { content: permission.reason ?? "Tool permission denied", isError: true };
     try {
       return await this.dispatchSubAgentTool(sessionId, name, input, signal);
@@ -2543,7 +2580,121 @@ export class AgentRunner {
     return this.runControl.removeSteering(sessionId, id);
   }
 
-  private async authorizeTool(sessionId: string, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<{ allowed: boolean; reason?: string }> {
+  /**
+   * 同消息 subagent fan-out 并行执行（设置 subAgentConcurrency>1 且消息全为 subagent 类调用时启用）。
+   *
+   * 与串行路径（run() 内 for 循环）的分工：可用性检查/扩展前处理/别名/重复守卫/授权/PreToolUse
+   * 钩子按调用顺序**串行**执行——守卫计数、权限卡与钩子语义与串行路径一致，不引入并发权限卡；
+   * 通过预检的调用经 worker 池并发调 executeTool（上限 = min(并行数, 调用数)），超出的调用在池内
+   * 排队依次执行（并行数只限并发、不截断调用总量）。全部就绪后按**原调用顺序**逐条落盘 tool_result，
+   * 满足 DeepSeek 并行回放 fc…fc → fco…fco 的历史布局约束。中断语义与串行路径一致：在途调用经
+   * signal 收尾（executeTool 内部 catch 转为失败结果并保留 taskId），未启动的排队项在此抛出让外层
+   * catch 的 backfillAbortedToolResults 补齐占位结果。
+   */
+  private async executeSubagentFanOut(
+    sessionId: string,
+    toolCalls: Array<Extract<MessageContent, { type: "tool_call" }>>,
+    context: {
+      session: SessionMeta;
+      availableToolNames: Set<string>;
+      toolsEnabled: boolean;
+      controller: AbortController;
+      profile: ModelProfile;
+      provider: Provider;
+    },
+  ): Promise<void> {
+    const { session, availableToolNames, toolsEnabled, controller, profile, provider } = context;
+    type ToolResult = MessageContent & { type: "tool_result" };
+    const prepared: Array<{ call: (typeof toolCalls)[number]; result?: ToolResult; run?: () => Promise<ToolResult> }> = [];
+    for (const call of toolCalls) {
+      const entry: { call: (typeof toolCalls)[number]; result?: ToolResult; run?: () => Promise<ToolResult> } = { call };
+      try {
+        // 1) 可用性 + 扩展前处理 + 重复守卫：与串行路径同一顺序与判定
+        const advertisedName = isSubagentToolName(call.name) ? SUBAGENT_TOOL : call.name;
+        if (!availableToolNames.has(advertisedName)) {
+          const externalLabel = call.name.startsWith("mcp__") ? "MCP 工具" : call.name.startsWith("ext__") ? "扩展工具" : undefined;
+          const content = session.agentMode === "plan" && externalLabel
+            ? `Plan 模式为只读：${externalLabel} ${call.name} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 code 模式执行。`
+            : toolsEnabled
+              ? `Tool is not available in this turn: ${call.name}`
+              : `Tool calls are disabled for the selected model: ${call.name}`;
+          this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId: call.id, error: content } });
+          entry.result = { type: "tool_result", toolCallId: call.id, content, isError: true };
+          continue;
+        }
+        const extensionOutcome = this.extensions
+          ? await this.extensions.beforeTool({ sessionId, cwd: session.cwd, tool: call.name, input: call.input })
+          : { sessionId, cwd: session.cwd, tool: call.name, input: call.input };
+        if (extensionOutcome.blocked) {
+          entry.result = { type: "tool_result", toolCallId: call.id, content: extensionOutcome.reason ?? "Blocked by extension", isError: true };
+          continue;
+        }
+        const effectiveInput = this.toolAliases.translateAliasInput(sessionId, call.name, extensionOutcome.input);
+        const repeated = this.recordToolCall(sessionId, call.name, effectiveInput);
+        if (repeated >= 3) {
+          const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
+          this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, ...boundToolEventInput(effectiveInput), count: repeated } });
+          entry.result = { type: "tool_result", toolCallId: call.id, content, isError: true };
+          continue;
+        }
+        // 2) 授权（plan 门禁/权限链，可挂起）与 PreToolUse 钩子：逐调用串行
+        const permission = await this.authorizeTool(sessionId, call.name, effectiveInput, controller.signal);
+        if (!permission.allowed) {
+          entry.result = { type: "tool_result", toolCallId: call.id, content: permission.reason ?? "Tool permission denied", isError: true };
+          continue;
+        }
+        const builtinName = this.toolAliases.resolveBuiltinToolName(sessionId, call.name);
+        const outcome = this.hooks
+          ? await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: builtinName, input: effectiveInput, ...(builtinName !== call.name ? { toolAlias: call.name } : {}) })
+          : undefined;
+        if (outcome?.blocked) {
+          entry.result = { type: "tool_result", toolCallId: call.id, content: outcome.reason ?? "Blocked by hook", isError: true };
+          continue;
+        }
+        entry.run = () => this.executeTool(sessionId, call.name, call.id, effectiveInput, controller.signal, {
+          // read_media 执行期门控：与本轮调用链一致（本轮均为子代理工具，实际不消费图片/视频模态）
+          image: profile.capabilities.modalities.includes("image"),
+          video: profile.capabilities.modalities.includes("video"),
+          providerInterface: provider.interfaceType,
+        });
+      } catch (error) {
+        // Abort 仍按原语义结束整个 run；其他前置失败必须回填给 provider（同串行路径 catch）
+        if (controller.signal.aborted) throw error;
+        const content = errorMessage(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId: call.id, error: content } });
+        entry.result = { type: "tool_result", toolCallId: call.id, content, isError: true };
+      }
+      prepared.push(entry);
+    }
+    // 3) worker 池并发执行：executeTool 内部自带 try/catch（非中断失败转 error result、保留 taskId）；
+    //    中断后在途调用以失败结果收尾，不再启动排队项
+    const runnables = prepared.filter((entry): entry is typeof entry & { run: () => Promise<ToolResult> } => entry.run !== undefined);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(this.subAgentConcurrencyLimit(), runnables.length)) }, async () => {
+      while (!controller.signal.aborted && next < runnables.length) {
+        const index = next;
+        next += 1;
+        try {
+          runnables[index]!.result = await runnables[index]!.run();
+        } catch (error) {
+          if (controller.signal.aborted) throw error;
+          const content = errorMessage(error);
+          this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId: runnables[index]!.call.id, error: content } });
+          runnables[index]!.result = { type: "tool_result", toolCallId: runnables[index]!.call.id, content, isError: true };
+        }
+      }
+    }));
+    // 4) 按原调用顺序落盘 tool_result（appendMessage 对同会话串行化，逐条等待保证顺序）
+    for (const entry of prepared) {
+      if (entry.result) {
+        await this.sessions.appendMessage(sessionId, "tool", [entry.result], this.messageLineage(sessionId));
+      }
+    }
+    // 排队项因中断未启动：抛出走外层 catch，由 backfillAbortedToolResults 补齐占位结果
+    if (controller.signal.aborted) throw new Error("Agent run aborted");
+  }
+
+  private async authorizeTool(sessionId: string, tool: string, input: Record<string, unknown>, signal: AbortSignal, context: "main" | "subagent" = "main"): Promise<{ allowed: boolean; reason?: string }> {
     const session = await this.sessions.getMeta(sessionId);
     if (!session) return { allowed: false, reason: "Session not found" };
     // 工具形态别名按原内置工具的权限类处理（不降级为 external）
@@ -2555,7 +2706,11 @@ export class AgentRunner {
       if (tool.startsWith("ext__")) return { allowed: false, reason: `Plan 模式为只读：扩展工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 code 模式执行。` };
       if (!PLAN_READONLY.has(tool)) return { allowed: false, reason: `Plan 模式为只读：${tool} 被拦截。请输出实施计划并请用户切换到 code 模式执行。` };
     }
-    const mode = session.permissionMode ?? "ask";
+    const baseMode = session.permissionMode ?? "ask";
+    // 子代理（subagent/spawn_swarm 成员，手动路径除外——authContext 由注入点区分）内部工具授权的
+    // 有效权限档：默认模型审核（review）；主 agent 切 yolo 时同步 yolo（yolo 只跳确认、不扩沙盒）。
+    // 只读白名单/allow 规则命中仍不经审核（下方 needsApproval 前置不变）。
+    const mode = context === "subagent" && baseMode !== "yolo" ? "review" : baseMode;
     const rules = session.permissionRules ?? [];
     // 本机会话（kind=local）文件工具路径门：cwd=HOME、core 路径根放宽到文件系统根，
     // HOME 之外的 read/write/edit/glob/grep 必须先命中 allow 规则或经人工审批——
@@ -2870,8 +3025,9 @@ export class AgentRunner {
           // 显式 maxTurns 参数优先，其次设置全局默认（resolveSubAgent 已按内置/设置解析），最后 runSubAgent 兜底
           maxTurns: requestedMaxTurns ?? resolved.maxTurns ?? this.subAgentMaxTurnsLimit(),
           shell: resolveShell(session.shellBackend ?? "default"),
-          // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
-          ...(resolved.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
+          // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）。
+          // 子代理内部工具权限档默认模型审核（review），主 agent 切 yolo 时跟随 yolo
+          ...(resolved.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal, "subagent") } : {}),
           core: this.core,
           sessionId,
           cwd: session.cwd,
@@ -3024,8 +3180,9 @@ export class AgentRunner {
               toolNames: effective.toolNames,
               maxTurns,
               shell: resolveShell(session.shellBackend ?? "default"),
-              // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
-              ...(effective.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
+              // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）。
+              // swarm 成员同 subagent：内部工具默认模型审核（review），主 agent 切 yolo 时跟随 yolo
+              ...(effective.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal, "subagent") } : {}),
               core: this.core,
               sessionId,
               cwd: session.cwd,
@@ -3080,10 +3237,11 @@ export class AgentRunner {
           }
         };
         // 并发上限内的 worker-pool：超出项排队，单项失败不拖垮整批（allSettled 语义）；
-        // 中断后不再启动排队项（在途项经 signal 自然中止）
+        // 中断后不再启动排队项（在途项经 signal 自然中止）。
+        // 并发成员数配置化：spawnSwarmConcurrencyLimit 现读设置项（2–16，默认 4）
         const outcomes: SwarmItemOutcome[] = new Array(prompts.length) as SwarmItemOutcome[];
         let next = 0;
-        const workers = Array.from({ length: Math.min(SPAWN_SWARM_CONCURRENCY, prompts.length) }, async () => {
+        const workers = Array.from({ length: Math.min(this.spawnSwarmConcurrencyLimit(), prompts.length) }, async () => {
           while (!signal.aborted && next < prompts.length) {
             const index = next;
             next += 1;

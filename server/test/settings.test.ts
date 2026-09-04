@@ -15,6 +15,7 @@ import { ProviderProfilesService } from "../src/provider-profiles.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { CODE_DEFAULTS, encodeFastModelSelection, SettingsService, type SettingsFieldView, type SettingsView } from "../src/settings-service.js";
+import { getOfficialUserAgent, getUserAgent } from "../src/user-agent.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "../src/remote-sync-scheduler.js";
 import type { UpdateChecker } from "../src/update-checker.js";
 import { tempRoot } from "./helpers/temp-roots.js";
@@ -85,7 +86,7 @@ describe("server settings API", () => {
     const view = response.json<SettingsView>();
     expect(view.groups.map((group) => group.id)).toEqual(["models", "modelSelection", "general", "defaults", "context", "executor", "service", "network", "proxy", "webSearch", "exchangeRate", "updateCheck"]);
     const fields = view.groups.flatMap((group) => group.fields);
-    expect(fields).toHaveLength(48);
+    expect(fields).toHaveLength(53);
     for (const item of fields) {
       expect(item.source).toBe("default");
       expect(item.editable).toBe(true);
@@ -107,6 +108,11 @@ describe("server settings API", () => {
     expect(field(view, "catalogSyncUrl")).toMatchObject({ value: null, nullable: true, restartRequired: false });
     expect(field(view, "pricingSyncUrl")).toMatchObject({ value: null, nullable: true, restartRequired: false });
     expect(field(view, "syncIntervalMinutes")).toMatchObject({ type: "number", value: 0, restartRequired: false });
+    expect(field(view, "subAgentConcurrency")).toMatchObject({ type: "number", value: 2, restartRequired: false });
+    expect(field(view, "spawnSwarmConcurrency")).toMatchObject({ type: "number", value: 4, restartRequired: false });
+    expect(field(view, "userAgent")).toMatchObject({ type: "text", value: null, nullable: true, restartRequired: false });
+    expect(field(view, "allowedOrigins")).toMatchObject({ type: "text", value: null, nullable: true, restartRequired: true });
+    expect(field(view, "providerStreamIdleMs")).toMatchObject({ type: "number", value: null, nullable: true, restartRequired: true });
   });
 
   it("selects a fast model from the unified catalog and hot-applies its request parameters", async () => {
@@ -237,6 +243,18 @@ describe("server settings API", () => {
       { sandboxAllowPaths: Array.from({ length: 17 }, (_, index) => `D:\\path-${index}`) },
       { jobObjectMemoryMB: 1_048_577 },
       { jobObjectMaxProcesses: 4097 },
+      { subAgentConcurrency: 0 },
+      { subAgentConcurrency: 17 },
+      { subAgentConcurrency: 1.5 },
+      { spawnSwarmConcurrency: 1 },
+      { spawnSwarmConcurrency: 17 },
+      { userAgent: "带\n换行" },
+      { userAgent: "x".repeat(201) },
+      { userAgent: "   " },
+      { allowedOrigins: "https://a.example.com/path" },
+      { allowedOrigins: "ftp://a.example.com" },
+      { providerStreamIdleMs: -1 },
+      { providerStreamIdleMs: 86_400_001 },
       { unknownKey: 1 },
     ]) {
       const response = await setup.app.inject({ method: "PUT", url: "/api/settings", payload: { overrides } });
@@ -258,6 +276,68 @@ describe("server settings API", () => {
     expect(partial.effective().sandbox?.jobObject).toEqual({ maxProcesses: 16 });
     const unset = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
     expect(unset.effective().sandbox).toBeUndefined();
+  });
+
+  it("exposes the new concurrency / userAgent / stream-idle settings from env (env 优先且不可 UI 覆盖)", async () => {
+    const root = await tempRoot("owc-newenv-");
+    const configured = await SettingsService.load({
+      env: {
+        OWC_SUB_AGENT_CONCURRENCY: "3",
+        OWC_SPAWN_SWARM_CONCURRENCY: "6",
+        OWC_USER_AGENT: "  MyAgent/1.0  ",
+        OWC_PROVIDER_STREAM_IDLE_MS: "0",
+        OWC_ALLOWED_ORIGINS: "https://a.example.com,https://b.example.com",
+      },
+      filePath: path.join(root, "server-settings.json"),
+    });
+    const effective = configured.effective();
+    expect(effective.subAgentConcurrency).toBe(3);
+    expect(effective.spawnSwarmConcurrency).toBe(6);
+    // userAgent 允许 env 直写首尾空白：effective 归一 trim
+    expect(effective.userAgent).toBe("MyAgent/1.0");
+    expect(effective.providerStreamIdleMs).toBe(0);
+    expect(effective.allowedOrigins).toEqual(["https://a.example.com", "https://b.example.com"]);
+    await expect(configured.update({ subAgentConcurrency: 5 })).rejects.toThrow("OWC_SUB_AGENT_CONCURRENCY");
+    expect(configured.effective().subAgentConcurrency).toBe(3);
+    const unset = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
+    expect(unset.effective().subAgentConcurrency).toBe(2);
+    expect(unset.effective().spawnSwarmConcurrency).toBe(4);
+    expect(unset.effective().userAgent).toBeUndefined();
+    expect(unset.effective().providerStreamIdleMs).toBeUndefined();
+  });
+
+  it("saves allowedOrigins and recomputes listener security from it", async () => {
+    const setup = await fixture();
+    const put = await setup.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { overrides: { allowedOrigins: "https://b.example.com" } },
+    });
+    expect(put.statusCode).toBe(200);
+    expect(field(put.json<SettingsView>(), "allowedOrigins")).toMatchObject({ value: "https://b.example.com", source: "file" });
+    expect(setup.settings.effective().allowedOrigins).toEqual(["https://b.example.com"]);
+    expect(setup.settings.effective().autoAllowSameOrigin).toBeUndefined();
+  });
+
+  it("hot-applies the userAgent setting to the outbound User-Agent module", async () => {
+    const setup = await fixture();
+    // 未设置：官方默认（测试文件模块隔离，可直接断言真实 user-agent 模块）
+    expect(getUserAgent()).toBe(getOfficialUserAgent());
+    const put = await setup.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { overrides: { userAgent: "CustomAgent/9.9" } },
+    });
+    expect(put.statusCode).toBe(200);
+    expect(field(put.json<SettingsView>(), "userAgent")).toMatchObject({ value: "CustomAgent/9.9", source: "file" });
+    expect(getUserAgent()).toBe("CustomAgent/9.9");
+    const cleared = await setup.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { overrides: { userAgent: null } },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(getUserAgent()).toBe(getOfficialUserAgent());
   });
 
   it("persists AppContainer allow paths as an array and exposes them in effective config", async () => {
@@ -361,11 +441,11 @@ describe("server settings API", () => {
     const view = (await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
     const groups = new Map(view.groups.map((group) => [group.id, group]));
     expect(groups.get("general")?.label).toBe("通用");
-    expect(groups.get("general")?.fields.map((item) => item.key)).toEqual(["defaultLanguage", "defaultCurrency", "chatModeEnabled"]);
+    expect(groups.get("general")?.fields.map((item) => item.key)).toEqual(["defaultLanguage", "defaultCurrency", "chatModeEnabled", "userAgent"]);
     expect(groups.get("defaults")?.label).toBe("会话默认");
     expect(groups.get("defaults")?.fields.map((item) => item.key)).toEqual(["defaultEffort", "defaultSnapshotMode", "snapshotBackend"]);
     expect(groups.get("context")?.label).toBe("上下文与运行");
-    expect(groups.get("context")?.fields.map((item) => item.key)).toEqual(["compactionThresholdPercent", "compactMaxTokens", "agentMaxTurns", "subAgentMaxTurns"]);
+    expect(groups.get("context")?.fields.map((item) => item.key)).toEqual(["compactionThresholdPercent", "compactMaxTokens", "agentMaxTurns", "subAgentMaxTurns", "subAgentConcurrency", "spawnSwarmConcurrency"]);
     expect(groups.get("webSearch")?.label).toBe("联网");
     expect(groups.get("webSearch")?.fields.map((item) => item.key)).toEqual(["offlineMode", "webSearchMode"]);
 
@@ -380,7 +460,7 @@ describe("server settings API", () => {
       "fastModelTimeoutMs",
       "roleModelCheap",
     ]);
-    expect(keyLists.get("models")).toEqual(["catalogSyncUrl", "pricingSyncUrl", "syncIntervalMinutes"]);
+    expect(keyLists.get("models")).toEqual(["catalogSyncUrl", "pricingSyncUrl", "syncIntervalMinutes", "providerStreamIdleMs"]);
     for (const key of ["defaultModel", "roleModelPremium", "roleModelBalanced", "roleModelCheap"]) {
       expect(field(view, key)).toMatchObject({
         type: "select",
