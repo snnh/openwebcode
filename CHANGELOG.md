@@ -15,6 +15,7 @@
 - **出站 User-Agent 可自定义**（设置 → 通用，`OWC_USER_AGENT`，热生效）：联网搜索/抓取、模型 API、MCP 等全部出站请求改用自定义 UA，留空用官方默认；更新检查与更新下载仍走官方 UA；env-sim 模拟开启时优先于自定义值。
 - **「允许来源列表」补进远程访问页**（对应 `OWC_ALLOWED_ORIGINS`，重启生效）：限定浏览器来源，留空放行与访问地址同源的请求。
 - **模型服务商流空闲超时可配置**（设置 → 模型目录，对应 `OWC_PROVIDER_STREAM_IDLE_MS`）：0 = 关闭 idle 超时，留空用服务商内置默认；下次注册（重启或服务商配置变更）生效。此前仅靠环境变量配置的运行时参数至此都有设置页入口。
+- **环境模拟 0.1.6**：内置五档预设对齐上游当前版本（2026-09）——kimi-code 0.36.0 → 0.40.1（改用默认引擎 agent-core-v2 的系统提示词模板：Communicating / Tool use / Coding / Risky actions / Delivering work / Context management / Environment / Project information 小节，移除旧版 Research / Ultimate Reminders 等段落）；Codex 0.147.0 → 0.153.2（系统提示词切到现行 `codex-rs/models-manager/prompt.md`：新增 Personality / AGENTS.md spec / Preamble / Planning / Ambition vs. precision 等小节，apply_patch 与审批表述按 OWC 可执行形态适配）；Claude Code 2.1.232 → 2.1.260；ZCode 3.7.7 → 3.10.1（GLM-5.3 时代，Memory 小节按官方文档更新为逐轮后台萃取 + `MEMORY.md` 索引自动载入的项目级记忆）；DSH 0.1.0-rc.6 → 0.1.2-rc.1（persona 与工具描述上游未变，仅版本同步）。各档拟态 User-Agent 值同步更新。
 
 ## [1.10.1]
 

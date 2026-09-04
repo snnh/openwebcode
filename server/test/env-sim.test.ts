@@ -731,14 +731,14 @@ describe("env-sim outbound UA simulation", () => {
       await manager.configure("env-sim", { enabled: true, config: { persona: "claude-code" } });
       expect(getUserAgent()).toBe(official());
       await manager.configure("env-sim", { config: { simulateUserAgent: true } });
-      expect(getUserAgent()).toBe("claude-code/2.1.232");
+      expect(getUserAgent()).toBe("claude-code/2.1.260");
       expect(getOfficialUserAgent()).toBe(official());
       await manager.configure("env-sim", { config: { simulateUserAgent: false } });
       expect(getUserAgent()).toBe(official());
       await manager.configure("env-sim", { config: { simulateUserAgent: true, persona: "" } });
       expect(getUserAgent()).toBe(official());
       await manager.configure("env-sim", { enabled: true, config: { persona: "codex", simulateUserAgent: true } });
-      expect(getUserAgent()).toBe("codex/0.147.0");
+      expect(getUserAgent()).toBe("codex/0.153.2");
       await manager.configure("env-sim", { enabled: false });
       expect(getUserAgent()).toBe(official());
     });
@@ -781,11 +781,11 @@ describe("env-sim outbound UA simulation", () => {
   it("ignores session-level persona overrides for the global UA", async () => {
     await withHarness({}, async ({ manager, sessions, session }) => {
       await manager.configure("env-sim", { enabled: true, config: { persona: "claude-code", simulateUserAgent: true } });
-      expect(getUserAgent()).toBe("claude-code/2.1.232");
+      expect(getUserAgent()).toBe("claude-code/2.1.260");
       // 会话级覆盖（SessionMeta.persona 回退通道）只作用于提示词与工具形态，
       // 不参与全局出站 UA——出站请求无会话上下文，避免并发会话串扰
       await sessions.updateConfig(session.id, { persona: "codex" });
-      expect(getUserAgent()).toBe("claude-code/2.1.232");
+      expect(getUserAgent()).toBe("claude-code/2.1.260");
     });
   }, 30_000);
 });
