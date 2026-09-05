@@ -569,10 +569,9 @@ function ownsWebSearchBlock(block: { provider?: string }, providerName: string):
  * 将 function_call 的 fc_* item id 同时作为 tool output 的 call_id。回放时统一
  * 使用原始 fc_* 标识，避免请求中的 function_call 与 function_call_output 脱配。 */
 function responseToolCallId(call: ToolCallContent): string {
-  // Responses 的 call_id 是应用侧关联键而非固定前缀；当历史同时保存了
-  // 原始 fc_* item id 时，以该稳定 id 作为关联键，保证 function_call 与
-  // function_call_output 在严格兼容网关中使用同一个标识。
-  return call.itemId?.startsWith("fc_") ? call.itemId : call.id;
+  // OpenAI/DeepSeek 均规定 function_call_output.call_id 必须等于
+  // function_call.call_id；fc_* 仅是 output item 的 id，不能替代 call_id。
+  return call.id;
 }
 
 function toResponsesInput(
