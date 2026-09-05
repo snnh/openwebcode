@@ -290,7 +290,9 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
     } else if (message.role === "assistant") {
       // 同一 id 在多条 assistant 消息重复出现时只发一次（重复 tool_calls 会被端点拒绝）
       const toolCalls = message.content
-        .filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id))
+        // 仅回放已有结果的调用；中断/截断留下的孤儿 call 若伪造占位结果，
+        // 部分原厂会以「No tool output found」拒绝整个请求。
+        .filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id) && outputs.has(block.id))
         .map((block) => ({
           id: block.id,
           type: "function",
