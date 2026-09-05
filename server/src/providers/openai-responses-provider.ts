@@ -118,7 +118,11 @@ export class OpenAIResponsesProvider implements Provider {
     if (request.thinking === "disabled" && (request.thinkingStyle === "thinking" || request.thinkingStyle === "fixed")) {
       reasoning.effort = "none";
     }
-    if (reasoningSummary) reasoning.summary = "auto";
+    // A number of Responses gateways (including simple OpenAI-compatible proxies) do not
+    // implement the optional summary field even though they accept /responses itself.
+    // Only request summaries when the caller explicitly selected a reasoning effort;
+    // plain Responses requests remain compatible with the minimal documented payload.
+    if (reasoningSummary && request.effort !== undefined) reasoning.summary = "auto";
     // system 组装：稳定前缀 + 动态尾部（Responses 无 system 角色，统一进 instructions）
     const suffix = request.systemSuffix?.trim();
     const instructions = suffix ? `${request.system}\n\n${suffix}` : request.system;
@@ -130,8 +134,9 @@ export class OpenAIResponsesProvider implements Provider {
           ...this.options.extraBody,
           model: request.model,
           stream: true,
-          // dsh 口径：store:false 服务端无状态，多轮上下文由本地回放维护
-          store: this.options.store ?? false,
+          // 仅在配置显式指定时发送 store。部分 Responses 兼容端点不认识该字段，
+          // 默认省略可避免无意义的 400；本地回放仍由 input 完整维护上下文。
+          ...(this.options.store === undefined ? {} : { store: this.options.store }),
           instructions,
           input: toResponsesInput(request.messages, this.name, reasoningSummary, this.options.diagnosticWriter ?? defaultDiagnosticWriter, encrypted),
           // dsh 口径：max_output_tokens 显式设置时不低于 16（OpenAI 拒绝更小值）
@@ -719,6 +724,10 @@ function toResponsesInput(
           call_id: call.id,
           name: call.name,
           arguments: JSON.stringify(call.input),
+          // Gateways that expose the Responses item id require it for pairing. Preserve it
+          // when it is the same stable identifier used as call_id; omit derived/mismatched
+          // ids because those trigger strict reasoning↔function validation on some endpoints.
+          ...(call.itemId?.startsWith("fc_") && call.itemId === call.id ? { id: call.itemId } : {}),
         });
       }
       for (const call of toolCalls) {

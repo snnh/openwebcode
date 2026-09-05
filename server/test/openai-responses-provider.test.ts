@@ -766,19 +766,19 @@ describe("OpenAIResponsesProvider request mapping", () => {
     expect(bodies[1]?.reasoning).toMatchObject({ effort: "none" });
     // effort_only 型（官方 OpenAI gpt 系）不下发 effort:none（官方无该取值）；summary 仍在
     await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "gpt-5", thinking: "disabled", thinkingStyle: "effort_only" })));
-    expect(bodies[2]?.reasoning).toEqual({ summary: "auto" });
+    expect(bodies[2]?.reasoning).toBeUndefined();
     // 未声明 thinkingStyle 也不下发（只发 effort/summary）
     await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "disabled" })));
-    expect(bodies[3]?.reasoning).toEqual({ summary: "auto" });
+    expect(bodies[3]?.reasoning).toBeUndefined();
     // enabled/adaptive 不覆盖
     await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "enabled", effort: "high", thinkingStyle: "thinking" })));
     expect(bodies[4]?.reasoning).toMatchObject({ effort: "high" });
   });
 
-  it("store:false 缺省随请求下发（dsh 无状态口径），options.store 可覆盖", async () => {
+  it("store 缺省省略以兼容不支持该字段的 Responses 端点，options.store 可显式设置", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     await drain(makeProvider(completedSseFetch(bodies)).streamChat(request()));
-    expect(bodies[0]?.store).toBe(false);
+    expect(bodies[0]?.store).toBeUndefined();
     await drain(makeProvider(completedSseFetch(bodies), { store: true }).streamChat(request()));
     expect(bodies[1]?.store).toBe(true);
   });
