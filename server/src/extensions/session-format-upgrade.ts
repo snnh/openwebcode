@@ -74,6 +74,36 @@ registerFormatUpgrade({
   },
 });
 
+/** 清理中断/旧迁移产生的孤儿工具调用：严格协议要求每个调用都有结果，
+ * 未完成调用不应在下一轮回放时伪造输出。正常已配对调用与工具结果保持原样。 */
+export function upgradeOrphanToolCalls(messages: readonly ChatMessage[]): { messages: ChatMessage[]; changed: number } {
+  const outputs = new Set<string>();
+  for (const message of messages) for (const block of message.content) {
+    if (block.type === "tool_result") outputs.add(block.toolCallId);
+  }
+  let changed = 0;
+  const upgraded = messages.map((message) => {
+    if (message.role !== "assistant") return message;
+    const content = message.content.filter((block) => {
+      if (block.type !== "tool_call" || outputs.has(block.id)) return true;
+      changed += 1;
+      return false;
+    });
+    return content.length === message.content.length ? message : { ...message, content };
+  });
+  return { messages: upgraded, changed };
+}
+
+registerFormatUpgrade({
+  id: "orphan-tool-calls",
+  scope: "messages",
+  description: "清理中断或旧迁移产生的孤儿工具调用：仅移除没有对应 tool_result 的 assistant tool_call，避免 Chat/Responses 下一轮回放触发 400。",
+  run: async (store, id) => {
+    const result = await store.transformMessages(id, upgradeOrphanToolCalls);
+    return { changed: result.changed, ...(result.backup ? { backup: result.backup } : {}) };
+  },
+});
+
 /** 旧会话 assistant 文本块 → v1 textSignature（幂等）：为每个文本非空且尚无 textSignature
  * 的文本块固化 v1 message item 签名 {"v":1,"id":msg_...}（id 派生自 message id + 文本块
  * 序数，与回放端无签名时的派生兜底完全一致）。非文本块与已升级块不碰；重复执行 changed === 0。
