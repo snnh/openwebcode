@@ -266,8 +266,8 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
   // 结果未落盘、压缩边界裁掉 assistant 留结果。先收集 tool_result 映射，tool_call 发出后
   // 立即内联对应 tool 消息（缺失补占位），tool 角色消息不再单独输出（游离结果丢弃）。
   const outputs = collectToolOutputs(messages);
-  const fallbackOutputs = [...outputs.values()];
-  let fallbackIndex = 0;
+  const fallbackOutputs = [...outputs.entries()];
+  const consumedOutputIds = new Set<string>();
   const toolMedia = collectToolMedia(messages);
   const result: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   const emitted = new Set<string>();
@@ -294,7 +294,11 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
       const toolCalls = message.content
         // 仅回放已有结果的调用；中断/截断留下的孤儿 call 若伪造占位结果，
         // 部分原厂会以「No tool output found」拒绝整个请求。
-        .filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id) && (outputs.has(block.id) || fallbackIndex < fallbackOutputs.length))
+        .filter((block): block is ToolCallContent => {
+          if (block.type !== "tool_call" || emitted.has(block.id)) return false;
+          if (outputs.has(block.id)) return true;
+          return fallbackOutputs.some(([id]) => !consumedOutputIds.has(id));
+        })
         .map((block) => ({
           id: block.id,
           type: "function",
@@ -323,10 +327,15 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
       // 之间不能插 user——端点要求 tool 消息紧跟各自 assistant 且连续；批量合并保持结构合法）。
       const batchMedia: ToolMediaItem[] = [];
       for (const call of toolCalls) {
+        const exactOutput = outputs.get(call.id);
+        const fallbackOutput = exactOutput === undefined
+          ? fallbackOutputs.find(([id]) => !consumedOutputIds.has(id))
+          : undefined;
+        consumedOutputIds.add(exactOutput !== undefined ? call.id : (fallbackOutput?.[0] ?? call.id));
         result.push({
           role: "tool",
           tool_call_id: call.id,
-          content: outputs.get(call.id) ?? fallbackOutputs[fallbackIndex++] ?? "The run was interrupted before this tool finished; no result was produced.",
+          content: exactOutput ?? fallbackOutput?.[1] ?? "The run was interrupted before this tool finished; no result was produced.",
         });
         batchMedia.push(...(toolMedia.get(call.id) ?? []));
       }
