@@ -266,6 +266,8 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
   // 结果未落盘、压缩边界裁掉 assistant 留结果。先收集 tool_result 映射，tool_call 发出后
   // 立即内联对应 tool 消息（缺失补占位），tool 角色消息不再单独输出（游离结果丢弃）。
   const outputs = collectToolOutputs(messages);
+  const fallbackOutputs = [...outputs.values()];
+  let fallbackIndex = 0;
   const toolMedia = collectToolMedia(messages);
   const result: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   const emitted = new Set<string>();
@@ -292,7 +294,7 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
       const toolCalls = message.content
         // 仅回放已有结果的调用；中断/截断留下的孤儿 call 若伪造占位结果，
         // 部分原厂会以「No tool output found」拒绝整个请求。
-        .filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id) && outputs.has(block.id))
+        .filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id) && (outputs.has(block.id) || fallbackIndex < fallbackOutputs.length))
         .map((block) => ({
           id: block.id,
           type: "function",
@@ -324,7 +326,7 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
         result.push({
           role: "tool",
           tool_call_id: call.id,
-          content: outputs.get(call.id) ?? "The run was interrupted before this tool finished; no result was produced.",
+          content: outputs.get(call.id) ?? fallbackOutputs[fallbackIndex++] ?? "The run was interrupted before this tool finished; no result was produced.",
         });
         batchMedia.push(...(toolMedia.get(call.id) ?? []));
       }
