@@ -46,8 +46,10 @@ export async function collectProviderTurn(
       const normalized = normalizeProviderError(error, events.length > 0);
       if (!normalized.retryable || attempt === maxAttempts) throw normalized;
       const exponential = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
+      // Add bounded jitter to avoid synchronized retries when many sessions hit a rate limit.
+      const jittered = Math.min(maxDelayMs, Math.round(exponential * (0.75 + Math.random() * 0.5)));
       const delayMs = normalized.retryAfterMs === undefined
-        ? exponential
+        ? jittered
         : Math.min(maxDelayMs, normalized.retryAfterMs);
       options.onRetry?.({ attemptId, attempt, delayMs, error: normalized });
       await abortableDelay(delayMs, request.signal);

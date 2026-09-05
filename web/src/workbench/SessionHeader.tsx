@@ -95,7 +95,8 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
   const [configPending, setConfigPending] = useState(false);
   // 移动端顶栏默认紧凑（下拉与导出收进展开区），本地已有记录时以用户选择为准
   const [headerCollapsed, setHeaderCollapsed] = useState(() => {
-    const stored = localStorage.getItem("owc-header-collapsed");
+    const storage = typeof globalThis.localStorage !== "undefined" ? globalThis.localStorage : undefined;
+    const stored = storage?.getItem("owc-header-collapsed");
     if (stored === "1" || stored === "0") return stored === "1";
     return isMobile;
   });
@@ -195,7 +196,9 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
     ...(isWindows || session.shellBackend === "cmd" ? [{ value: "cmd" as const, label: ["CMD", "CMD"] as [string, string] }] : []),
   ];
 
-  useEffect(() => { localStorage.setItem("owc-header-collapsed", headerCollapsed ? "1" : "0"); }, [headerCollapsed]);
+  useEffect(() => {
+    try { globalThis.localStorage?.setItem("owc-header-collapsed", headerCollapsed ? "1" : "0"); } catch { /* storage unavailable */ }
+  }, [headerCollapsed]);
 
   const openTask = (taskId: string): void => {
     if (expandedTask === taskId) {

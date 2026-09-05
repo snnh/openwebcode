@@ -224,4 +224,14 @@ export class EventBus extends EventEmitter {
       oversizedNotRetained: this.oversizedNotRetained,
     };
   }
+
+  /** 释放定时器与缓存，供服务关闭/测试 teardown 使用，避免长生命周期实例残留。 */
+  dispose(): void {
+    this.flushDeltas();
+    this.pendingDeltas.clear();
+    this.sessionSequences.clear();
+    this.history.length = 0;
+    this.historyBytes = 0;
+    this.removeAllListeners();
+  }
 }

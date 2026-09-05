@@ -552,7 +552,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
     // signature 提供权威 reasoning_text，但回放时剥掉 id/status/annotations（DeepSeek 输入只
     // 支持 plain-text content）；规范序 reasoning 在 message item 之前；function_call 只带 call_id，
-    // 不派发持久化的 itemId
+    // 保留原始 fc_* item id，兼容严格网关的配对校验
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
       { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
@@ -561,7 +561,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
         content: [{ type: "output_text", text: "我查一下", annotations: [] }],
         status: "completed", id: deriveMessageItemId("a1:0"),
       },
-      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", call_id: "call_1", id: "fc_xyz789", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
     ]);
   });
@@ -579,11 +579,9 @@ describe("OpenAIResponsesProvider request mapping", () => {
     ];
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
 
-    // 缺同源 thinking 素材的轮不回传 reasoning（真机验证规范序下无占位即通过）；悬空调用补 interrupted 占位输出
+    // 缺同源 thinking 素材与 tool_result 的悬空调用均不回放，避免严格网关拒绝。
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
-      { type: "function_call", call_id: "call_dangling", name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" },
-      { type: "function_call_output", call_id: "call_dangling", output: expect.stringContaining("interrupted") },
     ]);
   });
 
@@ -766,19 +764,19 @@ describe("OpenAIResponsesProvider request mapping", () => {
     expect(bodies[1]?.reasoning).toMatchObject({ effort: "none" });
     // effort_only 型（官方 OpenAI gpt 系）不下发 effort:none（官方无该取值）；summary 仍在
     await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "gpt-5", thinking: "disabled", thinkingStyle: "effort_only" })));
-    expect(bodies[2]?.reasoning).toEqual({ summary: "auto" });
+    expect(bodies[2]?.reasoning).toBeUndefined();
     // 未声明 thinkingStyle 也不下发（只发 effort/summary）
     await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "disabled" })));
-    expect(bodies[3]?.reasoning).toEqual({ summary: "auto" });
+    expect(bodies[3]?.reasoning).toBeUndefined();
     // enabled/adaptive 不覆盖
     await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "enabled", effort: "high", thinkingStyle: "thinking" })));
     expect(bodies[4]?.reasoning).toMatchObject({ effort: "high" });
   });
 
-  it("store:false 缺省随请求下发（dsh 无状态口径），options.store 可覆盖", async () => {
+  it("store 缺省省略以兼容不支持该字段的 Responses 端点，options.store 可显式设置", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     await drain(makeProvider(completedSseFetch(bodies)).streamChat(request()));
-    expect(bodies[0]?.store).toBe(false);
+    expect(bodies[0]?.store).toBeUndefined();
     await drain(makeProvider(completedSseFetch(bodies), { store: true }).streamChat(request()));
     expect(bodies[1]?.store).toBe(true);
   });
@@ -904,7 +902,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
         content: [{ type: "output_text", text: "我查一下再补充", annotations: [] }],
         status: "completed", id: "msg_enc1", phase: "commentary",
       },
-      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", call_id: "call_1", id: "fc_enc1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call", call_id: "call_2", name: "read_file", arguments: "{\"path\":\"a\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
       { type: "function_call_output", call_id: "call_2", output: "B" },

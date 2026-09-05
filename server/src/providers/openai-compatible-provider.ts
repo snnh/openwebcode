@@ -17,6 +17,7 @@ interface OpenAICompatibleProviderOptions {
   /** 思维链保留回传：历史 assistant 消息中的同源 thinking 块以 reasoning_content 回带
    * （deepseek/qwen/glm/kimi 等新模型要求；端点不识别该字段时可显式 false 关闭）。 */
   reasoningContent?: boolean;
+  includeUsage?: boolean;
   /** SSE 流连续无 data 事件的最大毫秒数（心跳注释不计），超时判为半开连接断开并走重试；<=0 关闭。 */
   streamIdleTimeoutMs?: number;
   fetch?: typeof fetch;
@@ -79,7 +80,7 @@ export class OpenAICompatibleProvider implements Provider {
         ...this.options.extraBody,
         model: request.model,
         stream: true,
-        stream_options: { include_usage: true },
+        ...(this.options.includeUsage !== false ? { stream_options: { include_usage: true } } : {}),
         // 未显式配置则不发送 max_tokens：不限制输出长度
         ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
         // 请求级采样参数（chat 模式助手预设下发）；undefined 时不发，由端点默认决定
@@ -265,6 +266,8 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
   // 结果未落盘、压缩边界裁掉 assistant 留结果。先收集 tool_result 映射，tool_call 发出后
   // 立即内联对应 tool 消息（缺失补占位），tool 角色消息不再单独输出（游离结果丢弃）。
   const outputs = collectToolOutputs(messages);
+  const fallbackOutputs = [...outputs.entries()];
+  const consumedOutputIds = new Set<string>();
   const toolMedia = collectToolMedia(messages);
   const result: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   const emitted = new Set<string>();
@@ -289,7 +292,13 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
     } else if (message.role === "assistant") {
       // 同一 id 在多条 assistant 消息重复出现时只发一次（重复 tool_calls 会被端点拒绝）
       const toolCalls = message.content
-        .filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id))
+        // 仅回放已有结果的调用；中断/截断留下的孤儿 call 若伪造占位结果，
+        // 部分原厂会以「No tool output found」拒绝整个请求。
+        .filter((block): block is ToolCallContent => {
+          if (block.type !== "tool_call" || emitted.has(block.id)) return false;
+          if (outputs.has(block.id)) return true;
+          return fallbackOutputs.some(([id]) => !consumedOutputIds.has(id));
+        })
         .map((block) => ({
           id: block.id,
           type: "function",
@@ -318,10 +327,15 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
       // 之间不能插 user——端点要求 tool 消息紧跟各自 assistant 且连续；批量合并保持结构合法）。
       const batchMedia: ToolMediaItem[] = [];
       for (const call of toolCalls) {
+        const exactOutput = outputs.get(call.id);
+        const fallbackOutput = exactOutput === undefined
+          ? fallbackOutputs.find(([id]) => !consumedOutputIds.has(id))
+          : undefined;
+        consumedOutputIds.add(exactOutput !== undefined ? call.id : (fallbackOutput?.[0] ?? call.id));
         result.push({
           role: "tool",
           tool_call_id: call.id,
-          content: outputs.get(call.id) ?? "The run was interrupted before this tool finished; no result was produced.",
+          content: exactOutput ?? fallbackOutput?.[1] ?? "The run was interrupted before this tool finished; no result was produced.",
         });
         batchMedia.push(...(toolMedia.get(call.id) ?? []));
       }

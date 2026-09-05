@@ -1,6 +1,6 @@
 {
   "name": "@openwebcode/web",
-  "version": "1.10.4",
+  "version": "1.10.8",
   "private": true,
   "type": "module",
   "engines": {
