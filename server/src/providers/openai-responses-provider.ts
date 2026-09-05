@@ -25,6 +25,8 @@ interface OpenAIResponsesProviderOptions {
    * response.reasoning_text.delta → thinking_delta），并控制历史同源 thinking 块的 reasoning
    * item 回传（DeepSeek 思维模式强制要求回传）。端点不接受时可显式 false 关闭。 */
   reasoningContent?: boolean;
+  /** Whether to request a reasoning summary in the response. */
+  reasoningSummary?: boolean;
   /** SSE 流连续无 data 事件的最大毫秒数（心跳注释不计），超时判为半开连接断开并走重试；<=0 关闭。 */
   streamIdleTimeoutMs?: number;
   fetch?: typeof fetch;
@@ -109,7 +111,11 @@ export class OpenAIResponsesProvider implements Provider {
     // reasoning/message/function_call item 按原始结构原样回放（含 rs_/fc_ id）
     const encrypted = request.responsesEncryptedReplay === true;
     // 思维摘要流开关：请求级（模型能力声明）优先，回落 provider 级配置（默认开）
-    const reasoningSummary = request.reasoningContent ?? (this.options.reasoningContent !== false);
+    // An explicit provider-level false is a hard compatibility opt-out. Model
+    // metadata may advertise reasoning content, but must not re-enable a
+    // provider option that was deliberately disabled for compatibility.
+    const replayReasoning = request.reasoningContent ?? (this.options.reasoningContent !== false);
+    const reasoningSummary = this.options.reasoningSummary !== false;
     const reasoning: Record<string, unknown> = {};
     if (this.options.reasoningEffort !== false && request.effort) reasoning.effort = request.effort;
     // 思考关闭按声明分发：thinking 型（deepseek 等）→ reasoning.effort:"none"（Responses 无
@@ -133,7 +139,7 @@ export class OpenAIResponsesProvider implements Provider {
           // dsh 口径：store:false 服务端无状态，多轮上下文由本地回放维护
           store: this.options.store ?? false,
           instructions,
-          input: toResponsesInput(request.messages, this.name, reasoningSummary, this.options.diagnosticWriter ?? defaultDiagnosticWriter, encrypted),
+          input: toResponsesInput(request.messages, this.name, replayReasoning, this.options.diagnosticWriter ?? defaultDiagnosticWriter, encrypted),
           // dsh 口径：max_output_tokens 显式设置时不低于 16（OpenAI 拒绝更小值）
           ...(maxTokens !== undefined ? { max_output_tokens: Math.max(maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS) } : {}),
           // 加密回放模式请求 reasoning.encrypted_content：include 与 reasoning 开关/effort 绑定
@@ -719,6 +725,10 @@ function toResponsesInput(
           call_id: call.id,
           name: call.name,
           arguments: JSON.stringify(call.input),
+          // Codex preserves the Responses function_call item id when replaying
+          // history. Keep the original fc_* id while call_id remains the
+          // independent tool correlation id.
+          ...(call.itemId && call.itemId.startsWith("fc_") ? { id: call.itemId } : {}),
         });
       }
       for (const call of toolCalls) {

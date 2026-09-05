@@ -2,6 +2,12 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.10.4]
+
+### 修复
+
+- **Responses 思考配置拆分**：思考摘要请求与历史思维链回传使用独立配置；GPT 系列模型默认不回传思维链，仍保留 `reasoning.effort` 思考强度设置；Responses 工具调用历史回放保留原始 function call item id。
+
 ## [1.10.3]
 
 ### 变更
@@ -1236,4 +1242,3 @@ Linux 体验与功能专项：快照新增 overlayfs 后端（原语下沉 core 
 - 支持 Skills、MCP、Hooks、自定义子代理、自定义斜杠命令和独立 Extension Host，并提供官方扩展体系。
 - 支持图片输入、Markdown/代码高亮/KaTeX、折叠思考内容、会话导入导出、可分享的自包含 HTML 页面和 `owc run` Headless CLI。
 - 提供 Windows MSI、Linux tar.gz 安装脚本和 GitHub Actions 发布流水线。
-
