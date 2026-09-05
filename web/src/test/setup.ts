@@ -2,6 +2,17 @@ import { afterEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, configure } from "@testing-library/react";
 
+// Node 运行器未提供 localStorage 时补齐最小实现，保持组件测试与浏览器语义一致。
+if (typeof window !== "undefined" && !window.localStorage) {
+  const values = new Map<string, string>();
+  Object.defineProperty(window, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, String(value)); },
+    removeItem: (key: string) => { values.delete(key); },
+    clear: () => { values.clear(); },
+  } satisfies Storage });
+}
+
 // findBy*/waitFor 默认 1000ms 超时在并行跑满 CPU（Windows 构建机）时偶发超时，
 // 被测代码本身是同步渲染、无真实时序问题；放宽到 3s 消除负载抖动，不掩盖逻辑错误。
 configure({ asyncUtilTimeout: 3000 });
