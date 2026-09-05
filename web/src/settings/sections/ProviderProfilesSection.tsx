@@ -15,6 +15,7 @@ interface ModelProviderForm {
   baseURL: string;
   apiKey: string;
   promptCaching: boolean;
+  reasoningSummary: boolean;
   extraBody: string;
   clearApiKey: boolean;
 }
@@ -26,6 +27,7 @@ const emptyModelProvider = (): ModelProviderForm => ({
   baseURL: "",
   apiKey: "",
   promptCaching: true,
+  reasoningSummary: true,
   extraBody: "",
   clearApiKey: false,
 });
@@ -132,6 +134,7 @@ export function ModelProvidersSection(): ReactElement {
       baseURL: profile.baseURL ?? "",
       apiKey: "",
       promptCaching: profile.promptCaching !== false,
+      reasoningSummary: profile.reasoningSummary !== false,
       extraBody: profile.extraBody ? JSON.stringify(profile.extraBody, null, 2) : "",
       clearApiKey: false,
     });
@@ -157,6 +160,7 @@ export function ModelProvidersSection(): ReactElement {
       interfaceType: modelForm.interfaceType,
       ...(modelForm.baseURL.trim() ? { baseURL: modelForm.baseURL.trim() } : { baseURL: null }),
       ...(modelForm.interfaceType === "anthropic-messages" ? { promptCaching: modelForm.promptCaching } : {}),
+      ...(modelForm.interfaceType === "openai-responses" ? { reasoningSummary: modelForm.reasoningSummary } : {}),
       extraBody,
       ...(modelForm.clearApiKey ? { apiKey: null } : modelForm.apiKey.trim() ? { apiKey: modelForm.apiKey.trim() } : {}),
     };
@@ -256,6 +260,7 @@ export function ModelProvidersSection(): ReactElement {
         <div className="settings-row">
           <label className="theme-option"><input type="checkbox" checked={modelForm.enabled} onChange={(event) => updateModelForm({ enabled: event.target.checked })} />{t("启用", "Enabled")}</label>
           {modelForm.interfaceType === "anthropic-messages" && <label className="theme-option"><input type="checkbox" checked={modelForm.promptCaching} onChange={(event) => updateModelForm({ promptCaching: event.target.checked })} />{t("提示词缓存", "Prompt caching")}</label>}
+          {modelForm.interfaceType === "openai-responses" && <label className="theme-option"><input type="checkbox" checked={modelForm.reasoningSummary} onChange={(event) => updateModelForm({ reasoningSummary: event.target.checked })} />{t("Responses 思考摘要", "Responses reasoning summary")}</label>}
           {modelForm.originalId && <label className="theme-option"><input type="checkbox" checked={modelForm.clearApiKey} onChange={(event) => updateModelForm({ clearApiKey: event.target.checked, apiKey: "" })} />{t("清除 API Key", "Clear API key")}</label>}
         </div>
         <div className="dialog-actions"><button className="btn small" disabled={busy} onClick={() => { setModelForm(emptyModelProvider()); setConnectionTest({ status: "idle" }); }}>{t("取消", "Cancel")}</button><button className="btn small" disabled={busy || connectionTest.status === "pending"} onClick={testModelConnection}>{connectionTest.status === "pending" ? t("测试中…", "Testing…") : t("测试连接", "Test connection")}</button><button className="btn small primary" disabled={busy} onClick={saveModelProvider}>{t("保存服务商", "Save provider")}</button></div>

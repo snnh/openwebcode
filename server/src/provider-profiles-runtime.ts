@@ -96,6 +96,7 @@ export class ProviderProfilesRuntime {
             baseURL: profile.baseURL ?? "https://api.openai.com/v1",
             ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
             ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
+            ...(profile.reasoningSummary !== undefined ? { reasoningSummary: profile.reasoningSummary } : {}),
             ...idleOption,
           }), DEFAULT_MAX_CONCURRENT);
         } else {

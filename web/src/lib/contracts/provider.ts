@@ -8,6 +8,7 @@ export interface ModelProviderProfileView {
   interfaceType: ModelInterfaceType;
   baseURL?: string;
   promptCaching?: boolean;
+  reasoningSummary?: boolean;
   extraBody?: Record<string, unknown>;
   hasApiKey: boolean;
   maskedApiKey?: string;
