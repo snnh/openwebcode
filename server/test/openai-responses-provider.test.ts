@@ -552,7 +552,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
     // signature 提供权威 reasoning_text，但回放时剥掉 id/status/annotations（DeepSeek 输入只
     // 支持 plain-text content）；规范序 reasoning 在 message item 之前；function_call 只带 call_id，
-    // 不派发持久化的 itemId
+    // 保留原始 fc_* item id，兼容严格网关的配对校验
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
       { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
@@ -561,7 +561,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
         content: [{ type: "output_text", text: "我查一下", annotations: [] }],
         status: "completed", id: deriveMessageItemId("a1:0"),
       },
-      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", call_id: "call_1", id: "fc_xyz789", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
     ]);
   });
@@ -902,7 +902,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
         content: [{ type: "output_text", text: "我查一下再补充", annotations: [] }],
         status: "completed", id: "msg_enc1", phase: "commentary",
       },
-      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", call_id: "call_1", id: "fc_enc1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call", call_id: "call_2", name: "read_file", arguments: "{\"path\":\"a\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
       { type: "function_call_output", call_id: "call_2", output: "B" },

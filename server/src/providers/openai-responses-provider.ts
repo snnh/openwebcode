@@ -565,6 +565,13 @@ function ownsWebSearchBlock(block: { provider?: string }, providerName: string):
   return block.provider === undefined || block.provider === providerName;
 }
 
+/** Responses 网关有两类合法标识：官方通常用 call_id（call_*），部分兼容端点
+ * 将 function_call 的 fc_* item id 同时作为 tool output 的 call_id。回放时统一
+ * 使用原始 fc_* 标识，避免请求中的 function_call 与 function_call_output 脱配。 */
+function responseToolCallId(call: ToolCallContent): string {
+  return call.id;
+}
+
 function toResponsesInput(
   messages: ChatMessage[],
   providerName: string,
@@ -626,9 +633,10 @@ function toResponsesInput(
             textBlockIndex += 1;
           } else if (block.type === "tool_call" && !emitted.has(block.id) && outputs.has(block.id)) {
             emitted.add(block.id);
+            const responseCallId = responseToolCallId(block);
             result.push({
               type: "function_call",
-              call_id: block.id,
+              call_id: responseCallId,
               name: block.name,
               arguments: JSON.stringify(block.input),
               // 仅原样回传以 fc_ 开头的官方 item id（其他派生/复制 id 反而触发配对校验）
@@ -636,7 +644,7 @@ function toResponsesInput(
             });
             result.push({
               type: "function_call_output",
-              call_id: block.id,
+              call_id: responseCallId,
               output: sanitizeSurrogates(outputs.get(block.id) ?? INTERRUPTED_TOOL_OUTPUT),
             });
             encryptedMediaBatch.push(...(toolMedia.get(block.id) ?? []));
@@ -723,19 +731,21 @@ function toResponsesInput(
         // 服务端 reasoning↔function_call 的 id 配对校验；call_id 与 output 配对已足够）
         result.push({
           type: "function_call",
-          call_id: call.id,
+          call_id: responseToolCallId(call),
           name: call.name,
           arguments: JSON.stringify(call.input),
           // Gateways that expose the Responses item id require it for pairing. Preserve it
           // when it is the same stable identifier used as call_id; omit derived/mismatched
           // ids because those trigger strict reasoning↔function validation on some endpoints.
-          ...(call.itemId?.startsWith("fc_") && call.itemId === call.id ? { id: call.itemId } : {}),
+          // 保留原始 function_call item id；OpenAI 官方允许输入项携带该 id，
+          // 兼容网关会用它校验后续 function_call_output 是否属于同一项。
+          ...(call.itemId?.startsWith("fc_") ? { id: call.itemId } : {}),
         });
       }
       for (const call of toolCalls) {
         result.push({
           type: "function_call_output",
-          call_id: call.id,
+          call_id: responseToolCallId(call),
           output: sanitizeSurrogates(outputs.get(call.id) ?? INTERRUPTED_TOOL_OUTPUT),
         });
       }
