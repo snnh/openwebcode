@@ -27,8 +27,11 @@ export function classifyHttpError(status: number, message: string, retryAfterMs?
   if (status === 403) return new ProviderError("permission", message, false);
   if (status === 404) return new ProviderError("not_found", message, false);
   if (status === 400 || status === 409 || status === 422) return new ProviderError("invalid_request", message, false);
-  if (status === 408 || status === 429) return new ProviderError("rate_limit", message, true, retryAfterMs);
+  if (status === 408) return new ProviderError("network", message, true, retryAfterMs);
+  if (status === 429) return new ProviderError("rate_limit", message, true, retryAfterMs);
   if (status === 529) return new ProviderError("overloaded", message, true, retryAfterMs);
+  // 502/504 通常表示网关或上游连接失败/超时，不等同于服务端过载。
+  if (status === 502 || status === 504) return new ProviderError("network", message, true, retryAfterMs);
   if (status >= 500) return new ProviderError("overloaded", message, true, retryAfterMs);
   return new ProviderError("unknown", message, false);
 }

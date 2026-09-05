@@ -89,6 +89,7 @@ export class ProviderProfilesRuntime {
             ...(profile.baseURL ? { baseURL: profile.baseURL } : {}),
             promptCaching: profile.promptCaching !== false,
             ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
+            ...idleOption,
           }), DEFAULT_MAX_CONCURRENT);
         } else if (profile.interfaceType === "openai-responses") {
           this.providers.register(new OpenAIResponsesProvider({
@@ -96,6 +97,7 @@ export class ProviderProfilesRuntime {
             baseURL: profile.baseURL ?? "https://api.openai.com/v1",
             ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
             ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
+            ...(profile.includeUsage !== undefined ? { includeUsage: profile.includeUsage } : {}),
             ...idleOption,
           }), DEFAULT_MAX_CONCURRENT);
         } else {

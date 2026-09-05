@@ -15,6 +15,8 @@ export interface ModelProviderProfile {
   apiKey?: string;
   baseURL?: string;
   promptCaching?: boolean;
+  /** Chat Completions 流式 usage 兼容性开关；部分网关不接受 stream_options。 */
+  includeUsage?: boolean;
   /** 自定义请求体：浅合并进每次模型请求 body（如 temperature/top_p/max_tokens），
    * 核心字段（model/messages/stream/tools）由 server 强制，不允许覆盖。 */
   extraBody?: Record<string, unknown>;
@@ -146,6 +148,9 @@ export function normalizeModel(value: unknown): ModelProviderProfile {
   if (raw.promptCaching !== undefined && typeof raw.promptCaching !== "boolean") {
     throw new ProviderProfilesValidationError("promptCaching 必须是布尔值");
   }
+  if (raw.includeUsage !== undefined && typeof raw.includeUsage !== "boolean") {
+    throw new ProviderProfilesValidationError("includeUsage 必须是布尔值");
+  }
   const extraBody = optionalExtraBody(raw.extraBody);
   return {
     id,
@@ -154,6 +159,7 @@ export function normalizeModel(value: unknown): ModelProviderProfile {
     ...(apiKey ? { apiKey } : {}),
     ...(baseURL ? { baseURL } : {}),
     ...(raw.interfaceType === "anthropic-messages" ? { promptCaching: raw.promptCaching !== false } : {}),
+    ...(raw.includeUsage !== undefined ? { includeUsage: raw.includeUsage } : {}),
     ...(extraBody ? { extraBody } : {}),
   };
 }

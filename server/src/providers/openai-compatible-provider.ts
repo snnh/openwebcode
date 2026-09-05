@@ -17,6 +17,7 @@ interface OpenAICompatibleProviderOptions {
   /** 思维链保留回传：历史 assistant 消息中的同源 thinking 块以 reasoning_content 回带
    * （deepseek/qwen/glm/kimi 等新模型要求；端点不识别该字段时可显式 false 关闭）。 */
   reasoningContent?: boolean;
+  includeUsage?: boolean;
   /** SSE 流连续无 data 事件的最大毫秒数（心跳注释不计），超时判为半开连接断开并走重试；<=0 关闭。 */
   streamIdleTimeoutMs?: number;
   fetch?: typeof fetch;
@@ -79,7 +80,7 @@ export class OpenAICompatibleProvider implements Provider {
         ...this.options.extraBody,
         model: request.model,
         stream: true,
-        stream_options: { include_usage: true },
+        ...(this.options.includeUsage !== false ? { stream_options: { include_usage: true } } : {}),
         // 未显式配置则不发送 max_tokens：不限制输出长度
         ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
         // 请求级采样参数（chat 模式助手预设下发）；undefined 时不发，由端点默认决定
