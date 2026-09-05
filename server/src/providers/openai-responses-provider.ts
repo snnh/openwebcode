@@ -624,7 +624,7 @@ function toResponsesInput(
               ...(parsedSignature?.phase ? { phase: parsedSignature.phase } : {}),
             });
             textBlockIndex += 1;
-          } else if (block.type === "tool_call" && !emitted.has(block.id)) {
+          } else if (block.type === "tool_call" && !emitted.has(block.id) && outputs.has(block.id)) {
             emitted.add(block.id);
             result.push({
               type: "function_call",
@@ -697,7 +697,9 @@ function toResponsesInput(
         .join("");
       // 同一 call_id 在多条 assistant 消息重复出现时只 inline 一次：
       // 重复的 function_call/_output 对会被 Responses API 拒绝。
-      const toolCalls = message.content.filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id));
+      // 不回放没有对应 tool_result 的孤儿调用；伪造 function_call_output 占位会被
+      // 严格 Responses 网关拒绝为「No tool output found」。
+      const toolCalls = message.content.filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id) && outputs.has(block.id));
       for (const call of toolCalls) emitted.add(call.id);
       if (text) {
         // 完整 message item（id 取自 textSignature，缺省派生稳定 id；与加密路径同构）

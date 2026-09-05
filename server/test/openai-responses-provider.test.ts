@@ -579,11 +579,9 @@ describe("OpenAIResponsesProvider request mapping", () => {
     ];
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
 
-    // 缺同源 thinking 素材的轮不回传 reasoning（真机验证规范序下无占位即通过）；悬空调用补 interrupted 占位输出
+    // 缺同源 thinking 素材与 tool_result 的悬空调用均不回放，避免严格网关拒绝。
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
-      { type: "function_call", call_id: "call_dangling", name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" },
-      { type: "function_call_output", call_id: "call_dangling", output: expect.stringContaining("interrupted") },
     ]);
   });
 
