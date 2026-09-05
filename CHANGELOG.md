@@ -4,9 +4,11 @@
 
 ## [1.10.4]
 
-### 修复
+### 修复与优化
 
-- **Responses 思考配置拆分**：思考摘要请求与历史思维链回传使用独立配置；GPT 系列模型默认不回传思维链，仍保留 `reasoning.effort` 思考强度设置；Responses 工具调用历史回放保留原始 function call item id。
+- 优化 OpenAI 兼容 Provider：可关闭流式 `include_usage`，细分网关网络错误，并增强重试退避抖动。
+- 修复 Responses 与 Chat 工具调用回放中的孤儿调用和工具输出标识不一致，保留 Responses 原始 `fc_*` item id，减少兼容网关 400 错误。
+- 会话格式升级扩展新增孤儿工具调用清理步骤，减少旧会话在严格端点上的回放失败。
 
 ## [1.10.3]
 

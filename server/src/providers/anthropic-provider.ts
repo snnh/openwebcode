@@ -14,7 +14,11 @@ interface AnthropicProviderOptions {
   /** 自定义请求体：浅合并进 messages 请求体，核心字段（model/messages/system/tools 等）优先；
    * max_tokens 例外——extraBody 中的 max_tokens 可覆盖默认值（API 强制要求该字段，无法省略）。 */
   extraBody?: Record<string, unknown>;
+  /** Maximum request duration in milliseconds; zero disables the SDK timeout. */
+  streamIdleTimeoutMs?: number;
 }
+
+const DEFAULT_ANTHROPIC_REQUEST_TIMEOUT_MS = 300_000;
 
 export class AnthropicProvider implements Provider {
   readonly name: string;
@@ -35,6 +39,7 @@ export class AnthropicProvider implements Provider {
       // SDK 内建重试（默认 2 次）关闭：重试统一收口 collectProviderTurn/retry.ts，
       // 避免与外层重试嵌套放大（2×3 次）
       maxRetries: 0,
+      timeout: options.streamIdleTimeoutMs === 0 ? 0 : (options.streamIdleTimeoutMs ?? DEFAULT_ANTHROPIC_REQUEST_TIMEOUT_MS),
       // UA 不在此固化：出站 UA 由 user-agent 模块动态解析（env-sim 模拟开关可能
       // 在 provider 存活期间变更），故在每次 streamChat 的请求级 headers 中注入。
     });

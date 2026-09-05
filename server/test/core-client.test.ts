@@ -26,7 +26,9 @@ const corePath = process.env.OWC_CORE_PATH ?? path.resolve(
   process.platform === "win32" ? "../../build/Debug/owc-exec.exe" : "../../build/owc-exec",
 );
 const coreExists = existsSync(corePath);
-const itIfCore = coreExists ? it : it.skip;
+// Windows AppContainer 真机能力取决于本机策略；默认不把环境性失败当作回归，
+// 显式设置 OWC_RUN_CORE_E2E=1 才执行真实 core 端到端用例。
+const itIfCore = coreExists && (process.platform !== "win32" || process.env.OWC_RUN_CORE_E2E === "1") ? it : it.skip;
 
 let client: CoreClient | undefined;
 let server: Server | undefined;

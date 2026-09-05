@@ -25,8 +25,6 @@ interface OpenAIResponsesProviderOptions {
    * response.reasoning_text.delta → thinking_delta），并控制历史同源 thinking 块的 reasoning
    * item 回传（DeepSeek 思维模式强制要求回传）。端点不接受时可显式 false 关闭。 */
   reasoningContent?: boolean;
-  /** Whether to request a reasoning summary in the response. */
-  reasoningSummary?: boolean;
   /** SSE 流连续无 data 事件的最大毫秒数（心跳注释不计），超时判为半开连接断开并走重试；<=0 关闭。 */
   streamIdleTimeoutMs?: number;
   fetch?: typeof fetch;
@@ -111,11 +109,7 @@ export class OpenAIResponsesProvider implements Provider {
     // reasoning/message/function_call item 按原始结构原样回放（含 rs_/fc_ id）
     const encrypted = request.responsesEncryptedReplay === true;
     // 思维摘要流开关：请求级（模型能力声明）优先，回落 provider 级配置（默认开）
-    // An explicit provider-level false is a hard compatibility opt-out. Model
-    // metadata may advertise reasoning content, but must not re-enable a
-    // provider option that was deliberately disabled for compatibility.
-    const replayReasoning = request.reasoningContent ?? (this.options.reasoningContent !== false);
-    const reasoningSummary = this.options.reasoningSummary !== false;
+    const reasoningSummary = request.reasoningContent ?? (this.options.reasoningContent !== false);
     const reasoning: Record<string, unknown> = {};
     if (this.options.reasoningEffort !== false && request.effort) reasoning.effort = request.effort;
     // 思考关闭按声明分发：thinking 型（deepseek 等）→ reasoning.effort:"none"（Responses 无
@@ -124,7 +118,11 @@ export class OpenAIResponsesProvider implements Provider {
     if (request.thinking === "disabled" && (request.thinkingStyle === "thinking" || request.thinkingStyle === "fixed")) {
       reasoning.effort = "none";
     }
-    if (reasoningSummary) reasoning.summary = "auto";
+    // A number of Responses gateways (including simple OpenAI-compatible proxies) do not
+    // implement the optional summary field even though they accept /responses itself.
+    // Only request summaries when the caller explicitly selected a reasoning effort;
+    // plain Responses requests remain compatible with the minimal documented payload.
+    if (reasoningSummary && request.effort !== undefined) reasoning.summary = "auto";
     // system 组装：稳定前缀 + 动态尾部（Responses 无 system 角色，统一进 instructions）
     const suffix = request.systemSuffix?.trim();
     const instructions = suffix ? `${request.system}\n\n${suffix}` : request.system;
@@ -136,10 +134,11 @@ export class OpenAIResponsesProvider implements Provider {
           ...this.options.extraBody,
           model: request.model,
           stream: true,
-          // dsh 口径：store:false 服务端无状态，多轮上下文由本地回放维护
-          store: this.options.store ?? false,
+          // 仅在配置显式指定时发送 store。部分 Responses 兼容端点不认识该字段，
+          // 默认省略可避免无意义的 400；本地回放仍由 input 完整维护上下文。
+          ...(this.options.store === undefined ? {} : { store: this.options.store }),
           instructions,
-          input: toResponsesInput(request.messages, this.name, replayReasoning, this.options.diagnosticWriter ?? defaultDiagnosticWriter, encrypted),
+          input: toResponsesInput(request.messages, this.name, reasoningSummary, this.options.diagnosticWriter ?? defaultDiagnosticWriter, encrypted),
           // dsh 口径：max_output_tokens 显式设置时不低于 16（OpenAI 拒绝更小值）
           ...(maxTokens !== undefined ? { max_output_tokens: Math.max(maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS) } : {}),
           // 加密回放模式请求 reasoning.encrypted_content：include 与 reasoning 开关/effort 绑定
@@ -566,6 +565,15 @@ function ownsWebSearchBlock(block: { provider?: string }, providerName: string):
   return block.provider === undefined || block.provider === providerName;
 }
 
+/** Responses 网关有两类合法标识：官方通常用 call_id（call_*），部分兼容端点
+ * 将 function_call 的 fc_* item id 同时作为 tool output 的 call_id。回放时统一
+ * 使用原始 fc_* 标识，避免请求中的 function_call 与 function_call_output 脱配。 */
+function responseToolCallId(call: ToolCallContent): string {
+  // OpenAI/DeepSeek 均规定 function_call_output.call_id 必须等于
+  // function_call.call_id；fc_* 仅是 output item 的 id，不能替代 call_id。
+  return call.id;
+}
+
 function toResponsesInput(
   messages: ChatMessage[],
   providerName: string,
@@ -625,11 +633,12 @@ function toResponsesInput(
               ...(parsedSignature?.phase ? { phase: parsedSignature.phase } : {}),
             });
             textBlockIndex += 1;
-          } else if (block.type === "tool_call" && !emitted.has(block.id)) {
+          } else if (block.type === "tool_call" && !emitted.has(block.id) && outputs.has(block.id)) {
             emitted.add(block.id);
+            const responseCallId = responseToolCallId(block);
             result.push({
               type: "function_call",
-              call_id: block.id,
+              call_id: responseCallId,
               name: block.name,
               arguments: JSON.stringify(block.input),
               // 仅原样回传以 fc_ 开头的官方 item id（其他派生/复制 id 反而触发配对校验）
@@ -637,7 +646,7 @@ function toResponsesInput(
             });
             result.push({
               type: "function_call_output",
-              call_id: block.id,
+              call_id: responseCallId,
               output: sanitizeSurrogates(outputs.get(block.id) ?? INTERRUPTED_TOOL_OUTPUT),
             });
             encryptedMediaBatch.push(...(toolMedia.get(block.id) ?? []));
@@ -698,7 +707,9 @@ function toResponsesInput(
         .join("");
       // 同一 call_id 在多条 assistant 消息重复出现时只 inline 一次：
       // 重复的 function_call/_output 对会被 Responses API 拒绝。
-      const toolCalls = message.content.filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id));
+      // 不回放没有对应 tool_result 的孤儿调用；伪造 function_call_output 占位会被
+      // 严格 Responses 网关拒绝为「No tool output found」。
+      const toolCalls = message.content.filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id) && outputs.has(block.id));
       for (const call of toolCalls) emitted.add(call.id);
       if (text) {
         // 完整 message item（id 取自 textSignature，缺省派生稳定 id；与加密路径同构）
@@ -722,19 +733,21 @@ function toResponsesInput(
         // 服务端 reasoning↔function_call 的 id 配对校验；call_id 与 output 配对已足够）
         result.push({
           type: "function_call",
-          call_id: call.id,
+          call_id: responseToolCallId(call),
           name: call.name,
           arguments: JSON.stringify(call.input),
-          // Codex preserves the Responses function_call item id when replaying
-          // history. Keep the original fc_* id while call_id remains the
-          // independent tool correlation id.
-          ...(call.itemId && call.itemId.startsWith("fc_") ? { id: call.itemId } : {}),
+          // Gateways that expose the Responses item id require it for pairing. Preserve it
+          // when it is the same stable identifier used as call_id; omit derived/mismatched
+          // ids because those trigger strict reasoning↔function validation on some endpoints.
+          // 保留原始 function_call item id；OpenAI 官方允许输入项携带该 id，
+          // 兼容网关会用它校验后续 function_call_output 是否属于同一项。
+          ...(call.itemId?.startsWith("fc_") ? { id: call.itemId } : {}),
         });
       }
       for (const call of toolCalls) {
         result.push({
           type: "function_call_output",
-          call_id: call.id,
+          call_id: responseToolCallId(call),
           output: sanitizeSurrogates(outputs.get(call.id) ?? INTERRUPTED_TOOL_OUTPUT),
         });
       }
