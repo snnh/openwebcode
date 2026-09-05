@@ -2,6 +2,15 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.10.4]
+
+### 修复与优化
+
+- 优化 OpenAI 兼容 Provider：可关闭流式 `include_usage`，细分网关网络错误，并增强重试退避抖动。
+- 增加 Anthropic 流式请求超时保护与统一资源释放能力。
+- 修复无 `localStorage` 环境下 Web 顶栏和测试初始化崩溃。
+- 精简低价值测试文件，保留核心 Provider、Core、权限/沙盒、会话和流式交互覆盖。
+
 ## [1.10.3]
 
 ### 变更
@@ -1236,4 +1245,3 @@ Linux 体验与功能专项：快照新增 overlayfs 后端（原语下沉 core 
 - 支持 Skills、MCP、Hooks、自定义子代理、自定义斜杠命令和独立 Extension Host，并提供官方扩展体系。
 - 支持图片输入、Markdown/代码高亮/KaTeX、折叠思考内容、会话导入导出、可分享的自包含 HTML 页面和 `owc run` Headless CLI。
 - 提供 Windows MSI、Linux tar.gz 安装脚本和 GitHub Actions 发布流水线。
-
