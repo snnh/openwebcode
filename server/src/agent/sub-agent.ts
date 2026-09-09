@@ -23,6 +23,7 @@ import {
 } from "./tool-schemas.js";
 import { appendSwarmBoard, readSwarmBoard } from "./swarm-board.js";
 import { resolveShell, type ResolvedShell } from "./shell-detect.js";
+import { normalizeBuiltinToolInput } from "./tool-alias.js";
 
 /**
  * 子代理允许使用的只读工具全集（构造上只读；subagent 不在其中，子代理不可再派生）。
@@ -350,6 +351,8 @@ async function executeSubTool(
   input: Record<string, unknown>,
   toolCallId: string,
 ): Promise<{ content: string; isError: boolean }> {
+  // 异名参数容错与主循环一致（file_path → path 等），权限/执行只看规范参数名
+  input = normalizeBuiltinToolInput(name, input);
   if (!allowed.has(name)) {
     const list = [...allowed].join(", ") || "(none)";
     return { content: `Tool not available to this sub-agent: ${name}. Allowed tools: ${list}`, isError: true };

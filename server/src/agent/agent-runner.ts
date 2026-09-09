@@ -12,7 +12,7 @@ import { ContextManager, selectCacheBreakpoints, type TurnLedger } from "../cont
 import { evictContext } from "../extensions/context-saver/index.js";
 import type { Compactor, CompactResult } from "../context/compactor.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
-import { errorMessage } from "../error-utils.js";
+import { errorMessage, invalidToolArgsMessage } from "../error-utils.js";
 import { RepoMapGenerator, DEFAULT_REPO_MAP_BUDGET } from "../context/repo-map.js";
 import { IndexManager, IndexUnavailableError } from "../index/index-manager.js";
 import type { DiagnosticsService } from "../diagnostics/service.js";
@@ -59,7 +59,7 @@ import {
 } from "./tool-schemas.js";
 import type { CronScheduler } from "../cron-scheduler.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
-import { ToolAliasResolver } from "./tool-alias.js";
+import { ToolAliasResolver, normalizeBuiltinToolInput } from "./tool-alias.js";
 
 /** 本机会话（kind=local）路径门覆盖的文件工具：HOME 外路径需人工允许或命中 allow 规则。
  * 由 FILE_TOOLS 派生 + read_media（本地路径读媒体与 read_file 同门；http(s) URL 在门内特判放行，
@@ -1929,7 +1929,10 @@ export class AgentRunner {
               if (extensionOutcome.blocked) {
                 result = { type: "tool_result", toolCallId: call.id, content: extensionOutcome.reason ?? "Blocked by extension", isError: true };
               } else {
-                effectiveInput = this.toolAliases.translateAliasInput(sessionId, call.name, extensionOutcome.input);
+                effectiveInput = normalizeBuiltinToolInput(
+                  this.toolAliases.resolveBuiltinToolName(sessionId, call.name),
+                  this.toolAliases.translateAliasInput(sessionId, call.name, extensionOutcome.input),
+                );
                 const repeated = this.recordToolCall(sessionId, call.name, effectiveInput);
                 if (repeated >= 3) {
                   const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
@@ -2359,6 +2362,8 @@ export class AgentRunner {
    * （随会话档，行为不变——手动路径后续计划归档）。
    */
   private async executeSubAgentTool(sessionId: string, name: string, input: Record<string, unknown>, signal: AbortSignal, authContext: "main" | "subagent" = "main"): Promise<{ content: string; isError: boolean }> {
+    // 异名参数容错与主循环一致：权限判定前归一到规范参数名
+    input = normalizeBuiltinToolInput(this.toolAliases.resolveBuiltinToolName(sessionId, name), input);
     const permission = await this.authorizeTool(sessionId, name, input, signal, authContext);
     if (!permission.allowed) return { content: permission.reason ?? "Tool permission denied", isError: true };
     try {
@@ -2384,7 +2389,7 @@ export class AgentRunner {
     }
     if (name === "bash") {
       const cmd = typeof input.cmd === "string" ? input.cmd : "";
-      if (!cmd) throw new Error("bash requires a non-empty cmd");
+      if (!cmd) throw new Error(invalidToolArgsMessage("bash", input, `required parameter "cmd" must be a non-empty string`));
       return this.executeBash(sessionId, cmd, `subagent-${randomUUID().slice(0, 8)}`, signal, { quiet: true, sessionEnv: true });
     }
     if (name === "repo_map") {
@@ -2816,7 +2821,10 @@ export class AgentRunner {
           entry.result = { type: "tool_result", toolCallId: call.id, content: extensionOutcome.reason ?? "Blocked by extension", isError: true };
           continue;
         }
-        const effectiveInput = this.toolAliases.translateAliasInput(sessionId, call.name, extensionOutcome.input);
+        const effectiveInput = normalizeBuiltinToolInput(
+          this.toolAliases.resolveBuiltinToolName(sessionId, call.name),
+          this.toolAliases.translateAliasInput(sessionId, call.name, extensionOutcome.input),
+        );
         const repeated = this.recordToolCall(sessionId, call.name, effectiveInput);
         if (repeated >= 3) {
           const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
@@ -3901,7 +3909,11 @@ export class AgentRunner {
       }
     }
     if (name !== "bash" || typeof input.cmd !== "string" || !input.cmd) {
-      return { type: "tool_result", toolCallId, content: `Unsupported or invalid tool call: ${name}`, isError: true };
+      // 区分「已知工具参数错误」（模型可据提示自我纠正）与「未知工具名」
+      const content = name === "bash"
+        ? invalidToolArgsMessage("bash", input, `required parameter "cmd" must be a non-empty string; call as {"cmd": "<command>"}`)
+        : `Unknown tool: ${name}`;
+      return { type: "tool_result", toolCallId, content, isError: true };
     }
 
     // 后台 bash：独立 core 进程，不阻塞主循环
