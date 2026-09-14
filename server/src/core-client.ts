@@ -73,6 +73,9 @@ function isCoreEnvAllowed(key: string): boolean {
     case "APPDATA":
       return true;
   }
+  // OWC_* 放行 server 自身运行时配置（端口/数据目录/沙盒开关等），但绝不放行凭据：
+  // 显式配置的 OWC_ACCESS_TOKEN 若经环境变量注入，沙盒内命令可直接 env 读取后假冒 CLI。
+  if (upper === "OWC_ACCESS_TOKEN") return false;
   if (upper.startsWith("LC_") || upper.startsWith("OWC_")) return true;
   return upper === "HTTP_PROXY" || upper === "HTTPS_PROXY" || upper === "NO_PROXY";
 }

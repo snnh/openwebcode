@@ -187,7 +187,7 @@ static owc_fs_error canonical_root(wchar_t **root){
     CloseHandle(h);free(*root);*root=final;
     return OWC_FS_OK;
 }
-static owc_fs_error paths(const char *root,const char *path,wchar_t **rw,wchar_t **pw){wchar_t *r=wide(root),*p=wide(path),*full;DWORD n;owc_fs_error e;int absolute;if(!r||!p){free(r);free(p);return OWC_FS_INVALID_UTF8;}absolute=p[0]&&p[1]==L':'&&p[2]&&(p[2]==L'\\'||p[2]==L'/');if(wcsstr(p,L"..")||p[0]==L'\\'||(p[0]&&p[1]==L':'&&!absolute)){free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}n=GetFullPathNameW(r,0,NULL,NULL);full=(wchar_t*)malloc(((size_t)n+1)*sizeof(*full));if(!full||!GetFullPathNameW(r,n+1,full,NULL)){free(r);free(p);free(full);return OWC_FS_IO_ERROR;}free(r);r=full;
+static owc_fs_error paths(const char *root,const char *path,wchar_t **rw,wchar_t **pw){wchar_t *r=wide(root),*p=wide(path),*full;DWORD n;owc_fs_error e;int absolute;if(!r||!p){free(r);free(p);return OWC_FS_INVALID_UTF8;}absolute=p[0]&&p[1]==L':'&&p[2]&&(p[2]==L'\\'||p[2]==L'/');if(wcsstr(p,L"..")||p[0]==L'\\'||(p[0]&&p[1]==L':'&&!absolute)){free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}{const wchar_t *ads=wcschr(absolute?p+2:p,L':');if(ads){free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}}/* reject NTFS ADS (file:stream): invisible to reparse walk and prefix compare */n=GetFullPathNameW(r,0,NULL,NULL);full=(wchar_t*)malloc(((size_t)n+1)*sizeof(*full));if(!full||!GetFullPathNameW(r,n+1,full,NULL)){free(r);free(p);free(full);return OWC_FS_IO_ERROR;}free(r);r=full;
     /* GetFinalPathNameByHandleW expands 8.3 components (for example
        C:\\Users\\RUNNER~1 on GitHub runners).  Expand the configured root as
        well before comparing the two paths, otherwise a valid child is
