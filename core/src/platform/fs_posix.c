@@ -1,8 +1,11 @@
 #include "fs_platform.h"
 #ifndef _WIN32
+#include "../path_policy.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <pthread.h>
 #include <sys/inotify.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -11,8 +14,12 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 static owc_fs_error err(void){if(errno==ENOENT)return OWC_FS_NOT_FOUND;if(errno==EACCES||errno==EPERM)return OWC_FS_PERMISSION_DENIED;if(errno==ELOOP||errno==ENOTDIR)return OWC_FS_OUTSIDE_ROOT;return OWC_FS_IO_ERROR;}
+static int deny_hit(int fd);
 static int component_bad(const char *s,size_t n){return !n||(n==1&&s[0]=='.')||(n==2&&s[0]=='.'&&s[1]=='.')||memchr(s,'/',n)!=NULL;}
 static owc_fs_error parent_fd(const char *root,const char *path,int *parent,char **leaf){int fd,nfd;const char *p=path,*slash;size_t n;char *part;
  /* Absolute paths were already checked against the session roots by the RPC layer; walk from the filesystem root instead. The per-component O_NOFOLLOW openat below still pins the object to the textual path. */
@@ -23,7 +30,7 @@ static owc_fs_error parent_fd_create(const char *root,const char *path,int creat
  if(path[0]=='/'){fd=open("/",O_RDONLY|O_DIRECTORY|O_CLOEXEC);p=path+1;}else fd=open(root,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);if(fd<0)return err();
  while((slash=strchr(p,'/'))!=NULL){n=(size_t)(slash-p);if(component_bad(p,n)){close(fd);return OWC_FS_OUTSIDE_ROOT;}part=(char*)malloc(n+1);if(!part){close(fd);return OWC_FS_NO_MEMORY;}memcpy(part,p,n);part[n]=0;nfd=openat(fd,part,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);if(nfd<0&&errno==ENOENT&&create_dirs){if(mkdirat(fd,part,0700)==0)nfd=openat(fd,part,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);}free(part);if(nfd<0){owc_fs_error e=err();close(fd);return e;}close(fd);fd=nfd;p=slash+1;}
  n=strlen(p);if(component_bad(p,n)){close(fd);return OWC_FS_OUTSIDE_ROOT;}*leaf=(char*)malloc(n+1);if(!*leaf){close(fd);return OWC_FS_NO_MEMORY;}memcpy(*leaf,p,n+1);*parent=fd;return OWC_FS_OK;}
-static owc_fs_error open_item(const char *root,const char *path,int flags,int *fd){int p=-1;char *leaf=NULL;owc_fs_error e;if(!strcmp(path,".")){*fd=open(root,flags|O_CLOEXEC|O_NOFOLLOW);return *fd<0?err():OWC_FS_OK;}e=parent_fd(root,path,&p,&leaf);if(e)return e;*fd=openat(p,leaf,flags|O_CLOEXEC|O_NOFOLLOW);free(leaf);close(p);return *fd<0?err():OWC_FS_OK;}
+static owc_fs_error open_item(const char *root,const char *path,int flags,int *fd){int p=-1;char *leaf=NULL;owc_fs_error e;if(!strcmp(path,".")){*fd=open(root,flags|O_CLOEXEC|O_NOFOLLOW);}else{e=parent_fd(root,path,&p,&leaf);if(e)return e;*fd=openat(p,leaf,flags|O_CLOEXEC|O_NOFOLLOW);free(leaf);close(p);}if(*fd<0)return err();if(deny_hit(*fd)){close(*fd);return OWC_FS_OUTSIDE_ROOT;}return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_read(const char *root,const char *path,owc_fs_bytes *b){int fd;struct stat st;size_t used=0,cap;ssize_t n;owc_fs_error e=open_item(root,path,O_RDONLY,&fd);if(e)return e;if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<0||(unsigned long long)st.st_size>OWC_FS_MAX_FILE_SIZE){close(fd);return OWC_FS_IO_ERROR;}cap=st.st_size>0?(size_t)st.st_size:1;b->data=(unsigned char*)malloc(cap+1);if(!b->data){close(fd);return OWC_FS_NO_MEMORY;}while((n=read(fd,b->data+used,cap-used))>0){used+=(size_t)n;if(used==cap){unsigned char *q;if(cap>=OWC_FS_MAX_FILE_SIZE){free(b->data);close(fd);return OWC_FS_IO_ERROR;}cap=cap>OWC_FS_MAX_FILE_SIZE/2?OWC_FS_MAX_FILE_SIZE:cap*2;q=(unsigned char*)realloc(b->data,cap+1);if(!q){free(b->data);close(fd);return OWC_FS_NO_MEMORY;}b->data=q;}}close(fd);if(n<0){free(b->data);return err();}b->length=used;b->data[used]=0;return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_read_binary(const char *root,const char *path,size_t limit,owc_fs_bytes *b,int *truncated){int fd;struct stat st;size_t want;ssize_t n;owc_fs_error e=open_item(root,path,O_RDONLY,&fd);if(e)return e;if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<0){close(fd);return OWC_FS_IO_ERROR;}*truncated=(unsigned long long)st.st_size>(unsigned long long)limit;want=*truncated?limit:(size_t)st.st_size;b->data=(unsigned char*)malloc(want+1);if(!b->data){close(fd);return OWC_FS_NO_MEMORY;}b->length=0;while(b->length<want){n=read(fd,b->data+b->length,want-b->length);if(n<=0){free(b->data);b->data=NULL;b->length=0;close(fd);return n<0?err():OWC_FS_IO_ERROR;}b->length+=(size_t)n;}close(fd);b->data[b->length]=0;return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_write(const char *root,const char *path,const unsigned char *data,size_t length,int create_dirs){int p=-1,fd=-1;char *leaf=NULL,*tmp=NULL;owc_fs_error e=parent_fd_create(root,path,create_dirs,&p,&leaf);size_t i,done=0;ssize_t n;if(e)return e;tmp=(char*)malloc(strlen(leaf)+64);if(!tmp){close(p);free(leaf);return OWC_FS_NO_MEMORY;}for(i=0;i<128;i++){snprintf(tmp,strlen(leaf)+64,".%s.owc-%ld-%llu.tmp",leaf,(long)getpid(),(unsigned long long)i);fd=openat(p,tmp,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);if(fd>=0)break;if(errno!=EEXIST)break;}if(fd<0){e=err();goto done;}while(done<length){n=write(fd,data+done,length-done);if(n<=0){e=OWC_FS_IO_ERROR;goto done;}done+=(size_t)n;}if(fsync(fd)||close(fd)){fd=-1;e=OWC_FS_IO_ERROR;goto done;}fd=-1;if(renameat(p,tmp,p,leaf)){e=err();goto done;}e=OWC_FS_OK;done:if(fd>=0)close(fd);if(e!=OWC_FS_OK&&tmp)unlinkat(p,tmp,0);close(p);free(tmp);free(leaf);return e;}
@@ -39,11 +46,31 @@ static const char *watch_kind(uint32_t mask){return mask&IN_CREATE?"created":mas
 owc_fs_error owc_fs_platform_watch_open(const char *root,const char *path,int recursive,owc_fs_watch **result){owc_fs_watch *watch;char proc_path[64];owc_fs_error error;if(!result||recursive)return OWC_FS_INVALID_ARGUMENT;*result=NULL;watch=(owc_fs_watch*)calloc(1,sizeof(*watch));if(!watch)return OWC_FS_NO_MEMORY;watch->directory=-1;watch->notify=inotify_init1(IN_NONBLOCK|IN_CLOEXEC);if(watch->notify<0){free(watch);return err();}error=open_item(root,path,O_RDONLY|O_DIRECTORY,&watch->directory);if(error){close(watch->notify);free(watch);return error;}snprintf(proc_path,sizeof(proc_path),"/proc/self/fd/%d",watch->directory);watch->descriptor=inotify_add_watch(watch->notify,proc_path,IN_CREATE|IN_DELETE|IN_MOVED_FROM|IN_MOVED_TO|IN_CLOSE_WRITE|IN_ATTRIB|IN_DELETE_SELF|IN_MOVE_SELF);if(watch->descriptor<0){close(watch->directory);close(watch->notify);free(watch);return err();}*result=watch;return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_watch_poll(owc_fs_watch *watch,size_t maximum_events,owc_fs_watch_result *result){unsigned char buffer[8192];ssize_t bytes;size_t offset=0;if(!watch||!result)return OWC_FS_INVALID_ARGUMENT;bytes=read(watch->notify,buffer,sizeof(buffer));if(bytes<0){if(errno==EAGAIN||errno==EWOULDBLOCK)return OWC_FS_OK;return err();}while(offset<(size_t)bytes&&result->count<maximum_events){struct inotify_event *event=(struct inotify_event*)(buffer+offset);owc_fs_watch_event *grown;char *path,*end;if((size_t)bytes-offset<sizeof(*event)||(size_t)bytes-offset<sizeof(*event)+event->len){owc_fs_watch_result_free(result);return OWC_FS_IO_ERROR;}if(event->mask&IN_Q_OVERFLOW){result->overflow=1;offset+=sizeof(*event)+event->len;continue;}if(!event->len){result->overflow=1;offset+=sizeof(*event)+event->len;continue;}end=(char*)memchr(event->name,0,event->len);if(!end||!owc_fs_utf8_valid(event->name,(size_t)(end-event->name))){result->overflow=1;offset+=sizeof(*event)+event->len;continue;}path=strdup(event->name);if(!path){owc_fs_watch_result_free(result);return OWC_FS_NO_MEMORY;}grown=(owc_fs_watch_event*)realloc(result->events,(result->count+1)*sizeof(*grown));if(!grown){free(path);owc_fs_watch_result_free(result);return OWC_FS_NO_MEMORY;}result->events=grown;result->events[result->count].path=path;result->events[result->count].kind=watch_kind(event->mask);result->count++;offset+=sizeof(*event)+event->len;}if(offset<(size_t)bytes)result->overflow=1;return OWC_FS_OK;}
 void owc_fs_platform_watch_close(owc_fs_watch *watch){if(!watch)return;if(watch->descriptor>=0)inotify_rm_watch(watch->notify,watch->descriptor);if(watch->directory>=0)close(watch->directory);if(watch->notify>=0)close(watch->notify);free(watch);}
-/* POSIX opens every path component with openat()+O_NOFOLLOW, so no symlink,
- * short-name, or trailing-dot indirection can make the resolved path differ
- * from the textual path the policy layer already compared.  There is no
- * resolved-path deny check to perform here. */
-void owc_fs_platform_set_deny_roots(const char *const *roots,size_t count){(void)roots;(void)count;}
+/* Deny roots are re-checked against the opened object itself: the RPC layer's
+ * textual path comparison cannot see hard links (a second name for a denied
+ * inode) or bind mounts.  Each deny root is canonicalized with realpath() and,
+ * when it exists, remembered by (dev, ino); every successful open is then
+ * checked by inode and by its kernel-resolved path (/proc/self/fd, F_GETPATH
+ * on macOS).  Directories cannot be hard linked, so an inode hit on the final
+ * component is sufficient for the file-shaped deny entries (".env" etc.);
+ * the resolved-path prefix check covers bind mounts of denied directories. */
+static pthread_mutex_t deny_mutex = PTHREAD_MUTEX_INITIALIZER;
+typedef struct { char *path; unsigned long long dev, ino; int has_ino; } deny_root_entry;
+static deny_root_entry *g_deny = NULL;
+static size_t g_deny_count = 0;
+static int deny_hit(int fd){size_t i;int hit=0;pthread_mutex_lock(&deny_mutex);if(g_deny_count){struct stat st;char resolved[PATH_MAX];ssize_t len=-1;if(fstat(fd,&st)==0){for(i=0;i<g_deny_count;i++)if(g_deny[i].has_ino&&g_deny[i].dev==(unsigned long long)st.st_dev&&g_deny[i].ino==(unsigned long long)st.st_ino){hit=1;break;}}
+ if(!hit){
+#ifdef __APPLE__
+  if(fcntl(fd,F_GETPATH,resolved)==0)len=(ssize_t)strlen(resolved);
+#else
+  {char link[64];snprintf(link,sizeof(link),"/proc/self/fd/%d",fd);len=readlink(link,resolved,sizeof(resolved)-1);if(len>=0)resolved[len]=0;}
+#endif
+  if(len>0){for(i=0;i<g_deny_count;i++)if(g_deny[i].path&&owc_path_is_within(resolved,g_deny[i].path)){hit=1;break;}}
+ }}
+ pthread_mutex_unlock(&deny_mutex);return hit;}
+void owc_fs_platform_set_deny_roots(const char *const *roots,size_t count){deny_root_entry *list=NULL;size_t i;if(count){list=(deny_root_entry*)calloc(count,sizeof(*list));if(!list)count=0;}
+ for(i=0;i<count;i++){char *resolved=realpath(roots[i],NULL);struct stat st;list[i].path=resolved?resolved:strdup(roots[i]);if(!list[i].path)continue;if(stat(list[i].path,&st)==0){list[i].dev=(unsigned long long)st.st_dev;list[i].ino=(unsigned long long)st.st_ino;list[i].has_ino=1;}}
+ pthread_mutex_lock(&deny_mutex);for(i=0;i<g_deny_count;i++)free(g_deny[i].path);free(g_deny);g_deny=list;g_deny_count=count;pthread_mutex_unlock(&deny_mutex);}
 /* Bind links are a Windows-only feature; no redirection exemption is ever
  * needed on POSIX. */
 void owc_fs_platform_set_bind_links(const char *const *virt_paths,const char *const *backing_paths,size_t count){(void)virt_paths;(void)backing_paths;(void)count;}
