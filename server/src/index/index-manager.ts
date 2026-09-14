@@ -115,6 +115,15 @@ const DEFAULT_EXCLUDES = [
 
 const SEARCH_LIMIT_DEFAULT = 50;
 const SEARCH_LIMIT_MAX = 200;
+/** watch 定向刷新的脏路径上限：超出即降级全量重建（批量检出/构建产物风暴防护）。 */
+const MAX_WATCH_DIRTY_PATHS = 2_000;
+
+/** watch 脏路径的排除判定：与 core index.scan 的 DEFAULT_EXCLUDES 同族（任一路径段命中即排除；支持尾部 * 通配）。 */
+function isExcludedPath(relativePath: string): boolean {
+  return relativePath.split("/").some((segment) =>
+    DEFAULT_EXCLUDES.some((pattern) =>
+      pattern.endsWith("*") ? segment.startsWith(pattern.slice(0, -1)) : segment === pattern));
+}
 
 interface WorkspaceState {
   cwd: string;
@@ -129,6 +138,10 @@ interface WorkspaceState {
   watchId?: number | undefined;
   watchTimer?: NodeJS.Timeout | undefined;
   refreshTimer?: NodeJS.Timeout | undefined;
+  /** watch 事件累积的脏相对路径（undefined = 未累积）；超限/溢出时转 watchOverflow 走全量重建。 */
+  watchDirty?: Set<string> | undefined;
+  /** watch 事件溢出或脏集超限：下次刷新必须全量扫描（定向刷新不再可信）。 */
+  watchOverflow?: boolean;
   batch: number;
 }
 
@@ -350,6 +363,44 @@ export class IndexManager {
     return { entries, summary };
   }
 
+  /** 变化文件经 core index.extract job 提取符号（applyManifest 与 watch 定向刷新共用）。 */
+  private async extractSymbols(
+    ws: WorkspaceState,
+    sessionId: string,
+    jobId: string,
+    extractable: IndexScanEntry[],
+    signal: AbortSignal,
+  ): Promise<Map<string, SymbolRecord[]>> {
+    const extracted = new Map<string, SymbolRecord[]>();
+    const extractJobId = `${jobId}-x`;
+    await this.core.startIndexExtract({
+      sessionId,
+      jobId: extractJobId,
+      kind: "index.extract",
+      cwd: ws.cwd,
+      path: ".",
+      files: extractable.map((entry) => entry.path),
+    });
+    const { summary: extractSummary } = await collectJobJsonLines(this.core, sessionId, extractJobId, signal, "index.extract", (line) => {
+      const record = JSON.parse(line) as Partial<IndexExtractEntry> & { summary?: IndexExtractSummary };
+      if (record.summary || typeof record.path !== "string" || !Array.isArray(record.symbols)) return;
+      extracted.set(record.path, record.symbols.map(toSymbolRecord));
+    }, this.pollMs);
+    // core 整条跳过的文件（读失败/非 UTF-8/策略拒绝）按 0 符号处理：清掉旧符号但不丢文件清单。
+    // 截断（truncated）时未收到输出行更可能是"没来得及处理"而非"跳过"：保留上一轮旧符号，不静默清空。
+    const extractTruncated = extractSummary?.truncated === true;
+    let preserved = 0;
+    for (const entry of extractable) {
+      if (extracted.has(entry.path)) continue;
+      if (extractTruncated) preserved += 1;
+      else extracted.set(entry.path, []);
+    }
+    if (preserved > 0) {
+      process.stderr.write(`[index] index.extract 截断（reason=${String(extractSummary?.reason ?? "unknown")}）：${preserved} 个文件未收到输出，保留旧符号\n`);
+    }
+    return extracted;
+  }
+
   /** diff → 变化文件经 core index.extract job 提取符号 → append 批次 → 必要时压实 → 写 meta。 */
   private async applyManifest(
     ws: WorkspaceState,
@@ -368,35 +419,9 @@ export class IndexManager {
     const extractable = [...diff.added, ...diff.changed]
       .filter((entry) => languageForPath(entry.path) !== undefined && entry.size <= MAX_EXTRACT_FILE_BYTES)
       .slice(0, this.budget.maxExtractFiles);
-    const extracted = new Map<string, SymbolRecord[]>();
-    if (extractable.length > 0) {
-      const extractJobId = `${jobId}-x`;
-      await this.core.startIndexExtract({
-        sessionId,
-        jobId: extractJobId,
-        kind: "index.extract",
-        cwd: ws.cwd,
-        path: ".",
-        files: extractable.map((entry) => entry.path),
-      });
-      const { summary: extractSummary } = await collectJobJsonLines(this.core, sessionId, extractJobId, signal, "index.extract", (line) => {
-        const record = JSON.parse(line) as Partial<IndexExtractEntry> & { summary?: IndexExtractSummary };
-        if (record.summary || typeof record.path !== "string" || !Array.isArray(record.symbols)) return;
-        extracted.set(record.path, record.symbols.map(toSymbolRecord));
-      }, this.pollMs);
-      // core 整条跳过的文件（读失败/非 UTF-8/策略拒绝）按 0 符号处理：清掉旧符号但不丢文件清单。
-      // 截断（truncated）时未收到输出行更可能是"没来得及处理"而非"跳过"：保留上一轮旧符号，不静默清空。
-      const extractTruncated = extractSummary?.truncated === true;
-      let preserved = 0;
-      for (const entry of extractable) {
-        if (extracted.has(entry.path)) continue;
-        if (extractTruncated) preserved += 1;
-        else extracted.set(entry.path, []);
-      }
-      if (preserved > 0) {
-        process.stderr.write(`[index] index.extract 截断（reason=${String(extractSummary?.reason ?? "unknown")}）：${preserved} 个文件未收到输出，保留旧符号\n`);
-      }
-    }
+    const extracted = extractable.length > 0
+      ? await this.extractSymbols(ws, sessionId, jobId, extractable, signal)
+      : new Map<string, SymbolRecord[]>();
 
     // 应用 manifest 全量态（内存条目预存小写路径/基名供搜索，不落盘）
     // 循环 set 构造：避免 entries.map 产生 10 万对中间数组
@@ -480,6 +505,21 @@ export class IndexManager {
     try {
       const result = await this.core.pollWatch({ sessionId, watchId: ws.watchId, limit: 500 });
       if (result.events.length === 0 && !result.overflow) return;
+      // 累积脏路径供定向增量刷新；溢出（事件丢失）或脏集超限则降级为全量重建
+      if (result.overflow) {
+        ws.watchDirty = undefined;
+        ws.watchOverflow = true;
+      } else if (!ws.watchOverflow) {
+        const dirty = (ws.watchDirty ??= new Set());
+        for (const event of result.events) {
+          dirty.add(event.path.replace(/\\/g, "/"));
+          if (dirty.size > MAX_WATCH_DIRTY_PATHS) {
+            ws.watchDirty = undefined;
+            ws.watchOverflow = true;
+            break;
+          }
+        }
+      }
       this.markStale(ws, "watch", sessionId);
     } catch {
       // watch 中途失败（core 重启等）：转降级模式
@@ -499,9 +539,126 @@ export class IndexManager {
     if (ws.refreshTimer) clearTimeout(ws.refreshTimer);
     ws.refreshTimer = setTimeout(() => {
       ws.refreshTimer = undefined;
-      void this.rebuild(sessionId, ws.cwd).catch(() => undefined);
+      void this.refreshAuto(sessionId, ws).catch(() => undefined);
     }, this.refreshDebounceMs);
     ws.refreshTimer.unref();
+  }
+
+  /** 去抖刷新入口：watch 已给出明确脏路径且未溢出 → 定向增量刷新；否则全量重建。 */
+  private async refreshAuto(sessionId: string, ws: WorkspaceState): Promise<void> {
+    const dirty = ws.watchDirty;
+    const overflow = ws.watchOverflow === true;
+    ws.watchDirty = undefined;
+    ws.watchOverflow = false;
+    if (!overflow && dirty && dirty.size > 0) {
+      await this.refreshPaths(ws, sessionId, [...dirty]);
+      return;
+    }
+    await this.rebuild(sessionId, ws.cwd);
+  }
+
+  /**
+   * watch 定向增量刷新：只对事件涉及的路径 stat + 符号重提取，不再全盘 walk。
+   * 文件系统仍是真相：stat 缺失/非文件视为删除；size+modifiedMs 任一变化视为修改
+   * （无 hash 时与 manifest diff 的回退判定同口径）；失败一律回落标滞后，不静默丢新鲜度。
+   */
+  private async refreshPaths(ws: WorkspaceState, sessionId: string, paths: string[]): Promise<void> {
+    if (ws.building) {
+      // 全量重建进行中：路径重新累积，重建结束后下一轮再增量
+      const pending = (ws.watchDirty ??= new Set());
+      for (const p of paths) pending.add(p);
+      return;
+    }
+    await this.ensureLoaded(ws);
+    const loaded = ws.loaded;
+    if (!loaded?.meta) return; // 尚无索引：重建是显式动作，不自动触发
+    const relevant = paths.filter((p) => !isExcludedPath(p));
+    if (relevant.length === 0) {
+      ws.stale = false;
+      ws.staleReason = undefined;
+      this.publish(sessionId, ws);
+      return;
+    }
+    try {
+      const stat = await this.core.statFiles({ sessionId, paths: relevant });
+      const byPath = new Map(stat.entries.map((entry) => [entry.path, entry]));
+      const deleted: string[] = [];
+      const upsert: IndexScanEntry[] = [];
+      for (const p of relevant) {
+        const current = byPath.get(p);
+        const indexed = loaded.files.get(p);
+        if (!current || current.type !== "file") {
+          if (indexed) deleted.push(p);
+          continue;
+        }
+        if (!indexed || indexed.size !== current.size || indexed.modifiedMs !== current.modifiedMs) {
+          upsert.push({ path: p, size: current.size, modifiedMs: current.modifiedMs });
+        }
+      }
+      if (deleted.length === 0 && upsert.length === 0) {
+        // 事件路径内容未变（如仅元数据触碰）：直接回到 fresh
+        ws.stale = false;
+        ws.staleReason = undefined;
+        this.publish(sessionId, ws);
+        return;
+      }
+      const extractable = upsert
+        .filter((entry) => languageForPath(entry.path) !== undefined && entry.size <= MAX_EXTRACT_FILE_BYTES)
+        .slice(0, this.budget.maxExtractFiles);
+      const extracted = extractable.length > 0
+        ? await this.extractSymbols(ws, sessionId, `index-${randomUUID()}`, extractable, new AbortController().signal)
+        : new Map<string, SymbolRecord[]>();
+
+      // 内存态就地增删（区别于全量重建的整表替换）
+      for (const filePath of deleted) {
+        loaded.files.delete(filePath);
+        loaded.symbolCount -= loaded.symbols.get(filePath)?.length ?? 0;
+        loaded.symbols.delete(filePath);
+      }
+      for (const entry of upsert) loaded.files.set(entry.path, toIndexedFileEntry(entry));
+      for (const [filePath, symbols] of extracted) {
+        if (symbols.length > 0) {
+          const list = symbols.map(toIndexedSymbolRecord);
+          loaded.symbolCount += list.length - (loaded.symbols.get(filePath)?.length ?? 0);
+          loaded.symbols.set(filePath, list);
+        } else {
+          loaded.symbolCount -= loaded.symbols.get(filePath)?.length ?? 0;
+          loaded.symbols.delete(filePath);
+        }
+      }
+
+      ws.batch += 1;
+      const appended = await ws.store.appendBatch(
+        ws.batch,
+        { upsert, deleted },
+        { upsert: [...extracted.entries()].map(([filePath, symbols]) => ({ path: filePath, symbols })), deleted },
+      );
+      loaded.fileLines += appended.fileLines;
+      loaded.symbolLines += appended.symbolLines;
+      if (ws.store.shouldCompact(loaded.fileLines, loaded.files.size) || ws.store.shouldCompact(loaded.symbolLines, loaded.symbols.size)) {
+        await ws.store.compact(loaded.files, loaded.symbols);
+        loaded.fileLines = loaded.files.size + 1;
+        loaded.symbolLines = loaded.symbols.size + 1;
+      }
+
+      const meta: IndexMeta = {
+        ...loaded.meta,
+        updatedAt: this.now(),
+        files: loaded.files.size,
+        symbols: loaded.symbolCount,
+      };
+      await ws.store.writeMeta(meta);
+      loaded.meta = meta;
+      ws.stale = false;
+      ws.staleReason = undefined;
+      this.publish(sessionId, ws);
+    } catch (error) {
+      // 增量刷新失败：如实标滞后，下次事件/手动 rebuild 再补
+      ws.stale = true;
+      ws.staleReason = "error";
+      const message = error instanceof Error ? error.message : String(error);
+      this.publish(sessionId, ws, `Index incremental refresh failed: ${message}`);
+    }
   }
 
   /**
