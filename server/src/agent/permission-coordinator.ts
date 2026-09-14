@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { EventBus } from "../events/event-bus.js";
 import type { PermissionMode, PermissionRule } from "../sessions/types.js";
-import { isReadOnlyCommand } from "./readonly-command.js";
+import { isReadOnlyCommand, type ReadonlyShellFlavor } from "./readonly-command.js";
 
 export type PermissionDecision = "allow" | "allow_always" | "deny";
 
@@ -15,6 +15,8 @@ interface PendingPermission {
   abort: () => void;
   /** 与权限模式无关、必须人工裁决的挂起单（本机会话 HOME 外路径门）：reconcile 永不自动放行。 */
   alwaysManual?: boolean;
+  /** 发起请求时生效 shell 的词法形态：只读命令判定依 shell 语义分流，reconcile 复查须用同一形态。 */
+  shell: ReadonlyShellFlavor;
 }
 
 export class PermissionCoordinator {
@@ -22,15 +24,16 @@ export class PermissionCoordinator {
 
   constructor(private readonly events: EventBus) {}
 
-  needsApproval(mode: PermissionMode, rules: PermissionRule[], tool: string, input: Record<string, unknown>): boolean {
+  needsApproval(mode: PermissionMode, rules: PermissionRule[], tool: string, input: Record<string, unknown>, shell: ReadonlyShellFlavor = "sh"): boolean {
     // 只读工具 + remember 自动放行：remember 是 agent 写自身长期记忆（低风险），
     // 写入路径固定为 <cwd>/.owc/memory.md 或 <dataDir>/memory.md，不接受任意路径
     if (["read_file", "read_media", "glob", "grep", "read_artifact", "load_skill", "subagent", "spawn_task", "spawn_swarm", "todo_write", "remember", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "exit_plan_mode", "swarm_board_post", "swarm_board_read", "cron_create", "cron_list", "cron_delete"].includes(tool)) return false;
     // 只读探查命令自动放行：`cd x && echo ... && head ...` 等纯只读链（词法级判定，
-    // 含 &&/|/; 分段逐段白名单，无重定向/命令替换/写命令）不需要人工批准。
+    // 含 &&/|/; 分段逐段白名单，无重定向/命令替换/写命令）不需要人工批准；仅 POSIX sh
+    // 形态参与判定，cmd/pwsh 因转义/引号语义分歧一律转人工（防判定与执行语法不一致）。
     // 判定保守：任何无法证明只读的形态都转人工；放行不改变沙盒/路径策略，
     // PreToolUse 钩子仍在放行后触发（exit 2 可拦截）。
-    if (tool === "bash" && typeof input.cmd === "string" && isReadOnlyCommand(input.cmd)) return false;
+    if (tool === "bash" && typeof input.cmd === "string" && isReadOnlyCommand(input.cmd, shell)) return false;
     // git_commit 默认不开放给 agent 自动执行：yolo 也不隐含提交授权（plan §4.3），
     // 只有用户对 git_commit 显式 allow_always（按会话授权）后才跳过确认。
     if (tool === "git_commit") return !rules.some((rule) => matchesRule(rule, tool, input));
@@ -39,7 +42,7 @@ export class PermissionCoordinator {
     return !rules.some((rule) => matchesRule(rule, tool, input));
   }
 
-  request(sessionId: string, tool: string, input: Record<string, unknown>, signal: AbortSignal, opts?: { alwaysManual?: boolean }): Promise<{ allowed: boolean; reason?: string; persist: boolean }> {
+  request(sessionId: string, tool: string, input: Record<string, unknown>, signal: AbortSignal, opts?: { alwaysManual?: boolean; shell?: ReadonlyShellFlavor }): Promise<{ allowed: boolean; reason?: string; persist: boolean }> {
     signal.throwIfAborted();
     const requestId = randomUUID();
     return new Promise((resolve) => {
@@ -48,7 +51,7 @@ export class PermissionCoordinator {
         this.publishResolved(sessionId, requestId);
         resolve({ allowed: false, reason: "Permission request aborted", persist: false });
       };
-      this.pending.set(requestId, { sessionId, tool, input, resolve, signal, abort, ...(opts?.alwaysManual ? { alwaysManual: true } : {}) });
+      this.pending.set(requestId, { sessionId, tool, input, resolve, signal, abort, shell: opts?.shell ?? "sh", ...(opts?.alwaysManual ? { alwaysManual: true } : {}) });
       signal.addEventListener("abort", abort, { once: true });
       this.events.publish({ source: "agent", type: "permission.request", sessionId, payload: { requestId, tool, input } });
     });
@@ -62,7 +65,7 @@ export class PermissionCoordinator {
   reconcile(sessionId: string, mode: PermissionMode, rules: PermissionRule[]): void {
     for (const [requestId, pending] of this.pending) {
       if (pending.sessionId !== sessionId || pending.alwaysManual) continue;
-      if (this.needsApproval(mode, rules, pending.tool, pending.input)) continue;
+      if (this.needsApproval(mode, rules, pending.tool, pending.input, pending.shell)) continue;
       this.pending.delete(requestId);
       this.publishResolved(sessionId, requestId);
       pending.signal.removeEventListener("abort", pending.abort);

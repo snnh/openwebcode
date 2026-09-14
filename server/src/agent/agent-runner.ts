@@ -2902,6 +2902,8 @@ export class AgentRunner {
       if (!PLAN_READONLY.has(tool)) return { allowed: false, reason: `Plan 模式为只读：${tool} 被拦截。请输出实施计划并请用户切换到 code 模式执行。` };
     }
     const baseMode = session.permissionMode ?? "ask";
+    // 只读命令自动放行按生效 shell 的词法形态分流（cmd/pwsh 与 sh 语法不同，不参与自动放行）
+    const shellFlavor = resolveShell(session.shellBackend ?? "default").flavor;
     // 子代理（subagent/spawn_swarm 成员，手动路径除外——authContext 由注入点区分）内部工具授权的
     // 有效权限档：默认模型审核（review）；主 agent 切 yolo 时同步 yolo（yolo 只跳确认、不扩沙盒）。
     // 只读白名单/allow 规则命中仍不经审核（下方 needsApproval 前置不变）。
@@ -2943,7 +2945,7 @@ export class AgentRunner {
         this.state(sessionId, "waiting_permission");
         // Notification 钩子：权限待批（与下方 needsApproval 审批路径同一挂点）
         await this.runNotificationHook("Notification", { sessionId, cwd: session.cwd, tool, input: { ...input, path: abs }, notification: { kind: "permission", summary: summarizeToolInput(tool, { ...input, path: abs }) } });
-        const result = await this.permissions.request(sessionId, tool, { ...input, path: abs }, signal, { alwaysManual: true });
+        const result = await this.permissions.request(sessionId, tool, { ...input, path: abs }, signal, { alwaysManual: true, shell: shellFlavor });
         this.state(sessionId, "tool_running");
         if (!result.allowed) return { allowed: false, reason: `访问 HOME 外路径未获允许：${abs}${result.reason ? `（${result.reason}）` : ""}` };
         return { allowed: true };
@@ -2958,7 +2960,7 @@ export class AgentRunner {
         input = { ...input, path: normalized.path };
       } catch { /* 回退原始路径 */ }
     }
-    if (!this.permissions.needsApproval(mode, rules, tool, input)) return { allowed: true };
+    if (!this.permissions.needsApproval(mode, rules, tool, input, shellFlavor)) return { allowed: true };
     // 模型审核（review 模式）：需要人工确认的调用先由审核模型评判风险；git_commit 永远直接人工。
     // 审核期间不置 waiting_permission（仍视为工具运行中）；LOW 自动放行，其余照旧走人工流程。
     if (mode === "review" && tool !== "git_commit") {
@@ -2968,14 +2970,14 @@ export class AgentRunner {
       // 审核窗口（最长 30s）内用户可能已热切权限档：按最新 mode/rules 复查，
       // 不再需要审批则直接放行，避免挂出一张新档下本不该存在的权限卡。
       const fresh = await this.sessions.getMeta(sessionId);
-      if (fresh && !this.permissions.needsApproval(fresh.permissionMode ?? "ask", fresh.permissionRules ?? [], tool, input)) {
+      if (fresh && !this.permissions.needsApproval(fresh.permissionMode ?? "ask", fresh.permissionRules ?? [], tool, input, shellFlavor)) {
         return { allowed: true };
       }
     }
     this.state(sessionId, "waiting_permission");
     // Notification 钩子：权限待批（仅通知不阻断，桌面通知/IM 机器人等外接提醒的挂点）
     await this.runNotificationHook("Notification", { sessionId, cwd: session.cwd, tool, input, notification: { kind: "permission", summary: summarizeToolInput(tool, input) } });
-    const result = await this.permissions.request(sessionId, tool, input, signal);
+    const result = await this.permissions.request(sessionId, tool, input, signal, { shell: shellFlavor });
     this.state(sessionId, "tool_running");
     return { allowed: result.allowed, ...(result.reason ? { reason: result.reason } : {}) };
   }
