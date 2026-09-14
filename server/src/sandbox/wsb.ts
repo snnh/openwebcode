@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
@@ -29,6 +30,8 @@ interface WsbConfigInput {
   distDir: string;
   hostIp: string;
   port: number;
+  /** 回连一次性令牌：guest core 连接成功后首行上送，宿主校验不匹配的连接直接丢弃。 */
+  connectToken: string;
   setupScript?: string;
   /** 沙盒虚拟交换机网络开关；缺省/"allow" 为 Enable，"deny" 为 Disable。 */
   network?: "allow" | "deny";
@@ -46,7 +49,7 @@ function escapeXml(value: string): string {
  * 登录后让沙盒内的 owc-exec 通过 --connect 回连宿主监听端口；setupScript 先行执行。
  */
 export function buildWsbConfig(input: WsbConfigInput): string {
-  const connect = `C:\\owc\\owc-exec.exe --connect ${input.hostIp}:${input.port}`;
+  const connect = `C:\\owc\\owc-exec.exe --connect ${input.hostIp}:${input.port} --connect-token ${input.connectToken}`;
   const inner = input.setupScript?.trim() ? `${input.setupScript.trim()} && ${connect}` : connect;
   const command = `cmd /c "${inner}"`;
   return [
@@ -99,6 +102,8 @@ interface WsbSessionOptions {
   /** 以下两项用于测试注入 */
   spawnWsb?: (wsbPath: string) => ChildProcess;
   pickHostIp?: () => string | undefined;
+  /** 测试注入：WSB 可用性探测（默认 detectWsb）。 */
+  detect?: () => WsbAvailability;
 }
 
 /** 一个 WSB 虚拟机会话：监听回连端口 → 写 .wsb → 拉起 WindowsSandbox → 接管回连 socket 完成握手。 */
@@ -107,22 +112,27 @@ class WsbSession {
   private child: ChildProcess | undefined;
   private client: CoreClient | undefined;
   private wsbPath: string | undefined;
+  /** 回连一次性令牌（随 .wsb LogonCommand 下发 guest，宿主按行校验）。 */
+  private connectToken = "";
 
   constructor(private readonly options: WsbSessionOptions) {}
 
   async start(): Promise<CoreClient> {
-    const availability = detectWsb();
+    const availability = (this.options.detect ?? detectWsb)();
     if (!availability.available) throw new Error(availability.reason ?? "Windows Sandbox is not available");
+    // 先选定回连地址再监听：绑定到该具体地址而非 0.0.0.0，缩小局域网暴露面；
+    // 连接准入由 connectToken 首行校验保证（回连窗口内先连入者不再被当作 guest core）。
+    const hostIp = (this.options.pickHostIp ?? defaultHostIp)();
+    if (!hostIp) throw new Error("No non-loopback IPv4 address for the sandbox to connect back to");
+    this.connectToken = randomBytes(32).toString("hex");
     const server = createServer();
     this.server = server;
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(0, "0.0.0.0", resolve);
+      server.listen(0, hostIp, resolve);
     });
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("WSB listener did not bind a port");
-    const hostIp = (this.options.pickHostIp ?? defaultHostIp)();
-    if (!hostIp) throw new Error("No non-loopback IPv4 address for the sandbox to connect back to");
     await mkdir(this.options.sessionRoot, { recursive: true });
     this.wsbPath = path.join(this.options.sessionRoot, "sandbox.wsb");
     await writeFile(this.wsbPath, buildWsbConfig({
@@ -130,6 +140,7 @@ class WsbSession {
       distDir: this.options.distDir,
       hostIp,
       port: address.port,
+      connectToken: this.connectToken,
       ...(this.options.setupScript ? { setupScript: this.options.setupScript } : {}),
       ...(this.options.network ? { network: this.options.network } : {}),
     }), "utf8");
@@ -150,6 +161,10 @@ class WsbSession {
     return client;
   }
 
+  /**
+   * 等待 guest core 回连：连接建立后先读一行 connectToken（core 在 RPC 流量前上送），
+   * 校验不匹配的连接直接销毁、继续等到超时——回连窗口内只有持令牌者会被接管。
+   */
   private waitForConnection(): Promise<Socket> {
     const server = this.server;
     if (!server) return Promise.reject(new Error("WSB listener is not running"));
@@ -162,7 +177,34 @@ class WsbSession {
         else reject(error ?? new Error("WSB connection wait failed"));
       };
       const timer = setTimeout(() => finish(new Error(`Sandbox core did not connect back within ${timeoutMs}ms`)), timeoutMs);
-      server.once("connection", (socket) => finish(undefined, socket));
+      server.on("connection", (socket) => {
+        let head = Buffer.alloc(0);
+        const onData = (chunk: Buffer): void => {
+          head = Buffer.concat([head, chunk]);
+          const newline = head.indexOf(0x0a);
+          // 令牌 64 hex 字符 + CRLF 足矣；超限即非我方 guest，断开
+          if (newline < 0) {
+            if (head.length > 256) socket.destroy();
+            return;
+          }
+          socket.removeListener("data", onData);
+          const presented = head.subarray(0, newline).toString("utf8").replace(/\r$/, "");
+          const rest = head.subarray(newline + 1);
+          const expected = Buffer.from(this.connectToken, "utf8");
+          const presentedBuffer = Buffer.from(presented, "utf8");
+          if (presentedBuffer.length !== expected.length || !timingSafeEqual(presentedBuffer, expected)) {
+            socket.destroy();
+            return;
+          }
+          // guest 在上送令牌前不会发 RPC 字节；防御性回填粘包余量
+          socket.pause();
+          if (rest.length > 0) socket.unshift(rest);
+          socket.resume();
+          finish(undefined, socket);
+        };
+        socket.on("data", onData);
+        socket.once("error", () => socket.destroy());
+      });
       if (this.child) {
         this.child.once("error", (error) => finish(error));
         this.child.once("exit", (code) => finish(new Error(`WindowsSandbox.exe exited before the core connected back (code ${code ?? "unknown"})`)));
@@ -203,6 +245,8 @@ interface WsbManagerOptions {
   connectTimeoutMs?: number;
   spawnWsb?: (wsbPath: string) => ChildProcess;
   pickHostIp?: () => string | undefined;
+  /** 测试注入：WSB 可用性探测（默认 detectWsb）。 */
+  detect?: () => WsbAvailability;
 }
 
 /** 按会话懒启动并缓存 WSB 沙盒 core 客户端。 */
@@ -229,6 +273,7 @@ export class WsbManager {
       ...(this.options.connectTimeoutMs !== undefined ? { connectTimeoutMs: this.options.connectTimeoutMs } : {}),
       ...(this.options.spawnWsb ? { spawnWsb: this.options.spawnWsb } : {}),
       ...(this.options.pickHostIp ? { pickHostIp: this.options.pickHostIp } : {}),
+      ...(this.options.detect ? { detect: this.options.detect } : {}),
     });
     const promise = wsbSession.start().then(async (client) => {
       if (this.pending.get(sessionId) !== promise) {

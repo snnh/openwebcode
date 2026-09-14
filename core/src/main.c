@@ -33,7 +33,7 @@ static void on_fatal_signal(int sig) {
 #endif
 
 static void usage(void) {
-    fprintf(stderr, "usage: owc-exec [--connect <host:port>]\n");
+    fprintf(stderr, "usage: owc-exec [--connect <host:port> [--connect-token <token>]]\n");
 }
 
 /* Parses "host:port"; host may be bracketed IPv6 ([::1]:8080). Returns 1 on success. */
@@ -143,6 +143,7 @@ static int socket_streams(intptr_t socket_handle, FILE **input, FILE **output) {
 int main(int argc, char **argv) {
     owc_rpc rpc={stdin,stdout,0,0};
     const char *target=NULL;
+    const char *connect_token=NULL;
     char host[256], port[16];
     int i;
     intptr_t socket_handle=-1;
@@ -160,7 +161,20 @@ int main(int argc, char **argv) {
             target=argv[i];
         } else if (!strncmp(argv[i],"--connect=",10)) {
             target=argv[i]+10;
+        } else if (!strcmp(argv[i],"--connect-token")) {
+            if (++i>=argc) { usage(); return 2; }
+            connect_token=argv[i];
+        } else if (!strncmp(argv[i],"--connect-token=",16)) {
+            connect_token=argv[i]+16;
         } else { usage(); return 2; }
+    }
+    /* Token shape: 1..128 chars, no CR/LF (it is sent as one line before RPC). */
+    if (connect_token) {
+        size_t token_length=strlen(connect_token);
+        if (!target || token_length==0 || token_length>128 || strchr(connect_token,'\r') || strchr(connect_token,'\n')) {
+            fprintf(stderr, "owc-exec: --connect-token requires --connect and a 1..128 char token without CR/LF\n");
+            return 2;
+        }
     }
     if (target) {
         if (!parse_connect_target(target,host,sizeof(host),port,sizeof(port))) {
@@ -177,6 +191,13 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
             (void)WSACleanup();
 #endif
+            return 1;
+        }
+        /* WSB callback authentication: present the one-time token as a single
+         * line before any RPC traffic; the host listener drops connections
+         * without it (output is already unbuffered). */
+        if (connect_token && (fputs(connect_token,output)==EOF || fputc('\n',output)==EOF)) {
+            fprintf(stderr,"owc-exec: failed to send connect token\n");
             return 1;
         }
         rpc.input=input; rpc.output=output;
