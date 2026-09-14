@@ -153,7 +153,10 @@ export function registerMiscRoutes(app: FastifyInstance, ctx: RouteContext): voi
     const releaseWorkspace = session ? acquireManagedWorkspaceUse(session) : (() => undefined);
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
-      return await core.run(request.body);
+      // network 是 server 内部专用覆盖（filtered 会话的 sidecar 代理以 allow 启动）：
+      // REST 入口剥离客户端该字段，防止绕开会话的 network=deny/filtered 策略。
+      const { network: _strippedNetwork, ...execBody } = request.body;
+      return await core.run(execBody);
     } finally {
       releaseWorkspace();
     }

@@ -9,6 +9,7 @@ import type { CoreClientLike } from "../core-client.js";
 import { getModelProfile } from "../context/model-profile.js";
 import type { ModelRegistry } from "../context/model-registry.js";
 import { withTimeout } from "../http-utils.js";
+import { minimalChildEnv } from "../mcp/client.js";
 import type { ProviderRegistry, ProviderTool } from "../providers/provider.js";
 import type { ChatMessage, SessionDetail, SessionMeta } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
@@ -835,8 +836,10 @@ export class ExtensionManager {
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const worker = fileURLToPath(new URL(`./extension-host-process.${extension}`, import.meta.url));
     // dist 运行直接 fork 编译后的 JS；tsx 开发/测试运行显式安装 loader，确保 NodeNext 的 .js specifier 可解析到 .ts 源文件。
+    // env 白名单（与 MCP 子进程同款纪律）：不透传宿主完整 process.env——扩展是可信代码，
+    // 但架构边界声明「扩展不得获得全局环境变量」（含 OWC_ACCESS_TOKEN、代理凭据等）。
     const execArgv = extension === "ts" ? ["--import", "tsx"] : [];
-    this.child = fork(worker, [], { stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv });
+    this.child = fork(worker, [], { stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv, env: minimalChildEnv() });
     const child = this.child;
     child.stderr?.on("data", (chunk: Buffer) => process.stderr.write(chunk));
     child.on("message", (message: HostResponse | ApiRequest) => {
