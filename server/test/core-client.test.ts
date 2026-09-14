@@ -64,6 +64,8 @@ describe("sanitizedCoreEnv", () => {
     vi.stubEnv("HTTPS_PROXY", "http://proxy.local:8443");
     vi.stubEnv("no_proxy", "localhost,127.0.0.1");
     vi.stubEnv("OWC_CORE_VERSION", "9.9.9");
+    // OWC_* 前缀放行运行时配置，但访问令牌凭据必须剥离（否则沙盒命令 env 可读后假冒 CLI）
+    vi.stubEnv("OWC_ACCESS_TOKEN", "owc-secret-token-0123456789abcdef");
     // Windows 必需的系统变量（大小写不敏感匹配，输出保留原大小写）
     vi.stubEnv("SYSTEMROOT", "C:\\WINDOWS");
     vi.stubEnv("windir", "C:\\WINDOWS");
@@ -97,6 +99,7 @@ describe("sanitizedCoreEnv", () => {
       expect(env.HTTPS_PROXY).toBe("http://proxy.local:8443");
       expect(env.no_proxy).toBe("localhost,127.0.0.1");
       expect(env.OWC_CORE_VERSION).toBe("9.9.9");
+      expect(env.OWC_ACCESS_TOKEN).toBeUndefined();
       // 大小写不敏感匹配，输出保留原始大小写（Windows 存储大小写随来源，键名断言按大写查找）
       const find = (name: string) => Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1];
       expect(find("SYSTEMROOT")).toBe("C:\\WINDOWS");
