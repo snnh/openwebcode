@@ -104,11 +104,31 @@ import { ModelRoleResolver, MODEL_ROLES, isModelRole, type ModelRole } from "../
 interface ExecutionContext {
   sessionId: string;
   output: Array<{ stream: string; data: string; seq: number }>;
+  /** 累积的 base64 字符总数（截断判定的运行计数，避免每事件 O(n) 重算）。 */
+  outputChars: number;
+  /** 输出超限被从头丢弃过（尾部保留，对齐持久 shell 截断语义）。 */
+  outputCapped: boolean;
 }
 
 const TOOL_EVENT_PREVIEW_CHARS = 1_024;
 /** 事件 payload 单字符串值上限：write_file 全量 content 这类大输入会把 MB 级帧推上 WS 热路径。 */
 const TOOL_EVENT_INPUT_VALUE_CHARS = 256 * 1024;
+
+/** 一次性/jobControl bash 输出的 base64 累积上限（≈1MiB 解码文本，对齐持久 shell 的
+ *  MAX_SHELL_OUTPUT_CHARS 纪律）：命令结束前无上限会让跑飞命令在超时窗口内撑爆内存
+ * （base64 副本 + 解码明文 + JSON 串三份）。超限从头丢最旧 chunk——尾部对错误诊断最有价值。 */
+const MAX_BASH_OUTPUT_B64_CHARS = 1_400_000;
+
+/** 追加一个输出 chunk 并按上限从头裁掉最旧者；返回是否发生过裁断。 */
+function pushCappedOutput(target: { output: Array<{ stream: string; data: string; seq: number }>; outputChars: number; outputCapped: boolean }, chunk: { stream: string; data: string; seq: number }): void {
+  target.output.push(chunk);
+  target.outputChars += chunk.data.length;
+  while (target.outputChars > MAX_BASH_OUTPUT_B64_CHARS && target.output.length > 0) {
+    target.outputChars -= target.output[0]!.data.length;
+    target.output.shift();
+    target.outputCapped = true;
+  }
+}
 
 /** Event replay is not the tool-result store. Keep payloads bounded and point
  * clients at the artifact/session detail path for complete output. */
@@ -793,6 +813,8 @@ export class AgentRunner {
   /** steering/消息队列/交互管理外观（实现见 run-control.ts）；公共方法在本类做一行委托，接口不变。 */
   private readonly runControl: RunControl;
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
+  /** read_artifact 粘性注入集：视图出现 artifact 引用后该会话持续注入（防工具表逐轮翻转击穿前缀缓存）。 */
+  private readonly artifactToolSticky = new Set<string>();
   private readonly mcpWarningSignatures = new Map<string, string>();
   /** 可编辑提示词覆盖：按 cwd 缓存一次，避免每轮 IO；首次构建时读取。 */
   private readonly promptOverrideCache = new Map<string, PromptOverride>();
@@ -1031,7 +1053,7 @@ export class AgentRunner {
         payload.data &&
         typeof payload.seq === "number"
       ) {
-        execution.output.push({ stream: payload.stream, data: payload.data, seq: payload.seq });
+        pushCappedOutput(execution, { stream: payload.stream, data: payload.data, seq: payload.seq });
       }
       this.events.publish({
         source: "core",
@@ -1542,12 +1564,16 @@ export class AgentRunner {
         //   刚被 boundToolResult 截断进 artifact，模型分页需要工具在场。
         // 其余轮次不注入（省系统提示目录行 + provider schema/描述）。会话 toolsDeny 显式
         // 禁止时仍尊重拒绝；首轮双工具形态（firstTurnOnlyTools）期间不联动，用户发第二条
-        // 消息后生效。渲染前的逐轮判定不缓存：视图含引用与否逐轮真实。
+        // 消息后生效。视图含引用的判定一旦命中即粘住（per-session  sticky）：工具表的
+        // 逐轮开/关翻转会使 system+tools 前缀缓存整段失效，粘性把失效压到每会话至多一次。
         if ((!firstTurnOnly || !isFirstTurn) && !shapedBuiltIns.some((tool) => tool.name === "read_artifact") && !(session.toolsDeny ?? []).includes("read_artifact")) {
           // 驱逐策略直读本轮 beginTurn 的轮级句柄（同一磁盘账本的 working 副本），
           // 免去每轮二次 new ContextManager().load() 全量加载 ledger 只为读 policy。
           const evictionOn = saverOn && turnLedger.working.policy.enabled && turnLedger.working.policy.strategy !== "off";
-          if (evictionOn || viewContainsArtifactReference(view.messages)) {
+          if (evictionOn || this.artifactToolSticky.has(sessionId)) {
+            shapedBuiltIns = [...shapedBuiltIns, READ_ARTIFACT_TOOL];
+          } else if (viewContainsArtifactReference(view.messages)) {
+            this.artifactToolSticky.add(sessionId);
             shapedBuiltIns = [...shapedBuiltIns, READ_ARTIFACT_TOOL];
           }
         }
@@ -3968,7 +3994,7 @@ export class AgentRunner {
     const quiet = options?.quiet === true;
     signal.throwIfAborted();
     const execId = `${sessionId}:${randomUUID()}`;
-    const execution: ExecutionContext = { sessionId, output: [] };
+    const execution: ExecutionContext = { sessionId, output: [], outputChars: 0, outputCapped: false };
     this.executions.set(execId, execution);
     if (!quiet) {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name: "bash", input: { cmd }, execId } });
@@ -3987,7 +4013,7 @@ export class AgentRunner {
       cmd = await this.wrapForPythonEnv(session, cmd);
       if (await this.coreGateway.supports("jobControl")) {
         const jobId = `job-${randomUUID()}`;
-        const output: Array<{ stream: "stdout" | "stderr"; data: string; seq: number }> = [];
+        const acc = { output: [] as Array<{ stream: string; data: string; seq: number }>, outputChars: 0, outputCapped: false };
         let afterSeq = 0;
         const cancel = () => { void this.core.cancelJob({ sessionId, jobId }).catch(() => undefined); };
         signal.addEventListener("abort", cancel, { once: true });
@@ -3996,7 +4022,7 @@ export class AgentRunner {
           await this.core.startJob({ sessionId, jobId, kind: "exec", cmd, cwd: session.cwd, timeoutMs: 10 * 60_000, ...coreExecShell(session.shellBackend ?? "default") });
           for (;;) {
             const page = await this.core.jobOutput({ sessionId, jobId, afterSeq, limit: 128 });
-            output.push(...page.chunks);
+            for (const chunk of page.chunks) pushCappedOutput(acc, chunk);
             afterSeq = page.nextSeq;
             const status = await this.core.jobStatus({ sessionId, jobId });
             if (status.state === "running") {
@@ -4005,13 +4031,13 @@ export class AgentRunner {
             }
             // Drain chunks produced between the last poll and terminal state.
             const tail = await this.core.jobOutput({ sessionId, jobId, afterSeq, limit: 128 });
-            output.push(...tail.chunks);
+            for (const chunk of tail.chunks) pushCappedOutput(acc, chunk);
             if (signal.aborted) signal.throwIfAborted();
             if (status.state === "cancelled" || status.state === "timed_out" || status.state === "failed") {
               throw new Error(status.error ?? `Job ${status.state}`);
             }
-            const decoded = decodeProcessOutputChunks(output);
-            const rawContent = JSON.stringify({ ...status, output: decoded, outputTruncated: page.truncated || tail.truncated });
+            const decoded = decodeProcessOutputChunks(acc.output);
+            const rawContent = JSON.stringify({ ...status, output: decoded, outputTruncated: page.truncated || tail.truncated || acc.outputCapped });
             const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), "bash", rawContent);
             if (!quiet) this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
             return { content: bounded.content, isError: false };
@@ -4022,7 +4048,7 @@ export class AgentRunner {
       }
       const result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd, ...coreExecShell(session.shellBackend ?? "default") });
       const output = decodeProcessOutputChunks(execution.output);
-      const rawContent = JSON.stringify({ ...result, output });
+      const rawContent = JSON.stringify({ ...result, output, outputTruncated: result.truncated || execution.outputCapped });
       const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), "bash", rawContent);
       // 事件只发摘要 + artifact 引用（0.3.x 规约）；完整输出走 artifact/session 读取路径。
       if (!quiet) this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
@@ -4084,6 +4110,7 @@ export class AgentRunner {
   discardSession(sessionId: string, cwd?: string): void {
     this.perfRecords.delete(sessionId);
     this.mcpWarningSignatures.delete(sessionId);
+    this.artifactToolSticky.delete(sessionId);
     this.todos.delete(sessionId);
     if (cwd) this.promptOverrideCache.delete(cwd);
   }
