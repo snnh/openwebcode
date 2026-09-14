@@ -54,7 +54,6 @@ export interface ChatConfig {
   defaultSystemPrompt?: string;
   defaultTemperature?: number;
   defaultAssistantId?: string;
-  lanUnauthenticated?: boolean;
   pythonLibraries?: string[];
   /** image_gen 工具的生图模型（全局唯一粒度）；provider 为 provider-profiles 的模型服务商 id。 */
   imageGenModel?: { provider: string; model: string };

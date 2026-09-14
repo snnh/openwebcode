@@ -10,7 +10,7 @@ import type { IndexManager } from "./index/index-manager.js";
 import type { DiagnosticsService } from "./diagnostics/service.js";
 import type { ScmService } from "./scm/service.js";
 import { isLoopbackHost } from "./config.js";
-import { TotpAuthService, TOTP_TICKET_TTL_MS, isLoopbackOrLAN } from "./auth-totp.js";
+import { TotpAuthService, TOTP_TICKET_TTL_MS } from "./auth-totp.js";
 import { getModelProfile, listModelProfiles, type Currency, type ModelProfile } from "./context/model-profile.js";
 import type { CatalogModel, ModelRegistry } from "./context/model-registry.js";
 import type { PricingCatalog } from "./cost/pricing-catalog.js";
@@ -42,7 +42,7 @@ import type { EvalEvaluator } from "./eval/evaluator.js";
 
 import {
   parseCookies, safeTokenEqual, requestToken,
-  isChatConversationRoute, isChatConfigRoute, isSharePublicRoute,
+  isSharePublicRoute,
   type RouteContext, type ManagedSession,
 } from "./routes/route-context.js";
 import { registerSystemRoutes } from "./routes/system.js";
@@ -175,15 +175,6 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
   const auth = dependencies.auth;
   const isAuthorized = (request: { headers: Record<string, string | string[] | undefined>; query?: unknown }, allowQueryToken = false) => !auth || safeTokenEqual(auth.accessToken, requestToken(request, allowQueryToken));
-  // chat.json 的 lanUnauthenticated（缺省 true）内存缓存，避免每个请求读盘；
-  // PUT /api/chat/config 保存成功后同步刷新该缓存
-  const chatLanUnauth: { cache: boolean | undefined } = { cache: undefined };
-  const chatLanUnauthenticated = async (): Promise<boolean> => {
-    if (chatLanUnauth.cache !== undefined) return chatLanUnauth.cache;
-    const config = dependencies.chatConfig ? await dependencies.chatConfig.get() : {};
-    chatLanUnauth.cache = config.lanUnauthenticated !== false;
-    return chatLanUnauth.cache;
-  };
   // TOTP 全局登录（提交⑥）：与 OWC_ACCESS_TOKEN 并存。bearer 通道仅在配置了 access token 时存在；
   // totpEnabled 时 /api/** 与 WS 要求有效 TOTP 票据 cookie 或有效 bearer token。
   const totp = dependencies.totp;
@@ -260,11 +251,6 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       const pathname = request.url.split("?", 1)[0] ?? "";
       // 分享公开路由直接放行（校验口令在路由内完成）
       if (isSharePublicRoute(pathname)) return;
-      // chat 对话路由 LAN 放行（chat.json lanUnauthenticated 缺省 true，置 false 时跳过；配置面路由不在此列）
-      if (isChatConversationRoute(pathname) && !isChatConfigRoute(pathname) && (await chatLanUnauthenticated())) {
-        const remoteAddr = request.socket.remoteAddress;
-        if (remoteAddr && isLoopbackOrLAN(remoteAddr)) return;
-      }
       // TOTP 已启用：/api/auth/* 匿名可达（登录入口）；有效 TOTP 票据与 bearer 并存放行
       if (totpGateEnabled()) {
         if (pathname.startsWith("/api/auth/")) return;
@@ -283,12 +269,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (upgrade?.toLowerCase() === "websocket") return;
     const pathname = request.url.split("?", 1)[0] ?? "";
     if (pathname === "/api/health" || pathname.startsWith("/api/auth/")) return;
-    // 分享公开路由与 LAN chat 对话路由同样免 TOTP 票据（与 bearer 门禁口径一致）
+    // 分享公开路由同样免 TOTP 票据（与 bearer 门禁口径一致）
     if (isSharePublicRoute(pathname)) return;
-    if (isChatConversationRoute(pathname) && !isChatConfigRoute(pathname) && (await chatLanUnauthenticated())) {
-      const remoteAddr = request.socket.remoteAddress;
-      if (remoteAddr && isLoopbackOrLAN(remoteAddr)) return;
-    }
     if (bearerAuthorized(request)) return;
     if (totpAuthenticated(request)) {
       // 滑动续期：同步刷新 cookie Max-Age
@@ -517,7 +499,6 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     isAuthorized, bearerAuthorized,
     totp, listenHost, totpGateEnabled, totpTicketOf, totpAuthenticated, totpCookieHeader,
     originAllowed, hostAllowed,
-    chatLanUnauth,
     clients, wsStats,
     configuredSessions, managedSyncingSessions, managedSyncAbortControllers, managedCheckpointingSessions, restoringSessions,
     resolveSnapshotBackend,
