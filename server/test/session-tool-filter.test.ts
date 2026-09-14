@@ -498,6 +498,54 @@ describe("isReadOnlyCommand", () => {
     expect(isReadOnlyCommand("date")).toBe(true);
   });
 
+  it("拒绝 sed/find 的命令执行与写文件形态（安全审计 S2）", () => {
+    // sed：e 命令执行 shell；w/W 写文件；r/R 读任意文件进输出（越权信息泄漏）
+    expect(isReadOnlyCommand("sed '1e id' f")).toBe(false);
+    expect(isReadOnlyCommand("sed -e 'e' f")).toBe(false);
+    expect(isReadOnlyCommand("sed 'w out' f")).toBe(false);
+    expect(isReadOnlyCommand("sed 'r /etc/passwd' f")).toBe(false);
+    expect(isReadOnlyCommand("sed 's/a/b/e' f")).toBe(false);
+    expect(isReadOnlyCommand("sed 's/a/b/w out' f")).toBe(false);
+    expect(isReadOnlyCommand("sed 's/a/b/ w' f")).toBe(false);
+    expect(isReadOnlyCommand("sed -f script.sed f")).toBe(false); // 脚本来自文件无法静态判定
+    expect(isReadOnlyCommand("sed --file=script.sed f")).toBe(false);
+    // sed 只读形态不受影响
+    expect(isReadOnlyCommand("sed -n '1,10p' f")).toBe(true);
+    expect(isReadOnlyCommand("sed -nE 's/foo/bar/p' f")).toBe(true);
+    expect(isReadOnlyCommand("sed -n '/ERROR/,/END/p' log")).toBe(true);
+    expect(isReadOnlyCommand("sed 's/a\\/b/c/' f")).toBe(true); // 转义界符
+    expect(isReadOnlyCommand("sed 's/a/b/2gp' f")).toBe(true);
+    expect(isReadOnlyCommand("sed 'y/abc/def/' f")).toBe(true);
+    expect(isReadOnlyCommand("sed '$d' f")).toBe(true);
+    expect(isReadOnlyCommand("sed '5!d' f")).toBe(true);
+    expect(isReadOnlyCommand("sed -n '/x/{s/y/z/;p}' f")).toBe(true);
+    expect(isReadOnlyCommand("sed 'a hello' f")).toBe(true);
+    // find：-fprint/-fprintf/-fls 写任意文件
+    expect(isReadOnlyCommand("find . -fprintf out '%p'")).toBe(false);
+    expect(isReadOnlyCommand("find . -fprint out")).toBe(false);
+    expect(isReadOnlyCommand("find . -fls out")).toBe(false);
+    expect(isReadOnlyCommand("find . -printf '%p\\n'")).toBe(true);
+  });
+
+  it("拒绝 git 只读子命令的外部执行/写文件选项（安全审计 S2）", () => {
+    expect(isReadOnlyCommand("git diff --ext-diff")).toBe(false);
+    expect(isReadOnlyCommand("git show --textconv")).toBe(false);
+    expect(isReadOnlyCommand("git log --ext-diff -1")).toBe(false);
+    expect(isReadOnlyCommand("git diff --output=/tmp/x")).toBe(false);
+    expect(isReadOnlyCommand("git diff HEAD~1")).toBe(true);
+    expect(isReadOnlyCommand("git log --oneline -5")).toBe(true);
+  });
+
+  it("非 POSIX sh 形态（cmd/pwsh）不参与只读自动放行（安全审计 S3）", () => {
+    // cmd 不认 `\\` 转义与单引号：按 POSIX 判定安全、按 cmd 实际执行出第二条命令
+    expect(isReadOnlyCommand("echo x \\& del y", "sh")).toBe(true); // POSIX：`\\&` 是字面量，整段为 echo 参数
+    expect(isReadOnlyCommand("echo x \\& del y", "cmd")).toBe(false);
+    expect(isReadOnlyCommand("ls", "cmd")).toBe(false);
+    expect(isReadOnlyCommand("ls", "pwsh")).toBe(false);
+    expect(isReadOnlyCommand("ls", "sh")).toBe(true);
+    expect(isReadOnlyCommand("ls")).toBe(true); // 缺省按 sh（POSIX 主路径）
+  });
+
   it("拒绝 git 写子命令与选项形态", () => {
     expect(isReadOnlyCommand("git push")).toBe(false);
     expect(isReadOnlyCommand("git commit -m x")).toBe(false);
