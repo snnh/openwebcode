@@ -181,13 +181,16 @@ export interface ViewFragment {
   pinned: boolean;
 }
 
-/** 增量构建缓存：键校验通过后只需为追加消息构建新片段。 */
+/** 增量构建缓存：结构键/选择键校验 + 片段级驱逐签名比对，未变片段直接复用。 */
 export interface ViewBuildCache {
   sourceIds: string[];
+  /** computeStructuralKey(ledger)：压缩/清空/驱逐模式（驱逐条目不参与，见 entrySignatures）。 */
   ledgerKey: string;
   selectionKey: string;
   header?: ViewFragment | undefined;
   fragments: ViewFragment[];
+  /** 与 fragments 平行：各片段构建时生效驱逐条目的签名（无条目为空串），逐轮比对实现片段级失效。 */
+  entrySignatures: string[];
   /** header+fragments 的累计统计：增量命中只需累加追加片段，不再全视图求和。 */
   totalTokens: number;
   segments: ContextSegmentBreakdown;

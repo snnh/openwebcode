@@ -34,15 +34,30 @@ const DEFAULT_POLICY: ContextPolicy = {
 
 /** read 头尾摘录与驱逐豁免等驱逐侧常量/函数已迁至 extensions/context-saver（扩展能力）；本文件只保留核心视图组装所需的部分。 */
 
-/** buildView 缓存键的 ledger 部分：压缩/清空/驱逐条目（与历史实现逐字节一致）。 */
-export function computeLedgerKey(ledger: ContextLedger): string {
+/** buildView 缓存键的 ledger 结构部分：压缩/清空/驱逐模式。驱逐条目不参与——
+ *  条目变化走片段级失效（entrySignature 逐片段比较），不再触发整表重建。 */
+export function computeStructuralKey(ledger: ContextLedger): string {
   return JSON.stringify({
     compacted: ledger.compacted ?? null,
     cleared: ledger.cleared ?? null,
     // evictionMode 改变视图渲染（结构后处理），必须参与缓存键
     mode: ledger.policy.evictionMode,
-    entries: ledger.entries.map((entry) => [entry.messageId, entry.artifactId, entry.state]),
   });
+}
+
+/**
+ * 单条驱逐条目影响片段渲染的全部输入的签名：state 决定是否替换、其余字段进入
+ * 占位符/摘录文本。excerpt 只记长度 + FNV-1a 指纹，避免在视图缓存里再驻留一份摘录全文。
+ */
+export function entrySignature(entry: LedgerEntry | undefined): string {
+  if (!entry) return "";
+  const excerpt = entry.excerpt ?? "";
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < excerpt.length; i += 1) {
+    hash ^= excerpt.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${entry.state}|${entry.artifactId}|${entry.toolName ?? ""}|${entry.sizeBytes ?? ""}|${excerpt.length}:${(hash >>> 0).toString(36)}`;
 }
 
 /** 驱逐占位符：给模型可操作的摘要（工具名/大小）与自助恢复路径（read_artifact）。 */

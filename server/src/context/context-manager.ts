@@ -24,7 +24,8 @@ import type {
   RecordedCost,
 } from "./context-types.js";
 import {
-  computeLedgerKey,
+  computeStructuralKey,
+  entrySignature,
   buildFragment,
   applyProcessEviction,
   normalizeLedger,
@@ -86,7 +87,7 @@ export class ContextManager {
       if (!isMissing(error)) throw error;
     }
     const ledger = normalizeLedger(value);
-    const entry: LedgerCacheEntry = { ledger, ...fingerprint, ledgerKey: computeLedgerKey(ledger) };
+    const entry: LedgerCacheEntry = { ledger, ...fingerprint, ledgerKey: computeStructuralKey(ledger) };
     ContextManager.touchLedgerCache(this.sessionRoot, entry);
     return { ledger, ledgerKey: entry.ledgerKey };
   }
@@ -110,7 +111,7 @@ export class ContextManager {
       size: info.size,
       mtimeMs: info.mtimeMs,
       ctimeMs: info.ctimeMs,
-      ledgerKey: computeLedgerKey(ledger),
+      ledgerKey: computeStructuralKey(ledger),
     });
   }
 
@@ -137,7 +138,7 @@ export class ContextManager {
     if (turn) {
       // 轮级句柄：复用 beginTurn 的工作副本，不再逐方法重读；轮内 key 相关字段不变。
       ledger = turn.working;
-      ledgerKey = turn.ledgerKey ??= computeLedgerKey(ledger);
+      ledgerKey = turn.ledgerKey ??= computeStructuralKey(ledger);
     } else {
       ({ ledger, ledgerKey } = await this.loadLedger());
     }
@@ -155,10 +156,10 @@ export class ContextManager {
     // 压缩和清空都裁剪消息前缀；较新的边界获胜。clear 覆盖压缩时不得重新注入旧摘要。
     const uptoIndex = Math.max(compactedIndex, clearedIndex);
 
-    // 增量复用（§4.4）：缓存键覆盖所有影响注入字节的输入——ledger 的压缩/清空/驱逐条目
-    // 与 pin/排除配置。压缩、驱逐、恢复、配置变更都会改变键值而自然触发全量重建；
-    // 会话恢复截断消息则令前缀校验失败。缓存只复用计算，最终产出字节与全量重建一致。
-    // ledgerKey 随 ledger 内存缓存预算，仅落盘变更时重算（见 loadLedger/save）。
+    // 增量复用（§4.4）：结构键覆盖压缩/清空/驱逐模式，选择键覆盖 pin/排除配置，
+    // 前缀校验挡会话恢复截断；驱逐条目走片段级失效（entrySignatures 逐片段比对），
+    // 滚动驱逐每轮新增条目不再触发整表全量重建。缓存只复用计算，产出与全量重建一致。
+    // ledgerKey（结构键）随 ledger 内存缓存预算，仅落盘变更时重算（见 loadLedger/save）。
     const selectionKey = JSON.stringify(selection);
 
     const cached = ContextManager.viewCaches.get(this.sessionRoot);
@@ -166,6 +167,7 @@ export class ContextManager {
     let header: ViewFragment | undefined;
     let fragments: ViewFragment[] | undefined;
     let sourceIds: string[] | undefined;
+    let entrySignatures: string[] | undefined;
     let total = 0;
     let pinnedTokens = 0;
     let segments: ContextSegmentBreakdown | undefined;
@@ -179,30 +181,63 @@ export class ContextManager {
       if (!appended.some((message) => message.content.some((block) => block.type === "image"))) {
         ContextManager.touchViewCache(this.sessionRoot, cached);
         header = cached.header;
-        // 无追加（纯缓存命中）时共享缓存数组，只读复用不展开；有追加才拷贝以便 push，
-        // 避免每轮纯命中都 O(n) 三次展开。segments 除外——调用方会原地累加
-        // stats.segments（agent-runner 的 repo map 段），必须拷贝隔离缓存主本。
-        const hasAppended = appended.length > 0;
-        fragments = hasAppended ? [...cached.fragments] : cached.fragments;
-        sourceIds = hasAppended ? [...cached.sourceIds] : cached.sourceIds;
-        total = cached.totalTokens;
-        pinnedTokens = cached.pinnedTokens;
-        segments = { ...cached.segments };
-        master = hasAppended ? [...cached.view] : cached.view;
         const byMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
-        for (const message of appended) {
-          const fragment = buildFragment(message, byMessage, pinnedIds);
-          // 追加消息不含图片（否则已回退全量），可立即完成该片段的 token 估算。
-          const measured = measureFragment(fragment.message);
-          fragment.tokens = measured.tokens;
-          fragment.segments = measured.segments;
-          fragments.push(fragment);
-          sourceIds.push(message.id);
-          total += fragment.tokens;
-          addSegments(segments, fragment.segments);
-          if (fragment.pinned) pinnedTokens += fragment.tokens;
-          // buildFragment 产出已是私有深克隆，直接入主克隆数组，不再二次克隆。
-          master.push(fragment.message);
+        // 片段级失效：与缓存逐片段比对驱逐条目签名，只重建签名变化的片段
+        // （从原始消息重建——缓存片段的 message 已是替换后形态，不能二次变换）。
+        const signatures: string[] = [];
+        let fragmentsChanged = false;
+        for (let i = 0; i < cached.fragments.length; i += 1) {
+          const signature = entrySignature(byMessage.get(messages[uptoIndex + i]!.id));
+          signatures.push(signature);
+          if (signature !== cached.entrySignatures[i]) fragmentsChanged = true;
+        }
+        if (!fragmentsChanged && appended.length === 0) {
+          // 纯缓存命中：共享缓存数组，只读复用不展开，避免每轮纯命中 O(n) 三次展开。
+          // segments 除外——调用方会原地累加 stats.segments（agent-runner 的 repo map 段），必须拷贝隔离缓存主本。
+          fragments = cached.fragments;
+          sourceIds = cached.sourceIds;
+          entrySignatures = cached.entrySignatures;
+          total = cached.totalTokens;
+          pinnedTokens = cached.pinnedTokens;
+          segments = { ...cached.segments };
+          master = cached.view;
+        } else {
+          fragments = [...cached.fragments];
+          sourceIds = [...cached.sourceIds];
+          master = [...cached.view];
+          const headerOffset = header ? 1 : 0;
+          for (let i = 0; i < signatures.length; i += 1) {
+            if (signatures[i] === cached.entrySignatures[i]) continue;
+            const fragment = buildFragment(messages[uptoIndex + i]!, byMessage, pinnedIds);
+            const measured = measureFragment(fragment.message);
+            fragment.tokens = measured.tokens;
+            fragment.segments = measured.segments;
+            fragments[i] = fragment;
+            master[headerOffset + i] = fragment.message;
+          }
+          for (const message of appended) {
+            const fragment = buildFragment(message, byMessage, pinnedIds);
+            // 追加消息不含图片（否则已回退全量），可立即完成该片段的 token 估算。
+            const measured = measureFragment(fragment.message);
+            fragment.tokens = measured.tokens;
+            fragment.segments = measured.segments;
+            fragments.push(fragment);
+            sourceIds.push(message.id);
+            signatures.push(entrySignature(byMessage.get(message.id)));
+            // buildFragment 产出已是私有深克隆，直接入主克隆数组，不再二次克隆。
+            master.push(fragment.message);
+          }
+          // 有片段被重建：token/段归因统一一趟 O(n) 纯加和重算（无序列化/估算开销）。
+          total = header ? header.tokens : 0;
+          pinnedTokens = 0;
+          segments = emptySegments();
+          if (header) addSegments(segments, header.segments);
+          for (const fragment of fragments) {
+            total += fragment.tokens;
+            addSegments(segments, fragment.segments);
+            if (fragment.pinned) pinnedTokens += fragment.tokens;
+          }
+          entrySignatures = signatures;
         }
         incremental = true;
       }
@@ -244,6 +279,7 @@ export class ContextManager {
       }
       master = rebuilt.map((fragment) => fragment.message);
       sourceIds = messages.map((message) => message.id);
+      entrySignatures = fragments.map((fragment) => entrySignature(byMessage.get(fragment.message.id)));
     }
     const evicted = aggregateEvicted(ledger.entries);
     const stats: ContextBuildStats = {
@@ -256,6 +292,7 @@ export class ContextManager {
     };
     ContextManager.touchViewCache(this.sessionRoot, {
       sourceIds: sourceIds!, ledgerKey, selectionKey, header, fragments,
+      entrySignatures: entrySignatures!,
       totalTokens: total, segments: { ...segments! }, pinnedTokens, view: master!,
     });
     // 返回按消息/内容数组浅拷：调用方（扩展 transform 等）可替换消息或内容数组而不污染
