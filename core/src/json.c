@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,9 +100,9 @@ static int add_child(owc_json *parent, owc_json *child) {
  * duplicate-key semantics never depend on this table. */
 typedef struct { size_t *slots; size_t capacity; } keyset;
 
-static unsigned long key_hash(const char *s) {
-    unsigned long h = 1469598103934665603ul;
-    while (*s) { h ^= (unsigned char)*s++; h *= 1099511628211ul; }
+static uint64_t key_hash(const char *s) {
+    uint64_t h = UINT64_C(1469598103934665603);
+    while (*s) { h ^= (unsigned char)*s++; h *= UINT64_C(1099511628211); }
     return h;
 }
 
