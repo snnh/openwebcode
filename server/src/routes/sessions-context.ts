@@ -238,7 +238,10 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
       : { pins: [] as string[], excludes: [] as string[] };
     const view = await manager.buildView(session.messages, { selection });
     const prefs = getPreferences();
-    return { ...view, selection, preferences: { language: prefs.language, currency: prefs.currency, currencyLabel: prefs.currency === "CNY" ? "RMB" : "USD" } };
+    // 响应不含消息体（view.messages）：前端面板只消费 stats/ledger/selection/preferences
+    // （消息摘要取自会话详情查询），长会话逐轮全量消息体的序列化与传输纯属浪费（P3）。
+    const { messages: _omittedMessages, ...viewWithoutMessages } = view;
+    return { ...viewWithoutMessages, selection, preferences: { language: prefs.language, currency: prefs.currency, currencyLabel: prefs.currency === "CNY" ? "RMB" : "USD" } };
   });
 
   app.put<{ Params: { id: string }; Body: BudgetBody }>("/api/sessions/:id/context/budget", async (request, reply) => {
