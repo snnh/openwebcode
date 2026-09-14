@@ -3,6 +3,7 @@
   "entry": ["src/cli.ts", "src/extensions/extension-host-process.ts"],
   "ignore": [
     "assets/eval/fixtures/**",
+    "assets/sandbox-proxy.mjs",
     "test/fixtures/fake-mcp-env.mjs",
     "test/fixtures/fake-mcp-server.mjs"
   ],
