@@ -19,7 +19,11 @@ const COMPONENTS: MarkdownConfig["components"] = {
     const { lang, code } = extractCode(children);
     return <CodeBlock lang={lang} code={code} />;
   },
-  code: ({ children }) => <code className="inline-code">{children}</code>,
+  // 透传 language-* className：pre 的 extractCode 依赖它取围栏代码块语言；
+  // 行内代码无 className 时才落 inline-code 样式
+  code: ({ className, children }) => <code className={className ?? "inline-code"}>{children}</code>,
+  // 消息内容不可信：图片懒加载 + 不带 Referer，降低外部图床的 IP/页面轨迹泄漏
+  img: ({ src, alt, title }) => <img src={src} alt={alt ?? ""} title={title} loading="lazy" referrerPolicy="no-referrer" />,
 };
 
 /** 渲染单个 markdown 文本块（不带 .markdown 外壳，由调用方包裹），供 Markdown.tsx 分块增量渲染 */
