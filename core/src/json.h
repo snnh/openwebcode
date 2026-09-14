@@ -21,7 +21,7 @@ struct owc_json {
         int boolean;
         double number;
         char *string;
-        struct { owc_json **items; size_t count; } children;
+        struct { owc_json **items; size_t count; size_t capacity; } children;
     } value;
 };
 

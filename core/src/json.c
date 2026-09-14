@@ -7,8 +7,15 @@
 #include <string.h>
 
 #define OWC_JSON_MAX_DEPTH 128
+/* Node budget: a 32 MiB frame could otherwise amplify into tens of millions of
+ * nodes (each ~48 bytes plus key/string allocations) and keep the single-threaded
+ * dispatch loop busy for minutes.  One million nodes is far beyond any
+ * legitimate RPC payload (large frames are base64 blobs - a single string node). */
+#define OWC_JSON_MAX_NODES 1000000
+/* Duplicate-key guard: linear scan below this, FNV-1a open-addressing above. */
+#define KEYSET_LINEAR_MAX 64
 
-typedef struct { const char *cursor; const char *end; const char *error; } parser;
+typedef struct { const char *cursor; const char *end; const char *error; size_t nodes_left; } parser;
 typedef struct { char *data; size_t length; size_t capacity; } buffer;
 
 static void skip_ws(parser *p) { while (p->cursor < p->end && isspace((unsigned char)*p->cursor)) p->cursor++; }
@@ -77,14 +84,59 @@ static char *parse_string(parser *p) {
 static owc_json *parse_value(parser *p, int depth);
 
 static int add_child(owc_json *parent, owc_json *child) {
-    size_t n = parent->value.children.count;
-    owc_json **items = (owc_json **)realloc(parent->value.children.items, (n + 1) * sizeof(*items));
-    if (!items) return 0;
-    parent->value.children.items = items; items[n] = child; parent->value.children.count = n + 1; return 1;
+    if (parent->value.children.count >= parent->value.children.capacity) {
+        /* capacity doubling: realloc-per-append turns large flat arrays quadratic */
+        size_t capacity = parent->value.children.capacity ? parent->value.children.capacity * 2 : 8;
+        owc_json **items = (owc_json **)realloc(parent->value.children.items, capacity * sizeof(*items));
+        if (!items) return 0;
+        parent->value.children.items = items; parent->value.children.capacity = capacity;
+    }
+    parent->value.children.items[parent->value.children.count++] = child; return 1;
+}
+
+/* Open-addressing table of child indexes (stored +1; 0 = empty) keyed by FNV-1a
+ * of the object key.  Allocation failure degrades to the linear scan - the
+ * duplicate-key semantics never depend on this table. */
+typedef struct { size_t *slots; size_t capacity; } keyset;
+
+static unsigned long key_hash(const char *s) {
+    unsigned long h = 1469598103934665603ul;
+    while (*s) { h ^= (unsigned char)*s++; h *= 1099511628211ul; }
+    return h;
+}
+
+/* Ensures the table covers items[0..upto) with load factor below 1/2.
+ * Returns 0 on allocation failure (caller falls back to linear scan). */
+static int keyset_ensure(keyset *ks, owc_json *object, size_t upto) {
+    size_t needed = 128, i;
+    if (ks->capacity && upto * 2 < ks->capacity) return 1;
+    while (upto * 2 >= needed) needed *= 2;
+    free(ks->slots);
+    ks->slots = (size_t *)calloc(needed, sizeof(*ks->slots));
+    if (!ks->slots) { ks->capacity = 0; return 0; }
+    ks->capacity = needed;
+    for (i = 0; i < upto; i++) {
+        size_t mask = ks->capacity - 1, slot = (size_t)(key_hash(object->value.children.items[i]->key) & mask);
+        while (ks->slots[slot]) slot = (slot + 1) & mask;
+        ks->slots[slot] = i + 1;
+    }
+    return 1;
+}
+
+/* Probes key against the set and reserves new_index for it.  1 = not a duplicate. */
+static int keyset_probe(keyset *ks, owc_json *object, const char *key, size_t new_index) {
+    size_t mask = ks->capacity - 1, slot = (size_t)(key_hash(key) & mask);
+    for (;;) {
+        size_t held = ks->slots[slot];
+        if (!held) { ks->slots[slot] = new_index + 1; return 1; }
+        if (strcmp(object->value.children.items[held - 1]->key, key) == 0) return 0;
+        slot = (slot + 1) & mask;
+    }
 }
 
 static owc_json *parse_collection(parser *p, int depth, int object) {
     owc_json *value = (owc_json *)calloc(1, sizeof(*value));
+    keyset keys = {0};
     char close = object ? '}' : ']';
     if (!value) return NULL;
     value->type = object ? OWC_JSON_OBJECT : OWC_JSON_ARRAY; p->cursor++; skip_ws(p);
@@ -100,21 +152,29 @@ static owc_json *parse_collection(parser *p, int depth, int object) {
         if (object) {
             /* RFC 8259 allows duplicate keys but leaves their semantics
              * undefined; silently keeping only the first would let callers
-             * misread the frame, so reject the whole object instead. */
-            size_t i;
-            for (i=0;i<value->value.children.count;i++) {
-                const char *existing = value->value.children.items[i]->key;
-                if (existing && strcmp(existing, key) == 0) break;
+             * misread the frame, so reject the whole object instead.
+             * Linear scan below KEYSET_LINEAR_MAX, hash table past it -
+             * a large flat object must not turn this guard quadratic. */
+            int duplicate = 0;
+            size_t count = value->value.children.count;
+            if (count >= KEYSET_LINEAR_MAX && keyset_ensure(&keys, value, count)) {
+                duplicate = !keyset_probe(&keys, value, key, count);
+            } else {
+                size_t i;
+                for (i=0;i<count;i++) {
+                    const char *existing = value->value.children.items[i]->key;
+                    if (existing && strcmp(existing, key) == 0) { duplicate = 1; break; }
+                }
             }
-            if (i < value->value.children.count) { owc_json_free(child); fail(p); break; }
+            if (duplicate) { owc_json_free(child); fail(p); break; }
         }
         if (!add_child(value, child)) { owc_json_free(child); break; }
         skip_ws(p);
-        if (p->cursor < p->end && *p->cursor == close) { p->cursor++; return value; }
+        if (p->cursor < p->end && *p->cursor == close) { p->cursor++; free(keys.slots); return value; }
         if (p->cursor >= p->end || *p->cursor++ != ',') { fail(p); break; }
         skip_ws(p);
     }
-    owc_json_free(value); return NULL;
+    owc_json_free(value); free(keys.slots); return NULL;
 }
 
 static owc_json *scalar(owc_json_type type) { owc_json *v = (owc_json *)calloc(1, sizeof(*v)); if (v) v->type = type; return v; }
@@ -146,7 +206,8 @@ static int parse_number_token(parser *p, const char **start, const char **end) {
 
 static owc_json *parse_value(parser *p, int depth) {
     owc_json *value; const char *number_start,*number_end; char *conversion_end;
-    skip_ws(p); if (depth > OWC_JSON_MAX_DEPTH || p->cursor >= p->end) { fail(p); return NULL; }
+    skip_ws(p); if (!p->nodes_left || depth > OWC_JSON_MAX_DEPTH || p->cursor >= p->end) { fail(p); return NULL; }
+    p->nodes_left--;
     if (*p->cursor == '{') return parse_collection(p, depth, 1);
     if (*p->cursor == '[') return parse_collection(p, depth, 0);
     if (*p->cursor == '"') { value = scalar(OWC_JSON_STRING); if (!value) return NULL; value->value.string = parse_string(p); if (!value->value.string) { free(value); return NULL; } return value; }
@@ -161,7 +222,7 @@ static owc_json *parse_value(parser *p, int depth) {
 }
 
 owc_json *owc_json_parse(const char *text, size_t length, const char **error_at) {
-    parser p = {text, text + length, NULL}; owc_json *value = parse_value(&p, 0); skip_ws(&p);
+    parser p = {text, text + length, NULL, OWC_JSON_MAX_NODES}; owc_json *value = parse_value(&p, 0); skip_ws(&p);
     if (value && p.cursor != p.end) { owc_json_free(value); value = NULL; fail(&p); }
     if (error_at) *error_at = p.error;
     return value;
