@@ -224,6 +224,9 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     if (request.body.setupScript !== undefined && typeof request.body.setupScript !== "string") {
       return reply.code(400).send({ error: "setupScript must be a string" });
     }
+    if (request.body.sshCredentials !== undefined && typeof request.body.sshCredentials !== "boolean") {
+      return reply.code(400).send({ error: "sshCredentials must be a boolean" });
+    }
     if (request.body.workspaceMode !== undefined && request.body.workspaceMode !== "managed") {
       return reply.code(400).send({ error: 'workspaceMode must be "managed"' });
     }

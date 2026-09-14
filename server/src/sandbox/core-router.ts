@@ -88,11 +88,13 @@ function effectiveSandboxMode(meta: SessionMeta | undefined, platform: NodeJS.Pl
  * Job Object 无文件系统隔离（凭据本就可读），追加只会挤占槽位；off/wsb 由 policyFor
  * 提前返回，与这里的判断无交集。core 侧 readOnlyPaths 上限 32：用户配置优先，凭据按序补到满为止（尽力而为）。
  */
-export function gitCredentialReadOnlyPaths(existing: string[] | undefined, platform: NodeJS.Platform = process.platform, home: string = os.homedir(), mode: SessionMeta["sandboxMode"] | undefined = undefined): string[] {
+export function gitCredentialReadOnlyPaths(existing: string[] | undefined, platform: NodeJS.Platform = process.platform, home: string = os.homedir(), mode: SessionMeta["sandboxMode"] | undefined = undefined, includeSsh = false): string[] {
   const merged = [...(existing ?? [])];
   if (platform === "win32" && (mode ?? "appcontainer") !== "appcontainer") return merged;
   if (!home) return merged;
-  const candidates = [".gitconfig", ".git-credentials", ".config/git", ".config/gh", ".ssh"]
+  // .ssh 含 SSH 私钥：只读挂载不防外泄（沙盒网络默认 allow），改为会话级显式 opt-in；
+  // git over HTTPS 凭据维持默认挂载（git push/gh 是高频合法需求，缺失会挂起交互提示）。
+  const candidates = [".gitconfig", ".git-credentials", ".config/git", ".config/gh", ...(includeSsh ? [".ssh"] : [])]
     .map((rel) => path.join(home, rel))
     .filter((candidate) => existsSync(candidate));
   for (const candidate of candidates) {
@@ -268,8 +270,9 @@ export class CoreRouter extends EventEmitter {
       ...(jobObject?.memoryMB !== undefined ? { jobMemoryMB: jobObject.memoryMB } : {}),
       ...(jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
     };
-    // 凭据放行按生效模式：POSIX 恒追加；Windows 仅 AppContainer 档（含缺省）追加，显式 jobobject 跳过
-    const credentials = gitCredentialReadOnlyPaths(sandbox.readOnlyPaths, platform, os.homedir(), effectiveSandboxMode(meta, platform));
+    // 凭据放行按生效模式：POSIX 恒追加；Windows 仅 AppContainer 档（含缺省）追加，显式 jobobject 跳过；
+    // ~/.ssh 另需会话显式开启（sshCredentials，见 gitCredentialReadOnlyPaths）
+    const credentials = gitCredentialReadOnlyPaths(sandbox.readOnlyPaths, platform, os.homedir(), effectiveSandboxMode(meta, platform), meta?.sshCredentials === true);
     const withCredentials = credentials.length > 0 ? { readOnlyPaths: credentials } : {};
     if (mode === "appcontainer") return { ...sandbox, ...withCredentials, ...limits, mode: "appcontainer" };
     // bubblewrap 显式下发（POSIX 专用；Windows 上的取值由 REST 校验拦截，这里不防御）

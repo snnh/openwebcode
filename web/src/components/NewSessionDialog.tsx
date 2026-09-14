@@ -15,6 +15,8 @@ export interface NewSessionValues {
   agentMode?: "plan" | "code" | "goal";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
+  /** 沙盒内只读挂载 ~/.ssh（SSH push 需要）；缺省不挂载（只读不防私钥外泄，显式开启才挂载）。 */
+  sshCredentials?: boolean;
   network?: SandboxNetwork;
   setupScript?: string;
   workspaceMode?: "managed";
@@ -55,6 +57,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const [model, setModel] = useState("");
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>("appcontainer");
+  const [sshCredentials, setSshCredentials] = useState(false);
   const [network, setNetwork] = useState<SandboxNetwork>("allow");
   const [setupScript, setSetupScript] = useState("");
   const [workspaceMode, setWorkspaceMode] = useState<"direct" | "managed">("direct");
@@ -174,6 +177,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             permissionMode,
             // appcontainer 是默认，不必显式提交；setupScript 仅 wsb 有意义；network 默认 allow 不必提交
             ...(sandboxMode !== "appcontainer" ? { sandboxMode } : {}),
+            ...(sshCredentials ? { sshCredentials: true } : {}),
             ...(network !== "allow" ? { network } : {}),
             ...(sandboxMode === "wsb" && setupScript.trim() ? { setupScript: setupScript.trim() } : {}),
             ...(workspaceMode === "managed" ? { workspaceMode } : {}),
@@ -337,6 +341,14 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             <option value="deny">{t("拒绝", "Deny")}</option>
             {isWindows && <option value="filtered">{t("代理过滤（仅 Windows）", "Filtered via proxy (Windows only)")}</option>}
           </select>
+        </label>
+        <label className="bindlink-readonly">
+          <input
+            type="checkbox"
+            checked={sshCredentials}
+            onChange={(event) => setSshCredentials(event.target.checked)}
+          />
+          {t("沙盒内只读挂载 ~/.ssh（SSH push 需要；注意私钥可被沙盒命令读取）", "Mount ~/.ssh read-only in the sandbox (needed for SSH push; note sandboxed commands can read the keys)")}
         </label>
         {network === "filtered" && (
           <p className="muted-empty dialog-hint">{t("经代理过滤出网（仅 Windows）；Linux 会话不支持该策略。", "Outbound traffic is filtered via a proxy (Windows only); not supported on Linux sessions.")}</p>
