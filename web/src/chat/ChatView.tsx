@@ -22,10 +22,10 @@ import { chatBridge } from "../app/chat-bridge";
 import { deriveSubagentRunsFromMessages, mergeSubagentRuns } from "../lib/subagent-runs";
 import type { UseSubagentTabsResult } from "../hooks/use-subagent-tabs";
 import type { UseTerminalTabsResult } from "../hooks/use-terminal-tabs";
-import { useStreamBlocks } from "./stream-buffer";
+import { useStreamActive, useStreamBlocks } from "./stream-buffer";
 import { useOlderMessages, loadOlderMessages } from "./pagination-store";
 import { clearComposerState, getAttachments, getDraft, setDraftValue } from "../composer/drafts";
-import { ChatActionsContext, type ChatActions, type EditingMessage } from "./types";
+import { ChatActionsContext, type ChatActions, type EditingMessage, type MessageListProps } from "./types";
 import { MessageList } from "./MessageList";
 import { SubagentTabStrip, SubagentTabView } from "./SubagentTabs";
 import { TerminalView } from "../terminal/TerminalView";
@@ -48,6 +48,13 @@ interface ChatViewProps {
   onOpenNavMenu?(): void;
 }
 
+/** 流式订阅下沉包装：useStreamBlocks 的逐帧提交只重渲 MessageList 子树，
+ *  ChatView 顶层（顶栏/输入栏/标签条）不随 token 帧连带重渲。 */
+function StreamingMessageList(props: Omit<MessageListProps, "streamBlocks"> & { sessionId: string }): ReactElement {
+  const streamBlocks = useStreamBlocks(props.sessionId);
+  return <MessageList {...props} streamBlocks={streamBlocks} />;
+}
+
 export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, onOpenNavMenu }: ChatViewProps): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -67,7 +74,9 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
   const latestUsage = useStore(sessionStore, (state) => state.usages[sessionId]);
   const runError = useStore(sessionStore, (state) => state.runFailures[sessionId]);
   const localPermissions = useStore(sessionStore, (state) => state.pendingPermissions);
-  const streamBlocks = useStreamBlocks(sessionId);
+  // 流式订阅下沉：ChatView 只订「有无流式内容」布尔（翻转才重渲），逐帧提交由
+  // StreamingMessageList 内部订阅承担——顶栏/输入栏/标签条不再随 token 帧连带重渲。
+  const streamActive = useStreamActive(sessionId);
   const liveSubagents = useLiveSubagentRuns(sessionId);
   const activityEntry = useLiveActivityEntry(sessionId);
   const liveCompactions = useLiveCompactions(sessionId);
@@ -78,7 +87,7 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
   );
 
   const currentState = currentRun?.state ?? agentState;
-  const running = streamBlocks.length > 0 || isBusyState(currentState);
+  const running = streamActive || isBusyState(currentState);
 
   // 合并分页加载的更早消息，形成完整显示会话
   const older = useOlderMessages(sessionId);
@@ -402,14 +411,14 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
       <ChatActionsContext.Provider value={chatActions}>
         {/* 主对话/终端/子代理标签内容互换：MessageList 与终端保持挂载（hidden 隐藏），滚动与 PTY 状态不丢 */}
         <div className="main-tab-panel" role="tabpanel" aria-label={t("主对话", "Main")} hidden={!chatVisible}>
-          <MessageList
+          <StreamingMessageList
+            sessionId={current.id}
             session={displaySession ?? current}
             {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
             compactions={compactionMarkers}
             hasMoreMessages={hasMoreMessages}
             loadingMore={older.loading}
             onLoadMore={onLoadMore}
-            streamBlocks={streamBlocks}
             {...(runError ? { runError } : {})}
             permissions={mergedPermissions}
             {...(liveActivity ? { liveActivity } : {})}

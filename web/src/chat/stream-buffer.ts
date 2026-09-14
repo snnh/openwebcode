@@ -203,3 +203,8 @@ export const streamBuffer = createStreamBuffer();
 export function useStreamBlocks(sessionId: string | undefined, buffer: StreamBuffer = streamBuffer): StreamBlock[] {
   return useSyncExternalStore(buffer.subscribe, () => buffer.blocksFor(sessionId ?? ""));
 }
+
+/** 轻量订阅「是否有流式内容」布尔：每帧提交不重渲，仅 true/false 翻转时重渲（ChatView 的 running 判定用）。 */
+export function useStreamActive(sessionId: string | undefined, buffer: StreamBuffer = streamBuffer): boolean {
+  return useSyncExternalStore(buffer.subscribe, () => buffer.blocksFor(sessionId ?? "").length > 0);
+}

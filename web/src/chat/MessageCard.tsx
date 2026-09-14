@@ -294,12 +294,16 @@ export function MessageCard({ message, turn, toolResults, liveSubagents, shellCm
   );
 }
 
-/** 内容块逐项相等（不含未知字段时退化为引用比较之外的浅比较） */
+/** 内容块逐项相等：逐块引用比较先行，仅引用不同的块付序列化代价（事件重放/会话刷新
+ * 会重建消息对象；流式期间的 60fps 帧不动历史块，不会走到序列化）。 */
 function sameContent(previous: MessageContent[], next: MessageContent[]): boolean {
   if (previous === next) return true;
   if (previous.length !== next.length) return false;
-  // 消息块字段有限且不含函数，序列化比较足够且实现简单
-  return JSON.stringify(previous) === JSON.stringify(next);
+  for (let i = 0; i < previous.length; i += 1) {
+    if (previous[i] === next[i]) continue;
+    if (JSON.stringify(previous[i]) !== JSON.stringify(next[i])) return false;
+  }
+  return true;
 }
 
 /**
