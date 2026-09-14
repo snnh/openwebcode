@@ -130,7 +130,7 @@ ChatGPT 风格的纯对话模式，与编码工作台并存，适合问答、写
   - Windows：`AppContainer`（默认，真文件隔离）/ `Job Object`（兼容模式，无文件隔离）/ `WSB`（Windows Sandbox，跑不可信代码用，一会话一 VM，关闭即销毁）/ `关闭`
   - Linux：`bubblewrap`（默认，mount/net namespace 隔离；无 bwrap 环境默认档会明确报错，需安装 bubblewrap 或显式切换 Landlock）/ `Landlock`（显式兼容档，仅内核规则，denyPaths 不经命令层强制）/ `关闭`
   - `关闭` 是完全不沙盒，不推荐
-  - Linux bubblewrap 与 Windows AppContainer 档内使用 git/gh：宿主的 `~/.gitconfig`、`~/.git-credentials`、`~/.config/git`、`~/.config/gh`、`~/.ssh`（仅实际存在的项）会以只读方式挂入沙盒，`git push` / `gh` 可直接使用宿主凭据；这些路径只读且对文件工具不可见（仅沙盒内进程可读）
+  - Linux bubblewrap 与 Windows AppContainer 档内使用 git/gh：宿主的 `~/.gitconfig`、`~/.git-credentials`、`~/.config/git`、`~/.config/gh`（仅实际存在的项）会以只读方式挂入沙盒，`git push` / `gh` 可直接使用宿主凭据；`~/.ssh` 因含 SSH 私钥**默认不挂载**，需要 SSH push 时在新建会话对话框或沙盒面板中显式开启（会话级开关）；这些路径只读且对文件工具不可见（仅沙盒内进程可读）
 - **本机会话**（侧栏「终端」图标一键创建）：会话目录固定为用户家目录，沙盒固定为 `关闭`，命令直接以 server 身份在宿主机执行、环境变量跟随启动 server 的终端——适合管理本机文件/服务。文件工具（read_file/write_file/edit_file/glob/grep）访问 **HOME 之外** 的路径必须经人工允许（每次或「总是允许」按目录前缀记入会话规则，HOME 内按普通权限模式处理）；本机会话不做快照，不能切换沙盒模式，也不支持托管工作区
 - **网络**：`允许（默认）` / `拒绝` / `代理过滤（仅 Windows）`。filtered 档让沙盒内进程经 sidecar 代理出网，默认全放行；拦截域名在 **设置 → 服务信息** 的「沙盒代理拦截域名」维护（每行一个域名、含其子域，最多 64 个，保存后对活跃会话热生效；对应环境变量 `OWC_SANDBOX_PROXY_DENY_LIST`）
 - **初始化脚本**（仅 WSB）：沙盒启动后、agent 启动前执行的命令

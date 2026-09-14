@@ -1,8 +1,8 @@
 import type { ReactElement } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { SandboxCapability, SandboxMode } from "../lib/contracts";
-import { useSessionQuery } from "../app/queries";
+import { qk, useSessionQuery } from "../app/queries";
 import { useI18n } from "../i18n";
 
 const SANDBOX_MODE_LABELS: Record<SandboxMode, [string, string]> = {
@@ -29,8 +29,14 @@ const CAPABILITY_PILL_CLASS: Record<SandboxCapability, string> = {
 /** 沙盒面板：会话沙盒策略 + 平台能力 + 最近一次 configureSession 上报的执行级别。会话详情自取（qk.session）。 */
 export function SandboxPanel({ sessionId }: { sessionId?: string | undefined }): ReactElement {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const sessionQuery = useSessionQuery(sessionId);
   const session = sessionQuery.data;
+  // ~/.ssh 只读挂载开关（会话级 opt-in）：变更触发服务端回收持久 shell 并重配沙盒
+  const sshToggle = useMutation({
+    mutationFn: (enabled: boolean) => api.updateSession(sessionId!, { sshCredentials: enabled }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: qk.session(sessionId!) }),
+  });
   const sandboxCaps = useQuery({
     queryKey: ["sandbox-capabilities"],
     queryFn: api.sandboxCapabilities,
@@ -73,6 +79,19 @@ export function SandboxPanel({ sessionId }: { sessionId?: string | undefined }):
         </dd>
         <dt>{t("网络", "Network")}</dt>
         <dd>{sandbox.network === "allow" ? t("允许", "Allowed") : sandbox.network === "filtered" ? t("代理过滤（仅 Windows）", "Filtered via proxy (Windows only)") : t("拒绝", "Denied")}</dd>
+        <dt>{t("SSH 凭据", "SSH credentials")}</dt>
+        <dd>
+          <label className="bindlink-readonly">
+            <input
+              type="checkbox"
+              checked={session.sshCredentials === true}
+              disabled={sshToggle.isPending || session.kind === "local"}
+              onChange={(event) => sshToggle.mutate(event.target.checked)}
+            />
+            {t("沙盒内只读挂载 ~/.ssh（SSH push 需要；默认关闭，私钥可被沙盒命令读取）", "Mount ~/.ssh read-only in the sandbox (needed for SSH push; off by default as sandboxed commands can read the keys)")}
+          </label>
+          {sshToggle.isError && <p className="muted-empty dialog-hint">{t("更新失败，请重试。", "Update failed; please retry.")}</p>}
+        </dd>
         <dt>{t("读取根", "Read roots")}</dt>
         <dd>{sandbox.readRoots.join("\n") || "—"}</dd>
         <dt>{t("写入根", "Write roots")}</dt>

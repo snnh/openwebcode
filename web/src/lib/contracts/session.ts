@@ -15,6 +15,8 @@ export interface Session {
   agentMode?: "plan" | "code" | "goal";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
+  /** 沙盒内只读挂载 ~/.ssh；undefined/false = 不挂载（默认关闭，防私钥经沙盒命令外泄）。 */
+  sshCredentials?: boolean;
   snapshotMode?: SnapshotMode;
   shellBackend?: ShellBackend;
   pythonEnv?: PythonEnv;

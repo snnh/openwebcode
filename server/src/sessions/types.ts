@@ -181,6 +181,9 @@ export interface SessionMeta {
   sandbox?: SandboxPolicy;
   /** 用户选择的沙盒模式；undefined = appcontainer（Windows 默认档；POSIX 未选择时不下发 mode） */
   sandboxMode?: SandboxMode;
+  /** 沙盒内只读挂载 ~/.ssh（SSH 私钥）；undefined/false = 不挂载。默认关闭：只读不防外泄
+   * （沙盒命令可读私钥且网络默认 allow），git over HTTPS 凭据（.git-credentials 等）仍默认挂载。 */
+  sshCredentials?: boolean;
   /** WSB 会话初始化脚本，内联进 .wsb LogonCommand，先于 owc-exec 执行 */
   setupScript?: string;
   /** 探测到的快照后端名（zfs 附带数据集："zfs:<dataset>"），由 snapshots/index.ts 落盘 */

@@ -315,7 +315,17 @@ describe("gitCredentialReadOnlyPaths（沙盒内 git/gh 凭据只读放行）", 
     await mkdir(path.join(home, ".ssh"), { recursive: true });
     const existing = ["/work/ro", path.join(home, ".gitconfig")];
     const merged = gitCredentialReadOnlyPaths(existing, "linux", home);
-    expect(merged).toEqual(["/work/ro", path.join(home, ".gitconfig"), path.join(home, ".ssh")]);
+    expect(merged).toEqual(["/work/ro", path.join(home, ".gitconfig")]);
+  });
+
+  it(".ssh 默认不挂载（只读不防私钥外泄），会话显式 opt-in 才并入", async () => {
+    const home = await tempRoot("owc-gh-cred-");
+    await mkdir(path.join(home, ".ssh"), { recursive: true });
+    // 缺省（未传 includeSsh）：不含 .ssh
+    expect(gitCredentialReadOnlyPaths(undefined, "linux", home)).toEqual([]);
+    // 显式开启：并入 .ssh
+    expect(gitCredentialReadOnlyPaths(undefined, "linux", home, undefined, true)).toEqual([path.join(home, ".ssh")]);
+    expect(gitCredentialReadOnlyPaths(undefined, "win32", home, "appcontainer", true)).toEqual([path.join(home, ".ssh")]);
   });
 
   it("win32 仅 AppContainer 档追加；显式 jobobject/off 不追加（Job Object 无文件隔离）", async () => {
@@ -323,9 +333,10 @@ describe("gitCredentialReadOnlyPaths（沙盒内 git/gh 凭据只读放行）", 
     await writeFile(path.join(home, ".gitconfig"), "[user]\n");
     await mkdir(path.join(home, ".ssh"), { recursive: true });
     const expected = [path.join(home, ".gitconfig"), path.join(home, ".ssh")];
-    // 缺省（win32 默认档 = AppContainer）与显式 appcontainer：追加
-    expect(gitCredentialReadOnlyPaths(undefined, "win32", home, undefined)).toEqual(expected);
-    expect(gitCredentialReadOnlyPaths(undefined, "win32", home, "appcontainer")).toEqual(expected);
+    // 缺省（win32 默认档 = AppContainer）与显式 appcontainer：追加（.ssh 需 opt-in）
+    expect(gitCredentialReadOnlyPaths(undefined, "win32", home, undefined)).toEqual([path.join(home, ".gitconfig")]);
+    expect(gitCredentialReadOnlyPaths(undefined, "win32", home, "appcontainer")).toEqual([path.join(home, ".gitconfig")]);
+    expect(gitCredentialReadOnlyPaths(undefined, "win32", home, "appcontainer", true)).toEqual(expected);
     // 显式 jobobject/off/wsb：跳过
     expect(gitCredentialReadOnlyPaths(undefined, "win32", home, "jobobject")).toEqual([]);
     expect(gitCredentialReadOnlyPaths(undefined, "win32", home, "off")).toEqual([]);

@@ -27,6 +27,8 @@ export interface CreateSessionBody {
   title?: string;
   agentMode?: "plan" | "code" | "goal";
   sandboxMode?: SandboxMode;
+  /** 沙盒内只读挂载 ~/.ssh（SSH push 需要）；缺省不挂载（只读不防外泄，需显式开启）。 */
+  sshCredentials?: boolean;
   /** 会话网络策略（缺省 allow；filtered 仅 Windows） */
   network?: SandboxNetwork;
   setupScript?: string;
@@ -65,6 +67,8 @@ export interface SessionConfigBody {
   agentMode?: "plan" | "code" | "goal";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
+  /** 沙盒 ~/.ssh 只读挂载开关补丁；仅显式提供时更新。 */
+  sshCredentials?: boolean;
   /** 会话网络策略补丁（仅显式提供时更新；filtered 仅 Windows）。 */
   network?: SandboxNetwork;
   setupScript?: string;

@@ -324,7 +324,7 @@ export class SessionStore {
     return message;
   }
 
-  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv" | "nodeEnv" | "persona" | "swarmEnabled" | "reviewModel" | "toolsAllow" | "toolsDeny" | "fallbackModels">>): Promise<SessionMeta> {
+  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv" | "nodeEnv" | "persona" | "swarmEnabled" | "reviewModel" | "toolsAllow" | "toolsDeny" | "fallbackModels" | "sshCredentials">>): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.provider = update.provider;
     meta.model = update.model;
@@ -356,6 +356,9 @@ export class SessionStore {
     // 备选模型链：undefined 或空数组 = 清除（与 toolsAllow 同款语义）
     if (update.fallbackModels === undefined || update.fallbackModels.length === 0) delete meta.fallbackModels;
     else meta.fallbackModels = update.fallbackModels;
+    // ~/.ssh 沙盒挂载：undefined/false = 不挂载（缺省关闭，显式 true 才挂载）
+    if (update.sshCredentials !== true) delete meta.sshCredentials;
+    else meta.sshCredentials = true;
     meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
     return meta;

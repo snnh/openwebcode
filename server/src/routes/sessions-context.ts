@@ -113,6 +113,11 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     if (swarmEnabled !== undefined && typeof swarmEnabled !== "boolean") {
       return reply.code(400).send({ error: "swarmEnabled must be a boolean" });
     }
+    // ~/.ssh 沙盒只读挂载开关：布尔校验；显式 false 与未设置等价（不挂载）
+    const sshCredentials = request.body && "sshCredentials" in request.body ? request.body.sshCredentials ?? undefined : session.sshCredentials;
+    if (sshCredentials !== undefined && typeof sshCredentials !== "boolean") {
+      return reply.code(400).send({ error: "sshCredentials must be a boolean" });
+    }
     // 会话级工具白名单/黑名单：缺省保持不变；null 或空数组清除；未知名静默忽略（过滤时无效果）
     const toolsAllow = request.body && "toolsAllow" in request.body ? request.body.toolsAllow ?? undefined : session.toolsAllow;
     const toolsAllowError = validateToolNameList(toolsAllow, "toolsAllow");
@@ -173,7 +178,7 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     // 沙盒策略或 python/node 运行环境变更需要回收持久 shell（pty 在旧沙盒策略下打开、
     // 环境激活命令只在建壳时注入一次）。遇在途 shell 命令（!cmd 执行中/等审批）默认 409，
     // 由前端二次确认后带 force:true 重发；强制路径回收时让在途命令立即报错结算。
-    const recycleShells = touchesSandbox || sandboxNetwork !== undefined || pythonEnv !== session.pythonEnv || nodeEnv !== session.nodeEnv;
+    const recycleShells = touchesSandbox || sandboxNetwork !== undefined || pythonEnv !== session.pythonEnv || nodeEnv !== session.nodeEnv || Boolean(sshCredentials) !== Boolean(session.sshCredentials);
     if (request.body?.force !== undefined && typeof request.body.force !== "boolean") {
       return reply.code(400).send({ error: "force must be a boolean" });
     }
@@ -184,7 +189,7 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
       // WSB 的启动脚本/模式/网络只在虚拟机启动时生效，切换前先释放旧实例。
       await core.release?.(session.id);
     }
-    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(nodeEnv ? { nodeEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(reviewModel ? { reviewModel } : {}), ...(toolsAllow?.length ? { toolsAllow } : {}), ...(toolsDeny?.length ? { toolsDeny } : {}), ...(fallbackModels?.length ? { fallbackModels } : {}) });
+    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(nodeEnv ? { nodeEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(sshCredentials === true ? { sshCredentials: true } : {}), ...(reviewModel ? { reviewModel } : {}), ...(toolsAllow?.length ? { toolsAllow } : {}), ...(toolsDeny?.length ? { toolsDeny } : {}), ...(fallbackModels?.length ? { fallbackModels } : {}) });
     let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
     // 运行中热切权限档：按新档结算挂起的权限请求（新档下无需审批的自动放行）
     if (running) await agent.reconcilePermissions?.(request.params.id);
@@ -201,6 +206,8 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     }
     // nodeEnv 变化会改变与选择绑定的沙盒工具链挂载（readOnlyPaths）：下次工具调用需重新 configure
     if (nodeEnv !== session.nodeEnv) configuredSessions.delete(session.id);
+    // sshCredentials 变化会改变 ~/.ssh 只读挂载：下次工具调用需重新 configure
+    if (Boolean(sshCredentials) !== Boolean(session.sshCredentials)) configuredSessions.delete(session.id);
     // 沙盒策略或 python/node 运行环境变更：回收该会话的持久 shell（下条 bash 透明重建，
     // 按新策略开壳并激活新环境，uv venv 懒创建也在此时触发）。在途命令已被上方守卫拦截，
     // force 路径由 disposeSession 立即报错结算。测试注入的简版 agent 可能未实现该方法。
