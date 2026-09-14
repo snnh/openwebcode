@@ -209,19 +209,6 @@ export function resolveDefaultProvider(settings: SettingsService | undefined, pr
   return providers.list().find((name) => configured === undefined || configured.has(name));
 }
 
-/** chat 对话路由判定（/api/chat/sessions/* 与 /api/share/* 属对话面）。 */
-export function isChatConversationRoute(pathname: string): boolean {
-  return pathname.startsWith("/api/chat/sessions") || pathname.startsWith("/api/share/");
-}
-
-/** chat 配置路由判定（配置/助手面始终要求凭据，不走 LAN 免认证）。 */
-export function isChatConfigRoute(pathname: string): boolean {
-  return pathname === "/api/chat/config"
-    || pathname === "/api/chat/models"
-    || pathname === "/api/chat/assistants"
-    || pathname.startsWith("/api/chat/assistants/");
-}
-
 /** 分享公开路由判定（含前端 SPA 分享页路径）。 */
 export function isSharePublicRoute(pathname: string): boolean {
   return pathname.startsWith("/api/share/") || /^\/share\/[\w-]+\/[\w-]+$/.test(pathname);
@@ -366,8 +353,6 @@ export interface RouteContext {
   totpCookieHeader: (token: string) => string;
   originAllowed: (origin: string | undefined, nativeClient: boolean, hostHeader?: string | undefined) => boolean;
   hostAllowed: (host: string | string[] | undefined) => boolean;
-  /** chat.json lanUnauthenticated 内存缓存（PUT /api/chat/config 热刷新，onRequest 门禁读取）。 */
-  chatLanUnauth: { cache: boolean | undefined };
   clients: Set<WsClient>;
   wsStats: { readonly slowClientDisconnects: number; readonly failedClientSends: number };
   configuredSessions: Set<string>;

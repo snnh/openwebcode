@@ -117,7 +117,7 @@ ChatGPT 风格的纯对话模式，与编码工作台并存，适合问答、写
   - 沙盒（需先开「沙盒」总开关）：`python`、`read_file`、`write_file`、`show`
 - **Python 沙盒**：uv 管理的独立环境预装 numpy / pandas / matplotlib / sympy / scipy / Pillow，不能额外装包；Linux 用 bubblewrap 全隔离（禁网），Windows 用 AppContainer 隔离（默认档；创建失败明确报错，可显式切换 Job Object 兼容档，工具结果如实标注）。matplotlib 保存的图直接内联回对话。
 - **分享**：会话菜单 → 分享生成只读公开链接（可设访问密码），任何浏览器可打开；再次进入菜单可撤销。分享页是快照式只读，不含后续新消息。
-- **鉴权**：局域网内打开 chat 页面可直接对话（免令牌）；修改 chat 配置、切换进工作台仍需访问令牌。要关闭局域网免令牌，在数据目录 `chat.json` 里设 `"lanUnauthenticated": false`。
+- **鉴权**：chat 与工作台（code）使用同一访问令牌（URL 携带 token 引导为 HttpOnly Cookie），不再提供局域网免认证通道。只读分享链接自带 HMAC 访问令牌（可叠加访问密码）。
 - **数据位置**：chat 会话独立存于 `<数据目录>/chat-sessions/`，与工作台会话互不影响；全局配置在 `<数据目录>/chat.json`，助手预设在 `chat-assistants.json`。
 
 ## 创建会话

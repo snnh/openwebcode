@@ -15,12 +15,12 @@ import type { RouteContext } from "./route-context.js";
 export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): void {
   const { dependencies } = ctx;
   const { providers } = dependencies;
-  const { chatLanUnauth, isAuthorized, totpAuthenticated } = ctx;
+  const { isAuthorized, totpAuthenticated } = ctx;
 
 
   // ---- 聊天模式（Chat）路由簇 ----
-  // 对话面（/api/chat/sessions/*、/api/share/*）LAN 免认证（见 onRequest 门禁）；
-  // 配置面（/api/chat/config|models|assistants）仍要求凭据。
+  // 全部 /api/chat/* 与 code 一样要求访问令牌（URL token → HttpOnly cookie），无 LAN 免认证通道；
+  // /api/share/* 只读分享面自带 HMAC token/口令校验（路由内完成，见 onRequest 门禁放行）。
   const chatSessions = dependencies.chatSessions;
   const chatConfig = dependencies.chatConfig;
   const chatRunner = dependencies.chatRunner;
@@ -585,8 +585,6 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
     if (!chatConfig) return reply.code(503).send(chatUnavailable());
     if (!request.body || typeof request.body !== "object") return reply.code(400).send({ error: "config body is required" });
     await chatConfig.save(request.body);
-    // 同步刷新 onRequest 门禁的 lanUnauthenticated 内存缓存（热生效，免重启）
-    chatLanUnauth.cache = request.body.lanUnauthenticated !== false;
     return chatConfig.get();
   });
 
