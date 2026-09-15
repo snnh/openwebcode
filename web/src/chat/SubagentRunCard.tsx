@@ -4,9 +4,44 @@ import { api } from "../lib/api";
 import type { LiveSubagentRun, MessageContent } from "../lib/contracts";
 import { snippet, swarmItems } from "../lib/subagent-runs";
 import { summarizeToolInput } from "../lib/tool-format";
+import { useLiveSubagentSynthesis } from "../app/live-store";
 import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { useI18n } from "../i18n";
+
+/** 四档角色徽标：data-role 着色（premium/balanced/fast/cheap），未识别档位按 balanced 样式。 */
+function SubagentRoleBadge({ role }: { role: string }): ReactElement {
+  const { t } = useI18n();
+  const labels: Record<string, string> = {
+    premium: t("极致", "premium"),
+    balanced: t("平衡", "balanced"),
+    fast: t("快速", "fast"),
+    cheap: t("廉价", "cheap"),
+  };
+  const known = role in labels;
+  return (
+    <span className="subagent-run-role" data-role={known ? role : "balanced"}>
+      {known ? labels[role] : role}
+    </span>
+  );
+}
+
+/** swarm 卡的「汇总」行：合成轮（synthesize）实时状态（运行中/完成/失败回落）。 */
+function SwarmSynthesisRow({ sessionId, toolCallId }: { sessionId?: string | undefined; toolCallId?: string | undefined }): ReactElement | null {
+  const { t } = useI18n();
+  const synthesis = useLiveSubagentSynthesis(sessionId, toolCallId);
+  if (!synthesis) return null;
+  return (
+    <li className="subagent-run-item subagent-run-synthesis" data-status={synthesis.status}>
+      <span className="subagent-run-synthesis-label">{t("汇总", "Synthesis")}</span>
+      {synthesis.model && <span className="subagent-run-model mono">{synthesis.model}</span>}
+      <SubagentStatusChip status={synthesis.status} />
+      {synthesis.status === "failed" && (
+        <span className="subagent-run-error">{t("合成失败，已回落原始结论", "Synthesis failed; raw conclusions returned")}{synthesis.error ? ` · ${synthesis.error}` : ""}</span>
+      )}
+    </li>
+  );
+}
 
 export function SubagentStatusChip({ status }: { status: "pending" | LiveSubagentRun["status"] }): ReactElement {
   const { t } = useI18n();
@@ -156,10 +191,12 @@ function RowHeader({ open, onToggle, children }: { open: boolean; onToggle(): vo
 }
 
 /** subagent / spawn_swarm 工具调用的紧凑折叠行：行头常驻，统计/逐项状态/转录链接展开后显示 */
-export function SubagentRunCard({ name, input, sessionId, live }: {
+export function SubagentRunCard({ name, input, sessionId, toolCallId, live }: {
   name: string;
   input?: Record<string, unknown>;
   sessionId?: string | undefined;
+  /** 工具调用 id（合成轮状态按它选择；历史卡片可缺省） */
+  toolCallId?: string | undefined;
   /** 该工具调用（toolCallId）关联的实时子代理运行；空/默认表示历史卡片 */
   live?: LiveSubagentRun[] | undefined;
 }): ReactElement {
@@ -189,11 +226,14 @@ export function SubagentRunCard({ name, input, sessionId, live }: {
                 const run = live?.find((entry) => entry.swarm?.index === index + 1);
                 const item = items[index];
                 const agent = run?.agent ?? item?.agent ?? callAgent;
+                const role = run?.role ?? item?.role;
                 const task = run?.prompt ?? item?.task ?? "";
                 return (
                   <li key={index} className="subagent-run-item" data-status={run?.status ?? (live && live.length > 0 ? "pending" : undefined)}>
                     <span className="subagent-run-index mono">{index + 1}/{total}</span>
                     {agent && <span className="subagent-run-agent mono">{agent}</span>}
+                    {role && <SubagentRoleBadge role={role} />}
+                    {run?.model && <span className="subagent-run-model mono" title={run.model}>{run.model}</span>}
                     {task && <span className="subagent-run-task" title={task}>{snippet(task, 80)}</span>}
                     {run ? <SubagentStatusChip status={run.status} /> : live && live.length > 0 ? <SubagentStatusChip status="pending" /> : null}
                     {run && <SubagentRunStats run={run} />}
@@ -203,6 +243,7 @@ export function SubagentRunCard({ name, input, sessionId, live }: {
                   </li>
                 );
               })}
+              <SwarmSynthesisRow sessionId={sessionId} toolCallId={toolCallId} />
             </ul>
           </div>
         )}
@@ -220,12 +261,14 @@ export function SubagentRunCard({ name, input, sessionId, live }: {
         <b className="mono">subagent</b>
         <span className="subagent-run-label">{t("子代理", "Subagent")}</span>
         {agent && <span className="subagent-run-agent mono">{agent}</span>}
+        {run?.role && <SubagentRoleBadge role={run.role} />}
         {prompt && <span className="subagent-run-summary mono" title={prompt}>{snippet(prompt)}</span>}
         {run && <SubagentStatusChip status={run.status} />}
       </RowHeader>
       {open && (run || prompt) && (
         <div className="subagent-run-body">
           <p className="subagent-run-fullprompt">{prompt}</p>
+          {run?.model && <p className="subagent-run-model mono">{run.model}</p>}
           {run && <SubagentRunStats run={run} />}
           {run && (run.status === "done" || run.status === "failed") && sessionId && <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} />}
         </div>

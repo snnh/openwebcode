@@ -17,11 +17,21 @@ import {
   REPO_MAP_TOOL,
   SWARM_BOARD_POST_TOOL,
   SWARM_BOARD_READ_TOOL,
+  SWARM_WAIT_TOOL,
   TEST_RUNNER_TOOL,
   WEB_FETCH_TOOL,
   WEB_SEARCH_TOOL,
 } from "./tool-schemas.js";
-import { appendSwarmBoard, readSwarmBoard } from "./swarm-board.js";
+import {
+  appendSwarmBoard,
+  isSwarmBoardKind,
+  readSwarmBoard,
+  SWARM_BOARD_KINDS,
+  waitSwarmBoard,
+  writeSwarmLifecycle,
+  type SwarmBoardEntry,
+  type SwarmRosterMember,
+} from "./swarm-board.js";
 import { resolveShell, type ResolvedShell } from "./shell-detect.js";
 import { normalizeBuiltinToolInput } from "./tool-alias.js";
 
@@ -121,9 +131,10 @@ export interface SubAgentOptions {
   /**
    * swarm 成员上下文（仅 spawn_swarm 派发时注入）：boardPath 为本次 swarm 的共享讨论板
    * （<sessionDir>/subagents/swarm-<swarmId>-board.jsonl），member 为发帖署名（成员名，
-   * 缺省回落 taskId）。注入后子代理额外获得 swarm_board_post / swarm_board_read 两个工具。
+   * 缺省回落 taskId）。roster 为全员分工表（系统提示注入 + to 校验），role/model 为自身档位。
+   * 注入后子代理额外获得 swarm_board_post / swarm_board_read / swarm_wait 三个工具。
    */
-  swarm?: { boardPath: string; member?: string };
+  swarm?: { boardPath: string; member?: string; roster?: SwarmRosterMember[]; role?: string; model?: string };
   /** 每次 LLM 用量事件回调（由调用方记账，子代理 token 计入会话成本）。 */
   onUsage?: (usage: Extract<ProviderEvent, { type: "usage" }>) => void | Promise<void>;
   /** taskId 生成后立即回调（用于发布 subagent.started；转录文件名即 <taskId>.json）。支持异步（回调完成后子代理才开始，保证 SubagentStart 先于 Stop）。 */
@@ -171,6 +182,9 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
   const kind = options.agentKind ?? "explore";
   const builtin = getBuiltinSubAgent(kind) ?? BUILTIN_SUB_AGENTS[0]!;
   const maxTurns = options.maxTurns ?? builtin.maxTurns;
+  const taskId = options.taskId ?? randomUUID();
+  // 发帖署名缺省回落 taskId（需在系统提示组装前确定，member 表与引导文案引用它）
+  if (options.swarm && !options.swarm.member) options.swarm.member = taskId;
   const allowed = new Set(options.toolNames.filter((name) => builtin.toolNames.includes(name)));
   const tools = SUB_AGENT_TOOL_SCHEMAS.filter((tool) => allowed.has(tool.name));
   // 子代理 bash 不开后台任务（run_in_background 依赖主循环的 BackgroundTaskRegistry）；
@@ -181,18 +195,15 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
     // swarm 成员专属工具：会话内通信，不走类型允许集/权限链（本地板文件读写，失败静默降级）
     allowed.add(SWARM_BOARD_POST_TOOL.name);
     allowed.add(SWARM_BOARD_READ_TOOL.name);
-    tools.push(SWARM_BOARD_POST_TOOL, SWARM_BOARD_READ_TOOL);
-    system += "\n\n## Shared discussion board\n" +
-      "You are one member of a parallel swarm working on sibling subtasks. Members share a discussion board: " +
-      "use swarm_board_read at the start to see what others have already found, swarm_board_post to share key findings or questions as you reach them, " +
-      "and swarm_board_read once more before finishing to fold in anything new. Keep posts short and factual.";
+    allowed.add(SWARM_WAIT_TOOL.name);
+    tools.push(SWARM_BOARD_POST_TOOL, SWARM_BOARD_READ_TOOL, SWARM_WAIT_TOOL);
+    system += `\n\n## Shared discussion board\n${swarmBoardGuidance(options.swarm)}`;
   }
 
-  const taskId = options.taskId ?? randomUUID();
-  // 发帖署名缺省回落 taskId（taskId 生成后才能确定）
-  if (options.swarm && !options.swarm.member) options.swarm.member = taskId;
   const startedAt = new Date().toISOString();
   await options.onStart?.(taskId);
+  // 生命周期系统贴：started（失败静默降级，不拖垮子代理）
+  if (options.swarm) await writeSwarmLifecycle(options.swarm.boardPath, options.swarm.member ?? taskId, "started");
   const messages: ChatMessage[] = [subMessage("user", [{ type: "text", text: options.prompt }])];
   const toolsUsed: string[] = [];
   let turns = 0;
@@ -328,7 +339,16 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
         ? `${lastText}\n[reached max turns (${maxTurns}); partial answer]`
         : `[reached max turns (${maxTurns}) without a final answer]`;
     conclusion = truncateConclusion(conclusion);
+    // 生命周期系统贴：finished（正常收尾；写失败静默）
+    if (options.swarm) await writeSwarmLifecycle(options.swarm.boardPath, options.swarm.member ?? taskId, "finished");
     return { taskId, conclusion, turns, toolsUsed };
+  } catch (error) {
+    // 生命周期系统贴：failed（含中断；reason 截断，写失败静默）
+    if (options.swarm) {
+      const reason = options.signal.aborted ? "aborted" : error instanceof Error ? error.message : String(error);
+      await writeSwarmLifecycle(options.swarm.boardPath, options.swarm.member ?? taskId, "failed", reason);
+    }
+    throw error;
   } finally {
     // 转录存档：失败只 warn，不影响结论返回
     try {
@@ -342,6 +362,67 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
       process.stderr.write(`[sub-agent] 转录写入失败：${error instanceof Error ? error.message : String(error)}\n`);
     }
   }
+}
+
+/** swarm 成员系统提示段：成员表（含分工）+ 自身位置/档位 + 协作引导。 */
+function swarmBoardGuidance(swarm: { boardPath: string; member?: string; roster?: SwarmRosterMember[]; role?: string; model?: string }): string {
+  const self = swarm.member ?? "unknown";
+  const selfEntry = swarm.roster?.find((entry) => entry.member === self);
+  const lines: string[] = [];
+  lines.push(`You are member "${self}" of a parallel swarm working on sibling subtasks` +
+    `${selfEntry ? ` (position ${selfEntry.index}/${swarm.roster!.length}` : ""}` +
+    `${swarm.role || swarm.model ? `; your tier/model: ${[swarm.role, swarm.model].filter(Boolean).join(" / ")}` : ""}. ` +
+    "Members coordinate via a shared discussion board.");
+  if (swarm.roster && swarm.roster.length > 0) {
+    lines.push("Members:");
+    for (const entry of swarm.roster) {
+      const tags = [entry.agent, entry.role, entry.model].filter(Boolean).join(" / ");
+      lines.push(`- ${entry.member}${tags ? ` [${tags}]` : ""}${entry.taskExcerpt ? ` — ${entry.taskExcerpt}` : ""}`);
+    }
+  }
+  lines.push(
+    "Board semantics: posts default to broadcast findings; set kind (finding/question/request/blocker/progress/decision) for structured collaboration; " +
+    "to=<member> sends a private message only that member (and you) can read; replyTo=<post id> references an earlier post; priority=high marks urgent items.",
+    "Workflow: swarm_board_read at the start to see what others have already found; swarm_board_post to share key findings, questions, requests and blockers as you reach them; " +
+    "swarm_wait when you need someone's input before you can proceed (default waits for posts addressed to you; from=<member> waits on a specific member and returns early if they already finished or failed); " +
+    "swarm_board_read once more before finishing to fold in anything new. Keep posts short and factual.",
+  );
+  return lines.join("\n");
+}
+
+/** 板帖的紧凑行格式：`[p_x1 08:00:01] alice (question) → bob: text`。 */
+function formatBoardEntry(entry: SwarmBoardEntry): string {
+  const time = entry.ts.length >= 19 ? entry.ts.slice(11, 19) : entry.ts;
+  const kind = entry.kind && entry.kind !== "lifecycle" ? ` (${entry.kind})` : "";
+  const to = entry.to ? ` → ${entry.to}` : "";
+  const reply = entry.replyTo ? ` [re ${entry.replyTo}]` : "";
+  const priority = entry.priority === "high" ? " (!)" : "";
+  return `[${entry.id} ${time}]${priority} ${entry.from}${kind}${to}${reply}: ${entry.text}`;
+}
+
+/** swarm_board_read 结果渲染：成员表/状态行 + 优先段（私聊/提及）+ 新段原文 + 旧段聚合 + 偏移行。 */
+function formatBoardRead(board: Awaited<ReturnType<typeof readSwarmBoard>>): string {
+  const sections: string[] = [];
+  if (board.members.length > 0) {
+    sections.push(`Members: ${board.members.map((entry) => {
+      const status = board.memberStatus[entry.member];
+      const tags = [entry.agent, entry.role, entry.model].filter(Boolean).join("/");
+      return `${entry.member}${tags ? ` (${tags})` : ""}${status ? ` [${status.event}]` : ""}`;
+    }).join("; ")}`);
+  }
+  if (board.priority.length > 0) {
+    sections.push(`Priority (private/@mention):\n${board.priority.map(formatBoardEntry).join("\n")}`);
+  }
+  if (board.entries.length > 0) {
+    sections.push(board.entries.map(formatBoardEntry).join("\n"));
+  }
+  if (board.aggregated.length > 0) {
+    sections.push(`Earlier posts (aggregated):\n${board.aggregated.map((line) => `- ${line}`).join("\n")}`);
+  }
+  if (sections.length === 0) {
+    return board.total === 0 ? "(board is empty)" : `(no new entries; offset=${board.offset})`;
+  }
+  return `${sections.join("\n\n")}\n(offset=${board.offset}, total=${board.total})`;
 }
 
 async function executeSubTool(
@@ -358,22 +439,77 @@ async function executeSubTool(
     return { content: `Tool not available to this sub-agent: ${name}. Allowed tools: ${list}`, isError: true };
   }
   // swarm 讨论板：本地板文件读写，不经权限链；读写失败静默降级为提示文本，不拖垮子代理
-  if (name === "swarm_board_post" || name === "swarm_board_read") {
+  if (name === "swarm_board_post" || name === "swarm_board_read" || name === "swarm_wait") {
     const swarm = options.swarm;
     if (!swarm) return { content: `${name} is only available to swarm members`, isError: true };
+    const viewer = swarm.member ?? "unknown";
     if (name === "swarm_board_post") {
       const text = typeof input.text === "string" ? input.text.trim() : "";
       if (!text) return { content: "swarm_board_post requires a non-empty text", isError: true };
-      const ok = await appendSwarmBoard(swarm.boardPath, swarm.member ?? "unknown", text);
+      const kind = typeof input.kind === "string" && input.kind ? input.kind : undefined;
+      if (kind !== undefined && !isSwarmBoardKind(kind)) {
+        return { content: `Unknown kind: ${kind} (expected one of ${SWARM_BOARD_KINDS.join("/")})`, isError: true };
+      }
+      const to = typeof input.to === "string" && input.to.trim() ? input.to.trim() : undefined;
+      if (to !== undefined && swarm.roster && swarm.roster.length > 0 && !swarm.roster.some((entry) => entry.member === to)) {
+        return { content: `Unknown swarm member: ${to} (roster: ${swarm.roster.map((entry) => entry.member).join(", ")})`, isError: true };
+      }
+      const priority = input.priority === undefined ? undefined : input.priority === "high" ? "high" as const : input.priority === "normal" ? "normal" as const : undefined;
+      if (input.priority !== undefined && priority === undefined) {
+        return { content: `Unknown priority: ${String(input.priority)} (expected normal/high)`, isError: true };
+      }
+      const replyTo = typeof input.replyTo === "string" && input.replyTo.trim() ? input.replyTo.trim() : undefined;
+      const ok = await appendSwarmBoard(swarm.boardPath, viewer, text, {
+        ...(kind ? { kind } : {}),
+        ...(to ? { to } : {}),
+        ...(priority ? { priority } : {}),
+        ...(replyTo ? { replyTo } : {}),
+      });
       return { content: ok ? "ok" : "ok (board unavailable; post dropped)", isError: false };
     }
-    const since = input.since === undefined ? 0 : Number(input.since);
-    const board = await readSwarmBoard(swarm.boardPath, Number.isInteger(since) && since > 0 ? since : 0);
-    if (board.entries.length === 0) {
-      return { content: board.total === 0 ? "(board is empty)" : `(no new entries; offset=${board.offset})`, isError: false };
+    if (name === "swarm_board_read") {
+      const since = input.since === undefined ? 0 : Number(input.since);
+      const kind = typeof input.kind === "string" && input.kind ? input.kind : undefined;
+      if (kind !== undefined && !isSwarmBoardKind(kind)) {
+        return { content: `Unknown kind: ${kind} (expected one of ${SWARM_BOARD_KINDS.join("/")})`, isError: true };
+      }
+      const from = typeof input.from === "string" && input.from.trim() ? input.from.trim() : undefined;
+      const to = typeof input.to === "string" && input.to.trim() ? input.to.trim() : undefined;
+      const board = await readSwarmBoard(swarm.boardPath, {
+        since: Number.isInteger(since) && since > 0 ? since : 0,
+        viewer,
+        ...(kind ? { kind } : {}),
+        ...(from ? { from } : {}),
+        ...(to ? { to } : {}),
+        ...(input.mine === true ? { mine: true } : {}),
+      });
+      return { content: formatBoardRead(board), isError: false };
     }
-    const lines = board.entries.map((entry) => `[${entry.ts}] ${entry.from}: ${entry.text}`);
-    return { content: `${lines.join("\n")}\n(offset=${board.offset}, total=${board.total})`, isError: false };
+    // swarm_wait：一次性等待（fs.watch + 回落轮询），命中/目标终态/超时/中止四态返回
+    const from = typeof input.from === "string" && input.from.trim() ? input.from.trim() : undefined;
+    if (from !== undefined && swarm.roster && swarm.roster.length > 0 && !swarm.roster.some((entry) => entry.member === from)) {
+      return { content: `Unknown swarm member: ${from} (roster: ${swarm.roster.map((entry) => entry.member).join(", ")})`, isError: true };
+    }
+    const since = input.since === undefined ? undefined : Number(input.since);
+    const timeoutSeconds = typeof input.timeoutSeconds === "number" && Number.isFinite(input.timeoutSeconds) ? input.timeoutSeconds : undefined;
+    const result = await waitSwarmBoard(swarm.boardPath, {
+      viewer,
+      ...(from ? { from } : {}),
+      ...(input.toMe === true ? { toMe: true } : {}),
+      ...(input.any === true ? { any: true } : {}),
+      ...(since !== undefined && Number.isInteger(since) && since > 0 ? { since } : {}),
+      ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
+      signal: options.signal,
+    });
+    if (result.outcome === "aborted") return { content: "swarm_wait aborted", isError: true };
+    if (result.outcome === "terminal") {
+      return { content: `(terminal) ${result.note ?? "target member reached a terminal state"}\n(offset=${result.offset})`, isError: false };
+    }
+    if (result.outcome === "timeout") {
+      return { content: `(timeout) ${result.note ?? "no matching posts before the deadline"}\n(offset=${result.offset})`, isError: false };
+    }
+    const lines = result.entries.map(formatBoardEntry);
+    return { content: `${lines.join("\n")}\n(offset=${result.offset})`, isError: false };
   }
   // general 类型：全部工具（含只读）统一经调用方注入的权限链执行入口
   if (options.executeTool) {

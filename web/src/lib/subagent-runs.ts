@@ -8,15 +8,16 @@ export function isSubagentToolCallName(name: string | undefined): name is "subag
   return name === "subagent" || name === "spawn_task" || name === "spawn_swarm";
 }
 
-/** spawn_swarm items 的两种形态：纯字符串或 { task, agent? }（与 server 端解析一致） */
-export function swarmItems(input?: Record<string, unknown>): Array<{ task: string; agent?: string }> {
+/** spawn_swarm items 的两种形态：纯字符串或 { task, agent?, role? }（与 server 端解析一致） */
+export function swarmItems(input?: Record<string, unknown>): Array<{ task: string; agent?: string; role?: string }> {
   if (!Array.isArray(input?.items)) return [];
   return input.items.map((raw) => {
     if (typeof raw === "string") return { task: raw };
     if (raw && typeof raw === "object" && !Array.isArray(raw)) {
       const record = raw as Record<string, unknown>;
       const agent = typeof record.agent === "string" && record.agent.trim() ? record.agent.trim() : undefined;
-      return { task: String(record.task ?? ""), ...(agent ? { agent } : {}) };
+      const role = typeof record.role === "string" && record.role.trim() ? record.role.trim() : undefined;
+      return { task: String(record.task ?? ""), ...(agent ? { agent } : {}), ...(role ? { role } : {}) };
     }
     return { task: String(raw) };
   });
@@ -68,11 +69,14 @@ export function deriveSubagentRunsFromMessages(messages: ChatMessage[]): Record<
             ? items[index]?.task ?? ""
             : typeof call.input?.prompt === "string" ? call.input.prompt : "";
           const failed = task.status === "failed";
+          const role = typeof task.role === "string" && task.role ? task.role : call.name === "spawn_swarm" ? items[index]?.role : undefined;
           runs[task.taskId] = {
             taskId: task.taskId,
             toolCallId,
             prompt,
             ...(agent ? { agent } : {}),
+            ...(role ? { role } : {}),
+            ...(typeof task.model === "string" && task.model ? { model: task.model } : {}),
             ...(call.name === "spawn_swarm" ? { swarm: { index: index + 1, total } } : {}),
             status: failed ? "failed" : "done",
             turns: 0,

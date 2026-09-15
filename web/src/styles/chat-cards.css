@@ -324,6 +324,18 @@
 .subagent-run-index { color: var(--text-3); font-size: 11px; }
 .subagent-run-task { color: var(--text-2); flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subagent-run-item .subagent-transcript { flex-basis: 100%; }
+/* 四档角色徽标（premium/balanced/fast/cheap 着色）与模型名 */
+.subagent-run-role { font-size: 10px; line-height: 1.4; padding: 0 5px; border-radius: var(--radius-s); border: 1px solid var(--border); color: var(--text-3); flex: 0 0 auto; }
+.subagent-run-role[data-role="premium"] { color: var(--accent); border-color: var(--accent); }
+.subagent-run-role[data-role="balanced"] { color: var(--text-2); }
+.subagent-run-role[data-role="fast"] { color: var(--success, #2da44e); border-color: var(--success, #2da44e); }
+.subagent-run-role[data-role="cheap"] { color: var(--text-3); border-style: dashed; }
+.subagent-run-model { font-size: 11px; color: var(--text-3); flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* swarm 合成轮「汇总」行 */
+.subagent-run-synthesis { border-style: dashed; }
+.subagent-run-synthesis[data-status="running"] { border-color: var(--accent); }
+.subagent-run-synthesis[data-status="failed"] { border-color: var(--danger-border); }
+.subagent-run-synthesis-label { font-size: 11px; font-weight: 600; color: var(--text-2); }
 
 /* 子代理转录（spawn_task / spawn_swarm 工具结果下方） */
 .subagent-transcripts { display: grid; gap: 6px; margin-top: 8px; }

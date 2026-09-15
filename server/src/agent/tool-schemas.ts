@@ -298,29 +298,68 @@ export const WEB_SEARCH_TOOL: ProviderTool = {
   },
 };
 
-/** swarm 成员专属：向本次 spawn_swarm 的共享讨论板追加一条发现/问题。仅 swarm 子代理可见。 */
+/** swarm 成员专属：向本次 spawn_swarm 的共享讨论板追加一条帖子。仅 swarm 子代理可见。 */
 export const SWARM_BOARD_POST_TOOL: ProviderTool = {
   name: "swarm_board_post",
   description:
-    "Post a finding or question to this swarm's shared discussion board so other members can see it. " +
-    "Keep it short (truncated at 500 characters).",
+    "Post to this swarm's shared discussion board. Defaults to a broadcast finding; use kind for structured collaboration " +
+    "(finding/question/request/blocker/progress/decision), to=<member> for a private message only that member (and you) can read, " +
+    "replyTo=<post id> to reference an earlier post, priority=high for urgent items. Keep it short (truncated at 500 characters).",
   inputSchema: {
     type: "object",
-    properties: { text: { type: "string", description: "The finding or question to share with the swarm." } },
+    properties: {
+      text: { type: "string", description: "The finding, question, or message to share with the swarm." },
+      kind: {
+        type: "string",
+        enum: ["finding", "question", "request", "blocker", "progress", "decision"],
+        description: "Collaboration kind of the post (defaults to finding).",
+      },
+      to: { type: "string", description: "Roster member name; makes the post a private message visible only to that member and you." },
+      priority: { type: "string", enum: ["normal", "high"], description: "Post priority (defaults to normal)." },
+      replyTo: { type: "string", description: "Post id (p_xxxxxx) this post replies to." },
+    },
     required: ["text"],
     additionalProperties: false,
   },
 };
 
-/** swarm 成员专属：读共享讨论板（可选 since 行偏移增量读）。仅 swarm 子代理可见。 */
+/** swarm 成员专属：读共享讨论板（增量读 + 过滤；私聊仅收发双方可见）。仅 swarm 子代理可见。 */
 export const SWARM_BOARD_READ_TOOL: ProviderTool = {
   name: "swarm_board_read",
   description:
-    "Read this swarm's shared discussion board (entries posted by all members, bounded to the most recent ones). " +
-    "Pass since=<offset from a previous read> to get only new entries.",
+    "Read this swarm's shared discussion board. You only see broadcasts, posts addressed to you, and your own posts; " +
+    "private posts and @mentions of you are always shown in full in a priority section. " +
+    "Pass since=<offset from a previous read> to get only new entries; filter with kind/from/to/mine.",
   inputSchema: {
     type: "object",
-    properties: { since: { type: "integer", minimum: 0, description: "Line offset from a previous read; only entries after it are returned." } },
+    properties: {
+      since: { type: "integer", minimum: 0, description: "Line offset from a previous read; only entries after it are returned." },
+      kind: { type: "string", enum: ["finding", "question", "request", "blocker", "progress", "decision"], description: "Only posts of this kind." },
+      from: { type: "string", description: "Only posts by this member." },
+      to: { type: "string", description: "Only posts addressed to this member." },
+      mine: { type: "boolean", description: "Only posts you sent or that were addressed to you." },
+    },
+    additionalProperties: false,
+  },
+};
+
+/** swarm 成员专属：等待板上出现满足条件的新帖（一次性调用，不占额外 LLM 轮次）。仅 swarm 子代理可见。 */
+export const SWARM_WAIT_TOOL: ProviderTool = {
+  name: "swarm_wait",
+  description:
+    "Wait for new posts on this swarm's discussion board. Default waits for posts addressed to you (private or @mention); " +
+    "pass from=<member> to wait for any new post by a specific member (returns early if that member has already finished or failed), " +
+    "or any=true to wake on any new post. One call waits up to timeoutSeconds (default 120, max 300) without consuming extra LLM turns; " +
+    "while waiting you still occupy a concurrency slot.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      from: { type: "string", description: "Roster member name; wake on any new post by this member. Returns early with a terminal note if that member already finished/failed without new posts." },
+      toMe: { type: "boolean", description: "Wake on posts addressed to you (private or @mention). This is the default when neither from nor any is given." },
+      any: { type: "boolean", description: "Wake on any new post by other members." },
+      since: { type: "integer", minimum: 0, description: "Line offset from a previous read/wait; defaults to the current board end." },
+      timeoutSeconds: { type: "number", description: "Wait timeout in seconds (default 120, max 300)." },
+    },
     additionalProperties: false,
   },
 };

@@ -3,7 +3,7 @@ export type { Session, SessionDetail, PersonaSummary, PersonaDetail, PersonaPres
 // ── sandbox ──
 export type { SandboxCapability, SandboxMode, SandboxNetwork, ShellBackend, PythonEnv, NodeEnv, SandboxCapabilities, SessionSandboxStatus, ManagedWorkspaceCapability, ManagedWorkspace, ManagedWorkspaceSyncChange, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult } from "./contracts/sandbox";
 // ── subagent ──
-export type { SubagentTranscript, SubagentSwarmRef, SubagentStartedEvent, SubagentProgressEvent, SubagentFinishedEvent, LiveSubagentRun, AgentInfo, AgentListResponse, StartSubagentResponse } from "./contracts/subagent";
+export type { SubagentTranscript, SubagentSwarmRef, SubagentStartedEvent, SubagentProgressEvent, SubagentFinishedEvent, SubagentSynthesisEvent, LiveSubagentRun, LiveSubagentSynthesis, AgentInfo, AgentListResponse, StartSubagentResponse } from "./contracts/subagent";
 // ── message ──
 export type { MessageContent, ChatMessage, MessageAttachment } from "./contracts/message";
 // ── context ──
