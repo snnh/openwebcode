@@ -24,6 +24,10 @@ export interface SubagentStartedEvent {
   taskId: string;
   prompt: string;
   agent?: string;
+  /** 子代理角色档（subagent/spawn_swarm 的 role 参数生效档；未指定时缺省）。 */
+  role?: string;
+  /** 实际生效模型（角色档/自定义 frontmatter 解析后）。 */
+  model?: string;
   swarm?: SubagentSwarmRef;
 }
 
@@ -53,10 +57,30 @@ export interface LiveSubagentRun {
   toolCallId: string;
   prompt: string;
   agent?: string;
+  role?: string;
+  model?: string;
   swarm?: SubagentSwarmRef;
   status: "running" | "done" | "failed";
   turns: number;
   toolsUsed: string[];
+  error?: string;
+}
+
+/** WS 事件 subagent.synthesis 的 payload（spawn_swarm 合成轮；phase=started/finished） */
+export interface SubagentSynthesisEvent {
+  toolCallId: string;
+  phase: "started" | "finished";
+  model?: string;
+  provider?: string;
+  status?: "done" | "failed";
+  error?: string;
+}
+
+/** 客户端按会话维护的 swarm 合成轮状态（sessionId → toolCallId → 条目） */
+export interface LiveSubagentSynthesis {
+  toolCallId: string;
+  status: "running" | "done" | "failed";
+  model?: string;
   error?: string;
 }
 

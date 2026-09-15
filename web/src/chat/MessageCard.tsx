@@ -109,7 +109,7 @@ function ContentBlock({ block, toolResults, liveSubagents }: {
       // subagent/spawn_swarm（含历史旧名 spawn_task）用专用卡片：运行中展示实时进度，历史卡片展示静态摘要
       if (isSubagentToolCallName(block.name) && block.id) {
         const live = liveSubagents?.filter((run) => run.toolCallId === block.id);
-        return <SubagentRunCard name={block.name} input={block.input} sessionId={sessionId} {...(live ? { live } : {})} />;
+        return <SubagentRunCard name={block.name} input={block.input} sessionId={sessionId} toolCallId={block.id} {...(live ? { live } : {})} />;
       }
       const call = groupCallsFromBlocks([block], toolResults, running)[0];
       return call ? <ToolCallGroupRow call={call} /> : null;

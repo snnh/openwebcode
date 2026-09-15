@@ -65,7 +65,7 @@ import { ToolAliasResolver, normalizeBuiltinToolInput } from "./tool-alias.js";
  * 由 FILE_TOOLS 派生 + read_media（本地路径读媒体与 read_file 同门；http(s) URL 在门内特判放行，
  * URL 安全由 media-fetch 的 SSRF 链负责）。 */
 const LOCAL_PATH_GATED_TOOLS = new Set([...FILE_TOOLS.map((tool) => tool.name), "read_media"]);
-import { digestSwarmBoard, swarmBoardPath } from "./swarm-board.js";
+import { digestSwarmBoard, SWARM_BOARD_EXCERPT_LIMIT, swarmBoardPath, writeSwarmRoster, type SwarmRosterMember } from "./swarm-board.js";
 import type { ChatMessage, MessageContent, NodeEnv, PythonEnv, SessionMeta, WebSearchCallContent } from "../sessions/types.js";
 import { replaceThinkingBlockById } from "../providers/thinking-merge.js";
 import { effectivePythonEnv, UvPythonEnvironments, uvVenvDir, wrapCommandWithNote, wrapCommandWithVenv } from "../python-env.js";
@@ -357,8 +357,11 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
     "The {{item}} placeholder in prompt_template is replaced with each item's task value; each item launches one independent sub-agent with an isolated context. " +
     "Use when many independent tasks of the same kind should run in parallel (e.g. reviewing several files or endpoints). " +
     "For a single task use subagent instead. Built-in agent types: explore (default; read-only) and general (write-capable, via the session permission chain); custom sub-agents are read-only. " +
-    "Members of one swarm share a discussion board (swarm_board_post/swarm_board_read) so they can exchange findings while running. " +
-    "Only each sub-agent's final conclusion (at most 64000 characters) is returned, aggregated as numbered results with a board digest.",
+    "Members of one swarm share a discussion board (swarm_board_post/swarm_board_read/swarm_wait) so they can exchange findings while running: " +
+    "structured post kinds (finding/question/request/blocker/progress/decision), private messages (to=<member>), replies (replyTo), and swarm_wait to block on someone's reply. " +
+    "Mix model tiers per item (e.g. cheap/fast for bulk fan-out, balanced/premium for review passes). " +
+    "Only each sub-agent's final conclusion (at most 64000 characters) is returned, aggregated as numbered results with a kind-aware board digest " +
+    "(decisions and blockers are pinned on top); pass synthesize to add a final no-tool LLM round that merges conclusions into a structured report (findings/disagreements/risks/decisions/todos).",
   inputSchema: {
     type: "object",
     properties: {
@@ -392,6 +395,15 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
       maxTurns: {
         type: "number",
         description: "Optional call-level turn limit (1-1000) applied to every launch unless an item overrides it.",
+      },
+      synthesize: {
+        type: "object",
+        properties: {
+          role: { type: "string", enum: [...MODEL_ROLES], description: "Model tier for the synthesis round (defaults to balanced, falling back to the session model)." },
+          maxTurns: { type: "number", description: "Continuation budget (1-1000) when the synthesis output is truncated at max_tokens; default 1 (single call)." },
+        },
+        additionalProperties: false,
+        description: "Optional final synthesis round (off by default): after all members finish, one no-tool LLM call merges member conclusions and the board digest into a structured report (key findings / disagreements / risks / decisions / todos, annotated with member and model). Costs one extra LLM call; on failure the raw conclusions are returned with an error note.",
       },
     },
     required: ["prompt_template", "items"],
@@ -1634,7 +1646,9 @@ export class AgentRunner {
           workDisciplineSection(availableToolNames),
           communicationSection(this.defaultLanguage),
           availableToolNames.has("spawn_swarm")
-            ? "## Parallel exploration\nspawn_swarm is enabled: when a task fans out into many independent subtasks of the same kind, launch them in one spawn_swarm call instead of serial subagent calls. Members of a swarm coordinate via the shared discussion board (swarm_board_post/swarm_board_read)."
+            ? "## Parallel exploration\nspawn_swarm is enabled: when a task fans out into many independent subtasks of the same kind, launch them in one spawn_swarm call instead of serial subagent calls. " +
+              "Members coordinate via the shared discussion board (swarm_board_post/swarm_board_read/swarm_wait): structured kinds, private messages (to=<member>), replies (replyTo), and swarm_wait to block on a reply. " +
+              "Mix model roles per item (cheap/fast for bulk fan-out, balanced/premium for review). Pass synthesize for a final no-tool LLM round merging conclusions into a structured report (off by default, one extra LLM call)."
             : "",
         ];
 
@@ -3320,7 +3334,7 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       // catch 分支需引用（中断/整体失败仍回报已启动项的 taskId 与逐项终态），声明在 try 之外
-      interface SwarmTaskStatus { taskId: string; index: number; status: "done" | "failed"; error?: string }
+      interface SwarmTaskStatus { taskId: string; index: number; status: "done" | "failed"; error?: string; role?: string; model?: string }
       const subagentTaskIds: string[] = [];
       const subagentTasks: SwarmTaskStatus[] = [];
       try {
@@ -3361,16 +3375,53 @@ export class AgentRunner {
             throw new Error(`${message} (item ${index + 1})`);
           }
         }
+        // synthesize（默认关）：{ role?, maxTurns? }——全部成员结束后做一次无工具 LLM 合成轮
+        interface SynthesizeSpec { role?: ModelRole; maxTurns?: number }
+        let synthesizeSpec: SynthesizeSpec | undefined;
+        if (input.synthesize !== undefined) {
+          if (!input.synthesize || typeof input.synthesize !== "object" || Array.isArray(input.synthesize)) {
+            throw new Error("spawn_swarm synthesize must be an object { role?, maxTurns? }");
+          }
+          const raw = input.synthesize as Record<string, unknown>;
+          const role = typeof raw.role === "string" && raw.role.trim() ? raw.role.trim() : undefined;
+          if (role !== undefined && !isModelRole(role)) {
+            throw new Error(`Unknown model role: ${role} (expected one of ${MODEL_ROLES.join("/")})`);
+          }
+          const parsedMaxTurns = parseMaxTurns(raw.maxTurns);
+          synthesizeSpec = { ...(role ? { role: role as ModelRole } : {}), ...(parsedMaxTurns !== undefined ? { maxTurns: parsedMaxTurns } : {}) };
+        }
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
         const contextRoot = this.sessions.contextRoot(sessionId);
         // 本次 swarm 的共享讨论板（<sessionDir>/subagents/swarm-<swarmId>-board.jsonl）：
         // swarmId 取 toolCallId，含文件名异字符时回落 uuid
         const swarmId = /^[\w-]+$/.test(toolCallId) ? toolCallId : randomUUID();
         const boardPath = swarmBoardPath(contextRoot, swarmId);
+        // roster：成员名 = agent 名（缺省用内置类型名；重名加 -2/-3 后缀）；taskExcerpt = 填充后 prompt 截断。
+        // 启动前写 roster 系统贴，全员角色/模型/分工互相可见（成员 to= 校验也以此为准）。
+        const memberNames = new Map<string, number>();
+        const roster: SwarmRosterMember[] = items.map((item, index) => {
+          const effective = itemResolutions.get(index) ?? resolvedDefault;
+          const base = effective.name ?? effective.kind ?? "member";
+          const seen = memberNames.get(base) ?? 0;
+          memberNames.set(base, seen + 1);
+          const member = seen === 0 ? base : `${base}-${seen + 1}`;
+          const role = item.role ?? callRole;
+          const task = prompts[index] ?? item.task;
+          return {
+            index: index + 1,
+            member,
+            agent: effective.name ?? effective.kind,
+            ...(role ? { role } : {}),
+            model: effective.modelOverride ?? session.model,
+            taskExcerpt: task.length > SWARM_BOARD_EXCERPT_LIMIT ? `${task.slice(0, SWARM_BOARD_EXCERPT_LIMIT)}…` : task,
+          };
+        });
+        await writeSwarmRoster(boardPath, roster);
         interface SwarmItemOutcome { ok: boolean; conclusion?: string; error?: string }
         const runOne = async (prompt: string, index: number): Promise<SwarmItemOutcome> => {
           const swarm = { index: index + 1, total: prompts.length };
           const effective = itemResolutions.get(index) ?? resolvedDefault;
+          const rosterEntry = roster[index]!;
           let taskId = "";
           try {
             // 生效 provider 按 effective resolution 逐项解析（角色档/frontmatter provider: 覆盖优先）
@@ -3411,8 +3462,14 @@ export class AgentRunner {
               cwd: session.cwd,
               contextRoot,
               signal,
-              // swarm 成员共享讨论板：member 缺省由子代理回落 taskId
-              swarm: { boardPath, ...(effective.name ? { member: effective.name } : {}) },
+              // swarm 成员共享讨论板：member 取 roster 署名（唯一），roster/role/model 注入系统提示
+              swarm: {
+                boardPath,
+                member: rosterEntry.member,
+                roster,
+                ...(rosterEntry.role ? { role: rosterEntry.role } : {}),
+                model: effectiveModel,
+              },
               onStart: async (id) => {
                 taskId = id;
                 subagentTaskIds[index] = id;
@@ -3420,7 +3477,12 @@ export class AgentRunner {
                   source: "agent",
                   type: "subagent.started",
                   sessionId,
-                  payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), swarm, ...(effective.name ? { agent: effective.name } : {}) },
+                  payload: {
+                    toolCallId, taskId: id, prompt: prompt.slice(0, 200), swarm,
+                    ...(effective.name ? { agent: effective.name } : {}),
+                    ...(rosterEntry.role ? { role: rosterEntry.role } : {}),
+                    model: effectiveModel,
+                  },
                 });
                 await this.runSubagentHook("SubagentStart", sessionId, session.cwd, { taskId: id, agent: effective.name, kind: effective.kind, swarm, prompt: prompt.slice(0, 200) });
               },
@@ -3442,7 +3504,7 @@ export class AgentRunner {
               payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns, toolsUsed: result.toolsUsed, swarm },
             });
             await this.runSubagentHook("SubagentStop", sessionId, session.cwd, { taskId: result.taskId, agent: effective.name, kind: effective.kind, swarm, status: "done" });
-            subagentTasks.push({ taskId, index, status: "done" });
+            subagentTasks.push({ taskId, index, status: "done", ...(rosterEntry.role ? { role: rosterEntry.role } : {}), model: effectiveModel });
             return { ok: true, conclusion: result.conclusion };
           } catch (error) {
             const message = errorMessage(error);
@@ -3455,7 +3517,7 @@ export class AgentRunner {
             // 仅真正启动过的成员补 SubagentStop（与逐项终态口径一致）
             if (taskId) await this.runSubagentHook("SubagentStop", sessionId, session.cwd, { taskId, agent: effective.name, kind: effective.kind, swarm, status: "failed", error: message });
             // 启动前失败的项没有 taskId/转录，不进入逐项终态
-            if (taskId) subagentTasks.push({ taskId, index, status: "failed", error: message });
+            if (taskId) subagentTasks.push({ taskId, index, status: "failed", error: message, ...(rosterEntry.role ? { role: rosterEntry.role } : {}), model: effective.modelOverride ?? session.model });
             return { ok: false, error: message };
           }
         };
@@ -3479,9 +3541,14 @@ export class AgentRunner {
             ? `[${index + 1}/${outcomes.length}] ${outcome.conclusion ?? ""}`
             : `[${index + 1}/${outcomes.length}] FAILED: ${outcome.error ?? "unknown error"}`)
           .join("\n\n");
-        // 讨论板摘要：路径、总条数、各成员发帖数、最后几条；板为空/读取失败时省略（digestSwarmBoard 内部已降级）
+        // 讨论板摘要：kind 分组统计 + decision/blocker 置顶 + 末帖段；板为空/读取失败时省略（内部已降级）
         const boardDigest = await digestSwarmBoard(boardPath);
-        const summary = boardDigest ? `${aggregated}\n\n---\nBoard digest\n${boardDigest}` : aggregated;
+        // 合成轮（默认关）：全部成员结束后做一次无工具 LLM 调用；失败回落纯拼接并标注错误
+        const synthesisSection = synthesizeSpec
+          ? await this.runSwarmSynthesis(sessionId, toolCallId, session, synthesizeSpec, template, outcomes, roster, boardDigest, subUsageContext, signal)
+          : "";
+        const body = synthesisSection ? `${synthesisSection}\n\n---\nMember conclusions\n${aggregated}` : aggregated;
+        const summary = boardDigest ? `${body}\n\n---\nBoard digest\n${boardDigest}` : body;
         const bounded = await boundToolResult(contextRoot, name, summary);
         this.events.publish({
           source: "agent",
@@ -4142,6 +4209,89 @@ export class AgentRunner {
     const ensured = await this.pythonEnvManager.ensure(venvDir);
     if (!ensured.ok) return wrapCommandWithNote(cmd, ensured.note ?? "uv environment unavailable; using the host python environment");
     return wrapCommandWithVenv(cmd, venvDir, resolveShell(session.shellBackend ?? "default").flavor);
+  }
+
+  /**
+   * spawn_swarm 合成轮（synthesize 参数开启时）：全部成员结束后以指定档位模型做一次无工具 LLM 调用，
+   * 输入 = 任务模板 + 各成员结论（标注成员/档位/模型）+ kind 感知板 digest（decision/blocker 置顶段作决议预填），
+   * 输出结构化报告（关键发现/分歧/风险/决议/待办）。maxTurns 仅在输出被 max_tokens 截断时续写。
+   * 失败回落：发布 subagent.synthesis failed 事件并返回错误标注段，不拖垮 swarm（中断除外，直接上抛）。
+   */
+  private async runSwarmSynthesis(
+    sessionId: string,
+    toolCallId: string,
+    session: { provider: string; model: string },
+    spec: { role?: ModelRole; maxTurns?: number },
+    template: string,
+    outcomes: Array<{ ok: boolean; conclusion?: string; error?: string }>,
+    roster: SwarmRosterMember[],
+    boardDigest: string | undefined,
+    usageContext: ContextManager,
+    signal: AbortSignal,
+  ): Promise<string> {
+    const role = spec.role ?? "balanced";
+    const selection = this.modelRoles?.resolveWithFallback(role, undefined);
+    const providerName = selection?.provider ?? session.provider;
+    const model = selection?.model ?? session.model;
+    const routing = selection ? `${providerName}/${model}` : `${model} (session default)`;
+    this.events.publish({ source: "agent", type: "subagent.synthesis", sessionId, payload: { toolCallId, phase: "started", model, provider: providerName } });
+    try {
+      const provider = this.providers.get(providerName);
+      if (!provider) throw new Error(`Provider ${providerName} is not configured`);
+      const capabilities = this.getProfile(model, providerName).capabilities;
+      const memberLines = outcomes.map((outcome, index) => {
+        const member = roster[index];
+        const label = member ? ` ${member.member} (${[member.role, member.model].filter(Boolean).join("/")})` : "";
+        return outcome.ok
+          ? `[${index + 1}/${outcomes.length}]${label} ${outcome.conclusion ?? ""}`
+          : `[${index + 1}/${outcomes.length}]${label} FAILED: ${outcome.error ?? "unknown error"}`;
+      }).join("\n\n");
+      const system =
+        "You are the synthesizer of a parallel sub-agent swarm. Merge the member conclusions and the board digest into one structured report with these sections: " +
+        "Key findings / Disagreements / Risks / Decisions / Todos. Attribute each item to the member and model that produced it. " +
+        "Treat the pinned Decisions/Blockers in the board digest as the authoritative starting point for those sections (they were posted deterministically by members); refine, do not invent. " +
+        "Be concise; reply in the user's language (default 中文).";
+      const userText = [
+        `Task template:\n${template}`,
+        `Member conclusions:\n${memberLines}`,
+        ...(boardDigest ? [`Board digest (kind-aware; decisions and blockers pinned):\n${boardDigest}`] : []),
+        "Produce the structured report now.",
+      ].join("\n\n");
+      const messages: ChatMessage[] = [{ id: randomUUID(), role: "user", content: [{ type: "text", text: userText }], createdAt: new Date().toISOString() }];
+      let report = "";
+      const maxTurns = spec.maxTurns ?? 1;
+      for (let turn = 0; turn < maxTurns; turn++) {
+        const result = await collectProviderTurn(provider, {
+          model,
+          system,
+          messages,
+          tools: [],
+          signal,
+          reasoningContent: capabilities.reasoningContent !== false,
+          ...(capabilities.responsesEncryptedReplay ? { responsesEncryptedReplay: true } : {}),
+          ...(capabilities.thinkingStyle ? { thinkingStyle: capabilities.thinkingStyle } : {}),
+        });
+        let text = "";
+        let stopReason: string | undefined;
+        for (const event of result.events) {
+          if (event.type === "text_delta") text += event.text;
+          else if (event.type === "text_end") { if (text === "") text = event.text; }
+          else if (event.type === "usage") await this.recordUsageEvent(sessionId, usageContext, providerName, model, event);
+          else if (event.type === "done") stopReason = event.stopReason;
+        }
+        report += text;
+        if (stopReason !== "max_tokens") break;
+        messages.push({ id: randomUUID(), role: "assistant", content: [{ type: "text", text }], createdAt: new Date().toISOString() });
+        messages.push({ id: randomUUID(), role: "user", content: [{ type: "text", text: "Your previous reply was truncated at the output limit. Continue exactly where you stopped." }], createdAt: new Date().toISOString() });
+      }
+      this.events.publish({ source: "agent", type: "subagent.synthesis", sessionId, payload: { toolCallId, phase: "finished", status: "done", model, provider: providerName } });
+      return `Synthesis (${role} → ${routing}):\n${report.trim() || "(empty report)"}`;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      const message = errorMessage(error);
+      this.events.publish({ source: "agent", type: "subagent.synthesis", sessionId, payload: { toolCallId, phase: "finished", status: "failed", error: message, model, provider: providerName } });
+      return `Synthesis failed (${role} → ${routing}): ${message}\n(raw member conclusions below)`;
+    }
   }
 
   // 用量记账：主循环与 subagent 子代理共用同一 ledger/用量日志/事件路径

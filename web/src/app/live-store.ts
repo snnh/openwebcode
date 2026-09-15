@@ -1,5 +1,5 @@
 import type {
-  AppEvent, LiveSubagentRun, SubagentFinishedEvent, SubagentProgressEvent, SubagentStartedEvent,
+  AppEvent, LiveSubagentRun, LiveSubagentSynthesis, SubagentFinishedEvent, SubagentProgressEvent, SubagentStartedEvent, SubagentSynthesisEvent,
 } from "../lib/contracts";
 import type { CompactionMarker, CompactionMode } from "../lib/compaction";
 import { capLiveSubagentRuns, LIVE_SUBAGENT_CAP } from "../lib/subagent-runs";
@@ -33,12 +33,14 @@ export interface LiveActivityInfo {
 
 interface LiveState {
   subagents: Record<string, Record<string, LiveSubagentRun>>;
+  /** swarm 合成轮状态（sessionId → toolCallId → 条目；subagent.synthesis 事件驱动） */
+  syntheses: Record<string, Record<string, LiveSubagentSynthesis>>;
   activities: Record<string, LiveActivityEntry>;
   /** 压缩检查点标记（sessionId → 标记数组，时间升序；运行中占位至多一个，沉降至多保留 CAP 条） */
   compactions: Record<string, CompactionMarker[]>;
 }
 
-const INITIAL_STATE: LiveState = { subagents: {}, activities: {}, compactions: {} };
+const INITIAL_STATE: LiveState = { subagents: {}, syntheses: {}, activities: {}, compactions: {} };
 const EMPTY_ACTIVITY: LiveActivityEntry = { outstanding: [] };
 
 /** 每会话已沉降压缩标记上限（运行中占位不计）：超出丢最旧 */
@@ -71,6 +73,8 @@ export const live = {
               toolCallId: payload.toolCallId,
               prompt: payload.prompt,
               ...(payload.agent ? { agent: payload.agent } : {}),
+              ...(payload.role ? { role: payload.role } : {}),
+              ...(payload.model ? { model: payload.model } : {}),
               ...(payload.swarm ? { swarm: payload.swarm } : {}),
               status: "running",
               turns: 0,
@@ -116,6 +120,24 @@ export const live = {
           },
         };
       });
+      return;
+    }
+    if (event.type === "subagent.synthesis") {
+      const payload = event.payload as SubagentSynthesisEvent;
+      liveStore.set((previous) => ({
+        syntheses: {
+          ...previous.syntheses,
+          [sessionId]: {
+            ...previous.syntheses[sessionId],
+            [payload.toolCallId]: {
+              toolCallId: payload.toolCallId,
+              status: payload.phase === "started" ? "running" : payload.status ?? "done",
+              ...(payload.model ? { model: payload.model } : {}),
+              ...(payload.error ? { error: payload.error } : {}),
+            },
+          },
+        },
+      }));
     }
   },
 
@@ -270,6 +292,11 @@ const EMPTY_RUNS: Record<string, LiveSubagentRun> = {};
 /** React 绑定：某会话的实时子代理运行（引用稳定，无更新不抖动） */
 export function useLiveSubagentRuns(sessionId: string | undefined): Record<string, LiveSubagentRun> {
   return useStore(liveStore, (state) => (sessionId ? state.subagents[sessionId] : undefined) ?? EMPTY_RUNS);
+}
+
+/** React 绑定：某次 spawn_swarm 调用的合成轮状态（无合成轮时 undefined） */
+export function useLiveSubagentSynthesis(sessionId: string | undefined, toolCallId: string | undefined): LiveSubagentSynthesis | undefined {
+  return useStore(liveStore, (state) => (sessionId && toolCallId ? state.syntheses[sessionId]?.[toolCallId] : undefined));
 }
 
 /** React 绑定：某会话的实时活动条目（用 deriveActivityInfo 派生展示信息） */
