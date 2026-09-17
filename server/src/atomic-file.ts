@@ -29,7 +29,7 @@ function isTransientWindowsRenameError(error: unknown): boolean {
 }
 
 /** Replace an already-written temporary file without ever deleting the target first. */
-export async function replaceFileWithRetry(temporary: string, target: string, options: AtomicReplaceOptions = {}): Promise<void> {
+async function replaceFileWithRetry(temporary: string, target: string, options: AtomicReplaceOptions = {}): Promise<void> {
   const platform = options.platform ?? process.platform;
   const delays = platform === "win32" ? (options.retryDelaysMs ?? WINDOWS_RENAME_RETRY_DELAYS_MS) : [];
   const renameFile = options.renameFile ?? rename;

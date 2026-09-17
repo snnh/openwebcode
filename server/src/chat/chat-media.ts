@@ -100,7 +100,7 @@ const IMAGE_GEN_TIMEOUT_MS = 120_000;
 const IMAGE_GEN_MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 
 /** OpenAI 兼容图像生成：POST <baseURL>/images/generations（response_format=b64_json）。 */
-export function createOpenAIImageGenProvider(options: {
+function createOpenAIImageGenProvider(options: {
   name: string;
   model: string;
   baseURL: string;
@@ -150,7 +150,7 @@ export type VisionReasoning = "off" | "low" | "medium" | "high";
  * 视觉理解适配器：构造含 image 块 + prompt 的单条 user 消息，走所选 provider 的
  * streamChat 通路收集流式文本。reasoning 缺省 off；low/medium/high 映射到 thinking=enabled + effort。
  */
-export function createProviderVisionProvider(options: { name: string; model: string; provider: Provider }): VisionProvider {
+function createProviderVisionProvider(options: { name: string; model: string; provider: Provider }): VisionProvider {
   return {
     name: options.name,
     async analyze(image, prompt, analyzeOptions) {

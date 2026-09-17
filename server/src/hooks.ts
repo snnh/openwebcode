@@ -161,7 +161,7 @@ export class HookRunner {
 }
 
 /** matcher：精确工具名、"前缀*" 前缀匹配、"*" 全匹配；无 tool 的事件仅 "*" 命中 */
-export function matchesMatcher(matcher: string, tool: string | undefined): boolean {
+function matchesMatcher(matcher: string, tool: string | undefined): boolean {
   if (matcher === "*") return true;
   if (tool === undefined) return false;
   if (matcher.endsWith("*")) return tool.startsWith(matcher.slice(0, -1));
@@ -174,7 +174,7 @@ const HOOK_EVENTS: readonly HookEvent[] = [
   "PreCompact", "PostCompact", "SessionEnd", "Notification", "SubagentStart", "SubagentStop",
 ];
 
-export function normalizeHooksConfig(value: unknown): HooksConfig {
+function normalizeHooksConfig(value: unknown): HooksConfig {
   if (!value || typeof value !== "object") return {};
   const config: HooksConfig = {};
   for (const event of HOOK_EVENTS) {

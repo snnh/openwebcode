@@ -17,9 +17,6 @@
     "playwright"
   ],
   "ignoreBinaries": [
-    "bwrap",
-    "pwsh",
-    "uv",
-    "mkfifo"
+    "bwrap"
   ]
 }

@@ -12,13 +12,13 @@
  */
 
 /** 距底小于该像素值视为「贴底」 */
-export const BOTTOM_THRESHOLD = 40;
+const BOTTOM_THRESHOLD = 40;
 
 /** restore 的返回值：数值为记忆的 scrollTop；"bottom" 表示此前贴底或无记忆 */
 type ScrollRestoreTarget = number | "bottom";
 
 /** 结构兼容 HTMLElement 的最小滚动容器（测试用假 DOM 实现同形接口） */
-export interface ScrollFollowerTarget {
+interface ScrollFollowerTarget {
   scrollTop: number;
   readonly scrollHeight: number;
   readonly clientHeight: number;

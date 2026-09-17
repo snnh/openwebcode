@@ -44,7 +44,7 @@ interface VaultIndexLite {
 }
 
 /** 解析 compact/index.json（容错：形状不合法返回 null）。 */
-export function parseVaultIndexJson(raw: string): VaultIndexLite | null {
+function parseVaultIndexJson(raw: string): VaultIndexLite | null {
   try {
     const value = JSON.parse(raw) as { uptoIndex?: unknown; sections?: unknown };
     const uptoIndex = value.uptoIndex;

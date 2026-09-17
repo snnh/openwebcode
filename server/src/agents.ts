@@ -16,7 +16,7 @@ interface AgentDefinition {
   source: "project" | "global";
 }
 
-export function parseAgentMarkdown(
+function parseAgentMarkdown(
   text: string,
   fallbackName: string,
   source: "project" | "global",

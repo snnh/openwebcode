@@ -39,7 +39,7 @@ interface SettingOptionView {
   label: string;
 }
 
-export interface SettingsFieldView {
+interface SettingsFieldView {
   key: string;
   label: string;
   type: SettingFieldType;
@@ -473,9 +473,6 @@ const INSTALL_DEFAULTS = new Map<string, SettingValue>(
       (Array.isArray(value) && value.every((entry) => typeof entry === "string")))
     .map(([key, value]) => [key, value as SettingValue]),
 );
-
-/** 代码内默认值（FIELDS.defaultValue）；测试用于校验与 config/defaults.json 保持一致。 */
-export const CODE_DEFAULTS: ReadonlyMap<string, SettingValue | null> = new Map(FIELDS.map((field) => [field.key, field.defaultValue]));
 
 function maskSecret(value: string): string {
   if (value.length <= 12) return "••••••";

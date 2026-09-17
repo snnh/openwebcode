@@ -52,7 +52,7 @@ export const GENERAL_AGENT_TOOL_NAMES = [
 ] as const;
 
 /** 结论硬上限（防单条结论撑爆主上下文；正常结论远小于此值）。 */
-export const SUB_AGENT_CONCLUSION_LIMIT = 64_000;
+const SUB_AGENT_CONCLUSION_LIMIT = 64_000;
 
 type BuiltinSubAgentKind = "explore" | "general";
 

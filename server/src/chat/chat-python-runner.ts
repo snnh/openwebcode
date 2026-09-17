@@ -137,7 +137,7 @@ async function resolveCwd(sessionDir: string, override: string | undefined): Pro
  * 子进程环境白名单：不继承 process.env（provider API Key 等绝不进入沙盒进程）。
  * 仅保留运行所需最小集。
  */
-export function buildSandboxEnv(home: string, mplConfigDir: string): Record<string, string> {
+function buildSandboxEnv(home: string, mplConfigDir: string): Record<string, string> {
   const env: Record<string, string> = {
     PATH: process.platform === "win32"
       ? `${process.env.SystemRoot ?? "C:\\Windows"}\\System32`
@@ -183,7 +183,7 @@ interface BwrapSpec {
  * 系统目录只读绑定（存在的才绑）、venv 只读、会话目录可写、/tmp 为 tmpfs、
  * 环境经 --clearenv + --setenv 白名单注入。
  */
-export function buildBwrapArgs(spec: BwrapSpec): string[] {
+function buildBwrapArgs(spec: BwrapSpec): string[] {
   const exists = spec.exists ?? existsSync;
   const args: string[] = ["--unshare-all", "--die-with-parent", "--new-session"];
   for (const dir of ["/usr", "/lib", "/lib64"]) {
@@ -210,7 +210,7 @@ function pyLiteral(value: string): string {
   return value.replace(/\\/g, "\\\\");
 }
 
-export function buildWrapper(scriptPath: string, imgDir: string, mplConfigDir: string, home: string): string {
+function buildWrapper(scriptPath: string, imgDir: string, mplConfigDir: string, home: string): string {
   return `import builtins
 import importlib
 import sys

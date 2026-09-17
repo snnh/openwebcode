@@ -82,7 +82,7 @@ export function mergeInstructions(previous: string[], extracted: string[]): stri
  * 模型偶尔会把待压缩对话原文原样返回（或返回思考内容），此类输出既没瘦身、
  * 又会因 uptoIndex 前进而永久失去重新压缩的机会，写入账本前必须拦截。
  */
-export function validateCompactionOutput(mode: "toolcalls" | "overview", summary: string, transcriptLength: number): string | undefined {
+function validateCompactionOutput(mode: "toolcalls" | "overview", summary: string, transcriptLength: number): string | undefined {
   // 复述原文：转录由 renderSpan 用【role】标记拼接，输出若带角色标记即逐字复述
   if (/【(user|assistant|system|tool)】/.test(summary)) {
     return "输出复述了对话原文（含转录角色标记）";
@@ -152,7 +152,7 @@ function ruleBasedToolcalls(span: ChatMessage[], previousSummary?: string): stri
  * 收缩后继续向下检查（级联收缩）。无对应结果的调用（中断轮残留）不算跨界——它本就无配对，
  * 压缩掉不制造新孤儿。
  */
-export function alignCompactionBoundary(messages: ChatMessage[], uptoIndex: number): number {
+function alignCompactionBoundary(messages: ChatMessage[], uptoIndex: number): number {
   let boundary = Math.min(Math.max(0, uptoIndex), messages.length);
   const resultIndex = new Map<string, number>();
   for (let index = 0; index < messages.length; index += 1) {

@@ -44,9 +44,6 @@ const ENV_PASSTHROUGH = new Set([
   "HOME", "USERPROFILE", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
 ]);
 
-/** 测试用：暴露白名单键集合（大写）。 */
-export const MCP_ENV_PASSTHROUGH: ReadonlySet<string> = ENV_PASSTHROUGH;
-
 /** 从 process.env 提取白名单内的最小运行环境。 */
 export function minimalChildEnv(): Record<string, string> {
   const result: Record<string, string> = {};

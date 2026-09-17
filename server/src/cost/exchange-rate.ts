@@ -5,7 +5,7 @@ import { isMissing } from "../fs-utils.js";
 import { withTimeout } from "../http-utils.js";
 import { getUserAgent } from "../user-agent.js";
 
-export const RATE_SCALE = 1_000_000n;
+const RATE_SCALE = 1_000_000n;
 
 export interface ExchangeRateSnapshot {
   base: "USD";
@@ -16,7 +16,7 @@ export interface ExchangeRateSnapshot {
   fetchedAt: string;
 }
 
-export interface ExchangeRateProvider {
+interface ExchangeRateProvider {
   fetch(signal: AbortSignal): Promise<ExchangeRateSnapshot>;
 }
 

@@ -9,7 +9,7 @@ import { usage } from "./mock-provider.js";
  * exact tool-call sequence the "model" produces, and assertions check the
  * resulting workspace and message state.
  */
-export const EVAL_TASKS: EvalTask[] = [
+const EVAL_TASKS: EvalTask[] = [
   {
     id: "create-file",
     name: "创建文件",

@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { estimateTokens } from "./model-profile.js";
 
-export const TOOL_RESULT_BUDGETS: Record<string, number> = {
+const TOOL_RESULT_BUDGETS: Record<string, number> = {
   bash: 8_000,
   read_file: 16_000,
   grep: 4_000,

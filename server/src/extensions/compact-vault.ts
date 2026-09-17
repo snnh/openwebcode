@@ -73,7 +73,7 @@ function renderBlock(block: MessageContent): string {
 }
 
 /** 归档分块：按 chunkSize 切消息序列。 */
-export function chunkMessages(messages: ChatMessage[], chunkSize: number): ChatMessage[][] {
+function chunkMessages(messages: ChatMessage[], chunkSize: number): ChatMessage[][] {
   const size = Math.max(1, Math.floor(chunkSize));
   const chunks: ChatMessage[][] = [];
   for (let index = 0; index < messages.length; index += size) {
@@ -83,7 +83,7 @@ export function chunkMessages(messages: ChatMessage[], chunkSize: number): ChatM
 }
 
 /** 渲染一块消息为归档文件正文（含文件头，保留全部内容）。 */
-export function renderChunk(chunk: ChatMessage[], file: string): string {
+function renderChunk(chunk: ChatMessage[], file: string): string {
   const header = [
     `# 归档转录 ${file}`,
     `消息数：${chunk.length}；范围：${chunk[0]?.id ?? ""} … ${chunk[chunk.length - 1]?.id ?? ""}`,
@@ -99,7 +99,7 @@ export function renderChunk(chunk: ChatMessage[], file: string): string {
  * 解析快速模型 Pass 1 输出的目录条目（容错：KEY:/TITLE:/FILES:/DESC: 四行字段，--- 分隔）。
  * 不完整条目丢弃；FILES 缺失时由调用方按当前块文件补齐。
  */
-export function parseSectionList(text: string): Array<{ key: string; title: string; files?: string; desc: string }> {
+function parseSectionList(text: string): Array<{ key: string; title: string; files?: string; desc: string }> {
   const result: Array<{ key: string; title: string; files?: string; desc: string }> = [];
   let current: Partial<{ key: string; title: string; files: string; desc: string }> = {};
   let sawKey = false;
@@ -141,7 +141,7 @@ export function parseSectionList(text: string): Array<{ key: string; title: stri
 }
 
 /** 读取 compact/index.json；缺失或形状不合法返回 null（不抛错——recall 与回注都按无归档降级）。 */
-export async function loadVaultIndex(compactDir: string): Promise<VaultIndex | null> {
+async function loadVaultIndex(compactDir: string): Promise<VaultIndex | null> {
   try {
     const value = JSON.parse(await readFile(path.join(compactDir, "index.json"), "utf8")) as Partial<VaultIndex>;
     const uptoIndex = value.uptoIndex;

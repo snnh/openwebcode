@@ -71,11 +71,6 @@ function hashCode(text: string): number {
   return hash >>> 0;
 }
 
-/** 清空高亮结果缓存（测试用；运行期缓存有界无需清理） */
-export function clearHighlightCache(): void {
-  highlightCache.clear();
-}
-
 /** 返回双主题高亮 HTML（CSS 变量随 data-theme 切换），语言不支持或失败时返回 undefined */
 export async function highlightCode(code: string, lang?: string): Promise<string | undefined> {
   const normalized = (lang ?? "").toLowerCase();

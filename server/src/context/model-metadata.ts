@@ -75,7 +75,7 @@ const PREFIXES: Array<[string, ModelMetadata]> = [
   ["gemini", { contextWindow: 1_000_000, capabilities: caps({ modalities: ["text", "image", "video"], effort: ["minimal", "low", "medium", "high"] }) }],
 ];
 
-export const FALLBACK_METADATA: ModelMetadata = {
+const FALLBACK_METADATA: ModelMetadata = {
   // 未知模型的保守兜底：256K 是当前主流中端窗口（用户明确「默认 256K」）；
   // 支持 1M 的模型族（deepseek-v4/k3/glm-5/gemini-3/gpt-4.1 等）在 PREFIXES 显式声明 1M。
   contextWindow: 256_000,

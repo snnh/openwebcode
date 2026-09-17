@@ -8,23 +8,6 @@ import { isMissing } from "./fs-utils.js";
  * - 内容为 "- " 子弹列表；系统提示每轮注入，remember 工具与压缩沉淀两处写入
  */
 
-/** 读文本；任何失败按不存在处理（注入路径绝不阻断 agent 循环）。 */
-async function readOrEmpty(filePath: string): Promise<string> {
-  try {
-    return await readFile(filePath, "utf8");
-  } catch {
-    return "";
-  }
-}
-
-export function readProjectMemory(cwd: string): Promise<string> {
-  return readOrEmpty(path.join(cwd, ".owc", "memory.md"));
-}
-
-export function readGlobalMemory(dataDir: string): Promise<string> {
-  return readOrEmpty(path.join(dataDir, "memory.md"));
-}
-
 /**
  * 把 facts 逐条作为 "- " 子弹追加到 filePath：
  * - 与文件中已有子弹（trim 后文本相同）重复的事实跳过

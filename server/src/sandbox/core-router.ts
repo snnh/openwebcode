@@ -64,7 +64,7 @@ import { WSB_WORKSPACE_MOUNT, type WsbManager } from "./wsb.js";
  * 目录外路径原样透传——沙盒本就无法访问，由沙盒内 core 按现有策略拒绝。
  * exec.run 的 cmd 字符串内嵌路径不做翻译（不可可靠解析），调用方应使用相对路径。
  */
-export function toSandboxPath(hostPath: string, workspace: string): string {
+function toSandboxPath(hostPath: string, workspace: string): string {
   const target = hostPath.replace(/\//g, "\\");
   const root = workspace.replace(/\//g, "\\");
   const lower = target.toLowerCase();

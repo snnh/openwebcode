@@ -24,11 +24,11 @@ import type {
 } from "./types.js";
 
 /** git_status 单分组输出上限；超出截断并保留真实总数。 */
-export const MAX_STATUS_ENTRIES_PER_GROUP = 200;
+const MAX_STATUS_ENTRIES_PER_GROUP = 200;
 /** diff 内联返回阈值（字节）；超出只给 stat + 摘要，完整 diff 落 artifact。 */
-export const MAX_INLINE_DIFF_BYTES = 32 * 1024;
+const MAX_INLINE_DIFF_BYTES = 32 * 1024;
 /** worktree 数量上限（plan §4.5 默认 4）。 */
-export const MAX_WORKTREES = 4;
+const MAX_WORKTREES = 4;
 /** 提交信息长度上限。 */
 const MAX_COMMIT_MESSAGE_CHARS = 2_000;
 
@@ -81,73 +81,8 @@ function validateWorktreeName(name: string): string {
   return trimmed;
 }
 
-/** 解析 `git status --porcelain=v1 --branch` 输出。 */
-export function parseStatusPorcelain(text: string): Omit<GitStatusResult, "isRepo"> {
-  const staged: GitStatusEntry[] = [];
-  const unstaged: GitStatusEntry[] = [];
-  const untracked: GitStatusEntry[] = [];
-  let branch: string | undefined;
-  let upstream: string | undefined;
-  let ahead = 0;
-  let behind = 0;
-  for (const line of text.split("\n")) {
-    if (line === "") continue;
-    if (line.startsWith("## ")) {
-      const header = line.slice(3);
-      if (header.startsWith("HEAD (no branch)") || header === "HEAD") {
-        branch = "HEAD";
-      } else {
-        const separator = header.indexOf("...");
-        const branchPart = separator >= 0 ? header.slice(0, separator) : header;
-        const restPart = separator >= 0 ? header.slice(separator + 3) : "";
-        const upstreamMatch = /^([^\s[]+)/.exec(restPart);
-        const trackingMatch = /\[([^\]]*)\]/.exec(restPart);
-        if (branchPart) branch = branchPart;
-        if (upstreamMatch) upstream = upstreamMatch[1];
-        const tracking = trackingMatch?.[1] ?? "";
-        const aheadMatch = /ahead (\d+)/.exec(tracking);
-        const behindMatch = /behind (\d+)/.exec(tracking);
-        if (aheadMatch) ahead = Number(aheadMatch[1]);
-        if (behindMatch) behind = Number(behindMatch[1]);
-      }
-      continue;
-    }
-    const code = line.slice(0, 2);
-    let filePath = line.slice(3);
-    let originalPath: string | undefined;
-    const renameIndex = filePath.indexOf(" -> ");
-    if (renameIndex >= 0) {
-      originalPath = filePath.slice(0, renameIndex);
-      filePath = filePath.slice(renameIndex + 4);
-    }
-    // porcelain 对含特殊字符的路径加引号；白名单外的路径仍如实返回（仅展示）
-    if (filePath.startsWith('"') && filePath.endsWith('"')) filePath = filePath.slice(1, -1);
-    const entry: GitStatusEntry = { path: filePath, code, ...(originalPath ? { originalPath } : {}) };
-    if (code === "??") {
-      untracked.push(entry);
-      continue;
-    }
-    const [index, worktree] = code;
-    if (index !== " " && index !== "?") staged.push(entry);
-    if (worktree !== " " && worktree !== "?") unstaged.push(entry);
-  }
-  const cap = (entries: GitStatusEntry[]): GitStatusEntry[] => entries.slice(0, MAX_STATUS_ENTRIES_PER_GROUP);
-  const truncated = staged.length > MAX_STATUS_ENTRIES_PER_GROUP || unstaged.length > MAX_STATUS_ENTRIES_PER_GROUP || untracked.length > MAX_STATUS_ENTRIES_PER_GROUP;
-  return {
-    ...(branch ? { branch } : {}),
-    ...(upstream ? { upstream } : {}),
-    ahead,
-    behind,
-    staged: cap(staged),
-    unstaged: cap(unstaged),
-    untracked: cap(untracked),
-    totals: { staged: staged.length, unstaged: unstaged.length, untracked: untracked.length },
-    truncated,
-  };
-}
-
 /** Parse `git status --porcelain=v1 --branch -z` without display quoting. */
-export function parseStatusPorcelainZ(text: string): Omit<GitStatusResult, "isRepo"> {
+function parseStatusPorcelainZ(text: string): Omit<GitStatusResult, "isRepo"> {
   const records = text.split("\0");
   const staged: GitStatusEntry[] = [];
   const unstaged: GitStatusEntry[] = [];
@@ -540,7 +475,7 @@ export class ScmService {
   }
 }
 
-export class NotARepoError extends Error {
+class NotARepoError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "NotARepoError";

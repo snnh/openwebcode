@@ -177,7 +177,7 @@ function parseMaxTurns(raw: unknown): number | undefined {
  */
 const CONTEXT_OVERFLOW_MESSAGE = /context.?length|too many tokens|maximum context|prompt is too long/i;
 
-export function isContextOverflowError(error: unknown): boolean {
+function isContextOverflowError(error: unknown): boolean {
   return error instanceof ProviderError && error.kind === "invalid_request" && CONTEXT_OVERFLOW_MESSAGE.test(error.message);
 }
 
@@ -327,7 +327,7 @@ const SUB_AGENT_ROLE_GUIDANCE: Record<ModelRole, string> = {
 };
 
 /** 手动启动（REST）子代理的每会话并发上限，超出直接 429（独立于 subagent/spawn_swarm 并行配置；手动路径后续计划归档）。 */
-export const MAX_MANUAL_SUBAGENTS = 4;
+const MAX_MANUAL_SUBAGENTS = 4;
 
 /** 手动子代理启动失败：REST 层按 code 映射 400/429。 */
 export class SubAgentLaunchError extends Error {

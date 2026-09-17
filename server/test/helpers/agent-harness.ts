@@ -1,5 +1,4 @@
 import path from "node:path";
-import { expect, vi } from "vitest";
 import { AgentRunner } from "../../src/agent/agent-runner.js";
 import { buildServer } from "../../src/app.js";
 import type { CoreClientLike } from "../../src/core-client.js";
@@ -77,28 +76,10 @@ export function makeAbortPendingProvider(name = "test-stub"): { provider: Provid
   return { provider, entered };
 }
 
-/** 等到会话出现 pending 交互并返回之。15s：Windows CI/本地全量并行高负载下 5s 会抖动超时。 */
-export async function waitForPendingInteraction(agent: AgentRunner, sessionId: string) {
-  await vi.waitFor(async () => {
-    const list = await agent.listInteractions(sessionId);
-    expect(list.some((item) => item.status === "pending")).toBe(true);
-  }, { timeout: 15000 });
-  return (await agent.listInteractions(sessionId)).find((item) => item.status === "pending")!;
-}
-
 /** 在会话详情里找指定 toolCallId 的 tool_result 块 */
 export function toolResultOf(detail: Awaited<ReturnType<SessionStore["get"]>>, toolCallId: string) {
   return detail?.messages
     .filter((message) => message.role === "tool")
     .flatMap((message) => message.content)
     .find((block) => block.type === "tool_result" && block.toolCallId === toolCallId);
-}
-
-/** 等到 sessions 落盘出现至少 count 条 role=tool 消息 */
-export async function waitForToolMessage(sessions: SessionStore, id: string, count = 1): Promise<void> {
-  await vi.waitFor(async () => {
-    const detail = await sessions.get(id);
-    const n = detail?.messages.filter((m) => m.role === "tool").length ?? 0;
-    if (n < count) throw new Error("no tool message yet");
-  }, { timeout: 5_000 });
 }

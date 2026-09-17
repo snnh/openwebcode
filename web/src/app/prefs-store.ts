@@ -53,10 +53,6 @@ export function useKeybindingOverrides(): KeybindingOverrides {
   return useStore(keybindingsStore, (state) => state.value);
 }
 
-export function getKeybindingOverrides(): KeybindingOverrides {
-  return keybindingsStore.get().value;
-}
-
 /** 设置某命令键位；key=null 表示解除绑定。 */
 export function setKeybinding(command: string, key: string | null): void {
   const next = { ...keybindingsStore.get().value, [command]: key };
