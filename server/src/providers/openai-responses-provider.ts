@@ -574,6 +574,101 @@ function responseToolCallId(call: ToolCallContent): string {
   return call.id;
 }
 
+/**
+ * 加密回放（official OpenAI / dsh same-model 口径）单条 assistant 消息的 item 序列：
+ * 按原始块序回放 thinking / web_search_call / text / tool_call(+function_call_output)；
+ * 附带媒体在所有 function_call_output 之后合成一条 user 消息（fc/fco 配对要求连续）。
+ */
+function encryptedReplayAssistantItems(
+  message: ChatMessage,
+  providerName: string,
+  emitted: Set<string>,
+  outputs: Map<string, string>,
+  toolMedia: Map<string, ToolMediaItem[]>,
+): Array<Record<string, unknown>> {
+  const items: Array<Record<string, unknown>> = [];
+  const mediaBatch: ToolMediaItem[] = [];
+  let textBlockIndex = 0;
+
+  for (const block of message.content) {
+    if (block.type === "thinking") {
+      if (block.provider !== providerName) continue;
+      const original = parseReasoningSignature(block.signature);
+      // 无签名 → skip（加密回放不做占位，服务端不需要存在性校验）
+      if (original) items.push(original);
+      continue;
+    }
+    if (block.type === "web_search_call") {
+      if (!ownsWebSearchBlock(block, providerName)) continue;
+      const item = parseWebSearchCallSignature(block.signature);
+      if (item) items.push(item);
+      continue;
+    }
+    if (block.type === "text") {
+      const textBlock = block as StoredTextBlock;
+      const parsedSignature = parseTextSignature(textBlock.textSignature);
+      items.push({
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: sanitizeSurrogates(textBlock.text), annotations: [] }],
+        status: "completed",
+        id: parsedSignature?.id ?? deriveMessageItemId(`${message.id}:${textBlockIndex}`),
+        ...(parsedSignature?.phase ? { phase: parsedSignature.phase } : {}),
+      });
+      textBlockIndex += 1;
+      continue;
+    }
+    if (block.type === "tool_call" && !emitted.has(block.id) && outputs.has(block.id)) {
+      emitted.add(block.id);
+      const responseCallId = responseToolCallId(block);
+      items.push({
+        type: "function_call",
+        call_id: responseCallId,
+        name: block.name,
+        arguments: JSON.stringify(block.input),
+        // 仅原样回传以 fc_ 开头的官方 item id（其他派生/复制 id 反而触发配对校验）
+        ...(block.itemId && block.itemId.startsWith("fc_") ? { id: block.itemId } : {}),
+      });
+      items.push({
+        type: "function_call_output",
+        call_id: responseCallId,
+        output: sanitizeSurrogates(outputs.get(block.id) ?? INTERRUPTED_TOOL_OUTPUT),
+      });
+      mediaBatch.push(...(toolMedia.get(block.id) ?? []));
+    }
+  }
+
+  if (mediaBatch.length > 0) items.push(openaiResponsesMediaMessage(mediaBatch));
+  return items;
+}
+
+/**
+ * 规范序前置项（reasoning / web_search_call）：按消息块原始顺序交错收集，
+ * 两者都属于 assistant 消息的前置内容（流式顺序：reasoning/ws → message → fc）。
+ */
+function collectCanonicalPreItems(
+  message: ChatMessage,
+  providerName: string,
+  replayReasoning: boolean,
+): { preItems: Array<Record<string, unknown>>; hasReasoning: boolean } {
+  const preItems: Array<Record<string, unknown>> = [];
+  let hasReasoning = false;
+  for (const block of message.content) {
+    if (block.type === "web_search_call") {
+      if (!ownsWebSearchBlock(block, providerName)) continue;
+      const item = parseWebSearchCallSignature(block.signature);
+      if (item) preItems.push(item);
+      continue;
+    }
+    if (block.type !== "thinking" || block.provider !== providerName || !replayReasoning) continue;
+    const parts = reasoningTextParts(block.signature, block.text);
+    if (parts.length === 0) continue;
+    preItems.push({ type: "reasoning", content: parts });
+    hasReasoning = true;
+  }
+  return { preItems, hasReasoning };
+}
+
 function toResponsesInput(
   messages: ChatMessage[],
   providerName: string,
@@ -600,59 +695,7 @@ function toResponsesInput(
       result.push({ role: "user", content });
     } else if (message.role === "assistant") {
       if (encrypted) {
-        // 加密回放模式（official OpenAI，dsh same-model 口径）：按原始块序回放——
-        // - 同源 thinking 块：带有效 signature 时把存储的完整 reasoning item（含 rs_ id /
-        //   encrypted_content / summary / content）原样回传；无签名直接跳过（不补占位）；
-        // - web_search_call 块：服务端原始 item 原样回传（文档：Pass back as-is，服务端自动恢复搜索结果）；
-        // - 文本块：完整 message item（msg_ id 取自 textSignature，缺省派生稳定 id）；
-        // - tool_call 块：function_call 保留 fc_ item id（itemId 以 fc_ 开头时），随后内联
-        //   function_call_output（结果缺失补 interrupted 占位）。
-        let textBlockIndex = 0;
-        // 附带媒体（read_media）批量收集：本 assistant 消息内全部 function_call_output
-        // 之后合成**一条** user 消息投递（fc/fco 配对要求连续，中间插 user 会破配对校验）
-        const encryptedMediaBatch: ToolMediaItem[] = [];
-        for (const block of message.content) {
-          if (block.type === "thinking") {
-            if (block.provider !== providerName) continue;
-            const original = parseReasoningSignature(block.signature);
-            if (original) result.push(original);
-            // 无签名 → skip（加密回放不做占位，服务端不需要存在性校验）
-          } else if (block.type === "web_search_call") {
-            if (!ownsWebSearchBlock(block, providerName)) continue;
-            const item = parseWebSearchCallSignature(block.signature);
-            if (item) result.push(item);
-          } else if (block.type === "text") {
-            const textBlock = block as StoredTextBlock;
-            const parsedSignature = parseTextSignature(textBlock.textSignature);
-            result.push({
-              type: "message",
-              role: "assistant",
-              content: [{ type: "output_text", text: sanitizeSurrogates(textBlock.text), annotations: [] }],
-              status: "completed",
-              id: parsedSignature?.id ?? deriveMessageItemId(`${message.id}:${textBlockIndex}`),
-              ...(parsedSignature?.phase ? { phase: parsedSignature.phase } : {}),
-            });
-            textBlockIndex += 1;
-          } else if (block.type === "tool_call" && !emitted.has(block.id) && outputs.has(block.id)) {
-            emitted.add(block.id);
-            const responseCallId = responseToolCallId(block);
-            result.push({
-              type: "function_call",
-              call_id: responseCallId,
-              name: block.name,
-              arguments: JSON.stringify(block.input),
-              // 仅原样回传以 fc_ 开头的官方 item id（其他派生/复制 id 反而触发配对校验）
-              ...(block.itemId && block.itemId.startsWith("fc_") ? { id: block.itemId } : {}),
-            });
-            result.push({
-              type: "function_call_output",
-              call_id: responseCallId,
-              output: sanitizeSurrogates(outputs.get(block.id) ?? INTERRUPTED_TOOL_OUTPUT),
-            });
-            encryptedMediaBatch.push(...(toolMedia.get(block.id) ?? []));
-          }
-        }
-        if (encryptedMediaBatch.length > 0) result.push(openaiResponsesMediaMessage(encryptedMediaBatch));
+        result.push(...encryptedReplayAssistantItems(message, providerName, emitted, outputs, toolMedia));
       } else {
       // 规范序回放（DeepSeek Responses 官方规则 + 真机验证）：带 tools 的请求中，所有含
       // reasoning_text 的 reasoning item 必须回传，且位于其归属的 assistant 消息之前
@@ -675,20 +718,7 @@ function toResponsesInput(
       }
       // 规范序前置项：reasoning（逐 thinking 块）与 web_search_call（原样）按消息块原始
       // 顺序交错——两者都属于 assistant 消息的前置内容（流式输出顺序：reasoning/ws → message → fc）。
-      const preItems: Array<Record<string, unknown>> = [];
-      let hasReasoning = false;
-      for (const block of message.content) {
-        if (block.type === "thinking" && block.provider === providerName && replayReasoning) {
-          const parts = reasoningTextParts(block.signature, block.text);
-          if (parts.length > 0) {
-            preItems.push({ type: "reasoning", content: parts });
-            hasReasoning = true;
-          }
-        } else if (block.type === "web_search_call" && ownsWebSearchBlock(block, providerName)) {
-          const item = parseWebSearchCallSignature(block.signature);
-          if (item) preItems.push(item);
-        }
-      }
+      const { preItems, hasReasoning } = collectCanonicalPreItems(message, providerName, replayReasoning);
       if (preItems.length > 0) result.push(...preItems);
       if (!hasReasoning && replayReasoning && message === messages[messages.length - 1]) {
         // 尾部保护：输入最后一条是 assistant 且历史上无任何 thinking 素材（旧协议/导入历史）时，

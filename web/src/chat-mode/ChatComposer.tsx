@@ -131,6 +131,22 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
     }
   }
 
+  /** 组装带图消息的 content 块（文本块在前）；任一附件上传失败返回 undefined，调用方保留草稿。 */
+  async function buildImageContent(sid: string, text: string): Promise<MessageContent[] | undefined> {
+    const content: MessageContent[] = [];
+    if (text) content.push({ type: "text", text });
+    for (const image of images) {
+      if (image.data) {
+        content.push({ type: "image", mediaType: image.mediaType, data: image.data });
+        continue;
+      }
+      const ref = await uploadImage(sid, image);
+      if (!ref) return undefined;
+      content.push({ type: "image", mediaType: image.mediaType, ref });
+    }
+    return content;
+  }
+
   async function handleSend(overrideText?: string): Promise<void> {
     // 建议直发经 overrideText 跨过草稿状态（setDraft 异步，直接读 state 会拿到旧值）
     const text = (overrideText ?? draft).trim();
@@ -151,19 +167,10 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
       // 纯文本保持旧 {text} 形态；带图走 content 块数组（text 为空时只发图片块）
       let body: Record<string, unknown> = { text };
       if (images.length > 0) {
-        const content: MessageContent[] = [];
-        if (text) content.push({ type: "text", text });
-        for (const image of images) {
-          if (image.data) {
-            content.push({ type: "image", mediaType: image.mediaType, data: image.data });
-          } else {
-            const ref = await uploadImage(sid, image);
-            if (!ref) {
-              setSending(false);
-              return; // 保留草稿与附件，用户可重试
-            }
-            content.push({ type: "image", mediaType: image.mediaType, ref });
-          }
+        const content = await buildImageContent(sid, text);
+        if (!content) {
+          setSending(false);
+          return; // 保留草稿与附件，用户可重试
         }
         body = { content };
       }
