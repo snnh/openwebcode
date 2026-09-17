@@ -10,7 +10,10 @@
  * - object 解析保留输入中的多余键（strict 模式除外）；缺席的可选键且解析值为 null 时不产出；
  * - union 依序尝试首个成功分支，全部失败时报 "expected <list> but got <json>"；
  * - intersect 逐分支 strict 解析后按对象合并，类型冲突报错；
- * - `~standard` 接口供 cordis Config 校验使用（仅支持同步校验）。
+ * - `~standard` 接口供 cordis Config 校验使用（仅支持同步校验）；
+ * - `Schema.from`：null/undefined → any、标量字面量 → const().required()、
+ *   String/Number/Boolean/Function 构造器 → 对应类型 required()；类实例校验
+ *   （`Schema.is`）不支持 → fail loud。
  */
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-namespace -- 垫片忠实复刻上游 schemastery 的宽松类型面（any/namespace 为上游公开 API 形态），逐行 disable 会淹没移植代码的可读性 */
 
@@ -349,7 +352,9 @@ Schema.from = function from(source: unknown): Schemastery {
     if (source === String) return Schema.string().required();
     if (source === Number) return Schema.number().required();
     if (source === Boolean) return Schema.boolean().required();
-    throw new UnsupportedSchemaError(`Schema.from(${(source as { name?: string }).name ?? "function"})`);
+    if (source === Function) return Schema.function().required();
+    // 上游此分支为 Schema.is(customClass).required()；垫片不支持类实例校验 → fail loud
+    throw new UnsupportedSchemaError(`Schema.from(${(source as { name?: string }).name ?? "function"})（类实例校验）`);
   }
   throw new UnsupportedSchemaError(`cannot infer schema from ${String(source)}`);
 };

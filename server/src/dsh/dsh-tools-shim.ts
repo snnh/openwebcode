@@ -1,12 +1,18 @@
 /**
- * dsh 兼容层 · dsh-tools 垫片（M1）
+ * dsh 兼容层 · dsh-tools 垫片（M1，已按上游 0d1f50007f 复核对齐）
  *
- * 对 `@deepseek-ai/dsh-tools`（上游 packages/core/tools）的 `defineTool` 子集复刻：
- * - 参数 DSL（隐式对象根 + 每属性 `required: true` 注记）编译为 JSON Schema，作者侧
- *   未知键 fail loud（对齐上游 compilePropertyMap 的 author 键断言）；
- * - `execute(args, exec)` 前做参数校验，违规抛 `ToolArgsError`（isError 语义由宿主落）；
- * - `presentCall`/`presentResult`/`isConcurrencySafe` 软校验：参数失配时分别回退
- *   undefined/undefined/false，绝不抛错（上游展示层回放安全约束）；
+ * 对 `@deepseek-ai/dsh-tools`（上游 packages/core/tools/src/schema.ts）的 `defineTool` 子集复刻：
+ * - 参数 DSL（隐式开放对象根 + 每属性 `required: true` 注记）编译为 JSON Schema；作者侧
+ *   约束与上游逐条一致：键白名单按节点类型收窄、object 节点必须显式声明
+ *   `additionalProperties: true|false`、enum/const 必须匹配节点类型且 const ∈ enum、
+ *   注记（default/examples）必须 lossless JSON、祖先链循环引用报 `is circular`；
+ * - `execute(args, exec)` 前做参数校验，违规抛 `ToolArgsError`（`code: "INVALID_ARGS"`，
+ *   文案 `invalid arguments: a; b`），isError 语义由宿主落；
+ * - 违规文案与上游 `validateJsonSchemaValue` 逐字一致（`"<路径>" must be ...`、根路径为
+ *   `"arguments"`、oneOf 要求**恰好命中一个分支**、对象/数组子树的 lossless 后置校验）；
+ * - `presentCall`/`presentResult`/`isConcurrencySafe` 软校验：参数失配分别回退
+ *   undefined/undefined/false；展示回调抛错一并吞掉（展示层回放不得影响主流程，
+ *   比上游更宽——上游靠作者自律，不 catch）；
  * - `output.render(args, value)` 产出文本/结构块，M3 宿主将其映射到 owc 工具结果。
  */
 /** lossless JSON 值（垫片内部用；跨进程序列化由宿主保证）。 */
@@ -165,12 +171,17 @@ export interface ToolDefinition {
   presentResult?: (args: unknown, result: ToolResult) => unknown;
 }
 
-/** 参数校验失败（上游 ToolArgsError 同语义；violations 为带路径的消息列表）。 */
+/**
+ * 参数校验失败（上游同形态：`code: "INVALID_ARGS"` + 单行 message + violations 列表）。
+ * 上游继承自 HarnessError；垫片无该基类，用等价的最小实现。
+ */
 export class ToolArgsError extends Error {
+  readonly code = "INVALID_ARGS";
+  /** 逐条违规消息（schema 遍历顺序）。 */
   readonly violations: string[];
 
   constructor(violations: string[]) {
-    super(`invalid tool arguments:\n${violations.map(line => `- ${line}`).join("\n")}`);
+    super(`invalid arguments: ${violations.join("; ")}`);
     this.name = "ToolArgsError";
     this.violations = violations;
   }
@@ -181,126 +192,170 @@ export class ToolArgsError extends Error {
 // ---------------------------------------------------------------------------
 
 const ANNOTATION_KEYS = ["description", "title", "default", "examples"] as const;
-const SCALAR_KEYS = ["type", "enum", "const"] as const;
+const SCHEMA_TYPES = "string/number/integer/boolean/null/array/object/json";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function authorError(path: string, message: string): never {
-  throw new TypeError(`[dsh-tools] ${path}: ${message}`);
+/** lossless JSON 判定（对齐上游 @deepseek-ai/dsh-util-values 的 isJsonValue）。 */
+function isLosslessJsonValue(value: unknown): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isLosslessJsonValue);
+  if (isPlainObject(value)) {
+    const proto = Object.getPrototypeOf(value) as unknown;
+    if (proto !== Object.prototype && proto !== null) return false;
+    return Object.values(value).every(isLosslessJsonValue);
+  }
+  return false;
+}
+
+/** 标量值是否匹配声明类型（作者侧 enum/const 约束用）。 */
+function matchesScalarType(type: string, value: unknown): boolean {
+  switch (type) {
+    case "string": return typeof value === "string";
+    case "number": return typeof value === "number" && Number.isFinite(value);
+    case "integer": return typeof value === "number" && Number.isInteger(value);
+    case "boolean": return typeof value === "boolean";
+    case "null": return value === null;
+    default: return false;
+  }
+}
+
+/** 作者侧错误：文案与上游 value schema DSL 对齐，冠垫片前缀便于日志检索。 */
+function authorError(message: string): never {
+  throw new TypeError(`[dsh-tools] ${message}`);
+}
+
+function assertAuthorKeys(input: Record<string, unknown>, path: string, allowed: readonly string[]) {
+  for (const key of Object.keys(input)) {
+    if (!allowed.includes(key)) authorError(`${path}.${key} is not supported by the value schema DSL`);
+  }
+}
+
+/** 循环引用防护：按祖先链判定（上游 compile 的 `is circular`）。 */
+function withAncestor<T>(input: Record<string, unknown>, path: string, ancestors: Set<object>, compile: () => T): T {
+  if (ancestors.has(input)) authorError(`${path} is circular`);
+  ancestors.add(input);
+  try {
+    return compile();
+  } finally {
+    ancestors.delete(input);
+  }
 }
 
 function copyAnnotations(input: Record<string, unknown>, node: RawJsonSchema, path: string) {
   for (const key of ANNOTATION_KEYS) {
     if (!Object.hasOwn(input, key)) continue;
     if (key === "description" || key === "title") {
-      if (typeof input[key] !== "string") authorError(`${path}.${key}`, "must be a string");
+      if (typeof input[key] !== "string") authorError(`${path}.${key} must be a string`);
       node[key] = input[key] as string;
     } else {
+      if (!isLosslessJsonValue(input[key])) authorError(`${path}.${key} annotation must be lossless JSON data`);
       node[key] = input[key] as JsonValue;
     }
   }
 }
 
-function compileValueSchema(input: unknown, path: string): RawJsonSchema {
-  if (!isPlainObject(input)) authorError(path, "must be a plain object");
-  const keys = Object.keys(input);
-  if (Object.hasOwn(input, "oneOf")) {
-    const allowed: string[] = [...ANNOTATION_KEYS, "oneOf"];
-    for (const key of keys) {
-      if (!allowed.includes(key)) authorError(`${path}.${key}`, `is not allowed on a oneOf node (allowed: ${allowed.join(", ")})`);
+/** 标量节点的 enum/const 约束（对齐上游 raw-schema 边界断言）。 */
+function copyScalarConstraints(input: Record<string, unknown>, node: RawJsonSchema, path: string, type: string) {
+  if (Object.hasOwn(input, "enum")) {
+    const list = input.enum;
+    if (!Array.isArray(list) || list.length === 0 || !list.every(entry => matchesScalarType(type, entry))) {
+      authorError(`${path}.enum must be a non-empty array of ${type} values`);
     }
-    const list = input.oneOf;
-    if (!Array.isArray(list) || list.length < 2) authorError(`${path}.oneOf`, "must be an array of at least 2 schemas");
-    const node: RawJsonSchema = { oneOf: list.map((entry, index) => compileValueSchema(entry, `${path}.oneOf[${index}]`)) };
-    copyAnnotations(input, node, path);
-    return node;
+    node.enum = [...list] as readonly unknown[];
   }
-  const type = input.type;
-  if (typeof type !== "string") authorError(`${path}.type`, "must be string/number/integer/boolean/null/array/object/json, or use oneOf");
-  switch (type) {
-    case "json": {
-      const allowed: string[] = [...ANNOTATION_KEYS, "type"];
-      for (const key of keys) {
-        if (!allowed.includes(key)) authorError(`${path}.${key}`, `is not allowed on a json node (allowed: ${allowed.join(", ")})`);
-      }
-      const node: RawJsonSchema = {};
-      copyAnnotations(input, node, path);
-      return node;
+  if (Object.hasOwn(input, "const")) {
+    if (!matchesScalarType(type, input.const)) authorError(`${path}.const must be a ${type} value`);
+    if (Array.isArray(node.enum) && !node.enum.includes(input.const)) {
+      authorError(`${path}.const must be one of ${path}.enum when both are declared`);
     }
-    case "string":
-    case "number":
-    case "integer":
-    case "boolean":
-    case "null": {
-      const allowed: string[] = [...ANNOTATION_KEYS, ...SCALAR_KEYS];
-      for (const key of keys) {
-        if (!allowed.includes(key)) authorError(`${path}.${key}`, `is not allowed on a ${type} node (allowed: ${allowed.join(", ")})`);
-      }
-      const node: RawJsonSchema = { type };
-      copyAnnotations(input, node, path);
-      if (Object.hasOwn(input, "enum")) {
-        if (!Array.isArray(input.enum) || input.enum.length === 0) authorError(`${path}.enum`, "must be a non-empty array of scalar values");
-        node.enum = [...input.enum];
-      }
-      if (Object.hasOwn(input, "const")) node.const = input.const;
-      return node;
-    }
-    case "array": {
-      const allowed: string[] = [...ANNOTATION_KEYS, ...SCALAR_KEYS, "items"];
-      for (const key of keys) {
-        if (!allowed.includes(key)) authorError(`${path}.${key}`, `is not allowed on an array node (allowed: ${allowed.join(", ")})`);
-      }
-      const node: RawJsonSchema = { type };
-      copyAnnotations(input, node, path);
-      if (Object.hasOwn(input, "items")) node.items = compileValueSchema(input.items, `${path}.items`);
-      return node;
-    }
-    case "object": {
-      const allowed: string[] = [...ANNOTATION_KEYS, ...SCALAR_KEYS, "properties", "additionalProperties"];
-      for (const key of keys) {
-        if (!allowed.includes(key)) authorError(`${path}.${key}`, `is not allowed on an object node (allowed: ${allowed.join(", ")})`);
-      }
-      const node: RawJsonSchema = { type };
-      copyAnnotations(input, node, path);
-      if (Object.hasOwn(input, "additionalProperties")) {
-        if (typeof input.additionalProperties !== "boolean") authorError(`${path}.additionalProperties`, "must be a boolean");
-        node.additionalProperties = input.additionalProperties;
-      }
-      if (Object.hasOwn(input, "properties")) {
-        const compiled = compilePropertyMap(input.properties, `${path}.properties`);
-        node.properties = compiled.properties;
-        if (compiled.required) node.required = compiled.required;
-      }
-      return node;
-    }
-    default:
-      authorError(`${path}.type`, `unsupported type "${type}"`);
+    node.const = input.const;
   }
 }
 
-/** 编译隐式参数映射，收集每属性 `required: true` 注记。 */
-function compilePropertyMap(input: unknown, path: string): { properties: Record<string, RawJsonSchema>; required?: string[] } {
-  if (!isPlainObject(input)) authorError(path, "must be a plain object of property specs");
-  const properties: Record<string, RawJsonSchema> = {};
-  const required: string[] = [];
-  for (const key of Object.keys(input)) {
-    const spec = input[key];
-    if (!isPlainObject(spec)) authorError(`${path}.${key}`, "must be a plain object spec");
-    const { required: isRequired, ...rest } = spec as Record<string, unknown>;
-    if (isRequired !== undefined && isRequired !== true) {
-      authorError(`${path}.${key}.required`, "only the literal `true` is accepted");
+function compileValueSchema(input: unknown, path: string, ancestors: Set<object>, allowRequired: boolean): RawJsonSchema {
+  if (!isPlainObject(input)) authorError(`${path} must be a value schema object`);
+  return withAncestor(input, path, ancestors, () => {
+    const annotationKeys: string[] = [...ANNOTATION_KEYS, ...allowRequired ? ["required"] : []];
+    if (Object.hasOwn(input, "required") && input.required !== true) authorError(`${path}.required must be true when present`);
+    if (Object.hasOwn(input, "oneOf")) {
+      assertAuthorKeys(input, path, [...annotationKeys, "oneOf", "type"]);
+      if (Object.hasOwn(input, "type")) authorError(`${path} cannot declare both type and oneOf`);
+      const list = input.oneOf;
+      if (!Array.isArray(list) || list.length < 2) authorError(`${path}.oneOf must be an array of at least two value schemas`);
+      const node: RawJsonSchema = {
+        oneOf: list.map((entry, index) => compileValueSchema(entry, `${path}.oneOf[${index}]`, ancestors, false)),
+      };
+      copyAnnotations(input, node, path);
+      return node;
     }
-    properties[key] = compileValueSchema(rest, `${path}.${key}`);
-    if (isRequired === true) required.push(key);
-  }
-  return required.length > 0 ? { properties, required } : { properties };
+    const type = input.type;
+    switch (type) {
+      case "json": {
+        assertAuthorKeys(input, path, [...annotationKeys, "type"]);
+        const node: RawJsonSchema = {};
+        copyAnnotations(input, node, path);
+        return node;
+      }
+      case "string":
+      case "number":
+      case "integer":
+      case "boolean":
+      case "null": {
+        assertAuthorKeys(input, path, [...annotationKeys, "type", "enum", "const"]);
+        const node: RawJsonSchema = { type };
+        copyAnnotations(input, node, path);
+        copyScalarConstraints(input, node, path, type);
+        return node;
+      }
+      case "array": {
+        assertAuthorKeys(input, path, [...annotationKeys, "type", "items"]);
+        const node: RawJsonSchema = { type };
+        copyAnnotations(input, node, path);
+        if (Object.hasOwn(input, "items")) node.items = compileValueSchema(input.items, `${path}.items`, ancestors, false);
+        return node;
+      }
+      case "object": {
+        assertAuthorKeys(input, path, [...annotationKeys, "type", "properties", "additionalProperties"]);
+        if (!Object.hasOwn(input, "additionalProperties") || typeof input.additionalProperties !== "boolean") {
+          authorError(`${path}.additionalProperties must be explicitly true or false`);
+        }
+        const node: RawJsonSchema = { type, additionalProperties: input.additionalProperties as boolean };
+        copyAnnotations(input, node, path);
+        if (Object.hasOwn(input, "properties")) {
+          const compiled = compilePropertyMap(input.properties, `${path}.properties`, ancestors);
+          node.properties = compiled.properties;
+          if (compiled.required) node.required = compiled.required;
+        }
+        return node;
+      }
+      default:
+        authorError(`${path}.type must be ${SCHEMA_TYPES}, or use oneOf`);
+    }
+  });
+}
+
+/** 编译隐式参数映射，收集每属性 `required: true` 注记。 */
+function compilePropertyMap(input: unknown, path: string, ancestors: Set<object>): { properties: Record<string, RawJsonSchema>; required?: string[] } {
+  if (!isPlainObject(input)) authorError(`${path} must be an object of value schemas`);
+  return withAncestor(input, path, ancestors, () => {
+    const properties: Record<string, RawJsonSchema> = {};
+    const required: string[] = [];
+    for (const key of Object.keys(input)) {
+      const spec = input[key];
+      properties[key] = compileValueSchema(spec, `${path}.${key}`, ancestors, true);
+      if (isPlainObject(spec) && spec.required === true) required.push(key);
+    }
+    return required.length > 0 ? { properties, required } : { properties };
+  });
 }
 
 /** 参数 DSL → 隐式对象根 JSON Schema（上游 parameterSchemaSpecToJsonSchema 子集）。 */
 export function parameterSchemaSpecToJsonSchema(spec: ParameterSchemaSpec): RawJsonSchema {
-  const compiled = compilePropertyMap(spec, "parameters");
+  const compiled = compilePropertyMap(spec, "parameters", new Set<object>());
   const schema: RawJsonSchema = { type: "object", properties: compiled.properties };
   if (compiled.required) schema.required = compiled.required;
   return schema;
@@ -308,94 +363,115 @@ export function parameterSchemaSpecToJsonSchema(spec: ParameterSchemaSpec): RawJ
 
 /** 输出值 DSL → JSON Schema（上游 valueSchemaSpecToJsonSchema 子集）。 */
 export function valueSchemaSpecToJsonSchema(spec: ValueSchemaSpec): RawJsonSchema {
-  return compileValueSchema(spec, "output.schema");
+  return compileValueSchema(spec, "schema", new Set<object>(), false);
 }
 
 // ---------------------------------------------------------------------------
 // 消费侧校验：args → violations
 // ---------------------------------------------------------------------------
-
-const SCALAR_TYPES: Record<string, (value: unknown) => boolean> = {
-  string: value => typeof value === "string",
-  number: value => typeof value === "number" && Number.isFinite(value),
-  integer: value => typeof value === "number" && Number.isInteger(value),
-  boolean: value => typeof value === "boolean",
-  null: value => value === null,
-};
-
-function isJsonValue(value: unknown): boolean {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  if (isPlainObject(value)) return Object.values(value).every(isJsonValue);
-  return false;
+/** 上游诊断路径：根标签为 "arguments"（validateArgs 的空路径哨兵）。 */
+function diagnosticPath(path: string): string {
+  return path === "" ? "arguments" : path;
 }
 
+/** 对象属性路径（根层不加前导点，对齐上游 propertyPath）。 */
+function propertyPath(path: string, key: string): string {
+  return path === "" ? key : `${path}.${key}`;
+}
+
+/** 校验一个节点，把违规消息按上游文案写入 violations（深度优先、逐节点收敛）。 */
 function validateNode(schema: RawJsonSchema, value: unknown, path: string, violations: string[]) {
-  const push = (message: string) => violations.push(`${path || "(root)"} ${message}`);
-  if (Object.hasOwn(schema, "const")) {
-    if (JSON.stringify(value) !== JSON.stringify(schema.const)) push(`must equal ${JSON.stringify(schema.const)}`);
-  }
+  const label = `"${diagnosticPath(path)}"`;
   if (Array.isArray(schema.oneOf)) {
-    const sub: string[] = [];
-    let matched = false;
-    for (const entry of schema.oneOf) {
-      const candidate: string[] = [];
-      validateNode(entry, value, path, candidate);
-      if (candidate.length === 0) {
-        matched = true;
-        break;
-      }
-      sub.push(...candidate);
+    // 上游语义：恰好命中一个分支，否则只报命中数（分支自身错误不外露）。
+    let matches = 0;
+    for (const branch of schema.oneOf) {
+      const branchViolations: string[] = [];
+      validateNode(branch, value, path, branchViolations);
+      if (branchViolations.length === 0) matches++;
     }
-    if (!matched) push(`must match one of the oneOf schemas (last error: ${sub[0] ?? "no match"})`);
+    if (matches !== 1) violations.push(`${label} must match exactly one oneOf branch (matched ${matches})`);
     return;
   }
-  if (schema.type !== undefined) {
-    if (schema.type === "json") {
-      if (!isJsonValue(value)) push("must be a lossless JSON value");
+  const type = schema.type;
+  if (type === undefined) {
+    // 注记性节点（作者侧 `json` 编译产物）：只要求 lossless JSON。
+    if (!isLosslessJsonValue(value)) violations.push(`${label} must be a lossless JSON value`);
+    return;
+  }
+  switch (type) {
+    case "object": {
+      if (!isPlainObject(value)) {
+        violations.push(`${label} must be an object`);
+        return;
+      }
+      const before = violations.length;
+      const properties = schema.properties ?? {};
+      for (const key of schema.required ?? []) {
+        if (!Object.hasOwn(value, key) || value[key] === undefined) {
+          violations.push(`missing required property "${propertyPath(path, key)}"`);
+        }
+      }
+      for (const [key, child] of Object.entries(properties)) {
+        if (!Object.hasOwn(value, key) || value[key] === undefined) continue;
+        validateNode(child, value[key], propertyPath(path, key), violations);
+      }
+      if (schema.additionalProperties === false) {
+        for (const key of Object.keys(value)) {
+          if (!Object.hasOwn(properties, key)) {
+            violations.push(`"${propertyPath(path, key)}" is not a declared property (additionalProperties: false)`);
+          }
+        }
+      }
+      if (violations.length === before && !isLosslessJsonValue(value)) {
+        violations.push(`${label} must be a lossless JSON object`);
+      }
       return;
     }
-    if (schema.type === "array") {
+    case "array": {
       if (!Array.isArray(value)) {
-        push(`must be an array`);
+        violations.push(`${label} must be an array`);
         return;
       }
-    } else if (schema.type === "object") {
-      if (!isPlainObject(value)) {
-        push(`must be an object`);
-        return;
+      const before = violations.length;
+      if (schema.items) {
+        value.forEach((entry, index) => validateNode(schema.items!, entry, `${path}[${index}]`, violations));
       }
-    } else {
-      const check = SCALAR_TYPES[schema.type];
-      if (!check || !check(value)) {
-        push(`must be a ${schema.type}`);
-        return;
+      if (violations.length === before && !isLosslessJsonValue(value)) {
+        violations.push(`${label} must be a dense lossless JSON array`);
       }
+      return;
     }
+    case "string":
+      if (typeof value !== "string") { violations.push(`${label} must be a string`); return; }
+      break;
+    case "number":
+      if (typeof value !== "number") { violations.push(`${label} must be a number`); return; }
+      if (!Number.isFinite(value)) { violations.push(`${label} must be a finite JSON number`); return; }
+      break;
+    case "integer":
+      if (typeof value !== "number" || !Number.isInteger(value)) { violations.push(`${label} must be an integer`); return; }
+      break;
+    case "boolean":
+      if (typeof value !== "boolean") { violations.push(`${label} must be a boolean`); return; }
+      break;
+    case "null":
+      if (value !== null) { violations.push(`${label} must be null`); return; }
+      break;
+    default:
+      if (!isLosslessJsonValue(value)) violations.push(`${label} must be a lossless JSON value`);
+      return;
   }
-  if (Array.isArray(schema.enum) && !schema.enum.some(entry => JSON.stringify(entry) === JSON.stringify(value))) {
-    push(`must be one of ${JSON.stringify(schema.enum)}`);
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
+    violations.push(`${label} must be one of ${JSON.stringify(schema.enum)}`);
+    return;
   }
-  if (schema.type === "array" && Array.isArray(value) && schema.items) {
-    value.forEach((entry, index) => validateNode(schema.items!, entry, `${path}[${index}]`, violations));
-  }
-  if (schema.type === "object" && isPlainObject(value)) {
-    for (const key of schema.required ?? []) {
-      if (!(key in value)) push(`missing required property "${key}"`);
-    }
-    for (const [key, entry] of Object.entries(value)) {
-      const propertySchema = schema.properties?.[key];
-      if (propertySchema) {
-        validateNode(propertySchema, entry, path ? `${path}.${key}` : key, violations);
-      } else if (schema.additionalProperties === false) {
-        push(`unknown property "${key}"`);
-      }
-    }
+  if (Object.hasOwn(schema, "const") && value !== schema.const) {
+    violations.push(`${label} must be ${JSON.stringify(schema.const)}`);
   }
 }
 
-/** 按编译后的参数 schema 校验一次调用参数，返回违规消息列表。 */
+/** 按编译后的参数 schema 校验一次调用参数，返回违规消息列表（上游 validateArgs 语义）。 */
 export function validateToolArgs(parameters: RawJsonSchema, args: unknown): string[] {
   const violations: string[] = [];
   validateNode(parameters, args, "", violations);
@@ -436,7 +512,8 @@ export function defineTool<S extends ParameterSchemaSpec, V = JsonValue>(
     throw new TypeError(`[dsh-tools] defineTool(${name}): output.render must be a function`);
   }
   if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-    throw new TypeError(`[dsh-tools] defineTool(${name}): timeoutMs must be a positive finite number`);
+    // 上游同款文案与错误类型（plain Error）
+    throw new Error(`defineTool(${name}): timeoutMs must be a positive finite number`);
   }
 
   const compiledParameters = parameterSchemaSpecToJsonSchema(parameters);

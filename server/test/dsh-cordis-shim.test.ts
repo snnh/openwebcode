@@ -138,8 +138,8 @@ describe("cordis-shim inject 硬依赖", () => {
     await vi.waitFor(() => expect(consumer.state).toBe("active"));
     expect(log).toEqual(['consume:{"api":1}']);
     await provider.dispose();
-    // 上游语义：provider 自身 effect 先回滚，provide disposer 触发的依赖卸载随后异步完成
-    await vi.waitFor(() => expect(log).toEqual(['consume:{"api":1}', "provider-stop", "consumer-stop"]));
+    // 上游 reflect.provide 语义：provider 自身 effect 先回滚，provide disposer 等依赖者卸载完成
+    expect(log).toEqual(['consume:{"api":1}', "provider-stop", "consumer-stop"]);
   });
 
   it("root 提供的服务可被插件消费", async () => {

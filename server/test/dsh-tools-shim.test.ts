@@ -49,6 +49,46 @@ describe("dsh-tools-shim 参数编译", () => {
     expect(properties.data).toEqual({ description: "any" });
   });
 
+  it("object 节点必须显式声明 additionalProperties（上游同款 fail loud）", () => {
+    expect(() => valueSchemaSpecToJsonSchema({
+      type: "object",
+      properties: { text: { type: "string" } },
+    } as never)).toThrow(/additionalProperties must be explicitly true or false/);
+    expect(() => valueSchemaSpecToJsonSchema({
+      type: "object",
+      additionalProperties: "no",
+      properties: {},
+    } as never)).toThrow(/additionalProperties must be explicitly true or false/);
+  });
+
+  it("循环引用 fail loud（上游 is circular）", () => {
+    const spec: Record<string, unknown> = { name: { type: "string" } };
+    spec.self = spec;
+    expect(() => parameterSchemaSpecToJsonSchema(spec as never)).toThrow(/parameters.self is circular/);
+    const node: Record<string, unknown> = { type: "object", additionalProperties: false };
+    node.properties = { inner: node };
+    expect(() => valueSchemaSpecToJsonSchema(node as never)).toThrow(/is circular/);
+  });
+
+  it("array 节点不接受 enum/const；标量 enum/const 必须匹配类型", () => {
+    expect(() => parameterSchemaSpecToJsonSchema({
+      a: { type: "array", items: { type: "string" }, enum: [["x"]] },
+    } as never)).toThrow(/schema DSL/);
+    expect(() => parameterSchemaSpecToJsonSchema({
+      a: { type: "string", const: 1 },
+    } as never)).toThrow(/const must be a string value/);
+    expect(() => valueSchemaSpecToJsonSchema({
+      type: "object",
+      additionalProperties: false,
+      properties: { k: { type: "string", const: "b", enum: ["a"] } },
+    } as never)).toThrow(/const must be one of/);
+    expect(() => valueSchemaSpecToJsonSchema({
+      type: "object",
+      additionalProperties: false,
+      properties: { k: { type: "string", default: new Date() } },
+    } as never)).toThrow(/annotation must be lossless JSON data/);
+  });
+
   it("作者侧未知键 fail loud", () => {
     expect(() => parameterSchemaSpecToJsonSchema({
       a: { type: "string", unknownKey: 1 } as unknown as ParameterSchemaSpec,
@@ -57,7 +97,11 @@ describe("dsh-tools-shim 参数编译", () => {
       a: { type: "string", required: false } as unknown as ParameterSchemaSpec,
     })).toThrow(/required/);
     expect(() => valueSchemaSpecToJsonSchema({ oneOf: [{ type: "string" }] } as never)).toThrow(/oneOf/);
-    expect(() => valueSchemaSpecToJsonSchema({ type: "map" } as never)).toThrow(/unsupported type/);
+    expect(() => valueSchemaSpecToJsonSchema({ type: "map" } as never)).toThrow(/must be string\/number\/integer\/boolean\/null\/array\/object\/json, or use oneOf/);
+    expect(() => valueSchemaSpecToJsonSchema({
+      type: "string",
+      oneOf: [{ type: "string" }, { type: "number" }],
+    } as never)).toThrow(/cannot declare both type and oneOf/);
   });
 });
 
@@ -83,26 +127,46 @@ describe("dsh-tools-shim 参数校验", () => {
       meta: { deep: "yes", extra: 1 },
     });
     const text = violations.join("\n");
+    // 文案与上游逐字一致（引号路径 + 声明式 additionalProperties 措辞）
     expect(text).toContain("missing required property \"name\"");
-    expect(text).toContain("level");
-    expect(text).toContain("must be one of [1,2,3]");
-    expect(text).toContain("tags[1]");
-    expect(text).toContain("meta.deep");
-    expect(text).toContain("unknown property \"extra\"");
+    expect(text).toContain("\"level\" must be one of [1,2,3]");
+    expect(text).toContain("\"tags[1]\" must be a string");
+    expect(text).toContain("\"meta.deep\" must be a boolean");
+    expect(text).toContain("\"meta.extra\" is not a declared property (additionalProperties: false)");
   });
 
-  it("json 类型接受任意 lossless JSON；integer 拒绝小数", () => {
+  it("json 类型接受任意 lossless JSON；拒非 JSON 值；integer 拒绝小数", () => {
     expect(validateToolArgs(schema, { name: "x", any: [1, "a", null, { b: true }] })).toEqual([]);
-    expect(validateToolArgs(schema, { name: "x", level: 1.5 }).join("\n")).toContain("must be a integer");
+    expect(validateToolArgs(schema, { name: "x", any: new Date() }).join("\n"))
+      .toContain("\"any\" must be a lossless JSON value");
+    expect(validateToolArgs(schema, { name: "x", any: Number.NaN }).join("\n"))
+      .toContain("\"any\" must be a lossless JSON value");
+    expect(validateToolArgs(schema, { name: "x", level: 1.5 }).join("\n")).toContain("must be an integer");
   });
 
-  it("oneOf 匹配其一即可", () => {
+  it("根非对象：\"arguments\" 标签（上游诊断路径）", () => {
+    expect(validateToolArgs(schema, "nope")).toEqual(["\"arguments\" must be an object"]);
+  });
+
+  it("required 属性显式 undefined 视同缺席（上游语义）", () => {
+    expect(validateToolArgs(schema, { name: undefined }))
+      .toEqual(["missing required property \"name\""]);
+  });
+
+  it("oneOf 必须恰好命中一个分支", () => {
     const schema2 = parameterSchemaSpecToJsonSchema({
       v: { oneOf: [{ type: "string" }, { type: "number" }] },
     });
     expect(validateToolArgs(schema2, { v: "s" })).toEqual([]);
     expect(validateToolArgs(schema2, { v: 3 })).toEqual([]);
-    expect(validateToolArgs(schema2, { v: true }).join("\n")).toContain("oneOf");
+    expect(validateToolArgs(schema2, { v: true }))
+      .toEqual(["\"v\" must match exactly one oneOf branch (matched 0)"]);
+    // 重叠分支：上游拒绝（matched 2）
+    const overlap = parameterSchemaSpecToJsonSchema({
+      v: { oneOf: [{ type: "string" }, { type: "string", enum: ["a"] }] },
+    });
+    expect(validateToolArgs(overlap, { v: "a" }))
+      .toEqual(["\"v\" must match exactly one oneOf branch (matched 2)"]);
   });
 });
 
@@ -134,8 +198,12 @@ describe("dsh-tools-shim defineTool 行为", () => {
     expect(tool.timeoutMs).toBe(1000);
   });
 
-  it("execute：先校验后执行；违规抛 ToolArgsError（isError 语义）", async () => {
-    await expect(tool.execute({ limit: 1 }, exec())).rejects.toBeInstanceOf(ToolArgsError);
+  it("execute：先校验后执行；违规抛 ToolArgsError（INVALID_ARGS，单行 message）", async () => {
+    const failure = await tool.execute({ limit: 1 }, exec()).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ToolArgsError);
+    expect((failure as ToolArgsError).code).toBe("INVALID_ARGS");
+    expect((failure as ToolArgsError).message).toBe('invalid arguments: missing required property "query"');
+    expect((failure as ToolArgsError).violations).toEqual(['missing required property "query"']);
     await expect(tool.execute({ query: "q" }, exec())).resolves.toEqual({ echoed: "q", limit: undefined });
   });
 
