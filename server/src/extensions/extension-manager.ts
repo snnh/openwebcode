@@ -16,6 +16,7 @@ import type { SessionStore } from "../sessions/session-store.js";
 import { ContextManager } from "../context/context-manager.js";
 import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionRoute, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
 import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
+import { dshPluginInfos, dshToolSourceId, scanDshPlugins, type DshPluginInfo, type DshPluginReport } from "../dsh/loader.js";
 import { setSimulatedUserAgent } from "../user-agent.js";
 import { BUILTIN_PERSONAS, getPersona, listPersonas, resolvePersona, personasDir, saveUserPreset, deleteUserPreset, type PersonaDetail, type PersonaPreset, type PersonaSummary } from "./env-sim/index.js";
 import type { CompactVaultService } from "./compact-vault.js";
@@ -43,6 +44,8 @@ const STORAGE_TOTAL_LIMIT = 50 * 1024 * 1024;
 const MODEL_PROMPT_LIMIT = 32 * 1024;
 const MODEL_MAX_TOKENS_LIMIT = 4096;
 const MODEL_DEFAULT_MAX_TOKENS = 1024;
+/** dsh 插件同步超时：插件激活可能含 IO（模型调用应在 apply 之外，超时即判错）。 */
+const DSH_SYNC_TIMEOUT_MS = 30_000;
 /** context.readImageFile 图片 base64 上限（≈5MB 原始字节，与消息带图同口径）：见 media-limits.ts。 */
 
 interface StoredConfig { version: 1; extensions: Record<string, ExtensionState> }
@@ -108,6 +111,11 @@ export class ExtensionManager {
   private readonly shapingWarningsIssued = new Set<string>();
   /** UA 模拟刷新序号：连续 configure 时只让最后一次异步解析落地。 */
   private userAgentSimulationSeq = 0;
+  /** dsh 兼容模式（M2）：上次同步聚合的插件状态，供 REST/UI 读取。 */
+  private dshInfos: DshPluginInfo[] = [];
+  /** 已请求过 dsh 同步：宿主崩溃重启 / 热重载后自动重放最近一次加载计划。 */
+  private dshSyncRequested = false;
+  private dshSyncInFlight: Promise<DshPluginInfo[]> | undefined;
 
   constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike; models?: ModelRegistry } = {}) {
     this.root = path.join(dataDir, "extensions");
@@ -161,7 +169,9 @@ export class ExtensionManager {
 
   isEnabled(id: string): boolean {
     const manifest = this.manifests.find((item) => item.id === id);
-    return manifest ? this.stateFor(manifest).enabled : false;
+    if (manifest) return this.stateFor(manifest).enabled;
+    // dsh 插件是伪扩展（无 manifest）：启用态由 dsh 同步回报决定。
+    return this.dshInfos.some((info) => dshToolSourceId(info.id) === id && info.status === "running");
   }
 
   /** 扩展 id 是否已知（官方或已安装的第三方）；供 REST 层做会话级扩展状态等校验。 */
@@ -181,6 +191,8 @@ export class ExtensionManager {
     await this.applyUserAgentSimulation();
     const reloaded = await this.request("reload", { states: this.states }) as { tools?: Record<string, ExtensionToolSpec[]> };
     this.replaceTools(reloaded.tools);
+    // reload 会清空宿主侧扩展状态：dsh 伪扩展的启用态与工具随加载计划重放。
+    await this.resyncDsh();
     this.events?.publish({ source: "server", type: "extension.updated", payload: { id, ...this.states[id] } });
     return this.list().find((item) => item.id === id)!;
   }
@@ -337,6 +349,55 @@ export class ExtensionManager {
   /** manifest 声明的 configSchema（无则 undefined），供 REST 层做松散校验。 */
   configSchemaFor(id: string): Record<string, unknown> | undefined {
     return this.manifests.find((item) => item.id === id)?.configSchema;
+  }
+
+  /**
+   * dsh 兼容模式插件同步（M2）：扫描 `<dataDir>/dsh-plugins` + `<dataDir>/dsh.json` 合成加载计划，
+   * 下发 Extension Host（插件激活在子进程内逐插件隔离），再与宿主回报合并为最终状态。
+   * 再次调用即全量重放（停用的插件自动卸载并回滚已注册的工具）；宿主重启 / 热重载后自动重放。
+   */
+  async syncDsh(): Promise<DshPluginInfo[]> {
+    this.dshSyncRequested = true;
+    const previous = this.dshSyncInFlight;
+    const next = (previous ? previous.catch(() => undefined) : Promise.resolve([])).then(() => this.runDshSync());
+    this.dshSyncInFlight = next;
+    try {
+      return await next;
+    } finally {
+      if (this.dshSyncInFlight === next) this.dshSyncInFlight = undefined;
+    }
+  }
+
+  /** 上次同步聚合的 dsh 插件状态（未同步过返回空表）。 */
+  dshPlugins(): DshPluginInfo[] {
+    return this.dshInfos.map((info) => ({ ...info }));
+  }
+
+  private async runDshSync(): Promise<DshPluginInfo[]> {
+    const scan = await scanDshPlugins(this.dataDir);
+    const child = this.child;
+    if (!child?.connected) {
+      this.dshInfos = dshPluginInfos(scan, undefined, "Extension Host 未连接，dsh 插件未加载");
+      return this.dshInfos;
+    }
+    let failure: string | undefined;
+    try {
+      const response = await this.request("dsh.sync", { plugins: scan.plan }, DSH_SYNC_TIMEOUT_MS) as { plugins?: DshPluginReport[]; tools?: Record<string, ExtensionToolSpec[]> };
+      this.replaceTools(response.tools);
+      this.dshInfos = dshPluginInfos(scan, response.plugins);
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+      const message = `dsh 插件同步失败：${failure}`;
+      this.events?.publish({ source: "server", type: "extension.warning", payload: { message } });
+      this.dshInfos = dshPluginInfos(scan, undefined, message);
+    }
+    return this.dshInfos;
+  }
+
+  /** 宿主重启 / 热重载后重放 dsh 加载计划（未同步过则跳过）。 */
+  private async resyncDsh(): Promise<void> {
+    if (!this.dshSyncRequested) return;
+    await this.runDshSync().catch(() => undefined);
   }
 
   /** env-sim 预设清单 + 用户预设目录绝对路径（UI 展示「把分享的预设 JSON 放到这里」）。 */
@@ -862,6 +923,8 @@ export class ExtensionManager {
       this.hostErrors = initialized.errors ?? {};
       this.replaceTools(initialized.tools);
       this.hostRestartCount = 0;
+      // 宿主重启（崩溃退避重启 / 安装扩展后的 restart）后重放 dsh 加载计划。
+      await this.resyncDsh();
       this.events?.publish({ source: "server", type: "extension.host_started", payload: { extensions: this.list().length } });
     } catch (error) {
       this.handleHostFailure(child, asError(error));

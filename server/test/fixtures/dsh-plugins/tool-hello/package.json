@@ -1,0 +1,11 @@
+{
+  "name": "tool-hello",
+  "version": "0.1.0",
+  "description": "dsh 兼容层集成测试 fixture：defineTool 注册（含参数校验与超时预算）",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-tools": "^0.1.6"
+  }
+}

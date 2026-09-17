@@ -1,0 +1,7 @@
+{
+  "name": "broken-entry",
+  "version": "0.1.0",
+  "description": "dsh 兼容层集成测试 fixture：入口越出包目录（判 invalid，不加载）",
+  "type": "module",
+  "main": "../outside.js"
+}

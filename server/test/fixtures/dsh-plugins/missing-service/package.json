@@ -1,0 +1,7 @@
+{
+  "name": "missing-service",
+  "version": "0.1.0",
+  "description": "dsh 兼容层集成测试 fixture：inject 的服务翻译层未提供（保持未激活）",
+  "type": "module",
+  "main": "index.js"
+}

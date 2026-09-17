@@ -4,6 +4,8 @@ import { OFFICIAL_EXTENSIONS, optimizeAttention } from "./official.js";
 import { RECALL_MEMORY_SPEC, recallMemory, reinjectVaultIndex, type VaultHostApi } from "./compact-vault-host.js";
 import { DESCRIBE_IMAGE_SPEC, bridgeVisionImages, describeImage, type VisionToolsHostApi } from "./vision-tools-host.js";
 import { isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolHookResult } from "./types.js";
+import type { DshHostRuntime } from "../dsh/host-runtime.js";
+import type { DshPluginReport, DshSyncItem } from "../dsh/loader.js";
 
 type Handler = (payload: unknown, config: Record<string, unknown>) => unknown | Promise<unknown>;
 type ToolHandler = (input: Record<string, unknown>, config: Record<string, unknown>, sessionId?: string) => unknown | Promise<unknown>;
@@ -109,9 +111,45 @@ function serializedTools(): Record<string, ExtensionToolSpec[]> {
   for (const [extensionId, registered] of tools) {
     // describe_image 只在 toolCall 模式生效（describe 模式无占位符，工具必然报错，不暴露给主模型）
     if (extensionId === "vision-tools" && states.get(extensionId)?.config?.mode !== "toolCall") continue;
+    if (registered.size === 0) continue;
     result[extensionId] = [...registered.values()].map((entry) => entry.spec);
   }
   return result;
+}
+
+/**
+ * dsh 兼容层宿主运行时（M2）：仅在 dsh 启用时动态加载（关闭时本进程零常驻 dsh 代码），
+ * 插件工具经伪扩展 id `dsh-<pluginId>` 进同一张 `tools` 表（agent 侧 `ext__dsh-<pluginId>__<tool>`）。
+ */
+let dshRuntimePromise: Promise<DshHostRuntime> | undefined;
+
+async function loadDshRuntime(): Promise<DshHostRuntime> {
+  dshRuntimePromise ??= (async () => {
+    const { createDshHostRuntime } = await import("../dsh/host-runtime.js");
+    return createDshHostRuntime({
+      log: (message) => process.stderr.write(`[dsh] ${message}\n`),
+      publish: (sourceId, state) => {
+        if (!state) {
+          states.delete(sourceId);
+          tools.delete(sourceId);
+          return;
+        }
+        // 启用态进 states：runHook 的启用门禁与 invokeTool 的启用门禁共用同一张表。
+        states.set(sourceId, { enabled: state.enabled, config: state.config });
+        if (state.tools.length === 0) tools.delete(sourceId);
+        else tools.set(sourceId, new Map(state.tools.map((entry) => [entry.spec.name, entry])));
+      },
+    });
+  })();
+  return dshRuntimePromise;
+}
+
+async function syncDsh(params: Record<string, unknown> | undefined): Promise<{ plugins: DshPluginReport[]; tools: Record<string, ExtensionToolSpec[]> }> {
+  const runtime = await loadDshRuntime();
+  const plugins = (Array.isArray(params?.plugins) ? params.plugins : []) as DshSyncItem[];
+  const reports = await runtime.sync(plugins);
+  // 计划外的 dsh 伪扩展（上一轮已卸载的）不应留在工具表里：runtime 已逐个 publish(undefined)。
+  return { plugins: reports, tools: serializedTools() };
 }
 
 function normalizeToolResult(value: unknown): ExtensionToolResult {
@@ -400,10 +438,13 @@ process.on("message", (message: HostRequest | EventMessage | ApiResponse) => {
       result = await invokeTool(request.params);
     } else if (request.method === "http.request") {
       result = await invokeRoute(request.params);
+    } else if (request.method === "dsh.sync") {
+      result = await syncDsh(request.params);
     } else if (request.method === "stats") {
       // 内部消息：宿主进程内存供性能面板展示；不经过任何扩展代码。
       result = { rss: process.memoryUsage().rss };
     } else if (request.method === "shutdown") {
+      await dshRuntimePromise?.then((runtime) => runtime.dispose()).catch(() => undefined);
       result = { stopped: true };
       process.send?.({ id: request.id, result } satisfies HostResponse);
       process.disconnect?.();

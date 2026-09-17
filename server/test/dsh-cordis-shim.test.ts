@@ -84,6 +84,25 @@ describe("cordis-shim 插件规范化与生命周期", () => {
     };
     await expect(ctx.plugin({ Config: asyncConfig, apply() {} })).rejects.toThrow(/Async config validation/);
   });
+
+  it("插件体返回的 thenable 会被 await（异步 apply 的注册先于激活完成，异步抛错落 failed）", async () => {
+    const { ctx } = createRoot();
+    const order: string[] = [];
+    const fiber = ctx.plugin(async () => {
+      await new Promise<void>(resolve => setTimeout(resolve, 1));
+      order.push("apply done");
+    });
+    await fiber;
+    expect(order).toEqual(["apply done"]);
+    expect((fiber as unknown as { state: string }).state).toBe("active");
+
+    const failing = ctx.plugin(async () => {
+      await Promise.resolve();
+      throw new Error("async apply boom");
+    });
+    await expect(failing).rejects.toThrow("async apply boom");
+    expect((failing as unknown as { state: string }).state).toBe("failed");
+  });
 });
 
 describe("cordis-shim inject 硬依赖", () => {

@@ -1,0 +1,11 @@
+{
+  "name": "incompatible-dep",
+  "version": "0.1.0",
+  "description": "dsh 兼容层集成测试 fixture：依赖翻译层未提供的 dsh 包（判 incompatible，不加载）",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-session": "^0.1.6"
+  }
+}
