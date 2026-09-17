@@ -11,7 +11,8 @@
     "assets/eval/fixtures/**",
     "assets/sandbox-proxy.mjs",
     "test/fixtures/fake-mcp-env.mjs",
-    "test/fixtures/fake-mcp-server.mjs"
+    "test/fixtures/fake-mcp-server.mjs",
+    "test/fixtures/dsh-plugins/**"
   ],
   "ignoreDependencies": [
     "playwright"

@@ -1,0 +1,11 @@
+{
+  "name": "hello",
+  "version": "0.1.0",
+  "description": "dsh 兼容层集成测试 fixture：最小插件（Config 默认值 + effect 回滚 + logger）",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  }
+}

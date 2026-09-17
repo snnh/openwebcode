@@ -1,0 +1,19 @@
+{
+  "name": "client-probe",
+  "version": "0.1.0",
+  "description": "dsh 兼容层集成测试 fixture：声明 dsh.client 的双面包（host + client 入口）",
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./index.js"
+    },
+    "./client": {
+      "default": "./client.js"
+    }
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  }
+}

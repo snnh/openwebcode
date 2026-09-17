@@ -23,6 +23,9 @@
  * `Service.invoke` 可调用实例、`internal/*` 核心事件的拦截语义、
  * `ctx.reflect`/`ctx.registry` 子服务（属性读取返回 undefined）与 cordis timer 服务
  * （timeout/interval/throttle/debounce，M3 按需补）。
+ *
+ * owc 扩展点（上游没有）：`Context.plugin(plugin, config, { prepare })` 允许宿主派生插件 ctx
+ * （dsh 兼容层用它把 `tools` 绑定到具体插件的 façade，注册归属与卸载回滚随插件 fiber）。
  */
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-function-type, @typescript-eslint/no-namespace -- 垫片忠实复刻上游 cordis 的宽松类型面（any/Function/namespace 均为上游公开 API 形态），逐行 disable 会淹没移植代码的可读性 */
 
@@ -93,6 +96,17 @@ interface PluginRuntime {
   callback: Function;
   Config?: StandardSchemaV1 | undefined;
   fibers: Set<Fiber>;
+  /** owc 扩展点：插件 ctx 派生（宿主用它把 `tools` 绑定到具体插件的 façade）。 */
+  prepare?: ((ctx: Context) => Context) | undefined;
+}
+
+/** 加载选项（上游无此参数；owc 宿主集成扩展点）。 */
+export interface PluginOptions {
+  /**
+   * 插件 ctx 派生：在插件体执行前对 fiber ctx 做一次变换（仅影响传给插件的 ctx，
+   * 不影响 fiber 自身的服务归属与 effect 归属）。用于给单个插件注入绑定的服务视图。
+   */
+  prepare?: (ctx: Context) => Context;
 }
 
 interface ServiceImpl {
@@ -497,7 +511,9 @@ export class Fiber {
         try {
           this.store = snapshot;
           this.config = this.resolveConfig();
-          this.runPlugin();
+          // 上游同款：插件体返回的 thenable 会被 await（异步 apply 的注册在 fiber 激活前完成；
+          // 异步抛错落进 catch → fiber failed + logger.error，不产生未处理拒绝）。
+          await this.runPlugin();
           if (this.epochChanged(target)) continue;
           this._error = undefined;
           this.state = "active";
@@ -534,16 +550,19 @@ export class Fiber {
     return (result as { value: unknown }).value;
   }
 
-  private runPlugin() {
+  private async runPlugin(): Promise<void> {
     const callback = this.runtime!.callback;
     const collect = (entry: Disposable) => this.disposables.push(entry);
+    // owc 扩展点：宿主可派生插件 ctx（服务视图绑定）；派生 ctx 共享同一 fiber，故服务归属与 effect 不变。
+    const prepare = this.runtime!.prepare;
+    const ctx = prepare ? prepare(this.ctx) : this.ctx;
     if (isConstructor(callback)) {
       // 类插件：构造后执行 [Service.init] 钩子，其返回值作为 effect（上游同款）。
-      const instance = new callback(this.ctx, this.config);
+      const instance = new callback(ctx, this.config);
       const init = (instance as any)?.[symbols.init];
-      materializeEffect(typeof init === "function" ? init.call(instance) : undefined, collect);
+      await materializeEffect(typeof init === "function" ? init.call(instance) : undefined, collect);
     } else {
-      materializeEffect(callback(this.ctx, this.config), collect);
+      await materializeEffect(callback(ctx, this.config), collect);
     }
   }
 
@@ -742,8 +761,8 @@ export class Context {
     return this.plugin({ inject: deps, apply: callback, name: callback.name } as Plugin, undefined);
   }
 
-  /** 加载插件（函数 / 类 / `{apply}` 对象），返回可 await 的 fiber。 */
-  plugin(pluginValue: Plugin | Function, config?: any): Fiber & PromiseLike<Fiber> {
+  /** 加载插件（函数 / 类 / `{apply}` 对象），返回可 await 的 fiber；options 为 owc 宿主扩展点。 */
+  plugin(pluginValue: Plugin | Function, config?: any, options?: PluginOptions): Fiber & PromiseLike<Fiber> {
     let callback: Function | undefined;
     if (typeof pluginValue === "function") callback = pluginValue as Function;
     else if (isApplicable(pluginValue)) callback = pluginValue.apply;
@@ -754,7 +773,7 @@ export class Context {
     const meta = pluginValue as Plugin;
     let name = (pluginValue as { name?: string }).name;
     if (name === "apply") name = undefined;
-    const runtime: PluginRuntime = { name, callback, Config: meta.Config, fibers: new Set() };
+    const runtime: PluginRuntime = { name, callback, Config: meta.Config, fibers: new Set(), prepare: options?.prepare };
     const fiber = new Fiber(this, config, Inject.resolve(meta.inject), runtime);
     const wrapped = Object.create(fiber) as Fiber & PromiseLike<Fiber>;
     wrapped.then = (onFulfilled: any, onRejected: any) => fiber.await().then(onFulfilled, onRejected);
