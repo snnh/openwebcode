@@ -21,7 +21,7 @@ const LOGIN_LOCK_MS = 60_000;
 
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
-export function base32Encode(data: Buffer): string {
+function base32Encode(data: Buffer): string {
   let value = 0;
   let bits = 0;
   let out = "";
@@ -37,7 +37,7 @@ export function base32Encode(data: Buffer): string {
   return out;
 }
 
-export function base32Decode(text: string): Buffer {
+function base32Decode(text: string): Buffer {
   const clean = text.replace(/=+$/, "").replace(/\s+/g, "").toUpperCase();
   let value = 0;
   let bits = 0;
@@ -67,12 +67,7 @@ function hotp(secret: Buffer, counter: number): string {
   return String(code % 10 ** TOTP_DIGITS).padStart(TOTP_DIGITS, "0");
 }
 
-/** 指定时刻的 TOTP 码（测试与登录校验共用） */
-export function totpAt(secret: Buffer, timestampMs: number): string {
-  return hotp(secret, Math.floor(timestampMs / 1_000 / TOTP_STEP_SECONDS));
-}
-
-export function verifyTotp(secret: Buffer, code: string, timestampMs: number, window = TOTP_WINDOW): boolean {
+function verifyTotp(secret: Buffer, code: string, timestampMs: number, window = TOTP_WINDOW): boolean {
   const normalized = code.trim();
   if (!TOTP_CODE_PATTERN.test(normalized)) return false;
   const counter = Math.floor(timestampMs / 1_000 / TOTP_STEP_SECONDS);

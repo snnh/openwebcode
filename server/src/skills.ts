@@ -14,7 +14,7 @@ interface Skill {
  * 解析 SKILL.md：可选 --- frontmatter（name/description）+ Markdown 正文。
  * name 缺省回退为目录名；正文为空视为无效技能。
  */
-export function parseSkillMarkdown(text: string, fallbackName: string, source: "global" | "project", filePath: string): Skill | undefined {
+function parseSkillMarkdown(text: string, fallbackName: string, source: "global" | "project", filePath: string): Skill | undefined {
   const { meta, body: rawBody } = parseFrontmatter(text);
   const body = rawBody.trim();
   if (body === "") return undefined;

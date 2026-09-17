@@ -3,8 +3,8 @@
  * 单客户端不得拖垮事件总线：待发字节或待发消息数任一超限即判定为慢客户端，
  * 由分发层先补发 resync.required 再断连（0.3.x §7.3 语义沿用）。
  */
-export const MAX_WS_BUFFERED_BYTES = 4 * 1024 * 1024;
-export const MAX_WS_BUFFERED_MESSAGES = 1_000;
+const MAX_WS_BUFFERED_BYTES = 4 * 1024 * 1024;
+const MAX_WS_BUFFERED_MESSAGES = 1_000;
 
 export interface WsBackpressureLimits {
   maxBufferedBytes: number;

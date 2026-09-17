@@ -23,7 +23,7 @@ const PERSISTENT_SHELL_ROWS = 30;
 /** 单命令超时：与 jobControl 路径一致（10 分钟）；超时销毁 shell，下条命令透明重建。 */
 const PERSISTENT_COMMAND_TIMEOUT_MS = 10 * 60_000;
 /** 输出字符上限：与 core job output_limit（1 MiB）对齐，超出截断但仍继续扫 sentinel。 */
-export const MAX_SHELL_OUTPUT_CHARS = 1_000_000;
+const MAX_SHELL_OUTPUT_CHARS = 1_000_000;
 /** core pty.input 单帧解码后 ≤8KB，按字符边界切块发送。 */
 const INPUT_CHUNK_BYTES = 4096;
 /** rawTail（chunk 末尾未成形转义序列残段）上限：恶意超长 OSC 无终结符时每个 chunk 都会
@@ -58,7 +58,7 @@ interface PersistentShellResult {
  *   $LASTEXITCODE 防止 cmdlet 成功时读到上一条原生命令的陈旧值。
  * - sh（含 Windows Git Bash）：$? 在执行期展开，独立行即可。
  */
-export function sentinelLine(flavor: ShellFlavor, rand: string): string {
+function sentinelLine(flavor: ShellFlavor, rand: string): string {
   const marker = `__OWC_DONE_${rand}_`;
   if (flavor === "pwsh") {
     return `echo "${marker}$(if ($?) { $LASTEXITCODE } elseif ($LASTEXITCODE -gt 0) { $LASTEXITCODE } else { 1 })__"; $global:LASTEXITCODE = 0`;
@@ -68,7 +68,7 @@ export function sentinelLine(flavor: ShellFlavor, rand: string): string {
 }
 
 /** pythonEnv=uv-* 的 venv 激活命令（PATH 前置一次，整个会话受益）；语法与 python-env.ts 的 wrapCommandWithVenv 对齐。 */
-export function venvActivationCommand(flavor: ShellFlavor, venvDir: string, platform: NodeJS.Platform = process.platform): string {
+function venvActivationCommand(flavor: ShellFlavor, venvDir: string, platform: NodeJS.Platform = process.platform): string {
   if (flavor === "pwsh") {
     const join = platform === "win32" ? path.win32.join : path.posix.join;
     const dir = join(venvDir, platform === "win32" ? "Scripts" : "bin");
@@ -87,7 +87,7 @@ export function venvActivationCommand(flavor: ShellFlavor, venvDir: string, plat
 // eslint-disable-next-line no-control-regex -- 匹配终端转义序列，控制字符（ESC/BEL/BS）本身就是匹配目标
 const ANSI_ESCAPE = /\x1b\[[0-9;:?>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>#@A-Z\\-_]|\x07|\x08/g;
 
-export function stripAnsi(text: string): string {
+function stripAnsi(text: string): string {
   return text.replace(ANSI_ESCAPE, "");
 }
 
@@ -99,7 +99,7 @@ export function stripAnsi(text: string): string {
 // eslint-disable-next-line no-control-regex -- 控制字符本身就是过滤目标
 const CONTROL_CHARS = /[\x00-\x08\x0b-\x1f\x7f\uFFF9-\uFFFB]/g;
 
-export function sanitizeShellOutput(text: string): string {
+function sanitizeShellOutput(text: string): string {
   return text.replace(CONTROL_CHARS, "");
 }
 
@@ -223,7 +223,7 @@ export class SentinelParser {
 /** 持久 shell 命令输出的代码页修复：pty 输出按 lossy UTF-8 增量喂给 sentinel 解析
  * （sentinel 为 ASCII，GBK/UTF-8 下位置一致），若结果含 U+FFFD 则用原始字节按
  * UTF-8 严格 / GBK 回退整体重解码并重跑解析；仍乱码则保留原输出。 */
-export function repairShellOutput(output: string, raw: readonly Buffer[], rand: string, lines: readonly string[], platform: NodeJS.Platform = process.platform): string {
+function repairShellOutput(output: string, raw: readonly Buffer[], rand: string, lines: readonly string[], platform: NodeJS.Platform = process.platform): string {
   if (!output.includes("�") || raw.length === 0) return output;
   const reparsed = new SentinelParser(rand, [...lines]);
   reparsed.feed(decodeChildProcessOutput(Buffer.concat(raw), platform));
@@ -609,7 +609,7 @@ export class PersistentShellManager {
  *   应答导致命令挂到超时。PAGER/GIT_PAGER 置 cat 后输出直写 stdout（git 经其内嵌 sh
  *   解析分页器命令，Windows 下 cat 同样可用）。人类真终端不经此 init，不受影响。
  */
-export function shellInitLines(flavor: ShellFlavor, cwd: string, platform: NodeJS.Platform = process.platform): string[] {
+function shellInitLines(flavor: ShellFlavor, cwd: string, platform: NodeJS.Platform = process.platform): string[] {
   const quoted = cwd.replace(/'/g, "''");
   if (flavor === "pwsh") {
     const eq = platform === "win32" ? "-ieq" : "-ceq";
@@ -634,6 +634,6 @@ export function shellInitLines(flavor: ShellFlavor, cwd: string, platform: NodeJ
  * `(call )`（带空格）置 ERRORLEVEL=0、无输出（真机探针验证；`(call)` 无空格反而置 1）。
  * 不能用 `>nul` 类重定向——AppContainer x ConPTY 下重定向 NUL 会被拒。
  */
-export function errorlevelResetLine(flavor: ShellFlavor, platform: NodeJS.Platform = process.platform): string | null {
+function errorlevelResetLine(flavor: ShellFlavor, platform: NodeJS.Platform = process.platform): string | null {
   return flavor === "cmd" && platform === "win32" ? "(call )" : null;
 }

@@ -14,15 +14,15 @@ import { FALLBACK_TAIL_CHARS, fallbackDiagnosticSet, parseTestOutput } from "./p
 import type { DiagnosticRun, DiagnosticSet } from "./types.js";
 
 /** 回授 agent 的失败摘要上限：最多前 20 条、每条 message/excerpt ≤500 字符；完整结果只走 artifact。 */
-export const MAX_FEEDBACK_FAILURES = 20;
-export const MAX_FEEDBACK_FIELD_CHARS = 500;
+const MAX_FEEDBACK_FAILURES = 20;
+const MAX_FEEDBACK_FIELD_CHARS = 500;
 /** 连续相同失败签名提示阈值 */
 const REPEATED_SIGNATURE_HINT_THRESHOLD = 2;
 const TEST_JOB_TIMEOUT_MS = 10 * 60_000;
 const POLL_INTERVAL_MS = 50;
 
 /** 失败签名：failures 的 name+file+line 稳定哈希（顺序敏感，消息内容不参与）。 */
-export function failureSignature(diagnostics: DiagnosticSet): string {
+function failureSignature(diagnostics: DiagnosticSet): string {
   const material = diagnostics.failures.map((failure) => [failure.name, failure.file ?? "", failure.line ?? 0]);
   return createHash("sha256").update(JSON.stringify(material)).digest("hex").slice(0, 16);
 }

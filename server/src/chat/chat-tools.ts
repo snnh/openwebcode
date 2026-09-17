@@ -119,7 +119,7 @@ async function resolveVisionSource(source: unknown, ctx: ChatToolContext): Promi
  * 支持 + - * / % ^（右结合）、括号、一元负号、
  * 函数 sqrt/abs/log(10 底)/ln/sin/cos/tan 与常量 pi/e。
  */
-export function calculateExpression(source: string): number {
+function calculateExpression(source: string): number {
   const parser = new ExpressionParser(source);
   const value = parser.parseExpression();
   parser.expectEnd();

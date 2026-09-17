@@ -40,7 +40,6 @@
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.4.1",
     "@vitest/coverage-v8": "^4.1.11",
-    "axe-core": "^4.12.1",
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.8.0",

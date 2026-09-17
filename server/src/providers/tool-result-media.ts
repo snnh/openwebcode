@@ -17,10 +17,10 @@ export interface ToolMediaItem {
 }
 
 /** 视频在不支持端点上的占位文本（模型可见，如实说明缺失原因）。 */
-export const VIDEO_OMITTED_PLACEHOLDER = "(video omitted: not supported by this provider)";
+const VIDEO_OMITTED_PLACEHOLDER = "(video omitted: not supported by this provider)";
 
 /** 合成 user 消息的引导行（openai 系两条路径共用）。 */
-export const MEDIA_ATTACHMENT_NOTE = "Attached media from tool result:";
+const MEDIA_ATTACHMENT_NOTE = "Attached media from tool result:";
 
 /**
  * toolCallId → 附带媒体（仅 data 内联形态；ref 形态由调用方内联后才会有 data，

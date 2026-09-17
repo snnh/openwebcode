@@ -3,7 +3,7 @@ import { render } from "@testing-library/react";
 import type { ReactElement } from "react";
 
 /** 测试用 QueryClient（关闭重试，queries staleTime Infinity）。 */
-export function makeTestClient(): QueryClient {
+function makeTestClient(): QueryClient {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
 }
 

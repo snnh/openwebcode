@@ -157,7 +157,7 @@ function decodeEntities(value: string): string {
   });
 }
 
-export function htmlToText(html: string): string {
+function htmlToText(html: string): string {
   return decodeEntities(html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
     .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
@@ -172,38 +172,6 @@ export function htmlToText(html: string): string {
 function supportedContentType(value: string): boolean {
   const type = value.split(";", 1)[0]!.trim().toLowerCase();
   return type.startsWith("text/") || type === "application/json" || type.endsWith("+json") || type === "application/xml" || type.endsWith("+xml");
-}
-
-export async function webFetch(
-  value: string,
-  options: { timeoutMs?: number; maxBytes?: number; fetchImpl?: typeof fetch; lookupImpl?: LookupAll; signal?: AbortSignal } = {},
-): Promise<WebFetchResult> {
-  const requested = assertSafeWebUrl(value);
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  const lookup = options.lookupImpl ?? defaultLookup;
-  const signal = withTimeout(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  // 每跳复验 SSRF 网关（含起始）：域名逐地址查私网表，重定向目标同样受检
-  const { response, finalUrl } = await fetchFollowingRedirects({
-    fetchImpl,
-    start: requested,
-    signal,
-    headers: { "User-Agent": getUserAgent() },
-    maxRedirects: MAX_REDIRECTS,
-    validate: async (url) => {
-      assertSafeWebUrl(url.href);
-      await assertPublicHostname(url, lookup);
-    },
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!supportedContentType(contentType)) throw new Error(`Unsupported content type: ${contentType || "unknown"}`);
-  const raw = await readTextLimited(response, options.maxBytes ?? DEFAULT_MAX_BYTES);
-  return {
-    url: requested.href,
-    finalUrl,
-    contentType,
-    text: contentType.toLowerCase().startsWith("text/html") ? htmlToText(raw) : raw,
-  };
 }
 
 /**

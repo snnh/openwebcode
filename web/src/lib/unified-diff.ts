@@ -108,12 +108,12 @@ export function parseUnifiedDiff(text: string): DiffFile[] {
 }
 
 /** hunk 的新侧文本（上下文 + 新增行，去前缀） */
-export function hunkNewText(hunk: DiffHunk): string[] {
+function hunkNewText(hunk: DiffHunk): string[] {
   return hunk.lines.filter((line) => line[0] === " " || line[0] === "+").map((line) => line.slice(1));
 }
 
 /** hunk 的旧侧文本（上下文 + 删除行，去前缀） */
-export function hunkOldText(hunk: DiffHunk): string[] {
+function hunkOldText(hunk: DiffHunk): string[] {
   return hunk.lines.filter((line) => line[0] === " " || line[0] === "-").map((line) => line.slice(1));
 }
 

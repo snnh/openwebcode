@@ -115,7 +115,7 @@ function isRecord(value: unknown): value is UsageEventRecord {
  * 每行约 200B，1 万次调用约 2MB，v0.1 不做轮转。
  */
 /** 报表聚合缓存的 LRU 上限：from/to 是自由查询参数，不封顶会随相异区间组合无限增长（每份含全量按日/按会话行）。 */
-export const MAX_CACHED_REPORTS = 8;
+const MAX_CACHED_REPORTS = 8;
 
 /** usage-events 清理模式（设置「服务信息」页签热生效；off 为默认，保持历史行为不清理）。 */
 export type UsageLogCleanupMode =

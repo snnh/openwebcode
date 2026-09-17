@@ -154,7 +154,7 @@ function coalesceAssistantText(content: MessageContent[]): MessageContent[] {
 
 const ROLE_LABELS: Record<string, [string, string]> = { user: ["你", "You"], assistant: ["OpenWebCode", "OpenWebCode"], tool: ["工具", "Tool"] };
 
-export function MessageCard({ message, turn, toolResults, liveSubagents, shellCmd }: MessageCardProps): ReactElement {
+function MessageCard({ message, turn, toolResults, liveSubagents, shellCmd }: MessageCardProps): ReactElement {
   const { t, locale } = useI18n();
   const actions = useChatActions();
   const { sessionId, running, contentLens } = actions;

@@ -130,12 +130,6 @@ export function nodeToolchainWritePaths(mode: NodeEnv, deps: NodeToolchainMountD
   return [];
 }
 
-/** project 模式的 bin 目录：项目工作区 node_modules/.bin；其余模式无目录前置。 */
-export function nodeBinDir(mode: NodeEnv, cwd: string): string | undefined {
-  if (mode === "project") return path.join(cwd, "node_modules", ".bin");
-  return undefined;
-}
-
 /**
  * nodeEnv 的 shell 激活片段（不含用户命令）；null = 该 shell/平台组合不支持。
  * project = node_modules/.bin 前置 PATH（语法与 python-env.ts 的 wrapCommandWithVenv 对齐）；

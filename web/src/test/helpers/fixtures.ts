@@ -1,4 +1,4 @@
-import type { ContextView, LiveSubagentRun, ModelProfile, SessionDetail } from "../../lib/contracts";
+import type { ContextView, ModelProfile, SessionDetail } from "../../lib/contracts";
 
 /** 标准 s1 会话 fixture，overrides 逐字段覆盖。 */
 export function makeSession(overrides: Partial<SessionDetail> = {}): SessionDetail {
@@ -39,17 +39,4 @@ export function makeContextView(overrides: Partial<ContextView> = {}): ContextVi
     preferences: { language: "zh-CN", currency: "CNY", currencyLabel: "￥" },
     ...overrides,
   } as ContextView;
-}
-
-/** LiveSubagentRun 工厂（subagent/subagents 系列测试共用）。 */
-export function makeSubagentRun(overrides: Partial<LiveSubagentRun>): LiveSubagentRun {
-  return {
-    taskId: "task-1",
-    toolCallId: "call-1",
-    prompt: "调查代码结构",
-    status: "running",
-    turns: 0,
-    toolsUsed: [],
-    ...overrides,
-  };
 }

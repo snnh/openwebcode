@@ -97,7 +97,7 @@ export function sanitizeProxyUrl(raw: string): string {
 }
 
 /** 解析 noProxy 列表：逗号分隔，小写归一，去空项。 */
-export function parseNoProxyList(raw: string | undefined): string[] {
+function parseNoProxyList(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw.split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
 }
@@ -112,7 +112,7 @@ function isLoopbackHostname(hostname: string): boolean {
  * noProxy 匹配：`*` 全绕过；精确主机；后缀域名（`example.com` 命中
  * `a.example.com`，前导 `.`/`*.` 写法等价）；本机回环地址始终绕过。
  */
-export function shouldBypassProxy(hostname: string, noProxy: string[]): boolean {
+function shouldBypassProxy(hostname: string, noProxy: string[]): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (isLoopbackHostname(h)) return true;
   for (const entry of noProxy) {

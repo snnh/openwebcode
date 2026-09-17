@@ -13,7 +13,7 @@ import { isMissing } from "./fs-utils.js";
  * - 单 timer（最近触发点重排），不轮询；测试经 now() 注入时钟 + autoSchedule=false 手动 tick。
  */
 
-export const CRON_MAX_JOBS_PER_SESSION = 50;
+const CRON_MAX_JOBS_PER_SESSION = 50;
 /** recurring 任务保留期：到期触发最后一次（stale）后自动删除。 */
 const CRON_RECURRING_TTL_MS = 7 * 24 * 3_600_000;
 /** setTimeout 上限（2^31-1 ms）；超出时截断，唤醒后重排。 */
@@ -127,7 +127,7 @@ function parseField(spec: string, min: number, max: number, label: string): numb
 }
 
 /** 解析 5 字段 cron 表达式；非法时抛出可读 Error。 */
-export function parseCronExpression(expression: string): CronFields {
+function parseCronExpression(expression: string): CronFields {
   if (expression.length > 100) throw new Error("Cron expression is too long (max 100 characters)");
   const parts = expression.trim().split(/\s+/);
   if (parts.length !== 5) throw new Error(`Cron expression must have exactly 5 fields (minute hour day-of-month month day-of-week), got ${parts.length}`);
@@ -157,7 +157,7 @@ function dayMatches(fields: CronFields, date: Date): boolean {
  * afterMs 之后（严格大于）的下一个触发点（本地时区，分钟分辨率）。
  * 4 年内不可达返回 null（如 `0 0 31 2 *` 这类合法但无触发点的表达式）。
  */
-export function nextCronFire(fields: CronFields, afterMs: number): number | null {
+function nextCronFire(fields: CronFields, afterMs: number): number | null {
   const start = new Date(afterMs);
   for (let day = 0; day <= SEARCH_DAYS; day += 1) {
     const date = new Date(start.getFullYear(), start.getMonth(), start.getDate() + day);

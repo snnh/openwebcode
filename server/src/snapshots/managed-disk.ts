@@ -75,7 +75,7 @@ interface ChainState {
 }
 
 /** managed-disk.ps1 的资产路径（与 refs-clone.ps1 同目录约定）。 */
-export function managedDiskScriptPath(): string {
+function managedDiskScriptPath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "assets", "managed-disk.ps1");
 }
 
@@ -92,7 +92,7 @@ export function managedWorkspacePaths(dataDir: string, sessionId: string): { wor
  * C:\Users\...\AppData 深层祖先，也避免 UAC 登录会话隔离的盘符映射。
  * 名称不使用前导点：<source>-openwebcode-<sessionId>。
  */
-export function managedVhdxMountPoint(originCwd: string, sessionId: string): string {
+function managedVhdxMountPoint(originCwd: string, sessionId: string): string {
   if (!/^[A-Za-z0-9-]+$/.test(sessionId)) throw new Error("Invalid managed workspace session id");
   const origin = path.resolve(originCwd);
   const parent = path.dirname(origin);
@@ -101,7 +101,7 @@ export function managedVhdxMountPoint(originCwd: string, sessionId: string): str
 }
 
 /** 能力检测：win32 → VHDX（Hyper-V PS 模块 + 当前进程 Hyper-V 访问权）；linux → qcow2（qemu-img + qemu-nbd + 免密 sudo）。REST 与创建流程共用。 */
-export async function detectManagedWorkspace(platform: NodeJS.Platform, runner: CommandRunner): Promise<ManagedWorkspaceCapability> {
+async function detectManagedWorkspace(platform: NodeJS.Platform, runner: CommandRunner): Promise<ManagedWorkspaceCapability> {
   if (platform === "win32") {
     const module = await runner.run("powershell", ["-NoProfile", "-Command", "Get-Command New-VHD"]).catch(() => ({ stdout: "", code: 1 }));
     const hasModule = module.code === 0 && module.stdout.trim().length > 0;

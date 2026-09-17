@@ -37,7 +37,7 @@ interface FormatUpgradeStepResult {
 /** 升级步骤声明：未来其他部分（消息格式/ledger/快照等）经 registerFormatUpgrade 登记，
  * 主应用与路由只调用通用执行接口（listFormatUpgrades / upgradeSessionFormat），
  * 不感知具体升级逻辑。 */
-export interface FormatUpgradeStep {
+interface FormatUpgradeStep {
   /** 步骤唯一 id（如 "responses-replay-fields"）；同 id 重复注册覆盖。 */
   id: string;
   /** 升级目标范围（当前仅消息 JSONL；未来可扩展 ledger/snapshot 等）。 */
@@ -53,7 +53,7 @@ export interface FormatUpgradeStep {
 const upgradeSteps = new Map<string, FormatUpgradeStep>();
 
 /** 注册升级步骤（幂等：同 id 覆盖）。主应用其他部分在需要升级既有会话数据时调用。 */
-export function registerFormatUpgrade(step: FormatUpgradeStep): void {
+function registerFormatUpgrade(step: FormatUpgradeStep): void {
   upgradeSteps.set(step.id, step);
 }
 
@@ -76,7 +76,7 @@ registerFormatUpgrade({
 
 /** 清理中断/旧迁移产生的孤儿工具调用：严格协议要求每个调用都有结果，
  * 未完成调用不应在下一轮回放时伪造输出。正常已配对调用与工具结果保持原样。 */
-export function upgradeOrphanToolCalls(messages: readonly ChatMessage[]): { messages: ChatMessage[]; changed: number } {
+function upgradeOrphanToolCalls(messages: readonly ChatMessage[]): { messages: ChatMessage[]; changed: number } {
   const outputs = new Set<string>();
   for (const message of messages) for (const block of message.content) {
     if (block.type === "tool_result") outputs.add(block.toolCallId);
@@ -108,7 +108,7 @@ registerFormatUpgrade({
  * 的文本块固化 v1 message item 签名 {"v":1,"id":msg_...}（id 派生自 message id + 文本块
  * 序数，与回放端无签名时的派生兜底完全一致）。非文本块与已升级块不碰；重复执行 changed === 0。
  * 官方 OpenAI 加密思维链回放依赖 textSignature 还原 message item id/phase（phase 缺失时仅 id）。 */
-export function upgradeResponsesTextSignatures(messages: readonly ChatMessage[]): { messages: ChatMessage[]; changed: number } {
+function upgradeResponsesTextSignatures(messages: readonly ChatMessage[]): { messages: ChatMessage[]; changed: number } {
   let changed = 0;
   const upgraded = messages.map((message) => {
     if (message.role !== "assistant") return message;

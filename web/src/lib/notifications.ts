@@ -26,7 +26,7 @@ export interface AppNotification {
 }
 
 /** 列表上限：超出丢弃最旧条目，避免长会话内存膨胀 */
-export const NOTIFICATION_LIMIT = 50;
+const NOTIFICATION_LIMIT = 50;
 
 let sequence = 0;
 

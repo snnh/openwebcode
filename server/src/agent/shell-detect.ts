@@ -73,7 +73,7 @@ function detectGitBash(env: EnvLike, exists: ExistsFn): string | undefined {
 }
 
 /** 纯探测（可注入 env/exists 供单测）。 */
-export function detectHostShells(platform: NodeJS.Platform, env: EnvLike, exists: ExistsFn): HostShellProbe {
+function detectHostShells(platform: NodeJS.Platform, env: EnvLike, exists: ExistsFn): HostShellProbe {
   if (platform === "win32") {
     const pwsh = findOnPath(env, "pwsh.exe", exists, platform);
     const gitBash = detectGitBash(env, exists);

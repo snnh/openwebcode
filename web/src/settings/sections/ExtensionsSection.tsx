@@ -43,7 +43,7 @@ const OFFICIAL_FIELD_EN: Record<string, Record<string, { title: string; descript
 };
 
 /** 英文界面下按字段 key 覆盖 schema 自带的中文 title/description（递归嵌套组） */
-export function localizeConfigFields(
+function localizeConfigFields(
   fields: ExtensionConfigField[] | null,
   overrides: Record<string, { title: string; description?: string }> | undefined,
 ): ExtensionConfigField[] | null {
@@ -64,7 +64,7 @@ function localizeField(
   };
 }
 
-export function ExtensionRow({ extension }: { extension: ExtensionInfo }): ReactElement {
+function ExtensionRow({ extension }: { extension: ExtensionInfo }): ReactElement {
   const { t, language } = useI18n();
   const queryClient = useQueryClient();
   const [json, setJson] = useState(() => JSON.stringify(extension.config, null, 2));

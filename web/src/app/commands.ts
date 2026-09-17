@@ -28,7 +28,7 @@ export interface Command {
 /** when 求值所需的上下文快照，由调用方（App/测试）提供 */
 export type WhenContext = Record<string, boolean>;
 
-export function evaluateWhen(when: string | undefined, context: WhenContext): boolean {
+function evaluateWhen(when: string | undefined, context: WhenContext): boolean {
   if (!when) return true;
   for (const clause of when.split(/\s+/)) {
     if (!clause) continue;
@@ -43,7 +43,7 @@ export function evaluateWhen(when: string | undefined, context: WhenContext): bo
 
 const commands = new Map<string, Command>();
 
-export function registerCommand(command: Command): () => void {
+function registerCommand(command: Command): () => void {
   if (commands.has(command.id)) throw new Error(`duplicate command id: ${command.id}`);
   commands.set(command.id, command);
   return () => {
@@ -66,11 +66,6 @@ export function runCommand(id: string, context?: WhenContext): boolean {
   if (!command || (context && !evaluateWhen(command.when, context))) return false;
   command.handler();
   return true;
-}
-
-/** 测试专用：清空注册表 */
-export function resetCommands(): void {
-  commands.clear();
 }
 
 // ===== 键位 =====
@@ -137,7 +132,7 @@ interface DispatchResult {
  * 组件已 preventDefault 的事件（如 Composer 的 mod+p 循环模型）不再分发——
  * window 冒泡阶段能看到 defaultPrevented，避免一键双触发。
  */
-export function dispatchKeybinding(
+function dispatchKeybinding(
   event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "target" | "defaultPrevented">,
   keybindings: readonly Keybinding[],
   context: WhenContext,
@@ -225,7 +220,7 @@ export function useGlobalKeybindings(context: WhenContext, keybindings: readonly
 // ===== when 上下文（从各 store 实时推导，App 无需手工拼装） =====
 
 /** 当前会话是否运行中：agent 状态 busy 或流式缓冲仍有内容 */
-export function isSessionRunning(sessionId: string | undefined): boolean {
+function isSessionRunning(sessionId: string | undefined): boolean {
   if (!sessionId) return false;
   if (isBusyState(sessionStore.get().agentStates[sessionId])) return true;
   return streamBuffer.blocksFor(sessionId).length > 0;
@@ -347,47 +342,6 @@ export function registerBuiltinCommands(getActions: () => CommandActions): () =>
 }
 
 // ===== REST 动作覆盖审计（验收项） =====
-// 枚举 api.ts 中用户可达的 REST 动作，并声明对应的命令 id。
-// command-coverage 测试校验两侧一致：api 方法存在且命令已注册。
-// 面板内部操作（上下文 pin/压缩、SCM diff、检查点等）通过面板视图命令可达，映射到打开对应视图的命令。
-
-import type { api } from "../lib/api";
-
-type ApiAction = keyof typeof api;
-
-export const REST_ACTION_COMMANDS: ReadonlyArray<{ action: ApiAction; command: string }> = [
-  // 会话生命周期
-  { action: "sessions", command: COMMAND_IDS.showSessionsView },
-  { action: "session", command: COMMAND_IDS.showSessionsView },
-  { action: "createSession", command: COMMAND_IDS.newSession },
-  { action: "deleteSession", command: COMMAND_IDS.deleteSession },
-  { action: "importSession", command: COMMAND_IDS.importSession },
-  { action: "updateSession", command: COMMAND_IDS.openSettings },
-  // 重命名/置顶在会话栏完成，归入会话视图命令
-  { action: "patchSession", command: COMMAND_IDS.showSessionsView },
-  // 对话主链路
-  { action: "sendMessage", command: COMMAND_IDS.send },
-  { action: "runShell", command: COMMAND_IDS.send },
-  { action: "abort", command: COMMAND_IDS.abort },
-  // 文件与视图
-  { action: "listFiles", command: COMMAND_IDS.showFilesView },
-  { action: "readFile", command: COMMAND_IDS.quickOpen },
-  { action: "writeFile", command: COMMAND_IDS.saveEditorFile },
-  { action: "workspaceFiles", command: COMMAND_IDS.quickOpen },
-  { action: "workspaceFileSymbols", command: COMMAND_IDS.saveEditorFile },
-  { action: "completePath", command: COMMAND_IDS.quickOpen },
-  { action: "latestDiagnostics", command: COMMAND_IDS.showProblemsView },
-  { action: "scmStatus", command: COMMAND_IDS.showScmView },
-  { action: "scmDiff", command: COMMAND_IDS.showScmView },
-  { action: "context", command: COMMAND_IDS.toggleBottomPanel },
-  // 后台任务列表经通知中心触达（task.finished 事件进通知流）
-  { action: "tasks", command: COMMAND_IDS.showNotifications },
-  // 设置与目录
-  { action: "settings", command: COMMAND_IDS.openSettings },
-  { action: "saveSettings", command: COMMAND_IDS.openSettings },
-  { action: "models", command: COMMAND_IDS.openSettings },
-];
-
 // ===== F6 区域轮换 =====
 
 const ZONE_ORDER = ["activity", "sidebar", "main", "bottom"] as const;
