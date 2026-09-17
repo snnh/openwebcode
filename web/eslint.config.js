@@ -34,6 +34,9 @@ export default tseslint.config(
     rules: {
       // null 用松散比较：value != null 同时兜住 null/undefined，是刻意的空值合并判断
       eqeqeq: ["error", "always", { null: "ignore" }],
+      // 嵌套深度门禁：存量已清零（lib/、chat-mode/ 等深块拆为独立函数），阈值 4 表示
+      // 深度 ≥5 直接失败，阻止新增深嵌套。
+      "max-depth": ["error", 4],
       "@typescript-eslint/no-unused-vars": [
         "error",
         {

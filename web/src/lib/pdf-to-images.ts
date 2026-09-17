@@ -192,6 +192,36 @@ async function renderPagePng(page: PDFPageProxy, scale: number, maxDimension: nu
 }
 
 /**
+ * 渲染单页并在超出上传上限时逐次降 scale；返回最终合规的 PNG。
+ * 重试次数与降级判定集中在 MAX_PNG_RENDER_ATTEMPTS / nextScaleAfterOversize。
+ */
+async function renderPageWithinLimit(
+  page: PDFPageProxy,
+  pageNumber: number,
+  dpi: number,
+  maxDimension: number,
+): Promise<RenderedPng> {
+  const baseViewport = page.getViewport({ scale: 1 });
+  let scale = pageScale(baseViewport, dpi, maxDimension);
+
+  for (let attempt = 1; attempt <= MAX_PNG_RENDER_ATTEMPTS; attempt += 1) {
+    const png = await renderPagePng(page, scale, maxDimension);
+    if (png.data.length <= MAX_IMAGE_BASE64_CHARS) return png;
+    if (attempt === MAX_PNG_RENDER_ATTEMPTS) {
+      throw new Error(`PDF page ${pageNumber} could not be reduced below the image upload limit after ${MAX_PNG_RENDER_ATTEMPTS} attempts`);
+    }
+    const nextScale = nextScaleAfterOversize(scale, baseViewport, png.data.length);
+    if (nextScale === undefined) {
+      throw new Error(`PDF page ${pageNumber} could not be reduced below the image upload limit`);
+    }
+    scale = nextScale;
+  }
+
+  // 循环首轮必然返回或抛错；保留兜底便于将来调整重试上限
+  throw new Error(`PDF page ${pageNumber} could not be rendered`);
+}
+
+/**
  * Render a local PDF into PNG attachments suitable for Composer. Rendering is
  * sequential to preserve page order and keep the peak canvas memory bounded.
  */
@@ -225,27 +255,7 @@ export async function renderPdfToImages(
 
       try {
         page = await document.getPage(pageNumber);
-        const baseViewport = page.getViewport({ scale: 1 });
-        let scale = pageScale(baseViewport, dpi, maxDimension);
-        let png: RenderedPng | undefined;
-        for (let attempt = 1; attempt <= MAX_PNG_RENDER_ATTEMPTS; attempt += 1) {
-          png = await renderPagePng(page, scale, maxDimension);
-          if (png.data.length <= MAX_IMAGE_BASE64_CHARS) break;
-
-          if (attempt === MAX_PNG_RENDER_ATTEMPTS) {
-            throw new Error(`PDF page ${pageNumber} could not be reduced below the image upload limit after ${MAX_PNG_RENDER_ATTEMPTS} attempts`);
-          }
-
-          const nextScale = nextScaleAfterOversize(scale, baseViewport, png.data.length);
-          if (nextScale === undefined) {
-            throw new Error(`PDF page ${pageNumber} could not be reduced below the image upload limit`);
-          }
-          scale = nextScale;
-        }
-        // The loop always assigns on its first iteration, but retain a guard
-        // for TypeScript and for any future change to the retry bound.
-        if (!png) throw new Error(`PDF page ${pageNumber} could not be rendered`);
-
+        const png = await renderPageWithinLimit(page, pageNumber, dpi, maxDimension);
         images.push({ mediaType: "image/png", data: png.data, previewUrl: png.previewUrl });
         onProgress?.({ completed: pageNumber, total: pagesToRender });
       } catch (error) {

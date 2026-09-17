@@ -31,6 +31,9 @@ export default tseslint.config(
   {
     rules: {
       eqeqeq: ["error", "always"],
+      // 嵌套深度门禁：现存量已清零（providers/ 等深块拆为独立函数），阈值 5 表示
+      // 深度 ≥6 直接失败，阻止新增深嵌套；后续收敛到 4 需先拆分剩余 5 层块。
+      "max-depth": ["error", 5],
       "@typescript-eslint/no-unused-vars": [
         "error",
         {

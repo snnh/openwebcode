@@ -1,4 +1,4 @@
-import type { ChatMessage, LiveSubagentRun } from "./contracts";
+import type { ChatMessage, LiveSubagentRun, MessageContent } from "./contracts";
 
 /** 每个会话保留的子代理运行条目上限（超出时丢弃最旧的） */
 export const LIVE_SUBAGENT_CAP = 100;
@@ -7,6 +7,15 @@ export const LIVE_SUBAGENT_CAP = 100;
 export function isSubagentToolCallName(name: string | undefined): name is "subagent" | "spawn_task" | "spawn_swarm" {
   return name === "subagent" || name === "spawn_task" || name === "spawn_swarm";
 }
+
+/** tool_call 阶段记录的调用描述（tool_result 配对时取回）。 */
+interface SubagentCall {
+  name: string;
+  input?: Record<string, unknown>;
+}
+
+/** 一条 tool_result 块（含新旧两代任务字段）。 */
+type ToolResultBlock = MessageContent;
 
 /** spawn_swarm items 的两种形态：纯字符串或 { task, agent?, role? }（与 server 端解析一致） */
 export function swarmItems(input?: Record<string, unknown>): Array<{ task: string; agent?: string; role?: string }> {
@@ -43,7 +52,7 @@ export function capLiveSubagentRuns(runs: Record<string, LiveSubagentRun>, cap: 
  * 推导条目不包含实时轮次/工具明细（turns/toolsUsed 置空）。
  */
 export function deriveSubagentRunsFromMessages(messages: ChatMessage[]): Record<string, LiveSubagentRun> {
-  const calls = new Map<string, { name: string; input?: Record<string, unknown> }>();
+  const calls = new Map<string, SubagentCall>();
   const runs: Record<string, LiveSubagentRun> = {};
   for (const message of messages) {
     for (const block of message.content) {
@@ -51,63 +60,104 @@ export function deriveSubagentRunsFromMessages(messages: ChatMessage[]): Record<
         calls.set(block.id, { name: block.name, ...(block.input ? { input: block.input } : {}) });
         continue;
       }
-      if (block.type !== "tool_result" || !block.toolCallId) continue;
-      if (!block.subagentTasks?.length && !block.subagentTaskIds?.length) continue;
-      const call = calls.get(block.toolCallId);
-      if (!call) continue;
-      const callAgent = typeof call.input?.agent === "string" && call.input.agent.trim() ? call.input.agent.trim() : undefined;
-      const items = call.name === "spawn_swarm" ? swarmItems(call.input) : [];
-      const toolCallId = block.toolCallId;
-      // 新格式：逐项终态（部分失败的 swarm 各项状态独立，不再被整体 isError 带偏）
-      if (block.subagentTasks?.length) {
-        const total = Math.max(items.length, block.subagentTasks.length);
-        for (const task of block.subagentTasks) {
-          if (!task || typeof task.taskId !== "string" || !task.taskId) continue;
-          const index = typeof task.index === "number" ? task.index : 0;
-          const agent = call.name === "spawn_swarm" ? items[index]?.agent ?? callAgent : callAgent;
-          const prompt = call.name === "spawn_swarm"
-            ? items[index]?.task ?? ""
-            : typeof call.input?.prompt === "string" ? call.input.prompt : "";
-          const failed = task.status === "failed";
-          const role = typeof task.role === "string" && task.role ? task.role : call.name === "spawn_swarm" ? items[index]?.role : undefined;
-          runs[task.taskId] = {
-            taskId: task.taskId,
-            toolCallId,
-            prompt,
-            ...(agent ? { agent } : {}),
-            ...(role ? { role } : {}),
-            ...(typeof task.model === "string" && task.model ? { model: task.model } : {}),
-            ...(call.name === "spawn_swarm" ? { swarm: { index: index + 1, total } } : {}),
-            status: failed ? "failed" : "done",
-            turns: 0,
-            toolsUsed: [],
-            ...(failed ? { error: snippet(task.error ?? block.content ?? "unknown error") } : {}),
-          };
-        }
-        continue;
-      }
-      // 旧消息回退：subagentTaskIds 与 items 位置对齐，整体 isError 决定全部条目状态
-      const total = block.subagentTaskIds!.length;
-      block.subagentTaskIds!.forEach((taskId, index) => {
-        const agent = call.name === "spawn_swarm" ? items[index]?.agent ?? callAgent : callAgent;
-        const prompt = call.name === "spawn_swarm"
-          ? items[index]?.task ?? ""
-          : typeof call.input?.prompt === "string" ? call.input.prompt : "";
-        runs[taskId] = {
-          taskId,
-          toolCallId,
-          prompt,
-          ...(agent ? { agent } : {}),
-          ...(call.name === "spawn_swarm" ? { swarm: { index: index + 1, total } } : {}),
-          status: block.isError ? "failed" : "done",
-          turns: 0,
-          toolsUsed: [],
-          ...(block.isError && block.content ? { error: snippet(block.content) } : {}),
-        };
-      });
+      if (block.type === "tool_result") applyToolResult(runs, calls, block);
     }
   }
   return runs;
+}
+
+/** 处理一条 tool_result：无配对调用或无任务列表时不动（其余副作用集中在两个 apply* 里）。 */
+function applyToolResult(
+  runs: Record<string, LiveSubagentRun>,
+  calls: Map<string, SubagentCall>,
+  block: ToolResultBlock,
+): void {
+  if (!block.toolCallId) return;
+  if (!block.subagentTasks?.length && !block.subagentTaskIds?.length) return;
+  const call = calls.get(block.toolCallId);
+  if (!call) return;
+  const callAgent = typeof call.input?.agent === "string" && call.input.agent.trim() ? call.input.agent.trim() : undefined;
+  const items = call.name === "spawn_swarm" ? swarmItems(call.input) : [];
+  // 新格式：逐项终态（部分失败的 swarm 各项状态独立，不再被整体 isError 带偏）
+  if (block.subagentTasks?.length) {
+    applySubagentTasks(runs, block, call, callAgent, items);
+    return;
+  }
+  // 旧消息回退：subagentTaskIds 与 items 位置对齐，整体 isError 决定全部条目状态
+  applyLegacyTaskIds(runs, block, call, callAgent, items);
+}
+
+/** swarm 逐项 agent/prompt 描述（单发调用回退调用级 agent 与顶层 prompt）。 */
+function describeTarget(
+  call: SubagentCall,
+  callAgent: string | undefined,
+  items: ReturnType<typeof swarmItems>,
+  index: number,
+): { agent?: string; prompt: string } {
+  if (call.name !== "spawn_swarm") {
+    return {
+      ...(callAgent ? { agent: callAgent } : {}),
+      prompt: typeof call.input?.prompt === "string" ? call.input.prompt : "",
+    };
+  }
+  const item = items[index];
+  const agent = item?.agent ?? callAgent;
+  return { ...(agent ? { agent } : {}), prompt: item?.task ?? "" };
+}
+
+function applySubagentTasks(
+  runs: Record<string, LiveSubagentRun>,
+  block: ToolResultBlock,
+  call: SubagentCall,
+  callAgent: string | undefined,
+  items: ReturnType<typeof swarmItems>,
+): void {
+  const tasks = block.subagentTasks ?? [];
+  const total = Math.max(items.length, tasks.length);
+  for (const task of tasks) {
+    if (!task || typeof task.taskId !== "string" || !task.taskId) continue;
+    const index = typeof task.index === "number" ? task.index : 0;
+    const target = describeTarget(call, callAgent, items, index);
+    const failed = task.status === "failed";
+    const role = typeof task.role === "string" && task.role ? task.role : call.name === "spawn_swarm" ? items[index]?.role : undefined;
+    runs[task.taskId] = {
+      taskId: task.taskId,
+      toolCallId: block.toolCallId!,
+      prompt: target.prompt,
+      ...(target.agent ? { agent: target.agent } : {}),
+      ...(role ? { role } : {}),
+      ...(typeof task.model === "string" && task.model ? { model: task.model } : {}),
+      ...(call.name === "spawn_swarm" ? { swarm: { index: index + 1, total } } : {}),
+      status: failed ? "failed" : "done",
+      turns: 0,
+      toolsUsed: [],
+      ...(failed ? { error: snippet(task.error ?? block.content ?? "unknown error") } : {}),
+    };
+  }
+}
+
+function applyLegacyTaskIds(
+  runs: Record<string, LiveSubagentRun>,
+  block: ToolResultBlock,
+  call: SubagentCall,
+  callAgent: string | undefined,
+  items: ReturnType<typeof swarmItems>,
+): void {
+  const taskIds = block.subagentTaskIds ?? [];
+  taskIds.forEach((taskId, index) => {
+    const target = describeTarget(call, callAgent, items, index);
+    runs[taskId] = {
+      taskId,
+      toolCallId: block.toolCallId!,
+      prompt: target.prompt,
+      ...(target.agent ? { agent: target.agent } : {}),
+      ...(call.name === "spawn_swarm" ? { swarm: { index: index + 1, total: taskIds.length } } : {}),
+      status: block.isError ? "failed" : "done",
+      turns: 0,
+      toolsUsed: [],
+      ...(block.isError && block.content ? { error: snippet(block.content) } : {}),
+    };
+  });
 }
 
 /** 合并实时与消息推导的子代理运行：实时条目优先（含轮次/工具明细），推导条目补齐历史 */
