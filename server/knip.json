@@ -1,12 +1,25 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src/cli.ts", "src/extensions/extension-host-process.ts"],
+  "entry": [
+    "src/cli.ts",
+    "src/extensions/extension-host-process.ts",
+    "src/dsh/cordis-shim.ts",
+    "src/dsh/dsh-tools-shim.ts",
+    "src/dsh/schemastery-shim.ts"
+  ],
   "ignore": [
     "assets/eval/fixtures/**",
     "assets/sandbox-proxy.mjs",
     "test/fixtures/fake-mcp-env.mjs",
     "test/fixtures/fake-mcp-server.mjs"
   ],
-  "ignoreDependencies": ["playwright"],
-  "ignoreBinaries": ["bwrap", "pwsh", "uv", "mkfifo"]
+  "ignoreDependencies": [
+    "playwright"
+  ],
+  "ignoreBinaries": [
+    "bwrap",
+    "pwsh",
+    "uv",
+    "mkfifo"
+  ]
 }
