@@ -1,5 +1,5 @@
 /** dsh 垫片集成冒烟（M1）：三垫片协同承载一个典型 dsh Host 插件（tool-cordis 式写法） */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Context } from "../src/dsh/cordis-shim.js";
 import { Context as CordisContext } from "../src/dsh/cordis-shim.js";
 import { defineTool } from "../src/dsh/dsh-tools-shim.js";
@@ -24,7 +24,7 @@ const helloToolModule = {
         who: { type: "string", required: true, description: "对象" },
       },
       output: {
-        schema: { type: "object", properties: { text: { type: "string", required: true } } },
+        schema: { type: "object", additionalProperties: false, properties: { text: { type: "string", required: true } } },
         render: (_args, value) => [{ type: "text", text: String((value as { text: string }).text) }],
       },
       execute: async args => ({ text: `${config.greeting}, ${args.who}${config.strict ? "!" : "."}` }),
@@ -53,7 +53,7 @@ describe("dsh 垫片集成冒烟", () => {
     });
 
     const fiber = ctx.plugin(helloToolModule as never);
-    await vi_waitFor(() => fiber.state === "active");
+    await vi.waitFor(() => expect(fiber.state).toBe("active"));
 
     // Config 默认值生效
     const tool = registered.get("hello_greet");
@@ -90,19 +90,3 @@ describe("dsh 垫片集成冒烟", () => {
     expect(registered.size).toBe(0);
   });
 });
-
-function vi_waitFor(condition: () => boolean): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const start = Date.now();
-    const tick = () => {
-      try {
-        if (condition()) return resolve();
-      } catch (error) {
-        return reject(error);
-      }
-      if (Date.now() - start > 2000) return reject(new Error("waitFor timeout"));
-      setTimeout(tick, 5);
-    };
-    tick();
-  });
-}

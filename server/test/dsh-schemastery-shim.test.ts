@@ -149,6 +149,15 @@ describe("schemastery-shim 集成面", () => {
     expectValidationError(() => (schema as unknown as (v: unknown) => unknown)("x"));
   });
 
+  it("Schema.from：标量/Function 推断（上游同款 required）", () => {
+    expect(Schema.from("x")("x")).toBe("x");
+    expectValidationError(() => Schema.from("x")("y"), "expected x but got y");
+    expect(Schema.from(String)("s")).toBe("s");
+    const fn = () => 1;
+    expect(Schema.from(Function)(fn)).toBe(fn);
+    expectValidationError(() => Schema.from(Function)(1), "expected function but got 1");
+  });
+
   it("未覆盖特性 fail loud（构造期抛 UnsupportedSchemaError）", () => {
     expect(() => Schema.date()).toThrow(UnsupportedSchemaError);
     expect(() => Schema.is(Date)).toThrow(UnsupportedSchemaError);

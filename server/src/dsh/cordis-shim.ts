@@ -20,7 +20,9 @@
  *
  * 未覆盖（fail loud 或直接缺失）：isolate/intercept/accessor/mixin、`@Inject` 装饰器、
  * HMR（internal/update 瀑布）、`fiber.update/restart`、跨 isolate 作用域、
- * `Service.invoke` 可调用实例、`internal/*` 核心事件的拦截语义。
+ * `Service.invoke` 可调用实例、`internal/*` 核心事件的拦截语义、
+ * `ctx.reflect`/`ctx.registry` 子服务（属性读取返回 undefined）与 cordis timer 服务
+ * （timeout/interval/throttle/debounce，M3 按需补）。
  */
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-function-type, @typescript-eslint/no-namespace -- 垫片忠实复刻上游 cordis 的宽松类型面（any/Function/namespace 均为上游公开 API 形态），逐行 disable 会淹没移植代码的可读性 */
 
@@ -289,11 +291,20 @@ function unregisterFiber(root: Context, fiber: Fiber) {
   fibersByRoot.get(root)?.delete(fiber);
 }
 
-/** 服务变更后唤醒所有 fiber 重算依赖（上游 notify 子集）。 */
-function notifyDependents(root: Context) {
+/**
+ * 服务变更后唤醒依赖重算（上游 reflect.notify 子集）：
+ * 给定服务名时只唤醒 inject 该名字的 fiber，返回被唤醒者供卸载路径 await。
+ */
+function notifyDependents(root: Context, name?: string): Fiber[] {
   const fibers = fibersByRoot.get(root);
-  if (!fibers) return;
-  for (const fiber of [...fibers]) fiber.refresh();
+  if (!fibers) return [];
+  const woken: Fiber[] = [];
+  for (const fiber of [...fibers]) {
+    if (name !== undefined && !(name in fiber.inject)) continue;
+    fiber.refresh();
+    woken.push(fiber);
+  }
+  return woken;
 }
 
 /**
@@ -321,7 +332,8 @@ export class Fiber {
   private disposed = false;
   private readonly runtime: PluginRuntime | null;
   private readonly isRoot: boolean;
-  private readonly inject: Record<string, unknown>;
+  /** 声明的依赖表（名称 → 注记）；服务变更时按此判定是否唤醒本 fiber。 */
+  readonly inject: Record<string, unknown>;
   private readonly effectLabels = new Set<string>();
 
   constructor(parent: Context, config: any, inject: Record<string, unknown>, runtime: PluginRuntime | null) {
@@ -597,7 +609,6 @@ export class Context {
   }
   /** 服务仓库（root 与其子 context 共享同一张表）。 */
   readonly serviceStore: Map<string, ServiceImpl>;
-  private readonly parentContext: Context | null;
 
   /** 跨副本可靠的 context 判定（上游 Context.is 语义，经品牌 Symbol 实现）。 */
   static is(value: any): value is Context {
@@ -605,7 +616,6 @@ export class Context {
   }
 
   constructor(options: ContextOptions = {}) {
-    this.parentContext = null;
     this.serviceStore = new Map();
     this.events = new EventService();
     const proxied = new Proxy(this, contextHandler) as Context;
@@ -624,7 +634,6 @@ export class Context {
   extend(meta: Record<string | symbol, unknown> = {}): Context {
     const child = Object.create(null) as Context;
     Object.setPrototypeOf(child, Context.prototype);
-    (child as any).parentContext = this;
     (child as any).serviceStore = this.serviceStore;
     (child as any).events = this.events;
     (child as any).root = this.root;
@@ -643,8 +652,10 @@ export class Context {
     return impl.value;
   }
 
-  /** 注册服务实现，归属当前 fiber（卸载自动移除并唤醒等待者）。 */
-  /** 注册服务实现，归属当前 fiber（卸载自动移除并唤醒等待者）。 */
+  /**
+   * 注册服务实现，归属当前 fiber（卸载自动移除并唤醒等待者）。
+   * 上游 reflect.provide 语义：disposer 等依赖者卸载完成后再结束。
+   */
   provide(name: string, value?: unknown, check?: () => boolean): () => void {
     void check; // 子集：可用性谓词未支持
     const fiber = this.fiber;
@@ -656,12 +667,12 @@ export class Context {
     return this.fiber.effect(() => {
       const impl: ServiceImpl = { name, value, fiber };
       this.serviceStore.set(name, impl);
-      notifyDependents(this.root);
+      notifyDependents(this.root, name);
       return () => {
-        if (this.serviceStore.get(name) === impl) {
-          this.serviceStore.delete(name);
-          notifyDependents(this.root);
-        }
+        if (this.serviceStore.get(name) !== impl) return;
+        this.serviceStore.delete(name);
+        const dependents = notifyDependents(this.root, name);
+        return Promise.allSettled(dependents.map(dependent => dependent.await()));
       };
     }, `provide(${name})`) as () => void;
   }
