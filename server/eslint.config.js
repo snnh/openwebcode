@@ -20,6 +20,17 @@ export default tseslint.config(
     },
   },
   {
+    // dsh 兼容模式的桥接插件是浏览器 bundle（在 dsh SPA 里执行）：需要 browser 全局，
+    // 且它以 IIFE/打包形态书写（不做模块化重排），故只保留浏览器全局声明
+    files: ["assets/dsh-bridge/**/*.js"],
+    languageOptions: {
+      globals: globals.browser,
+    },
+    rules: {
+      "no-empty": "off",
+    },
+  },
+  {
     files: ["test/**/*.ts"],
     rules: {
       // 桩 provider 常用“只抛错不产出”的 async generator，yield 缺失是刻意的

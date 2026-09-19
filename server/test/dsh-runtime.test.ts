@@ -55,6 +55,8 @@ function makeRuntime(overrides: {
     agent,
     events: new EventBus(),
     home: "/home/tester",
+    version: () => "1.12.0-test",
+    mainPort: () => 3210,
     logger: {
       info: (message) => overrides.logs?.push(message),
       warn: (message) => overrides.warnings?.push(message),

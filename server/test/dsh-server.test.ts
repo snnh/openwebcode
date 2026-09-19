@@ -251,6 +251,35 @@ describe.skipIf(!VENDOR_READY)("dsh 端口服务（需 vendor）", () => {
     })).toBeUndefined();
   });
 
+  it("桥接插件：随 owc 发布的手写 bundle 被加载、进图，且 /dsh-owc/status 返回 owc 事实", async () => {
+    const { loadBridgePlugin, buildOwcStatus } = await import("../src/dsh/web-protocol/bridge.js");
+    const assets = path.join(SERVER_ROOT, "assets");
+    const bridge = await loadBridgePlugin(path.join(assets, "dsh-bridge"));
+    expect(bridge).toBeDefined();
+    expect(bridge?.id).toBe("owc-dsh-bridge");
+    expect(bridge?.rev).toMatch(/^[0-9a-f]{12}$/);
+    bridge!.originDirectory = path.join(assets, "dsh-bridge");
+    const server = await buildDshServer({
+      vendorDirectory: VENDOR,
+      enabled: () => true,
+      accessToken: TOKEN,
+      deps: fakeDeps(),
+      bridgePlugin: bridge,
+      owcStatus: () => buildOwcStatus({ version: "1.12.0", dshVersion: "0.1.6-alpha.2", mainPort: 3210, protocol: "http:", host: "127.0.0.1", accessToken: TOKEN }),
+      logger: { warn: () => {}, info: () => {} },
+    });
+    servers.push(server as DshServer);
+    const index = await (server as DshServer).app.inject({ method: "GET", url: "/", headers: { cookie: `owc_access_token=${TOKEN}` } });
+    expect(index.body).toContain("/plugins/owc-dsh-bridge/client.js?rev=");
+    const bundle = await (server as DshServer).app.inject({ method: "GET", url: `/plugins/owc-dsh-bridge/client.js?rev=${bridge?.rev}` });
+    expect(bundle.statusCode).toBe(200);
+    expect(bundle.body).toContain("__ModuleLoader__.load({");
+    expect((await (server as DshServer).app.inject({ method: "GET", url: "/dsh-owc/status" })).statusCode).toBe(401);
+    const status = await (server as DshServer).app.inject({ method: "GET", url: "/dsh-owc/status", headers: { cookie: `owc_access_token=${TOKEN}` } });
+    expect(status.statusCode).toBe(200);
+    expect(JSON.parse(status.body)).toMatchObject({ version: "1.12.0", dshVersion: "0.1.6-alpha.2", workbenchUrl: `http://127.0.0.1:3210/?token=${TOKEN}` });
+  });
+
   it("可注入 bridge 插件：graph 追加 application batch", async () => {
     const deps = fakeDeps();
     const server = await buildDshServer({

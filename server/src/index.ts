@@ -291,6 +291,8 @@ const dshCompat = new DshCompatRuntime({
   agent,
   events,
   home: homedir(),
+  version: () => getServerVersion(),
+  mainPort: () => settings.effective().port,
   logger: {
     info: (message) => console.log(message),
     warn: (message) => process.stderr.write(`${message}\n`),

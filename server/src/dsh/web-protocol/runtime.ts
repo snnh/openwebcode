@@ -12,6 +12,7 @@ import type { AgentRunner } from "../../agent/agent-runner.js";
 import type { EventBus } from "../../events/event-bus.js";
 import type { SessionStore } from "../../sessions/session-store.js";
 import { buildDshServer, type DshServer } from "./server.js";
+import { buildOwcStatus, loadBridgePlugin } from "./bridge.js";
 import type { DshWireDeps } from "./streams.js";
 
 export interface DshCompatRuntimeOptions {
@@ -27,6 +28,10 @@ export interface DshCompatRuntimeOptions {
   agent: AgentRunner;
   events: EventBus;
   home: string;
+  /** owc 服务版本（`/dsh-owc/status` 与桥接插件展示用）。 */
+  version: () => string;
+  /** owc 主端口（桥接插件回跳 URL 用）。 */
+  mainPort: () => number;
   imageLimits?: DshWireDeps["projection"]["imageLimits"];
   logger?: { warn(message: string): void; info(message: string): void };
 }
@@ -116,11 +121,27 @@ export class DshCompatRuntime {
       },
       logger: { warn: (message) => this.warn(message) },
     };
+    // 桥接插件产物与 vendor 同级（server/assets/dsh-bridge/client.js）；缺失时不阻塞 dsh 模式
+    const bridgeDirectory = path.join(path.dirname(this.options.vendorDirectory), "dsh-bridge");
+    const bridgePlugin = await loadBridgePlugin(bridgeDirectory);
+    if (bridgePlugin !== undefined) bridgePlugin.originDirectory = bridgeDirectory;
     const server = await buildDshServer({
       vendorDirectory,
       enabled: () => this.options.enabled(),
       accessToken: this.options.accessToken(),
       deps,
+      ...(bridgePlugin === undefined ? {} : { bridgePlugin }),
+      owcStatus: () => {
+        const token = this.options.accessToken();
+        return buildOwcStatus({
+          version: this.options.version(),
+          dshVersion: "0.1.6-alpha.2",
+          mainPort: this.options.mainPort(),
+          protocol: "http:",
+          host: this.options.host(),
+          ...(token === undefined ? {} : { accessToken: token }),
+        });
+      },
       logger: { warn: (message) => this.warn(message), info: (message) => this.log(message) },
     });
     if (server === undefined) {
