@@ -101,6 +101,12 @@ jobs:
           set -euo pipefail
           cmake -S core -B build -A x64 -DCPACK_PACKAGE_VERSION="$BASE_VERSION" -DCPACK_FULL_VERSION="$VERSION"
           cmake --build build --config Release --target owc-exec
+      - name: Vendor dsh UI
+        shell: bash
+        # dsh 兼容模式的可选产物（server/assets/dsh-web/）；失败不阻塞发布（发布包缺少 vendor 时该模式如实不可用）
+        continue-on-error: true
+        run: node scripts/fetch-dsh-web.mjs
+
       - name: Stage runtime into build/stage
         shell: bash
         run: |
@@ -302,6 +308,11 @@ jobs:
           set -euo pipefail
           # 防 toolchain 静默回落主机编译器：交叉产物必须是目标架构 ELF
           file build/owc-exec | grep -qi 'loongarch' || { echo "build/owc-exec is not loongarch64 ELF"; file build/owc-exec; exit 1; }
+      - name: Vendor dsh UI
+        # dsh 兼容模式的可选产物（server/assets/dsh-web/）；失败不阻塞发布（缺少 vendor 时该模式如实不可用）
+        continue-on-error: true
+        run: node scripts/fetch-dsh-web.mjs
+
       - name: Stage runtime into build/stage
         run: |
           set -euo pipefail
