@@ -254,8 +254,23 @@ export interface JobOutputResult { chunks: Array<{ seq: number; stream: "stdout"
  * （人类终端通道强制 false；sandbox=true 供后续 agent 持久 shell 复用会话策略）。 */
 export interface PtyOpenRequest { session: string; cwd: string; cols: number; rows: number; sandbox: boolean; shell?: string }
 export interface PtyOpenResult { ptyId: number; sandboxCapability?: string; sandboxReason?: string }
-export interface PtyInputRequest { ptyId: number; data: string }
-export interface PtyResizeRequest { ptyId: number; cols: number; rows: number }
+/**
+ * pty.input / pty.resize / pty.close 的归属参数。
+ *
+ * core 侧 `sessionId` 是**必填**字段并与 `pty.open` 记录的 session_id 比对
+ * （缺失/非字符串 -32602，不匹配 -32002 `pty belongs to a different session`）：
+ * ptyId 是进程级编号，缺这道闸门任一会话都能向别的会话终端注入按键（含
+ * `pty.open sandbox:false` 的应用属主人机终端）。
+ *
+ * 调用点必须显式传自身会话 id（见 routes/sessions-run.ts）。字段在类型上保持
+ * 可选，仅为兼容 server/src/agent/persistent-shell.ts 等既有调用点（该目录由
+ * 其他代理维护）：省略时 CoreClient/CoreRouter 用 pty.open 登记的归属补全，
+ * 登记缺失则原样发送、由 core 以 -32602 拒绝——不猜测、不放宽。
+ */
+export interface PtyInputRequest { ptyId: number; data: string; sessionId?: string }
+export interface PtyResizeRequest { ptyId: number; cols: number; rows: number; sessionId?: string }
+export interface PtyCloseRequest { ptyId: number; sessionId?: string }
+export interface PtyCloseResult { ok: true; exitCode?: number }
 /**
  * overlay.*：Linux overlayfs 快照原语（信任边界同 pty.*，core 本身非沙盒进程）。
  * stateRoot 为 core 侧根界：upper/work/merged/dest/sourceUpper 必须严格位于其下
@@ -337,7 +352,7 @@ export interface CoreClientLike {
   openPty?(request: PtyOpenRequest): Promise<PtyOpenResult>;
   inputPty?(request: PtyInputRequest): Promise<{ ok: true }>;
   resizePty?(request: PtyResizeRequest): Promise<{ ok: true }>;
-  closePty?(request: { ptyId: number }): Promise<{ ok: true; exitCode?: number }>;
+  closePty?(request: PtyCloseRequest): Promise<PtyCloseResult>;
   /** per-pty 事件通道（exec.output 的 emitter 先例按 ptyId 细分）：output/exit */
   ptyEvents?(ptyId: number): EventEmitter;
   removePtyEvents?(ptyId: number): void;
@@ -372,6 +387,9 @@ export class CoreClient extends EventEmitter {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly ptyEmitters = new Map<number, EventEmitter>();
   private readonly pendingPtyEvents = new Map<number, Array<{ type: "output" | "exit"; params: unknown }>>();
+  /** ptyId → 开出该 pty 的会话 id（pty.open 时登记）。core 要求 pty.input/
+   * resize/close 带 sessionId 并比对归属；未显式传参的调用点由此补全。 */
+  private readonly ptySessions = new Map<number, string>();
   private nextId = 1;
   private stopping = false;
   private restartCount = 0;
@@ -534,10 +552,26 @@ export class CoreClient extends EventEmitter {
     }
   }
   normalizePath(request: PathNormalizeRequest): Promise<PathNormalizeResult> { return this.call("path.normalize", request); }
-  openPty(request: PtyOpenRequest): Promise<PtyOpenResult> { return this.call("pty.open", request); }
-  inputPty(request: PtyInputRequest): Promise<{ ok: true }> { return this.call("pty.input", request); }
-  resizePty(request: PtyResizeRequest): Promise<{ ok: true }> { return this.call("pty.resize", request); }
-  closePty(request: { ptyId: number }): Promise<{ ok: true; exitCode?: number }> { return this.call("pty.close", request); }
+  async openPty(request: PtyOpenRequest): Promise<PtyOpenResult> {
+    const result = await this.call<PtyOpenResult>("pty.open", request);
+    this.ptySessions.set(result.ptyId, request.session);
+    return result;
+  }
+  inputPty(request: PtyInputRequest): Promise<{ ok: true }> { return this.call("pty.input", this.withPtySession(request)); }
+  resizePty(request: PtyResizeRequest): Promise<{ ok: true }> { return this.call("pty.resize", this.withPtySession(request)); }
+  async closePty(request: PtyCloseRequest): Promise<PtyCloseResult> {
+    const result = await this.call<PtyCloseResult>("pty.close", this.withPtySession(request));
+    this.ptySessions.delete(request.ptyId);
+    return result;
+  }
+
+  /** 补全 pty.* 的归属 sessionId：显式值优先（core 负责比对，写错就 -32002），
+   * 缺省按 pty.open 登记值补全，登记缺失则原样发送（core 回 -32602）。 */
+  private withPtySession<T extends { ptyId: number; sessionId?: string }>(request: T): T {
+    if (typeof request.sessionId === "string" && request.sessionId !== "") return request;
+    const owner = this.ptySessions.get(request.ptyId);
+    return owner === undefined ? request : { ...request, sessionId: owner };
+  }
   overlayMount(request: OverlayMountRequest): Promise<OverlayMountResult> { return this.call("overlay.mount", request); }
   overlayCheckpoint(request: OverlayCheckpointRequest): Promise<OverlayCopyResult> { return this.call("overlay.checkpoint", request); }
   overlayRestore(request: OverlayRestoreRequest): Promise<OverlayRestoreResult> { return this.call("overlay.restore", request); }
@@ -569,6 +603,7 @@ export class CoreClient extends EventEmitter {
   removePtyEvents(ptyId: number): void {
     this.ptyEmitters.delete(ptyId);
     this.pendingPtyEvents.delete(ptyId);
+    this.ptySessions.delete(ptyId);
   }
 
   private async spawnAndHandshake(generation: number): Promise<CoreInfo> {

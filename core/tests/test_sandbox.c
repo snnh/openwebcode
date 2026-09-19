@@ -647,6 +647,29 @@ int main(void) {
                 if (!strcmp(owc_landlock_full_access_paths[j], required_full[i])) break;
             if (j == owc_landlock_full_access_path_count) return 6;
         }
+        /* network=deny must fail closed when this kernel/these headers cannot
+         * express network rules: PARTIAL would mean the exec/pty gate runs the
+         * command (only ADVISORY is refused) with full network access, i.e. the
+         * session silently gets the opposite of what it asked for.  ABI 0 keeps
+         * owc_landlock_apply from applying a half policy. */
+        {
+            owc_sandbox_result denied;
+            owc_landlock_probe(0, &denied);
+            if (denied.status != OWC_SANDBOX_ENFORCED) {
+                if (denied.status != OWC_SANDBOX_ADVISORY) return 7;
+                if (denied.abi != 0) return 8;
+                if (!strstr(denied.reason, "network")) return 9;
+                if (!strstr(denied.reason, "refusing")) return 10;
+            }
+            /* allow_network=1 must not be downgraded by the deny-only rule. */
+            {
+                owc_sandbox_result allowed;
+                owc_landlock_probe(1, &allowed);
+                if (allowed.status == OWC_SANDBOX_ADVISORY && !allowed.reason[0]) return 11;
+                if (denied.status == OWC_SANDBOX_ENFORCED &&
+                    allowed.status != OWC_SANDBOX_ENFORCED) return 12;
+            }
+        }
     }
 #endif
     (void)printf("status=%s reason=%s\n", name, reason);

@@ -136,6 +136,13 @@ static int header_name_equals(const char *line, const char *name, size_t length)
     return line[length]==':';
 }
 
+/* Frame reader.  Header lines are read with fgets into a fixed 1024-byte
+ * buffer, so the longest acceptable header line is 1023 bytes plus the newline
+ * (documented as "RPC 头部单行缓冲 1024 字节，超限断开" in
+ * docs/protocol.md).  A longer line has no terminating newline in the buffer
+ * and returns -1 here; main.c turns any -1 into "invalid RPC frame" plus a
+ * hard teardown (stdio transport: the single connection IS the process, so
+ * "disconnect" means exit code 2 and the server respawns core). */
 int owc_rpc_read(owc_rpc *rpc, char **body, size_t *length) {
     char line[1024]; size_t content_length=SIZE_MAX; int saw_header_end=0;
     *body=NULL; *length=0;
@@ -174,12 +181,17 @@ static char *base64_encode(const unsigned char *data, size_t length) {
     out[o]='\0'; return out;
 }
 
+/* JSON-RPC 2.0 requires an id that is neither a string nor a number to be
+ * answered with id:null.  This used to return NULL for object/array ids, and
+ * reply_error/reply_result skip the write when the id cannot be rendered, so
+ * such a request got no answer at all (the caller only saw its own timeout)
+ * instead of the -32600 invalid request the spec mandates. */
 static char *id_json(const owc_json *id) {
     char number[64],*copy;
     if(!id || id->type==OWC_JSON_NULL) { copy=(char *)malloc(5); if(copy) (void)strcpy(copy,"null"); return copy; }
     if(id->type==OWC_JSON_STRING) return owc_json_escape_string(id->value.string);
     if(id->type==OWC_JSON_NUMBER) { (void)snprintf(number,sizeof(number),"%.17g",id->value.number); copy=(char *)malloc(strlen(number)+1); if(copy) (void)strcpy(copy,number); return copy; }
-    return NULL;
+    copy=(char *)malloc(5); if(copy) (void)strcpy(copy,"null"); return copy;
 }
 
 static int reply_error(owc_rpc *rpc, const owc_json *id, int code, const char *message) {
@@ -1569,6 +1581,26 @@ static pty_record *pty_find(unsigned id){size_t i;for(i=0;i<OWC_PTY_MAX_CONCURRE
 static void pty_release(pty_record *record){if(record->handle)owc_pty_close(record->handle);free(record->session_id);memset(record,0,sizeof(*record));}
 static void remove_session_ptys(const char *session_id){size_t i;for(i=0;i<OWC_PTY_MAX_CONCURRENT;i++)if(ptys[i].handle&&!strcmp(ptys[i].session_id,session_id))pty_release(&ptys[i]);}
 static int parse_pty_id(const owc_json *value,unsigned *pty_id){size_t number;if(!value||!json_size(value,&number)||!number||number>UINT_MAX)return 0;*pty_id=(unsigned)number;return 1;}
+/* ptyId is a process-wide handle shared by every session: on its own it lets
+ * one session type into (or resize/close) another session's terminal, and
+ * pty.open sandbox=false is the human-terminal channel that runs with the app
+ * owner's identity instead of the session sandbox.  pty.input/resize/close
+ * therefore carry a required sessionId that is checked against the record that
+ * owns the pty.  A missing/non-string/empty sessionId or a malformed ptyId is
+ * -32602 (invalid params, like every other missing required field); an unknown
+ * pty stays -32003; a well-formed request naming another session is -32002
+ * (deterministic refusal, same family as the path-policy rejections).  Returns
+ * the record, or NULL after having sent the error reply. */
+static pty_record *pty_owned(owc_rpc *rpc,const owc_json *id,const owc_json *p,const char *method){
+    const char *session=owc_json_get_string(owc_json_object_get(p,"sessionId"));
+    unsigned pty_id;pty_record *record;char message[192];
+    if(!session||!session[0]){(void)snprintf(message,sizeof(message),"%s requires non-empty string sessionId",method);(void)reply_error(rpc,id,-32602,message);return NULL;}
+    if(!parse_pty_id(owc_json_object_get(p,"ptyId"),&pty_id)){(void)snprintf(message,sizeof(message),"%s requires positive ptyId",method);(void)reply_error(rpc,id,-32602,message);return NULL;}
+    record=pty_find(pty_id);
+    if(!record){(void)reply_error(rpc,id,-32003,"pty not found");return NULL;}
+    if(!record->session_id||strcmp(record->session_id,session)){(void)reply_error(rpc,id,-32002,"pty belongs to a different session");return NULL;}
+    return record;
+}
 
 /* Runs on the reader thread.  The record stays alive until owc_pty_close
  * has joined this thread, so the callback can never touch a freed record. */
@@ -1653,13 +1685,12 @@ static int handle_pty_open(owc_rpc *rpc,const owc_json *id,const owc_json *p){
 }
 
 static int handle_pty_input(owc_rpc *rpc,const owc_json *id,const owc_json *p){
-    static const char *keys[]={"ptyId","data"};const char *encoded;unsigned pty_id;pty_record *record;unsigned char *decoded=NULL;size_t decoded_length=0;
-    if(!allowed_keys(p,keys,2))return reply_error(rpc,id,-32602,"pty.input contains unknown fields");
-    if(!parse_pty_id(owc_json_object_get(p,"ptyId"),&pty_id))return reply_error(rpc,id,-32602,"pty.input requires positive ptyId");
+    static const char *keys[]={"ptyId","sessionId","data"};const char *encoded;pty_record *record;unsigned char *decoded=NULL;size_t decoded_length=0;
+    if(!allowed_keys(p,keys,3))return reply_error(rpc,id,-32602,"pty.input contains unknown fields");
     encoded=owc_json_get_string(owc_json_object_get(p,"data"));
     if(!encoded||!base64_decode_bounded(encoded,&decoded,&decoded_length))return reply_error(rpc,id,-32602,"pty.input data must be canonical base64");
     if(decoded_length>OWC_PTY_MAX_INPUT_BYTES){free(decoded);return reply_error(rpc,id,-32602,"pty.input data must decode to at most 8192 bytes");}
-    record=pty_find(pty_id);if(!record){free(decoded);return reply_error(rpc,id,-32003,"pty not found");}
+    record=pty_owned(rpc,id,p,"pty.input");if(!record){free(decoded);return 1;}
     if(record->exited){free(decoded);return reply_error(rpc,id,-32000,"pty has exited");}
     if(!owc_pty_write(record->handle,decoded,decoded_length)){free(decoded);return reply_error(rpc,id,-32000,"failed to write to pty");}
     free(decoded);
@@ -1667,22 +1698,20 @@ static int handle_pty_input(owc_rpc *rpc,const owc_json *id,const owc_json *p){
 }
 
 static int handle_pty_resize(owc_rpc *rpc,const owc_json *id,const owc_json *p){
-    static const char *keys[]={"ptyId","cols","rows"};const owc_json *value;size_t cols,rows;unsigned pty_id;pty_record *record;
-    if(!allowed_keys(p,keys,3))return reply_error(rpc,id,-32602,"pty.resize contains unknown fields");
-    if(!parse_pty_id(owc_json_object_get(p,"ptyId"),&pty_id))return reply_error(rpc,id,-32602,"pty.resize requires positive ptyId");
+    static const char *keys[]={"ptyId","sessionId","cols","rows"};const owc_json *value;size_t cols,rows;pty_record *record;
+    if(!allowed_keys(p,keys,4))return reply_error(rpc,id,-32602,"pty.resize contains unknown fields");
     value=owc_json_object_get(p,"cols");if(!value||!json_size(value,&cols)||!cols||cols>OWC_PTY_MAX_COLS)return reply_error(rpc,id,-32602,"pty.resize cols must be an integer from 1 to 512");
     value=owc_json_object_get(p,"rows");if(!value||!json_size(value,&rows)||!rows||rows>OWC_PTY_MAX_ROWS)return reply_error(rpc,id,-32602,"pty.resize rows must be an integer from 1 to 512");
-    record=pty_find(pty_id);if(!record)return reply_error(rpc,id,-32003,"pty not found");
+    record=pty_owned(rpc,id,p,"pty.resize");if(!record)return 1;
     if(record->exited)return reply_error(rpc,id,-32000,"pty has exited");
     if(!owc_pty_resize(record->handle,(int)cols,(int)rows))return reply_error(rpc,id,-32000,"failed to resize pty");
     return reply_result(rpc,id,"{\"ok\":true}");
 }
 
 static int handle_pty_close(owc_rpc *rpc,const owc_json *id,const owc_json *p){
-    static const char *keys[]={"ptyId"};unsigned pty_id;pty_record *record;int exited,exit_code;
-    if(!allowed_keys(p,keys,1))return reply_error(rpc,id,-32602,"pty.close contains unknown fields");
-    if(!parse_pty_id(owc_json_object_get(p,"ptyId"),&pty_id))return reply_error(rpc,id,-32602,"pty.close requires positive ptyId");
-    record=pty_find(pty_id);if(!record)return reply_error(rpc,id,-32003,"pty not found");
+    static const char *keys[]={"ptyId","sessionId"};pty_record *record;int exited,exit_code;
+    if(!allowed_keys(p,keys,2))return reply_error(rpc,id,-32602,"pty.close contains unknown fields");
+    record=pty_owned(rpc,id,p,"pty.close");if(!record)return 1;
     exited=record->exited;exit_code=record->exit_code;
     pty_release(record);
     if(exited){char result_text[96];(void)snprintf(result_text,sizeof(result_text),"{\"ok\":true,\"exitCode\":%d}",exit_code);return reply_result(rpc,id,result_text);}
@@ -1702,9 +1731,15 @@ static int overlay_path_form(const char *path) {
     /* Absolute POSIX path without any "." or ".." component.  Backslashes
      * are refused outright: they are legitimate Linux filename bytes but
      * never appear in state directories, and refusing them keeps
-     * Windows-style path tricks out of the trusted boundary. */
+     * Windows-style path tricks out of the trusted boundary.  Commas and
+     * colons are refused too: the Linux implementation splices these paths
+     * into the overlayfs "-o lowerdir=...,upperdir=..." option string and
+     * into "host:path" style transport syntax, where a legal directory name
+     * containing them would inject additional mount options (a comma splits
+     * the option list). */
     const char *cursor;
-    if(!path||path[0]!='/'||strlen(path)>OWC_OVERLAY_MAX_PATH||strchr(path,'\\')) return 0;
+    if(!path||path[0]!='/'||strlen(path)>OWC_OVERLAY_MAX_PATH) return 0;
+    if(strchr(path,'\\')||strchr(path,',')||strchr(path,':')) return 0;
     if(!owc_fs_utf8_valid(path,strlen(path))) return 0;
     cursor=path;
     while(*cursor) {
@@ -1742,7 +1777,7 @@ static int handle_overlay_mount(owc_rpc *rpc,const owc_json *id,const owc_json *
     upper=owc_json_get_string(owc_json_object_get(p,"upper"));
     work=owc_json_get_string(owc_json_object_get(p,"work"));
     merged=owc_json_get_string(owc_json_object_get(p,"merged"));
-    if(!overlay_path_form(state_root)||!overlay_path_form(lower)||!overlay_path_form(upper)||!overlay_path_form(work)||!overlay_path_form(merged))return reply_error(rpc,id,-32602,"overlay.mount paths must be absolute UTF-8 without dot components");
+    if(!overlay_path_form(state_root)||!overlay_path_form(lower)||!overlay_path_form(upper)||!overlay_path_form(work)||!overlay_path_form(merged))return reply_error(rpc,id,-32602,"overlay.mount paths must be absolute UTF-8 without dot, comma, colon, or backslash characters");
     if(!overlay_within_root(upper,state_root)||!overlay_within_root(work,state_root)||!overlay_within_root(merged,state_root))return reply_error(rpc,id,-32002,"upper, work, and merged must be strictly below stateRoot");
     if(!strcmp(lower,merged))return reply_error(rpc,id,-32602,"merged must differ from lower");
     if(!overlay_reply_supported(rpc,id))return 1;
@@ -1757,7 +1792,7 @@ static int handle_overlay_checkpoint(owc_rpc *rpc,const owc_json *id,const owc_j
     state_root=owc_json_get_string(owc_json_object_get(p,"stateRoot"));
     upper=owc_json_get_string(owc_json_object_get(p,"upper"));
     dest=owc_json_get_string(owc_json_object_get(p,"dest"));
-    if(!overlay_path_form(state_root)||!overlay_path_form(upper)||!overlay_path_form(dest))return reply_error(rpc,id,-32602,"overlay.checkpoint paths must be absolute UTF-8 without dot components");
+    if(!overlay_path_form(state_root)||!overlay_path_form(upper)||!overlay_path_form(dest))return reply_error(rpc,id,-32602,"overlay.checkpoint paths must be absolute UTF-8 without dot, comma, colon, or backslash characters");
     if(!overlay_within_root(upper,state_root)||!overlay_within_root(dest,state_root))return reply_error(rpc,id,-32002,"upper and dest must be strictly below stateRoot");
     if(!overlay_reply_supported(rpc,id))return 1;
     if(!owc_overlay_copy_tree(state_root,upper,dest,&summary,err,sizeof(err)))return reply_error(rpc,id,-32000,err);
@@ -1774,7 +1809,7 @@ static int handle_overlay_restore(owc_rpc *rpc,const owc_json *id,const owc_json
     work=owc_json_get_string(owc_json_object_get(p,"work"));
     merged=owc_json_get_string(owc_json_object_get(p,"merged"));
     source_upper=owc_json_get_string(owc_json_object_get(p,"sourceUpper"));
-    if(!overlay_path_form(state_root)||!overlay_path_form(lower)||!overlay_path_form(upper)||!overlay_path_form(work)||!overlay_path_form(merged)||!overlay_path_form(source_upper))return reply_error(rpc,id,-32602,"overlay.restore paths must be absolute UTF-8 without dot components");
+    if(!overlay_path_form(state_root)||!overlay_path_form(lower)||!overlay_path_form(upper)||!overlay_path_form(work)||!overlay_path_form(merged)||!overlay_path_form(source_upper))return reply_error(rpc,id,-32602,"overlay.restore paths must be absolute UTF-8 without dot, comma, colon, or backslash characters");
     if(!overlay_within_root(upper,state_root)||!overlay_within_root(work,state_root)||!overlay_within_root(merged,state_root)||!overlay_within_root(source_upper,state_root))return reply_error(rpc,id,-32002,"upper, work, merged, and sourceUpper must be strictly below stateRoot");
     if(!strcmp(lower,merged))return reply_error(rpc,id,-32602,"merged must differ from lower");
     if(!strcmp(source_upper,upper))return reply_error(rpc,id,-32602,"sourceUpper must differ from upper");
@@ -1802,7 +1837,7 @@ static int handle_overlay_unmount(owc_rpc *rpc,const owc_json *id,const owc_json
     if(!p||p->type!=OWC_JSON_OBJECT||!allowed_keys(p,keys,2))return reply_error(rpc,id,-32602,"overlay.unmount contains unknown fields");
     state_root=owc_json_get_string(owc_json_object_get(p,"stateRoot"));
     merged=owc_json_get_string(owc_json_object_get(p,"merged"));
-    if(!overlay_path_form(state_root)||!overlay_path_form(merged))return reply_error(rpc,id,-32602,"overlay.unmount paths must be absolute UTF-8 without dot components");
+    if(!overlay_path_form(state_root)||!overlay_path_form(merged))return reply_error(rpc,id,-32602,"overlay.unmount paths must be absolute UTF-8 without dot, comma, colon, or backslash characters");
     if(!overlay_within_root(merged,state_root))return reply_error(rpc,id,-32002,"merged must be strictly below stateRoot");
     if(!overlay_reply_supported(rpc,id))return 1;
     if(!owc_overlay_unmount(merged,err,sizeof(err)))return reply_error(rpc,id,-32000,err);
@@ -1861,14 +1896,27 @@ static int handle_core_stats(owc_rpc *rpc, const owc_json *id,
 }
 
 int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
+    static const char *request_keys[]={"jsonrpc","method","id","params"};
     const char *error_at=NULL,*method,*version; owc_json *root=owc_json_parse(body,length,&error_at);
-    const owc_json *id,*params;
+    const owc_json *id,*reply_id,*params;
     (void)error_at;
     if(!root) return reply_error(rpc,NULL,-32700,"parse error");
     id=owc_json_object_get(root,"id"); version=owc_json_get_string(owc_json_object_get(root,"jsonrpc")); method=owc_json_get_string(owc_json_object_get(root,"method")); params=owc_json_object_get(root,"params");
+    /* Only a scalar id is echoed; an object/array id is answered with id:null
+     * (see id_json) because it can neither be trusted nor rendered. */
+    reply_id=(id&&(id->type==OWC_JSON_STRING||id->type==OWC_JSON_NUMBER))?id:NULL;
     rpc->suppress_responses=0;
     write_mutex_init();
-    if(!version || strcmp(version,"2.0")!=0 || !method || (id && id->type!=OWC_JSON_NULL && id->type!=OWC_JSON_STRING && id->type!=OWC_JSON_NUMBER)) { int ok=reply_error(rpc,id,-32600,"invalid request"); owc_json_free(root); return ok; }
+    if(root->type!=OWC_JSON_OBJECT) { int ok=reply_error(rpc,NULL,-32600,"invalid request"); owc_json_free(root); return ok; }
+    /* Root-level key whitelist: the per-method params whitelist cannot catch a
+     * stray top-level key, so a typo like "methd" was answered generically and
+     * an unknown field was silently ignored - exactly the silent protocol
+     * drift the params whitelists exist to prevent. */
+    if(!allowed_keys(root,request_keys,sizeof(request_keys)/sizeof(request_keys[0]))) { int ok=reply_error(rpc,reply_id,-32602,"request contains unknown fields"); owc_json_free(root); return ok; }
+    /* An id that is not a string/number/null makes the whole request invalid
+     * (JSON-RPC 2.0 struct): it is answered with id:null and -32600. */
+    if(!version || strcmp(version,"2.0")!=0 || !method ||
+       (id && id->type!=OWC_JSON_NULL && id->type!=OWC_JSON_STRING && id->type!=OWC_JSON_NUMBER)) { int ok=reply_error(rpc,reply_id,-32600,"invalid request"); owc_json_free(root); return ok; }
     rpc->suppress_responses=id==NULL;
     if(strcmp(method,"core.ping")==0) {
         if(params&&!allowed_keys(params,NULL,0))(void)reply_error(rpc,id,-32602,"core.ping accepts no params fields");else{

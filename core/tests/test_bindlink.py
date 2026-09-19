@@ -293,6 +293,15 @@ def main_overlay():
             (11, "overlay.unmount", {"stateRoot": root, "merged": root + "/."}),
             (12, "overlay.mount", {**mount_params, "stateRoot": root + "/.."}),
             (13, "overlay.mount", {**mount_params, "merged": root + "\\merged"}),
+            # Commas and colons are rejected too: the Linux backend splices
+            # these paths into the mount option string
+            # (lowerdir=...,upperdir=...), where a comma in a legal directory
+            # name would inject additional mount options.
+            (30, "overlay.mount", {"stateRoot": root + ",inject", "lower": lower, "upper": root + ",inject/upper", "work": root + ",inject/work", "merged": root + ",inject/merged"}),
+            (31, "overlay.mount", {"stateRoot": root + ":inject", "lower": lower, "upper": root + ":inject/upper", "work": root + ":inject/work", "merged": root + ":inject/merged"}),
+            (32, "overlay.checkpoint", {"stateRoot": root, "upper": root + "/upper", "dest": root + "/snap,1"}),
+            (33, "overlay.restore", {**restore_params, "sourceUpper": root + "/snap:1"}),
+            (34, "overlay.unmount", {"stateRoot": root, "merged": root + "/merged,1"}),
         ]:
             request(proc, bad_id, method, params)
             response, _ = collect_until_response(proc, bad_id)

@@ -28,6 +28,45 @@ static const char *const bwrap_read_exec_paths[] = {
 #define BWRAP_READ_EXEC_PATH_COUNT \
     (sizeof(bwrap_read_exec_paths) / sizeof(bwrap_read_exec_paths[0]))
 
+/* Namespace/session isolation flags shared verbatim by the smoke probe and
+ * the real command argv (bwrap_append_isolation_flags below drives both).
+ * They must stay in lockstep: the probe is the only thing standing between a
+ * kernel that cannot create these namespaces and a "probe passed, exec
+ * failed" fork, and a real argv that omits them leaves the sandboxed process
+ * inside the host PID/IPC/UTS namespaces, where it can kill or attach to
+ * every same-uid process on the machine (the core, the Node server, other
+ * sessions).
+ *   --unshare-user  own user namespace (the kernel may refuse this without
+ *                   unprivileged userns support; the probe then fails closed
+ *                   instead of letting the command run unconfined)
+ *   --unshare-pid   separate PID namespace (no host processes visible, no
+ *                   kill() of same-uid host processes)
+ *   --unshare-ipc   separate SysV/POSIX IPC namespace (no shared shm/sem)
+ *   --unshare-uts   separate UTS namespace (no hostname/domain mutation)
+ * --die-with-parent stays first: it is the lifetime guarantee the exec/pty
+ * kill paths rely on.  --new-session is handled separately (BWRAP_NEW_SESSION):
+ * it is terminal-session hardening, not a namespace, and it must be skipped
+ * for the pty channel (see bwrap.h). */
+static const char *const bwrap_isolation_flags[] = {
+    "--die-with-parent", "--unshare-user", "--unshare-pid",
+    "--unshare-ipc", "--unshare-uts"
+};
+#define BWRAP_ISOLATION_FLAG_COUNT \
+    (sizeof(bwrap_isolation_flags) / sizeof(bwrap_isolation_flags[0]))
+#define BWRAP_NEW_SESSION "--new-session"
+#define BWRAP_ISOLATION_PROBE_FLAG_COUNT (BWRAP_ISOLATION_FLAG_COUNT + 1u)
+
+/* Append the isolation set (plus --new-session, for the probe and for the
+ * exec/job argv - see bwrap.h) to an argv vector and return the new argc.  The
+ * caller guarantees room for BWRAP_ISOLATION_PROBE_FLAG_COUNT entries. */
+static size_t bwrap_append_isolation_flags(char **argv, size_t argc, int new_session) {
+    size_t i;
+    for (i = 0; i < BWRAP_ISOLATION_FLAG_COUNT; ++i)
+        argv[argc++] = (char *)bwrap_isolation_flags[i];
+    if (new_session) argv[argc++] = (char *)BWRAP_NEW_SESSION;
+    return argc;
+}
+
 static int path_has_executable(const char *name) {
     const char *path = getenv("PATH");
     const char *cursor;
@@ -62,13 +101,16 @@ static owc_sandbox_result probe_cache;
 static pthread_once_t probe_once = PTHREAD_ONCE_INIT;
 
 /* The smoke run proves the whole unprivileged path bwrap needs (user
- * namespace creation, a bind mount, exec) instead of trusting a version
- * query: kernels with unprivileged userns disabled and Ubuntu 24.04's
- * AppArmor restriction both fail here with a useful stderr message.  It
- * also passes --unshare-net, the network-deny switch, so a kernel that
- * forbids unprivileged network namespaces is caught too: filesystem-only
- * sandboxes would still work, so that failure is reported as partial
- * rather than unavailable (see probe_run's failure classification). */
+ * namespace creation, the isolation namespace set the real argv uses, a bind
+ * mount, a fresh /proc, exec) instead of trusting a version query: kernels
+ * with unprivileged userns disabled and Ubuntu 24.04's AppArmor restriction
+ * both fail here with a useful stderr message.  The flag list is shared with
+ * owc_bwrap_build_argv (bwrap_isolation_flags), so a host that passes the
+ * probe cannot fail the same flags in the real run; it also passes
+ * --unshare-net, the network-deny switch, so a kernel that forbids
+ * unprivileged network namespaces is caught too: filesystem-only sandboxes
+ * would still work, so that failure is reported as partial rather than
+ * unavailable (see probe_run's failure classification). */
 static void probe_run(void) {
     int pipefd[2];
     pid_t pid;
@@ -97,6 +139,12 @@ static void probe_run(void) {
     }
     if (pid == 0) {
         int devnull;
+        /* bwrap + the full isolation set (--new-session included, so the
+         * probe covers a superset of every real argv) + the mount prologue the
+         * command will also get + --unshare-net + a full read-only root + true:
+         * BWRAP_ISOLATION_PROBE_FLAG_COUNT + 12 fixed entries + NULL. */
+        char *probe_argv[BWRAP_ISOLATION_PROBE_FLAG_COUNT + 14];
+        size_t probe_argc = 0;
         (void)close(pipefd[0]);
         (void)dup2(pipefd[1], STDERR_FILENO);
         devnull = open("/dev/null", O_RDWR);
@@ -105,9 +153,17 @@ static void probe_run(void) {
             (void)dup2(devnull, STDOUT_FILENO);
             if (devnull > STDERR_FILENO) (void)close(devnull);
         }
-        execlp("bwrap", "bwrap", "--die-with-parent", "--unshare-user",
-               "--unshare-net",
-               "--ro-bind", "/", "/", "--", "true", (char *)NULL);
+        probe_argv[probe_argc++] = (char *)"bwrap";
+        probe_argc = bwrap_append_isolation_flags(probe_argv, probe_argc, 1);
+        probe_argv[probe_argc++] = (char *)"--proc"; probe_argv[probe_argc++] = (char *)"/proc";
+        probe_argv[probe_argc++] = (char *)"--dev"; probe_argv[probe_argc++] = (char *)"/dev";
+        probe_argv[probe_argc++] = (char *)"--tmpfs"; probe_argv[probe_argc++] = (char *)"/tmp";
+        probe_argv[probe_argc++] = (char *)"--unshare-net";
+        probe_argv[probe_argc++] = (char *)"--ro-bind";
+        probe_argv[probe_argc++] = (char *)"/"; probe_argv[probe_argc++] = (char *)"/";
+        probe_argv[probe_argc++] = (char *)"--"; probe_argv[probe_argc++] = (char *)"true";
+        probe_argv[probe_argc] = NULL;
+        execvp("bwrap", probe_argv);
         (void)dprintf(STDERR_FILENO, "exec bwrap failed: %s\n", strerror(errno));
         _exit(127);
     }
@@ -187,25 +243,27 @@ char **owc_bwrap_build_argv(const char *cwd,
                             const char *const *write_roots, size_t write_root_count,
                             const char *const *deny_paths, size_t deny_path_count,
                             const char *const *allow_paths, size_t allow_path_count,
-                            int allow_network, char *const *command_argv) {
+                            int allow_network, int new_session,
+                            char *const *command_argv) {
     /* Worst case with the 32-entry root list caps and 16 deny paths:
-     * 8 fixed prologue/epilogue entries plus 3 per read-exec path, 3-4 per
-     * bounded root, 4 per deny path, and the command tail.  That far exceeds
-     * any fixed stack array, so the argv vector is allocated dynamically
-     * (the old fixed 256 entries returned E2BIG when the RPC caps were
-     * raised); only allocation failure can stop the build now.  This runs in
-     * the parent before fork: malloc is unsafe in the forked child of this
-     * multithreaded process. */
+     * bwrap + the shared isolation set + 6 mount-prologue entries plus 3 per
+     * read-exec path, 3-4 per bounded root, 4 per deny path, and the command
+     * tail.  That far exceeds any fixed stack array, so the argv vector is
+     * allocated dynamically (the old fixed 256 entries returned E2BIG when the
+     * RPC caps were raised); only allocation failure can stop the build now.
+     * This runs in the parent before fork: malloc is unsafe in the forked
+     * child of this multithreaded process. */
     size_t argc = 0, i, command_count = 0, argv_count;
     char **argv;
     while (command_argv[command_count]) command_count++;
-    argv_count = 8u + 3u * BWRAP_READ_EXEC_PATH_COUNT +
+    argv_count = 1u + BWRAP_ISOLATION_PROBE_FLAG_COUNT + 6u +
+                 3u * BWRAP_READ_EXEC_PATH_COUNT +
                  3u * (read_root_count + read_only_count + allow_path_count + write_root_count) +
                  4u * deny_path_count + 4u + command_count + 1u;
     argv = (char **)malloc(argv_count * sizeof(char *));
     if (!argv) return NULL;
     argv[argc++] = (char *)"bwrap";
-    argv[argc++] = (char *)"--die-with-parent";
+    argc = bwrap_append_isolation_flags(argv, argc, new_session);
     argv[argc++] = (char *)"--proc"; argv[argc++] = (char *)"/proc";
     argv[argc++] = (char *)"--dev"; argv[argc++] = (char *)"/dev";
     argv[argc++] = (char *)"--tmpfs"; argv[argc++] = (char *)"/tmp";
@@ -288,13 +346,14 @@ char **owc_bwrap_build_argv(const char *cwd,
                             const char *const *write_roots, size_t write_root_count,
                             const char *const *deny_paths, size_t deny_path_count,
                             const char *const *allow_paths, size_t allow_path_count,
-                            int allow_network, char *const *command_argv) {
+                            int allow_network, int new_session,
+                            char *const *command_argv) {
     (void)cwd; (void)read_roots; (void)read_root_count;
     (void)read_only_paths; (void)read_only_count;
     (void)write_roots; (void)write_root_count;
     (void)deny_paths; (void)deny_path_count;
     (void)allow_paths; (void)allow_path_count;
-    (void)allow_network; (void)command_argv;
+    (void)allow_network; (void)new_session; (void)command_argv;
     return NULL;
 }
 

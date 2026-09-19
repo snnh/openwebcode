@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import re
+import select
 import shlex
 import shutil
 import subprocess
@@ -46,6 +47,16 @@ def receive(proc):
 
 def request(proc, request_id, method, params=None):
     send(proc, {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}})
+
+
+def receive_or_fail(proc, timeout=5.0):
+    """Read one frame, failing fast when core sends nothing at all.
+
+    Used for malformed-request cases: a dropped reply must fail the test, not
+    block it forever."""
+    ready, _, _ = select.select([proc.stdout], [], [], timeout)
+    assert ready, "core sent no reply frame (malformed requests must still be answered)"
+    return receive(proc)
 
 
 def collect_until_response(proc, request_id):
@@ -123,6 +134,29 @@ def assert_landlock_filesystem_isolation_if_enforced(proc):
         with open(allowed_path, "r", encoding="utf-8") as stored:
             assert stored.read() == "allowed-ok"
         assert not os.path.exists(outside_path), outside_path
+
+
+def assert_oversized_header_exits_core(executable):
+    """An over-long header line makes core drop the frame and exit (C8).
+
+    docs/protocol.md documents the header line buffer as 1024 bytes with
+    "over the limit: disconnect".  On stdio the single connection *is* the
+    process, so "disconnect" is an exit with code 2 (main.c teardown); the
+    server observes the exit and respawns core.  Pinned here so the documented
+    equivalence cannot drift silently."""
+    proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    try:
+        # 1023 bytes plus CRLF is the last accepted line; 4096 is well past it.
+        proc.stdin.write(b"X-Padding: " + b"p" * 4096 + b"\r\n\r\n{}")
+        proc.stdin.flush()
+        assert proc.wait(timeout=10) == 2, "oversized header line must exit core with 2"
+        stderr = proc.stderr.read().decode(errors="replace")
+        assert "invalid RPC frame" in stderr, stderr
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 def assert_posix_children_killed_on_core_exit(executable):
@@ -242,6 +276,68 @@ def main():
         response, _ = collect_until_response(proc, "after-dup-key")
         assert response["result"]["version"] == version
 
+        # Invalid id shapes must still be answered: JSON-RPC 2.0 requires
+        # id:null when the id can be neither trusted nor rendered.  The reply
+        # used to be dropped entirely (the id could not be rendered, so the
+        # error frame was skipped), leaving the caller on its own timeout.
+        def send_raw(body):
+            proc.stdin.write(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+            proc.stdin.flush()
+
+        for label, raw_id in (("id-object", b"{}"), ("id-array", b"[1,2]")):
+            send_raw(b'{"jsonrpc":"2.0","id":' + raw_id + b',"method":"core.ping","params":{}}')
+            response = receive_or_fail(proc)
+            assert response["id"] is None, (label, response)
+            assert response["error"]["code"] == -32600, (label, response)
+
+        # A non-object root is an invalid request, answered with id:null.
+        send_raw(b'[1,2]')
+        response = receive_or_fail(proc)
+        assert response["id"] is None and response["error"]["code"] == -32600, response
+
+        # Root-level key whitelist (jsonrpc/method/id/params): a stray
+        # top-level field is refused with -32602 instead of being ignored.
+        send_raw(b'{"jsonrpc":"2.0","id":"root-extra","method":"core.ping","params":{},"extra":1}')
+        response = receive_or_fail(proc)
+        assert response["id"] == "root-extra", response
+        assert response["error"]["code"] == -32602, response
+        assert "unknown fields" in response["error"]["message"], response
+
+        request(proc, "after-malformed", "core.ping")
+        response, _ = collect_until_response(proc, "after-malformed")
+        assert response["result"]["version"] == version
+
+        # overlay.* path form gate: a comma or colon in a path would be spliced
+        # into the Linux mount option string (lowerdir=...,upperdir=...) and
+        # could inject extra mount options, so both are refused up front.  The
+        # full overlay contract lives in core/tests/test_bindlink.py; this gate
+        # is platform-independent and asserted here so it also runs on hosts
+        # where the overlay mechanism itself is unavailable.
+        for bad_id, method, state_root in [
+            ("overlay-comma-mount", "overlay.mount", "/tmp/owc-overlay,contract"),
+            ("overlay-comma-checkpoint", "overlay.checkpoint", "/tmp/owc-overlay,contract"),
+            ("overlay-comma-restore", "overlay.restore", "/tmp/owc-overlay,contract"),
+            ("overlay-comma-unmount", "overlay.unmount", "/tmp/owc-overlay,contract"),
+            ("overlay-colon-mount", "overlay.mount", "/tmp/owc-overlay:contract"),
+        ]:
+            if method == "overlay.mount":
+                params = {"stateRoot": state_root, "lower": "/tmp/owc-overlay-lower",
+                          "upper": state_root + "/upper", "work": state_root + "/work",
+                          "merged": state_root + "/merged"}
+            elif method == "overlay.checkpoint":
+                params = {"stateRoot": state_root, "upper": state_root + "/upper",
+                          "dest": state_root + "/snap"}
+            elif method == "overlay.restore":
+                params = {"stateRoot": state_root, "lower": "/tmp/owc-overlay-lower",
+                          "upper": state_root + "/upper", "work": state_root + "/work",
+                          "merged": state_root + "/merged", "sourceUpper": state_root + "/snap"}
+            else:
+                params = {"stateRoot": state_root, "merged": state_root + "/merged"}
+            request(proc, bad_id, method, params)
+            response, _ = collect_until_response(proc, bad_id)
+            assert response["error"]["code"] == -32602, (method, response)
+            assert "overlay" in response["error"]["message"], (method, response)
+
         if use_pwsh_main_channel:
             command = "Write-Output hello; [Console]::Error.WriteLine('error'); exit 7"
             slow = "Start-Sleep -Seconds 5"
@@ -264,7 +360,7 @@ def main():
         pty_id = response["result"]["ptyId"]
         assert response["result"]["sandboxCapability"] == "advisory", response
         assert response["result"]["sandboxReason"] == "sandbox disabled by session policy", response
-        request(proc, 61, "pty.close", {"ptyId": pty_id})
+        request(proc, 61, "pty.close", {"ptyId": pty_id, "sessionId": "s1"})
         response, _ = collect_until_response(proc, 61)
         assert response.get("result", {}).get("ok") is True, response
 
@@ -277,7 +373,7 @@ def main():
         request(proc, 63, "session.configure", {"sessionId": "s1", "cwd": os.getcwd(), "sandbox": {"enabled": False, "allowPaths": [os.getcwd()], "denyPaths": [], "network": "allow"}})
         response, _ = collect_until_response(proc, 63)
         assert "result" in response, response
-        request(proc, 64, "pty.input", {"ptyId": pty_id, "data": base64.b64encode(b"echo owc-pty-alive\n").decode("ascii")})
+        request(proc, 64, "pty.input", {"ptyId": pty_id, "sessionId": "s1", "data": base64.b64encode(b"echo owc-pty-alive\n").decode("ascii")})
         response, _ = collect_until_response(proc, 64)
         assert response.get("result", {}).get("ok") is True, response
 
@@ -286,11 +382,11 @@ def main():
         request(proc, 65, "session.configure", {"sessionId": "s1", "cwd": os.getcwd(), "sandbox": {"enabled": False, "allowPaths": [os.getcwd()], "denyPaths": [], "network": "deny"}})
         response, _ = collect_until_response(proc, 65)
         assert "result" in response, response
-        request(proc, 66, "pty.input", {"ptyId": pty_id, "data": base64.b64encode(b"echo owc-pty-dead\n").decode("ascii")})
+        request(proc, 66, "pty.input", {"ptyId": pty_id, "sessionId": "s1", "data": base64.b64encode(b"echo owc-pty-dead\n").decode("ascii")})
         response, _ = collect_until_response(proc, 66)
         assert "pty not found" in response.get("error", {}).get("message", ""), response
         # 兜底关闭：pty 已被重配移除时会返回 pty not found 错误，忽略结果。
-        request(proc, 67, "pty.close", {"ptyId": pty_id})
+        request(proc, 67, "pty.close", {"ptyId": pty_id, "sessionId": "s1"})
         collect_until_response(proc, 67)
 
         # 恢复 s1 原策略：后续既有用例在 s1 上跑 exec/fs，network deny 会破坏它们。
@@ -678,6 +774,7 @@ def main():
         if stderr:
             print(stderr, file=sys.stderr)
     assert_posix_children_killed_on_core_exit(executable)
+    assert_oversized_header_exits_core(executable)
 
 
 if __name__ == "__main__":

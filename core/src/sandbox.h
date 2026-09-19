@@ -127,6 +127,13 @@ int owc_landlock_apply(const char *cwd, const char *const *allow_paths,
                        owc_sandbox_result *result);
 /* Runtime exemption tables applied by owc_landlock_apply (see
  * sandbox_posix.c).  Exposed for test assertions. */
+/* network="deny" needs Landlock ABI >= 4 (net bind/connect rules).  On an
+ * older ABI (or with build headers lacking the network constants) the probe
+ * reports ADVISORY with abi = 0 and a reason that starts with "network denial
+ * requires Landlock ABI 4": fail-closed, so the exec/pty gates refuse to run
+ * the command instead of running it with full network access.  Do not turn
+ * this back into PARTIAL - that let a network-denied session execute with the
+ * network fully open (silent downgrade). */
 extern const char *const owc_landlock_read_exec_paths[];
 extern const size_t owc_landlock_read_exec_path_count;
 extern const char *const owc_landlock_full_access_paths[];

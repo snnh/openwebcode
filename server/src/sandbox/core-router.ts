@@ -39,6 +39,7 @@ import type {
   FsWriteRequest,
   PathNormalizeRequest,
   PathNormalizeResult,
+  PtyCloseRequest,
   PtyInputRequest,
   PtyOpenRequest,
   PtyOpenResult,
@@ -209,6 +210,9 @@ export class CoreRouter extends EventEmitter {
   private readonly hostNormalizeConfigs = new Set<string>();
   /** ptyId → 开出该 pty 的 core 客户端（各 core 独立编号，openPty 时登记）。 */
   private readonly ptyOwners = new Map<number, CoreClientLike>();
+  /** ptyId → 开出该 pty 的会话 id（pty.open 时登记）。core 要求 pty.input/
+   * resize/close 带 sessionId 并与 pty 归属比对；未显式传参的调用点由此补全。 */
+  private readonly ptySessions = new Map<number, string>();
   /** sessionId → 最近一次 configureSession 成功后 core 上报的执行级别（REST 透出用）。 */
   private readonly sandboxStatus = new Map<string, { capability: string; reason?: string; at: number }>();
 
@@ -655,26 +659,38 @@ export class CoreRouter extends EventEmitter {
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
     const result = await client.openPty({ ...request, cwd });
     this.ptyOwners.set(result.ptyId, client);
+    this.ptySessions.set(result.ptyId, request.session);
     return result;
   }
 
   async inputPty(request: PtyInputRequest): Promise<{ ok: true }> {
     const client = this.ptyOwners.get(request.ptyId) ?? this.shared;
     if (!client.inputPty) throw new Error("Core pty support is unavailable");
-    return client.inputPty(request);
+    return client.inputPty(this.withPtySession(request));
   }
 
   async resizePty(request: PtyResizeRequest): Promise<{ ok: true }> {
     const client = this.ptyOwners.get(request.ptyId) ?? this.shared;
     if (!client.resizePty) throw new Error("Core pty support is unavailable");
-    return client.resizePty(request);
+    return client.resizePty(this.withPtySession(request));
   }
 
-  async closePty(request: { ptyId: number }): Promise<{ ok: true; exitCode?: number }> {
+  async closePty(request: PtyCloseRequest): Promise<{ ok: true; exitCode?: number }> {
     const client = this.ptyOwners.get(request.ptyId) ?? this.shared;
-    this.ptyOwners.delete(request.ptyId);
     if (!client.closePty) throw new Error("Core pty support is unavailable");
-    return client.closePty(request);
+    const withSession = this.withPtySession(request);
+    const result = await client.closePty(withSession);
+    this.ptyOwners.delete(request.ptyId);
+    this.ptySessions.delete(request.ptyId);
+    return result;
+  }
+
+  /** 补全 pty.* 的归属 sessionId（语义见 core-client.ts 的 PtyInputRequest）：
+   * 显式值优先并交由 core 比对，缺省按 pty.open 登记值补全。 */
+  private withPtySession<T extends { ptyId: number; sessionId?: string }>(request: T): T {
+    if (typeof request.sessionId === "string" && request.sessionId !== "") return request;
+    const owner = this.ptySessions.get(request.ptyId);
+    return owner === undefined ? request : { ...request, sessionId: owner };
   }
 
   ptyEvents(ptyId: number): EventEmitter {
@@ -685,6 +701,7 @@ export class CoreRouter extends EventEmitter {
 
   removePtyEvents(ptyId: number): void {
     this.ptyOwners.delete(ptyId);
+    this.ptySessions.delete(ptyId);
     this.shared.removePtyEvents?.(ptyId);
   }
 }

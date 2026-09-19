@@ -206,7 +206,11 @@ int owc_pty_open(const owc_pty_options *options,
                 options->write_roots, options->write_root_count,
                 options->deny_paths, options->deny_path_count,
                 options->allow_paths, options->allow_path_count,
-                options->allow_network, shell_argv);
+                /* new_session = 0: --new-session setsid()s the sandbox and the
+                 * interactive shell would lose the pty as its controlling
+                 * terminal ("can't access tty; job control turned off").  The
+                 * namespace isolation flags are unaffected. */
+                options->allow_network, 0, shell_argv);
     }
     child = forkpty(&pty->master, NULL, NULL, &size);
     if (child < 0) { free(bwrap_argv); *system_error = (unsigned long)errno; goto cleanup; }

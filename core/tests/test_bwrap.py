@@ -156,6 +156,32 @@ def run_bwrap_e2e(proc, workspace):
             assert stored.read() == "workspace-ok"
         assert not os.path.exists(outside_path), outside_path
 
+        # Namespace isolation (C1): a sandboxed process must not share the host
+        # PID/IPC/UTS namespaces, otherwise it can see and kill every same-uid
+        # process on the machine - the core itself, the Node server, and other
+        # sessions.  The probe validates the same flag set the exec argv uses
+        # (see bwrap_isolation_flags), so this cannot pass while the exec runs
+        # without the flags.
+        host_namespaces = {
+            name: os.readlink(f"/proc/{proc.pid}/ns/{name}")
+            for name in ("pid", "ipc", "uts", "user")
+        }
+        namespace_probe = (
+            f"test -d /proc/{proc.pid} && echo host-pid-visible || echo host-pid-isolated; "
+            f"kill -0 {proc.pid} 2>/dev/null && echo host-kill-allowed || echo host-kill-blocked; "
+            "readlink /proc/self/ns/pid; readlink /proc/self/ns/ipc; "
+            "readlink /proc/self/ns/uts; readlink /proc/self/ns/user"
+        )
+        result, output = run_exec(proc, 40, workspace, namespace_probe)
+        assert result["exitCode"] == 0, result
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        assert "host-pid-isolated" in lines, output
+        assert "host-kill-blocked" in lines, output
+        namespace_links = [line for line in lines if line.startswith(("pid:", "ipc:", "uts:", "user:"))]
+        assert len(namespace_links) == 4, output
+        for name, link in zip(("pid", "ipc", "uts", "user"), namespace_links):
+            assert link != host_namespaces[name], (name, link, host_namespaces[name], output)
+
         # denyPaths masking: a denied file is shadowed by /dev/null (its
         # content is unreadable), a denied directory by an empty tmpfs.
         masked_file = os.path.join(workspace, "secret.txt")
@@ -366,7 +392,10 @@ def main_landlock_e2e():
             stored.write("outside-content")
         result, output = run_exec_landlock(proc, 2, workspace, f"cat '{outside_file}'")
         assert result["exitCode"] != 0, result
-        assert "Permission denied" in output, output
+        # Assert the isolation property itself instead of the tool's message:
+        # "Permission denied" is localized (a zh_CN host prints "权限不够"), so
+        # matching the English text made this case locale-dependent.
+        assert "outside-content" not in output, output
 
         # Disabled-sandbox control: the same read succeeds.
         response = configure_landlock(proc, 3, workspace, {"enabled": False})
@@ -387,21 +416,35 @@ def main_landlock_e2e():
         with open(extra_write, "r", encoding="utf-8") as stored:
             assert stored.read() == "write-root-ok"
 
-        # Network denial needs Landlock ABI 4; the configure reply reports
-        # partial with the ABI caveat below that.
+        # Network denial under Landlock needs ABI 4.  Landlock mode caps the
+        # session capability at "partial" (denyPaths stay unenforced there), so
+        # "partial" means the network rules are live and "advisory" means this
+        # kernel cannot express them at all - the fail-closed case: a session
+        # that asked for network isolation must not run with full network
+        # access (the old code reported partial and executed anyway).
         response = configure_landlock(proc, 7, workspace, {"enabled": True, "network": "deny", "mode": "landlock"})
         assert "result" in response, response
-        if response["result"]["sandboxCapability"] != "enforced":
-            print(f"SKIP: network denial needs Landlock ABI 4 ({response['result'].get('sandboxReason', '')})",
+        capability = response["result"]["sandboxCapability"]
+        reason = response["result"].get("sandboxReason", "")
+        marker = os.path.join(workspace, "network-deny-must-not-run.txt")
+        if capability == "advisory":
+            assert "network" in reason, response
+            result, output = run_exec_landlock(
+                proc, 8, workspace, f"printf x > '{marker}'")
+            assert result["exitCode"] == 126, result
+            assert result["sandboxCapability"] == "advisory", result
+            assert "network" in result["sandboxReason"], result
+            assert not os.path.exists(marker), marker
+            print(f"SKIP: Landlock lacks network support; fail-closed path verified ({reason})",
                   file=sys.stderr)
-        elif shutil.which("python3"):
+        elif not shutil.which("python3"):
+            print("SKIP: python3 not on PATH; network case not run", file=sys.stderr)
+        else:
             probe = ("python3 -c \"import socket; s = socket.socket(); "
-                     "s.settimeout(2); s.connect(('127.0.0.1', 9))\"")
+                     "s.settimeout(2); s.connect(('192.0.2.1', 9))\"")
             result, output = run_exec_landlock(proc, 8, workspace, probe)
             assert result["exitCode"] != 0, result
-            assert "Permission denied" in output, output
-        else:
-            print("SKIP: python3 not on PATH; network case not run", file=sys.stderr)
+            assert not os.path.exists(marker), marker
         print("test_landlock_e2e.py: ok")
     finally:
         try:
