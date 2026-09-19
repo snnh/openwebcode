@@ -112,7 +112,7 @@ function useGroupPager(groupCount: number, resetKey: string): {
 
 function HitCell({ row }: { row: ReportMetrics }): ReactElement {
   const rate = rowHitRate(row);
-  return <td className="num">{rate === null ? "—" : `${Math.round(rate * 100)}%`}</td>;
+  return <td className="num">{rate === null ? "—" : `${(rate * 100).toFixed(1)}%`}</td>;
 }
 
 function DayTable({ report, currency, from, to }: { report: CostReport; currency: "USD" | "CNY"; from: number; to: number }): ReactElement {
@@ -254,7 +254,7 @@ export function CostPanel(): ReactElement {
             {hasCacheActivity && hitRate !== null && (
               <div className="cost-card" data-testid="cache-hit-card">
                 <span className="cost-card-label">{t("缓存命中", "Cache hit")}</span>
-                <b>{Math.round(hitRate * 100)}%</b>
+                <b>{(hitRate * 100).toFixed(1)}%</b>
                 <span className="cost-card-sub">{t(`读 ${formatTokensShort(data.totals.cacheRead)} · 写 ${formatTokensShort(data.totals.cacheWrite)}`, `read ${formatTokensShort(data.totals.cacheRead)} · write ${formatTokensShort(data.totals.cacheWrite)}`)}</span>
               </div>
             )}

@@ -109,7 +109,7 @@ function WindowSection({ info, latestUsage, cumulativeUsage, evicted, thresholdP
               className="pill small"
               title={formatCacheTitle(latestCache, { cumulative: false }, t, formatTokensShort)}
             >
-              {t("本轮", "Last call")} {Math.round(latestCache.rate * 100)}%
+              {t("本轮", "Last call")} {(latestCache.rate * 100).toFixed(1)}%
             </span>
           )}
           {cumulativeCache.rate !== null && (cumulativeCache.cacheRead > 0 || cumulativeCache.cacheWrite > 0) && (
@@ -118,7 +118,7 @@ function WindowSection({ info, latestUsage, cumulativeUsage, evicted, thresholdP
               data-tone={cacheTone(cumulativeCache)}
               title={formatCacheTitle(cumulativeCache, { cumulative: true }, t, formatTokens)}
             >
-              {t("累计", "Session")} {Math.round(cumulativeCache.rate * 100)}%
+              {t("累计", "Session")} {(cumulativeCache.rate * 100).toFixed(1)}%
             </span>
           )}
         </p>
