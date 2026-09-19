@@ -47,6 +47,7 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 - 内置符号索引（`repo_map` / `code_search`）、测试诊断（Problems 面板）、SCM 面板（diff、stage、worktree 合回、生成提交信息）。
 - 任务清单：标签栏右端折叠 chip，随时查看 agent 当前任务与进度。
 - `owc run` cli 支持。
+- dsh 兼容模式（实验，默认关闭）：独立端口托管 dsh 官方 SPA，并加载 dsh 生态插件（Host 工具/钩子与 client UI 插件）。
 
 具体详见 [使用帮助](./help/usage.md) 和 [常见问题](./help/faq.md)。
 
@@ -146,6 +147,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 
 - [`help/usage.md`](./help/usage.md) — 使用帮助：启动、面板、快捷键、模型与成本、自定义扩展点模板
 - [`help/faq.md`](./help/faq.md) — 常见问题：模型接入、权限与沙盒、快照回滚、CLI 集成、故障排查
+- [`help/dsh-compat.md`](./help/dsh-compat.md) — dsh 兼容模式：开启方式、安装 dsh 插件、支持/不支持清单、可信边界与故障排查
 - [`help/development.md`](./help/development.md) — 二次开发：仓库布局、三件套构建、测试约定、切入点、CI 与发布
 - [`packaging/README.md`](./packaging/README.md) — 打包流程、分发布局、安装脚本与发布流水线
 - [`CHANGELOG.md`](./CHANGELOG.md) — 版本更新日志

@@ -49,6 +49,7 @@ Browser (React) ── HTTP/WebSocket ──► Node service (agent loop, tools)
 - Built-in symbol index (`repo_map` / `code_search`), test diagnostics (Problems panel), and an SCM panel (diffs, staging, worktree merges, generated commit messages).
 - Task list: a collapsible chip on the right side of the main tab bar shows the agent's current tasks and progress (completed items struck through). It persists after a run finishes and refreshes when the next run updates the list.
 - The `owc run` CLI.
+- dsh compatibility mode (experimental, off by default): hosts the official dsh SPA on its own port and loads dsh-ecosystem plugins (Host tools/hooks and client UI plugins).
 
 See the [user guide](./help/usage.md) and [FAQ](./help/faq.md) (both in Chinese) for details.
 
@@ -147,6 +148,7 @@ Production reference (v1.7.6, Debian 13 x86-64, measured on an always-on instanc
 
 - [`help/usage.md`](./help/usage.md) — user guide: startup, panels, shortcuts, models and costs, extension-point templates (Chinese)
 - [`help/faq.md`](./help/faq.md) — FAQ: model setup, permissions and sandbox, snapshot rollback, CLI integration, troubleshooting (Chinese)
+- [`help/dsh-compat.md`](./help/dsh-compat.md) — dsh compatibility mode: enabling it, installing dsh plugins, supported/unsupported wire surface, trust boundary, troubleshooting (Chinese)
 - [`help/development.md`](./help/development.md) — development guide: repository layout, the three builds, test conventions, entry points, CI and release (Chinese)
 - [`packaging/README.en.md`](./packaging/README.en.md) — packaging, distribution layout, installers, and the release pipeline
 - [`CHANGELOG.md`](./CHANGELOG.md) — version history (Chinese)
