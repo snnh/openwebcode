@@ -128,7 +128,13 @@ export function parseMuxFrame(raw: string): DshMuxInboundFrame | undefined {
   for (const segment of body.endpoint.split("/")) {
     if (!ENDPOINT_SEGMENT.test(segment)) return undefined;
   }
-  const payload = isRecord(body.payload) ? body.payload : {};
-  const args = isRecord(payload.args) ? payload.args : {};
+  // open 帧 payload 严格校验：客户端把端点请求编码成 payload，键集合恒为 {args}（无参数端点也是 {args:{}}），
+  // args 恒为对象。放宽会掩盖协议漂移（多余键被静默吞掉后表现为端点收到空参数）。
+  const payload = body.payload;
+  if (!isRecord(payload)) return undefined;
+  const payloadKeys = Object.keys(payload);
+  if (payloadKeys.length !== 1 || payloadKeys[0] !== "args") return undefined;
+  const args = payload.args;
+  if (!isRecord(args)) return undefined;
   return { type: "open", streamId: body.streamId, endpoint: body.endpoint, args };
 }

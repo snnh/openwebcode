@@ -99,10 +99,10 @@ dsh 插件**只在「启用 dsh 兼容模式」打开时加载**（它们是可�
 
 | 已支持 | 说明 |
 |---|---|
-| 会话列表 / 新建 | `session/list`、`session/create`（按 id 幂等） |
-| 打开会话与历史 | `session/follow`（快照 + 增量事件 + 助手流式）、`session/page`（向前翻旧历史） |
+| 会话列表 / 新建 | `session/list`、`session/create`（按 id 幂等；新建后与主工作台同一条可见性链路，侧边栏即时出现） |
+| 打开会话与历史 | `session/follow`（快照 + 轮次结束后的增量事件；不做逐 token 流式，见下「已知限制」）、`session/page`（向前翻旧历史） |
 | 发消息 / 中断 / 队列 | `session/prompt`（`queue` / `steer`）、`session/cancel`、`session/updateQueue` |
-| 运行态 | `session/control`（待发送队列、投影基线；后台任务见下） |
+| 运行态 | `session/control`（投影基线；后台任务见下） |
 | 模型选择 | `session/modelCatalog`（服务商分组的模型目录 + 部署默认 + 可路由服务商）、`session/selectModel`（空闲时切模型，校验口径与主工作台一致：服务商须已配置、模型须在目录中、力度须在模型声明档位内）、会话 `modelSelection` 投影（composer 的模型座位显示当前会话模型） |
 | 插件清单 | `pluginInventory/list`（只读投影 `<dataDir>/dsh-plugins` 里的 dsh 插件与启停状态；`managementAvailable=false`——插件安装/启停在 owc 侧管理） |
 | 历史图片 | `session/attachment`（owc 内联 base64 图片可回读；仅落盘引用的图片返回明确错误） |
@@ -126,6 +126,15 @@ dsh 插件**只在「启用 dsh 兼容模式」打开时加载**（它们是可�
 
 **后台任务不投影**：`session/control` 的 jobs 字段如实留空（owc 的后台任务只在主工作台可见）。
 
+### 已知限制（v1，如实记录不静默吞掉）
+
+| 限制 | 表现 | 原因 |
+|---|---|---|
+| **运行中消息不支持图片** | 会话正在跑时发带图消息会明确报错（`session/unsupported`：「运行中消息不支持图片附件」），不会被静默接受 | owc 的排队/插话入参只有文本；图片要等本轮结束后作为新消息发送 |
+| **助手输出不做逐 token 流式** | 回复在本轮结束时一次性出现（不逐字冒出）；打开会话时也不回放历史增量 | 翻译层不编造 token 级增量，只下发已落盘的完整事件 |
+| **提问一次只承载一问** | dsh 侧一次提问请求对应一个 owc 交互（`ask_user` 多题时逐题串行） | owc 的交互应答是一问一答；多出来的答案写日志后丢弃（不会假装已接受） |
+| **答案形状按题目类型收敛** | 选择题：选中的选项 label + 「其他」自定义文本（按上游约定编码为 `other:<文本>`）；是/否题按文本判定肯定/否定（不匹配即否定）；自由文本原样传递 | 两端答案形状不同，翻译层按 owc 交互契约映射，见 `docs/dsh-wire-contract.md` §5.1 |
+
 需要凭据配置、权限模式、扩展设置、dsh 插件安装这些操作时，回主工作台做——dsh UI 的设置页不接 owc 的设置面。
 
 **模型选择器**：dsh composer 的模型座位读 `session/modelCatalog` + 会话 `modelSelection` 投影；新建会话按主工作台同一套默认（`settings.defaultModel` + 校验过的 `defaultEffort`）落 provider/model，所以从 dsh UI 直接开新会话就能用。模型未配置 / 会话运行中切模型会给出明确 wire 错误，不静默改配置。
@@ -137,7 +146,7 @@ dsh 插件**只在「启用 dsh 兼容模式」打开时加载**（它们是可�
 - **dsh 插件（Host 与 Client 入口）是可信代码**，与「Hooks / 项目 MCP / v1 扩展」同档：**安装即信任（≈ yolo）**，不经沙盒、不经过权限确认链；插件注册的工具在**被 agent 调用汇总时**仍走 owc 的权限与沙盒门禁，但插件自身的代码（含读取文件、发起网络请求）不做拦截。只装你信任的插件。
 - **dsh SPA 与 client 插件代码同为可信代码**，运行在你的浏览器里，与 owc 主 SPA 共享同一 host 的 cookie；它们**拿不到** owc 的 core 通道、数据目录路径与原始 API Key。
 - **不进沙盒**：dsh 插件不是被沙盒包裹的第三方代码；界面上的隔离状态如实展示，不把「独立进程」宣传成沙盒。
-- **模式关闭 = 零常驻**：`dshCompatEnabled=false` 时不监听端口、不加载 vendor、不建事件桥；模式本身出故障只降级（发布包缺 vendor、插件加载失败），不阻塞消息提交、会话加载与 Run 收尾。
+- **模式关闭 = 零常驻**：`dshCompatEnabled=false` 时不监听端口（连接被拒）、不加载 vendor、不建事件桥；owc **主服务端口上没有 dsh 端点**（翻译层只挂在独立端口，设置页/工作台读的是 owc 自己的 API）；只有「设置已改为关、端口还没关完」的一小段窗口里，独立端口上的请求会得到 503 + 原因。模式本身出故障只降级（发布包缺 vendor、插件加载失败、端口被占），不阻塞主服务启动、消息提交、会话加载与 Run 收尾。
 - **性能**：开启后 agent 循环、账本、工具执行、快照、索引等敏感路径仍走 owc 自有实现，翻译层只做投影，不复制状态、不引入 dsh 运行时。
 
 ---
@@ -171,8 +180,8 @@ dsh tools/pre-execute ask 降级为放行：<reason>（tool=<工具名>, session
 | 活动栏没有 `layers` 图标 | `dshCompatEnabled` 未开（或设置未加载完成）。去 设置 → 通用 打开；保存后无需刷新 |
 | 图标在，但打开 `<host>:3211` 连不上 | 服务端没有 vendor（源码构建常见）：跑 `node scripts/fetch-dsh-web.mjs`；看 server stderr 的 `[dsh] 未找到 dsh UI 产物` 提示 |
 | 打开端口报 401 | 用 `http://<host>:3211/?token=<访问令牌>` 打开一次换 cookie；令牌见 `<数据目录>/access-token` |
-| 打开端口报 503 | 该请求到达时 `dshCompatEnabled` 为关。检查设置是否被环境变量覆盖（`OWC_DSH_COMPAT_ENABLED`） |
-| 端口起不来 / 提示占用 | `dshPort` 与其它进程冲突，换端口（如 3212）后保存即热生效 |
+| 打开端口报 503 | 该请求到达时 `dshCompatEnabled` 已为关（只会在「关闭设置已生效、端口还没关完」的瞬间出现）。检查设置是否被环境变量覆盖（`OWC_DSH_COMPAT_ENABLED`）；彻底关闭后端口不再监听，表现为连不上而不是 503 |
+| 端口起不来 / 提示占用 | `dshPort` 与其它进程冲突：服务端记一条 `[dsh] 独立端口 … 监听失败` 并**继续启动主服务**（不因可选层失败拒启）；换端口（如 3212）后保存即热生效 |
 | 插件注册的工具没出现 | 先确认「启用 dsh 兼容模式」是开的（关着就不下发加载计划）；再看 `<数据目录>/dsh.json` 是否把它 `enabled: false`；最后看服务端日志的 `[dsh]` 行 |
 | 日志出现 `incompatible`（依赖 `@deepseek-ai/*`） | 插件依赖了三个垫片之外的 `@deepseek-ai/*` 运行期包（对应服务缝不存在），不会被加载。换插件版本或换插件 |
 | 日志出现 `missing-services` | 插件声明的服务翻译层未提供，插件保持未激活（日志会列出缺失服务名） |

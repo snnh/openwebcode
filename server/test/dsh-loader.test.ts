@@ -1,5 +1,5 @@
 /** dsh 兼容层 M2 单测：插件发现（入口/兼容/配置清单）与最小 semver 范围匹配。 */
-import { cp, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,6 +123,26 @@ describe("dsh 插件扫描", () => {
     const planned = scan.plan.map((item) => item.id).sort();
     expect(planned).toEqual(["client-probe", "client-worker", "config-fail", "hello", "hook-gate", "missing-service", "tool-hello"]);
     expect(scan.plan.find((item) => item.id === "hello")?.directory).toBe(path.join(dshPluginsRoot(dataDir), "hello"));
+  });
+
+  it("D13：@scope/pkg 布局也能被发现（scope 目录只下探一层，本身不算插件）", async () => {
+    const scoped = await mkdtemp(path.join(tmpdir(), "owc-dsh-scoped-"));
+    const root = dshPluginsRoot(scoped);
+    await mkdir(path.join(root, "@acme", "gizmo"), { recursive: true });
+    await writeFile(path.join(root, "@acme", "gizmo", "package.json"), JSON.stringify({ name: "@acme/gizmo", version: "1.2.3", main: "index.js" }));
+    await writeFile(path.join(root, "@acme", "gizmo", "index.js"), "export function apply() {}\n");
+    await mkdir(path.join(root, "plain"), { recursive: true });
+    await writeFile(path.join(root, "plain", "package.json"), JSON.stringify({ name: "plain", version: "1.0.0", main: "index.js" }));
+    await writeFile(path.join(root, "plain", "index.js"), "export function apply() {}\n");
+
+    const scan = await scanDshPlugins(scoped);
+    expect(scan.plan.map((item) => item.id).sort()).toEqual(["gizmo", "plain"]);
+    const gizmo = scan.plan.find((item) => item.id === "gizmo");
+    expect(gizmo?.directory).toBe(path.join(root, "@acme", "gizmo"));
+    expect(gizmo?.name).toBe("@acme/gizmo");
+    // scope 目录没有被误当插件（否则会出现一个 invalid 的 `@acme` 条目）
+    expect(scan.entries.map((entry) => entry.id).sort()).toEqual(["gizmo", "plain"]);
+    expect(scan.entries.every((entry) => entry.problem === undefined)).toBe(true);
   });
 
   it("dsh.json 停用的插件不进计划；配置随计划下发", async () => {

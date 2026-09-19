@@ -16,6 +16,8 @@
  * 未覆盖（M4 按需补）：agent/compact/fs/shell 等服务缝、`presentCall`/`presentResult` 卡片、
  * client 入口（M4 的 `/plugins` 路由）。M3 已接入：llm/sessions/storage/timer/dshEvents
  * 服务缝（services.ts）与 tools/pre-execute、tools/post-execute agent 钩子桥。
+ * 服务缝的 llm/sessions/storage 按插件绑定（`dsh-<插件id>` 来源 id），所以激活窗口之外的调用
+ * （timer 回调、工具执行、事件 handler）仍落到调用方插件自己的隔离目录。
  */
 import * as nodeModule from "node:module";
 import path from "node:path";
@@ -24,7 +26,7 @@ import { Context } from "./cordis-shim.js";
 import type { Fiber, LoggerMessage, LoggerSink, Plugin } from "./cordis-shim.js";
 import type { ToolDefinition, ToolRenderBlock } from "./dsh-tools-shim.js";
 import type { DshHostCall } from "./services.js";
-import { provideDshServices, runDshPostExecute, runDshPreExecute } from "./services.js";
+import { provideDshServices, pluginServiceViews, runDshPostExecute, runDshPreExecute } from "./services.js";
 import type { DshPostToolOutcome, DshPreToolOutcome } from "./services.js";
 import { dshToolSourceId, type DshPluginReport, type DshSyncItem } from "./loader.js";
 import type { ExtensionToolResult, ExtensionToolSpec } from "../extensions/types.js";
@@ -115,11 +117,17 @@ function installDshShims(log: (message: string) => void): void {
   log(`垫片解析钩子已注册（${Object.keys(shims).join("、")}）`);
 }
 
-/** 插件 ctx 派生：`get('tools')` 与 `ctx.tools` 指向本插件绑定的 façade（其余转发原 ctx）。 */
-function bindPluginTools(ctx: Context, facade: DshToolsFacade): Context {
+/**
+ * 插件 ctx 派生：`get(name)` 命中宿主为插件绑定的视图时返回该插件专属实例（其余转发原 ctx）。
+ *
+ * 派生 ctx 与原 ctx 共享同一 fiber（服务归属与 effect 归属不变），所以插件经它注册的工具/定时器
+ * 仍随插件卸载回滚。绑定内容是：`tools` façade + 各服务缝（llm/sessions/storage）的按插件实例——
+ * 后者的意义是让激活窗口之外的调用（timer 回调、工具执行、事件 handler）仍带正确来源 id。
+ */
+function bindPluginContext(ctx: Context, views: ReadonlyMap<string, unknown>): Context {
   const bound = ctx.extend({});
   Object.defineProperty(bound, "get", {
-    value: (name: string) => (name === "tools" ? facade : ctx.get(name)),
+    value: (name: string) => (views.has(name) ? views.get(name) : ctx.get(name)),
     configurable: true,
   });
   return bound;
@@ -251,12 +259,19 @@ class DshRuntime implements DshHostRuntime {
   /** 插件 dshEvents 订阅登记（归属当前激活插件）；返回解除订阅 disposer。 */
   private subscribePluginEvents(types: string[], dispatch: (event: { type: string; sessionId?: string; payload: unknown }) => void): () => void {
     this.ensureDshEventsRegistered();
-    const pluginId = this.currentActivatingPluginId;
-    const set = this.eventSubscriptions.get(pluginId) ?? new Set();
+    // 键口径与卸载/派发一致：都用伪扩展 id（`dsh-<pluginId>`），否则 unload 删错键 →
+    // 订阅残留 + 重激活叠加 handler（同一事件被触发多次）
+    const key = this.currentSubscriptionKey();
+    const set = this.eventSubscriptions.get(key) ?? new Set();
     const entry = { types: [...types], dispatch };
     set.add(entry);
-    this.eventSubscriptions.set(pluginId, set);
+    this.eventSubscriptions.set(key, set);
     return () => set.delete(entry);
+  }
+
+  /** 当前激活插件对应的订阅键（伪扩展 id）；激活窗口外为空串（root 级订阅）。 */
+  private currentSubscriptionKey(): string {
+    return this.currentActivatingPluginId === "" ? "" : dshToolSourceId(this.currentActivatingPluginId);
   }
 
   async sync(plugins: readonly DshSyncItem[]): Promise<DshPluginReport[]> {
@@ -302,7 +317,13 @@ class DshRuntime implements DshHostRuntime {
     }
   }
 
-  /** 解析宿主能力调用的伪扩展 id：激活窗口用正在激活的插件，否则用任一已激活插件。 */
+  /**
+   * root 级服务实例的来源 id（伪扩展 id）。
+   *
+   * 逐插件绑定后（见 bindPluginCtx），插件 ctx 上的 llm/sessions/storage 都是自己的实例，
+   * 不再走这里；本函数只剩两条路径：激活窗口内 root 兜底、以及激活窗口外的 root 级调用
+   * （此时取第一个已加载插件，仅为「有值可用」，插件代码不该走这条路径）。
+   */
   private resolveCallSourceId(): string {
     if (this.currentActivatingPluginId) return dshToolSourceId(this.currentActivatingPluginId);
     const first = this.loaded.keys().next().value;
@@ -331,9 +352,8 @@ class DshRuntime implements DshHostRuntime {
 
   /** server EventBus 白名单事件 → 订阅插件的 ctx（按当前激活插件过滤；handler 抛错隔离到本插件）。 */
   dispatchEvent(sourceId: string, event: { type: string; sessionId?: string; payload: unknown }): void {
-    // sourceId 为伪扩展 id（dsh-<pluginId>）；订阅表按裸插件 id 键（subscribe 发生在激活窗口）。
-    const bareId = sourceId.startsWith("dsh-") ? sourceId.slice(4) : sourceId;
-    const target = this.currentActivatingPluginId || bareId;
+    // sourceId 为伪扩展 id（dsh-<pluginId>），订阅表按键同口径（激活窗口内的 subscribe 已归一）
+    const target = this.currentSubscriptionKey() || sourceId;
     const subscriptions = this.eventSubscriptions.get(target);
     if (!subscriptions) return;
     for (const subscription of [...subscriptions]) {
@@ -367,8 +387,8 @@ class DshRuntime implements DshHostRuntime {
     let fiber: Fiber;
     this.currentActivatingPluginId = item.id;
     try {
-      // prepare：插件 ctx 的 tools 指向本插件绑定的 façade（注册归属插件 fiber + 卸载自动回滚）。
-      fiber = this.root.plugin(plugin, item.config, { prepare: (ctx) => bindPluginTools(ctx, this.createFacade(sourceId, ctx)) });
+      // prepare：插件 ctx 的 tools 与各服务缝指向本插件专属视图（注册归属插件 fiber + 卸载自动回滚）
+      fiber = this.root.plugin(plugin, item.config, { prepare: (ctx) => this.bindPluginCtx(ctx, sourceId) });
       await fiber.await();
     } catch (error) {
       return { id: item.id, status: "error", error: `插件激活失败：${errorMessage(error)}` };
@@ -377,6 +397,17 @@ class DshRuntime implements DshHostRuntime {
     }
     this.loaded.set(item.id, { key: pluginKey(item), item, fiber });
     return this.reportFor(item, fiber);
+  }
+
+  /** 插件 ctx 的服务视图绑定（tools façade + 服务缝按插件实例）。 */
+  private bindPluginCtx(ctx: Context, sourceId: string): Context {
+    const views = new Map<string, unknown>();
+    views.set("tools", this.createFacade(sourceId, ctx));
+    const call = this.bridge.call;
+    if (call !== undefined) {
+      for (const [name, view] of Object.entries(pluginServiceViews(sourceId, call))) views.set(name, view);
+    }
+    return bindPluginContext(ctx, views);
   }
 
   private async unload(id: string): Promise<void> {

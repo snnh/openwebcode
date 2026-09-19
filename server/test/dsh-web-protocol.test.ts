@@ -1,5 +1,5 @@
-/** dsh 翻译层骨架单测：wire 信封、逻辑流复用、$events 连接代状态。 */
-import { describe, expect, it } from "vitest";
+/** dsh 翻译层骨架单测：wire 信封、逻辑流复用、$events 连接代状态、真实端点（非假解析器）。 */
+import { describe, expect, it, vi } from "vitest";
 import {
   DSH_CLOSE_PROTOCOL,
   DshMuxSession,
@@ -16,11 +16,58 @@ import {
   parseUnaryRequest,
   wireError,
 } from "../src/dsh/web-protocol/wire.js";
+import { buildStreamHandlers, DshEventBridge, type DshWireDeps } from "../src/dsh/web-protocol/streams.js";
+import { EventBus } from "../src/events/event-bus.js";
+import type { DshProjectionDeps } from "../src/dsh/web-protocol/session-projection.js";
+import type { SessionMeta } from "../src/sessions/types.js";
 
 function channel(): { frames: DshMuxOutboundFrame[]; closed: Array<{ code: number; reason: string }>; sink: DshMuxChannel } {
   const frames: DshMuxOutboundFrame[] = [];
   const closed: Array<{ code: number; reason: string }> = [];
   return { frames, closed, sink: { send: (frame) => frames.push(frame), close: (code, reason) => closed.push({ code, reason }) } };
+}
+
+/** 最小 wire 依赖（真实投影面 + mock 宿主应答），供真实端点表使用。 */
+function wireDeps(): DshWireDeps & { respondInteraction: ReturnType<typeof vi.fn>; events: EventBus } {
+  const metas = [{
+    id: "s1",
+    cwd: "/work/proj",
+    provider: "p",
+    model: "m",
+    title: "会话一",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:10:00.000Z",
+  } as SessionMeta];
+  const projection = {
+    sessions: {
+      list: async () => metas,
+      getMeta: async (id: string) => metas.find((entry) => entry.id === id),
+      getTail: async (id: string) => (id === "s1"
+        ? { ...metas[0], messages: [{ id: "m1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: "2026-01-01T00:05:00.000Z" }], hasMoreMessages: false }
+        : undefined),
+      get: async () => undefined,
+      create: async () => metas[0] as never,
+    },
+    agent: {
+      run: vi.fn(async () => {}),
+      isRunning: () => false,
+      abort: vi.fn(() => true),
+      enqueueSteering: vi.fn(async () => ({ id: "s", position: 1, reused: false })),
+      enqueueFollowUp: vi.fn(async () => ({ id: "q", position: 1, reused: false })),
+      listQueue: async () => [],
+      updateQueue: vi.fn(async () => undefined),
+      removeQueue: vi.fn(async () => false),
+    },
+    defaultCwd: "/work/default",
+  } as unknown as DshProjectionDeps;
+  return {
+    projection,
+    events: new EventBus(),
+    home: "/home/tester",
+    respondPermission: vi.fn(async () => {}),
+    respondInteraction: vi.fn(async () => {}),
+    logger: { warn: () => {} },
+  } as never;
 }
 
 describe("dsh unary 信封", () => {
@@ -85,16 +132,23 @@ describe("dsh 逻辑流复用", () => {
     expect(session.streamCount).toBe(0);
   });
 
-  it("未知端点回 method-unavailable；重复 streamId 回 bad-request", () => {
-    const { frames, sink } = channel();
-    const session = new DshMuxSession(sink, (endpoint) => (endpoint === "session/control" ? () => {} : undefined));
+  it("未知端点回 method-unavailable；重复 streamId 回 bad-request 后按协议违规断连", () => {
+    const { frames, closed, sink } = channel();
+    let cleaned = 0;
+    const session = new DshMuxSession(sink, (endpoint) => (endpoint === "session/control" ? (handle) => { handle.onCancel(() => { cleaned++; }); } : undefined));
     session.handleText(JSON.stringify({ type: "open", streamId: "s1", endpoint: "session/nope", payload: { args: {} } }));
     session.handleText(JSON.stringify({ type: "open", streamId: "s2", endpoint: "session/control", payload: { args: {} } }));
     session.handleText(JSON.stringify({ type: "open", streamId: "s2", endpoint: "session/control", payload: { args: {} } }));
     expect(frames.map((frame) => frame.type === "error" ? frame.error.code : frame.type)).toEqual([
       "gateway/method-unavailable", "gateway/bad-request",
     ]);
-    expect(session.streamCount).toBe(1);
+    // 与上游一致：重复 streamId 是协议违规 → 回错后断开物理连接并清理全部逻辑流
+    expect(closed).toEqual([{ code: DSH_CLOSE_PROTOCOL, reason: "duplicate streamId: s2" }]);
+    expect(cleaned).toBe(1);
+    expect(session.streamCount).toBe(0);
+    // 断连后不再处理该连接的后续帧
+    session.handleText(JSON.stringify({ type: "open", streamId: "s3", endpoint: "session/control", payload: { args: {} } }));
+    expect(session.streamCount).toBe(0);
   });
 
   it("cancel 触发清理回调并停止后续推送；重复 cancel 幂等", () => {
@@ -149,13 +203,146 @@ describe("dsh 逻辑流复用", () => {
     expect(second).toEqual({ type: "item", streamId: "s2" });
   });
 
-  it("帧解析：非法形状返回 undefined，合法 open 取 payload.args", () => {
-    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"session/follow"}')).toEqual({
-      type: "open", streamId: "s", endpoint: "session/follow", args: {},
+  it("帧解析：非法形状返回 undefined，合法 open 取 payload.args（payload 严格只有 args 键）", () => {
+    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"session/follow","payload":{"args":{"request":{}}}}')).toEqual({
+      type: "open", streamId: "s", endpoint: "session/follow", args: { request: {} },
     });
-    expect(parseMuxFrame('{"type":"open","streamId":"","endpoint":"a/b"}')).toBeUndefined();
+    // 无参数端点：客户端也发 {args:{}}（vendor `REMOTE_EVENT_STREAM_PAYLOAD`）
+    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"$events","payload":{"args":{}}}')).toEqual({
+      type: "open", streamId: "s", endpoint: "$events", args: {},
+    });
+    expect(parseMuxFrame('{"type":"open","streamId":"","endpoint":"a/b","payload":{"args":{}}}')).toBeUndefined();
+    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"a/b"}')).toBeUndefined();
+    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"a/b","payload":{"args":{},"extra":1}}')).toBeUndefined();
+    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"a/b","payload":{"args":[]}}')).toBeUndefined();
+    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"a/b","payload":{}}')).toBeUndefined();
     expect(parseMuxFrame('{"type":"item","streamId":"s"}')).toBeUndefined();
     expect(parseMuxFrame('{"type":"cancel","streamId":"s"}')).toEqual({ type: "cancel", streamId: "s" });
+  });
+
+  it("open 帧形状非法（含 payload 键不合法）按协议违规 close(1008)", () => {
+    const { frames, closed, sink } = channel();
+    const session = new DshMuxSession(sink, () => () => {});
+    session.handleText(JSON.stringify({ type: "open", streamId: "s1", endpoint: "session/control", payload: { args: {}, extra: 1 } }));
+    expect(frames).toEqual([]);
+    expect(closed).toEqual([{ code: DSH_CLOSE_PROTOCOL, reason: "invalid stream frame" }]);
+  });
+});
+
+describe("dsh 真实逻辑流端点（不经假解析器）", () => {
+  /** 用真实端点表 + 真实投影依赖开一条流，返回帧收集。 */
+  function realStreams() {
+    const deps = wireDeps();
+    const bridge = new DshEventBridge(deps);
+    const streams = buildStreamHandlers(deps, bridge);
+    const { frames, closed, sink } = channel();
+    const session = new DshMuxSession(sink, (endpoint) => streams.get(endpoint));
+    return { deps, bridge, frames, closed, session };
+  }
+
+  it("session/control 无参数：open 帧 payload.args 为 {} 时仍返回 Host 级基线（不 fail）", async () => {
+    const { frames, session } = realStreams();
+    session.handleText(JSON.stringify({ type: "open", streamId: "ctl", endpoint: "session/control", payload: { args: {} } }));
+    await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
+    expect(frames[0]).toMatchObject({ type: "item", streamId: "ctl" });
+    const value = (frames[0] as { value: { type: string; value: { jobs: Record<string, unknown>; projections: Record<string, unknown> } } }).value;
+    expect(value.type).toBe("baseline");
+    expect(value.value.jobs).toEqual({});
+    // Host 级：覆盖全部会话（该端点没有 sessionId 参数，不能只给一个会话）
+    expect(Object.keys(value.value.projections)).toEqual(["s1"]);
+    // asOfSeq 口径 = 记录 seq（1 条 user 消息 → turn/start+step/start+user/message+step/end+turn/end = 5）
+    expect(value.value.projections.s1).toMatchObject({ asOfSeq: 5 });
+    expect(frames.some((frame) => frame.type === "error")).toBe(false);
+  });
+
+  it("session/follow 真实端点：快照帧可发，子代理地址如实报不支持", async () => {
+    const { frames, session } = realStreams();
+    session.handleText(JSON.stringify({ type: "open", streamId: "f1", endpoint: "session/follow", payload: { args: { request: { address: { kind: "subagent", parentSessionId: "s1", childSessionId: "s2", mode: "one-shot" } } } } }));
+    await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
+    expect(frames[0]).toMatchObject({ type: "error", error: { code: "session/unsupported" } });
+  });
+
+  it("$events 提问回路：answers 全量映射到 owc 交互契约（多选 + 自定义答案）", async () => {
+    const { bridge, deps, frames, session } = realStreams();
+    session.handleText(JSON.stringify({ type: "open", streamId: "ev", endpoint: "$events", payload: { args: {} } }));
+    await vi.waitFor(() => expect(frames.length).toBe(1));
+    const clientId = (frames[0] as { value: { clientId: string } }).value.clientId;
+
+    deps.events.publish({
+      source: "agent",
+      type: "interaction.requested",
+      sessionId: "s1",
+      payload: { id: "int-1", kind: "multi_select", title: "选择", prompt: "选哪几个", options: [{ id: "opt-0", label: "A" }, { id: "opt-1", label: "B", description: "第二个" }] },
+    });
+    await vi.waitFor(() => expect(frames.length).toBe(2));
+    const waterfall = (frames[1] as { value: { eventId: string; request: { questions: Array<Record<string, unknown>> } } }).value;
+    expect(waterfall.request.questions).toEqual([{
+      id: "int-1",
+      question: "选哪几个",
+      header: "选择",
+      options: [{ label: "A" }, { label: "B", description: "第二个" }],
+      multiSelect: true,
+    }]);
+
+    const resolved = await bridge.resolveResult({
+      clientId,
+      eventId: waterfall.eventId,
+      outcome: { kind: "result", value: { answers: [{ id: "int-1", selected: ["A", "B"], custom: "再加一个" }] } },
+    });
+    expect(resolved).toEqual({ value: {} });
+    // owc 契约：select 类交互收「选项 label 数组 + other:<自定义文本>」，不能丢 custom/多项
+    await vi.waitFor(() => expect(deps.respondInteraction).toHaveBeenCalledWith("s1", "int-1", ["A", "B", "other:再加一个"]));
+  });
+
+  it("$events 提问回路：多答案按问题 id 归位，多余答案不静默接受（记日志）", async () => {
+    const deps = wireDeps();
+    const warnings: string[] = [];
+    deps.logger = { warn: (message: string) => warnings.push(message) };
+    const bridge = new DshEventBridge(deps);
+    const streams = buildStreamHandlers(deps, bridge);
+    const { frames, sink } = channel();
+    const session = new DshMuxSession(sink, (endpoint) => streams.get(endpoint));
+    session.handleText(JSON.stringify({ type: "open", streamId: "ev", endpoint: "$events", payload: { args: {} } }));
+    await vi.waitFor(() => expect(frames.length).toBe(1));
+    const clientId = (frames[0] as { value: { clientId: string } }).value.clientId;
+
+    deps.events.publish({ source: "agent", type: "interaction.requested", sessionId: "s1", payload: { id: "int-2", kind: "single_select", prompt: "选一个", options: [{ id: "opt-0", label: "A" }] } });
+    await vi.waitFor(() => expect(frames.length).toBe(2));
+    const waterfall = (frames[1] as { value: { eventId: string } }).value;
+    await bridge.resolveResult({
+      clientId,
+      eventId: waterfall.eventId,
+      // 第二条答案不对应任何 owc 交互（我们只问了一题）
+      outcome: { kind: "result", value: { answers: [{ id: "int-other", selected: ["Z"] }, { id: "int-2", selected: ["A"] }] } },
+    });
+    await vi.waitFor(() => expect(deps.respondInteraction).toHaveBeenCalledWith("s1", "int-2", ["A"]));
+    expect(warnings.some((line) => line.includes("多余答案"))).toBe(true);
+  });
+
+  it("$events 提问回路：confirm / text / plan_approval 各按 owc 契约映射", async () => {
+    const cases: Array<{ kind: string; answers: Array<Record<string, unknown>>; expected: unknown }> = [
+      { kind: "confirm", answers: [{ selected: [], custom: "是" }], expected: true },
+      { kind: "confirm", answers: [{ selected: [], custom: "no" }], expected: false },
+      { kind: "text", answers: [{ selected: [], custom: "随便说说" }], expected: "随便说说" },
+      { kind: "plan_approval", answers: [{ selected: [], custom: "approve" }], expected: { decision: "approve" } },
+      { kind: "plan_approval", answers: [{ selected: ["不要这么做"] }], expected: { decision: "reject", feedback: "不要这么做" } },
+    ];
+    for (const [index, entry] of cases.entries()) {
+      const deps = wireDeps();
+      const bridge = new DshEventBridge(deps);
+      const streams = buildStreamHandlers(deps, bridge);
+      const { frames, sink } = channel();
+      const session = new DshMuxSession(sink, (endpoint) => streams.get(endpoint));
+      session.handleText(JSON.stringify({ type: "open", streamId: "ev", endpoint: "$events", payload: { args: {} } }));
+      await vi.waitFor(() => expect(frames.length).toBe(1));
+      const clientId = (frames[0] as { value: { clientId: string } }).value.clientId;
+      const requestId = `int-${index}`;
+      deps.events.publish({ source: "agent", type: "interaction.requested", sessionId: "s1", payload: { id: requestId, kind: entry.kind, prompt: "问" } });
+      await vi.waitFor(() => expect(frames.length).toBe(2));
+      const waterfall = (frames[1] as { value: { eventId: string } }).value;
+      await bridge.resolveResult({ clientId, eventId: waterfall.eventId, outcome: { kind: "result", value: { answers: entry.answers } } });
+      await vi.waitFor(() => expect(deps.respondInteraction).toHaveBeenCalledWith("s1", requestId, entry.expected));
+    }
   });
 });
 

@@ -57,6 +57,32 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+/**
+ * dsh 答案里的肯定语义（confirm / plan_approval 用）。
+ *
+ * dsh 的 `user-questions/request` 对没有 options 的提问只回自由文本（custom），无法表达强类型布尔，
+ * 因此这里按一组显式词表判定「肯定」；不匹配一律按否定处理（批准类判定绝不因畸形响应放行）。
+ */
+const AFFIRMATIVE_ANSWERS = new Set([
+  "y", "yes", "true", "ok", "okay", "approve", "approved", "confirm", "confirmed", "allow", "allowed", "accept", "1",
+  "是", "好", "好的", "确认", "同意", "允许", "批准", "继续", "可以",
+]);
+
+/** dsh 单个问题答案 → owc `respondInteraction` 的 answer（按交互 kind 判别式，见 settleInteraction 注释）。 */
+function toOwcInteractionAnswer(kind: string, answer: Record<string, unknown>): unknown {
+  const selected = Array.isArray(answer.selected) ? answer.selected.filter((item): item is string => typeof item === "string") : [];
+  const custom = typeof answer.custom === "string" ? answer.custom.trim() : "";
+  const affirmative = AFFIRMATIVE_ANSWERS.has((custom !== "" ? custom : selected.join(" ")).trim().toLowerCase());
+  if (kind === "confirm") return affirmative;
+  if (kind === "plan_approval") {
+    if (affirmative) return { decision: "approve" };
+    return { decision: "reject", feedback: custom !== "" ? custom : selected.join(", ") };
+  }
+  if (kind === "text") return custom !== "" ? custom : selected.join("\n");
+  // single_select / multi_select：owc 收选项 label 数组；自定义答案用上游的 other:<文本> 约定传递
+  return [...selected, ...(custom === "" ? [] : [`other:${custom}`])];
+}
+
 /** unary 端点表（未列入的端点由 server 回 `gateway/method-unavailable`）。 */
 export function buildUnaryHandlers(deps: DshWireDeps): Map<string, DshUnaryHandler> {
   const handlers = new Map<string, DshUnaryHandler>();
@@ -186,8 +212,10 @@ export class DshEventBridge {
         const payload = asRecord(event.payload);
         const requestId = typeof payload.id === "string" ? payload.id : undefined;
         if (requestId === undefined) return;
+        const kind = typeof payload.kind === "string" ? payload.kind : "text";
         const options = Array.isArray(payload.options) ? payload.options : [];
         const questions = [{
+          // 问题 id 用 owc 交互 id：应答回路按该 id 找回来源交互
           id: requestId,
           question: typeof payload.prompt === "string" ? payload.prompt : "",
           ...(typeof payload.title === "string" ? { header: payload.title } : {}),
@@ -199,12 +227,12 @@ export class DshEventBridge {
                 ...(typeof record.description === "string" ? { description: record.description } : {}),
               };
             }),
-            multiSelect: payload.kind === "multi_select",
+            multiSelect: kind === "multi_select",
           }),
         }];
         const eventId = stream.request("user-questions/request", sessionId, { questions }, (outcome) => {
           this.pendingBySource.delete(this.sourceKey(sessionId, requestId));
-          void this.settleInteraction(sessionId, requestId, outcome);
+          void this.settleInteraction(sessionId, requestId, kind, outcome);
         });
         this.pendingBySource.set(this.sourceKey(sessionId, requestId), { clientId: stream.clientId, eventId });
         return;
@@ -246,15 +274,36 @@ export class DshEventBridge {
     await this.deps.respondPermission(sessionId, requestId, "deny", reason);
   }
 
-  /** 提问答案 → owc 交互应答（结构差异在翻译层收敛）。 */
-  private async settleInteraction(sessionId: string, requestId: string, outcome: DshWaterfallOutcome): Promise<void> {
+  /**
+   * 提问答案 → owc 交互应答。
+   *
+   * 两侧契约（本地核对：`agent/agent-runner.ts` 的 `normalizeAskUserAnswer` /
+   * `parsePlanApprovalDecision` + `routes/sessions-run.ts` 的 `respond` 路由）：
+   * - owc 一次 `respondInteraction(sessionId, id, answer)` 只对应**一个问题**（`ask_user` 逐题串行建交互）；
+   * - owc 的 answer 形状按交互 kind 区分：confirm→boolean、text→string、
+   *   single_select/multi_select→选项 label 数组（自定义答案是 `other:<文本>`）、plan_approval→`{decision,…}`；
+   * - dsh 侧回的是整份答案数组（每个问题一条 `{id, selected, custom?}`），按问题 id 归位。
+   *
+   * 因此这里：按 id 取回本交互对应的那一条答案，并全量映射（selected 多项与 custom 都不丢）；
+   * dsh 侧多出来的答案（问题数 > owc 交互数，理论不可达）不静默接受，如实写日志并按已知限制丢弃。
+   */
+  private async settleInteraction(sessionId: string, requestId: string, kind: string, outcome: DshWaterfallOutcome): Promise<void> {
     if (outcome.kind !== "result") return;
     const answers = asRecord(asRecord(outcome.value)).answers;
     if (!Array.isArray(answers)) return;
-    const first = asRecord(answers[0]);
-    const selected = Array.isArray(first.selected) ? first.selected.filter((entry): entry is string => typeof entry === "string") : [];
-    const custom = typeof first.custom === "string" ? first.custom : undefined;
-    await this.deps.respondInteraction(sessionId, requestId, { selected, ...(custom === undefined ? {} : { custom }) });
+    const entries = answers.map(asRecord);
+    // 归位：问题 id 即 owc 交互 id；只有一条答案时无条件接受（兼容客户端省略 id 的形态）
+    const entry = entries.find((candidate) => candidate.id === requestId) ?? (entries.length === 1 ? entries[0] : undefined);
+    if (entry === undefined) {
+      this.deps.logger.warn(`dsh 提问应答无法归位（requestId=${requestId}，answers=${entries.length} 条）：已忽略`);
+      return;
+    }
+    const dropped = entries.length - 1;
+    if (dropped > 0) {
+      // owc 一个交互只接受一个答案：多出来的答案无处落地，如实记录而不是假装已接受
+      this.deps.logger.warn(`dsh 提问应答含 ${dropped} 条多余答案（requestId=${requestId}）：owc 单交互仅接受一个答案，已按问题 id 取一条`);
+    }
+    await this.deps.respondInteraction(sessionId, requestId, toOwcInteractionAnswer(kind, entry));
   }
 
   private sourceKey(sessionId: string, requestId: string): string {
@@ -273,18 +322,15 @@ export function buildStreamHandlers(deps: DshWireDeps, bridge: DshEventBridge): 
   const handlers = new Map<string, DshMuxEndpointHandler>();
   handlers.set(DSH_EVENTS_STREAM, (handle) => bridge.open(handle));
   handlers.set("session/control", async (handle) => {
-    const sessionId = typeof handle.args.sessionId === "string" ? handle.args.sessionId : undefined;
-    if (sessionId === undefined) {
-      handle.fail(wireError("session/arguments-invalid", "args.sessionId 缺失"));
-      return;
-    }
-    const baseline = await projectSessionControlBaseline(deps.projection, sessionId);
+    // 该端点协议上无参数（vendor 描述符 parameters: []，客户端 open 帧 payload 恒为 {args:{}}）：
+    // 基线是 Host 级的（全部会话的投影），绝不因缺 args.sessionId 而 fail
+    const baseline = await projectSessionControlBaseline(deps.projection);
     if ("error" in baseline) {
       handle.fail(baseline.error);
       return;
     }
     handle.send(baseline.value);
-    // 增量（queue/jobs 变化）v1 不发：dsh UI 侧以 follow 的会话事件为准，见 docs
+    // 增量（jobs / projection 帧）v1 不发：dsh UI 侧以 follow 的会话事件为准，见 docs
   });
   handlers.set("session/follow", async (handle) => {
     const address = asRecord(asRecord(handle.args.request).address);

@@ -1,4 +1,5 @@
-/** dsh 兼容模式运行期装配单测（M4 步骤 16）：启停、热切换、vendor 缺失降级。 */
+/** dsh 兼容模式运行期装配单测（M4 步骤 16）：启停、热切换、vendor 缺失降级、端口占用降级。 */
+import net from "node:net";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -191,6 +192,62 @@ describe("dsh 兼容模式运行期", () => {
     expect(runtime.listening).toBe(true);
     await runtime.close();
     expect(runtime.listening).toBe(false);
+    await runtime.sync();
+    expect(runtime.listening).toBe(true);
+  });
+
+  it("D12：session/create 补发 session.created（与 REST 创建路径同一可见性链路）", async () => {
+    const vendor = await fakeVendor();
+    const published: Array<{ source: string; type: string; sessionId?: string; payload: unknown }> = [];
+    const created = {
+      id: "new-session",
+      cwd: "/tmp",
+      provider: "p",
+      model: "m",
+      title: "新会话",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const runtime = makeRuntime({
+      vendor,
+      enabled: () => true,
+      accessToken: "t".repeat(32),
+      sessions: { create: vi.fn(async () => created), getMeta: async () => undefined, list: async () => [] } as unknown as SessionStore,
+      agent: { isRunning: () => false } as unknown as AgentRunner,
+      events: { publish: (event: { source: string; type: string; sessionId?: string; payload: unknown }) => { published.push(event); } } as unknown as EventBus,
+    });
+    await runtime.sync();
+    expect(runtime.listening).toBe(true);
+    const response = await fetch(`http://${runtime.address}/api/session/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: `owc_access_token=${"t".repeat(32)}` },
+      body: JSON.stringify({ type: "client-request", rpcId: "r1", method: "session/create", payload: { args: { request: { cwd: "/tmp" } } } }),
+    });
+    const envelope = await response.json() as { result: { ok: boolean; value?: unknown } };
+    expect(envelope.result.ok).toBe(true);
+    expect(envelope.result.value).toEqual({ sessionId: "new-session" });
+    // 不补发该事件时 dsh 侧边栏与主工作台都要等刷新才看到新会话
+    expect(published).toEqual([{ source: "session", type: "session.created", sessionId: "new-session", payload: created }]);
+  });
+
+  it("D6：端口被占用时 sync 抛错（启动路径必须 catch），不残留半启动状态且端口腾出后可重试", async () => {
+    const vendor = await fakeVendor();
+    const warnings: string[] = [];
+    // 先占住一个端口（模拟 dshPort 与其它进程冲突）
+    const blocker = net.createServer();
+    const occupied = await new Promise<number>((resolve) => {
+      blocker.listen(0, "127.0.0.1", () => resolve((blocker.address() as { port: number }).port));
+    });
+    let port = occupied;
+    const runtime = makeRuntime({ vendor, enabled: () => true, port: () => port, warnings });
+    await expect(runtime.sync()).rejects.toThrow();
+    expect(runtime.listening).toBe(false);
+    expect(runtime.address).toBeUndefined();
+    // 原因如实记录（主服务继续启动，日志里能看到为什么没起）
+    expect(warnings.join("\n")).toContain(`127.0.0.1:${occupied} 监听失败`);
+
+    await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    port = 0; // 端口腾出后（或换了端口）下一次 sync 能重试成功
     await runtime.sync();
     expect(runtime.listening).toBe(true);
   });

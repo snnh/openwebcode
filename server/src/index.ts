@@ -377,7 +377,13 @@ events.on("event", (event) => {
     void extensions.syncDsh(settings.effective().dshCompat.enabled).catch((error: unknown) => process.stderr.write(`[dsh] 插件同步失败：${error instanceof Error ? error.message : String(error)}\n`));
   }
 });
-await dshCompat.sync();
+// dsh 兼容模式是可选层：dshPort 被占（EADDRINUSE）等失败只记录原因并继续启动 owc 主服务，
+// 与下面设置热切换路径的 .catch 行为一致（主服务绝不因该层失败而拒启）
+try {
+  await dshCompat.sync();
+} catch (error) {
+  process.stderr.write(`[dsh] 启动失败（owc 主服务继续启动）：${error instanceof Error ? error.message : String(error)}\n`);
+}
 // dsh 插件（可信代码，≈ yolo）只在模式开启时下发加载计划；默认关闭时一个都不加载
 if (settings.effective().dshCompat.enabled) {
   await extensions.syncDsh(true).catch((error: unknown) => process.stderr.write(`[dsh] 插件同步失败：${error instanceof Error ? error.message : String(error)}\n`));

@@ -351,9 +351,28 @@ export interface DshServicesOptions {
   audit?: (message: string) => void;
 }
 
+/**
+ * 单个插件专属的服务缝视图（llm / sessions / storage）。
+ *
+ * 必须是「按插件绑定」的独立实例：宿主能力调用的来源 id 决定 server 侧的数据隔离与审计
+ * （storage 落 `<dataDir>/extensions-data/dsh-<插件id>/`）。若共用一个在调用时反查
+ * 「当前插件」的实例，激活窗口之外（timer 回调、工具执行、事件 handler）来源 id 会落到
+ * 第一个加载的插件，所有插件的存储目录会串在一起。
+ */
+export function pluginServiceViews(extensionId: string, call: DshHostCall): Record<string, unknown> {
+  const resolveExtensionId = (): string => extensionId;
+  return {
+    llm: createLlmService(resolveExtensionId, call),
+    sessions: createSessionsService(resolveExtensionId, call),
+    storage: createStorageService(resolveExtensionId, call),
+  };
+}
+
 /** 在 root context 上 provide M3 服务缝（root fiber；插件卸载不移除，宿主关闭时随 root 回收）。 */
 export function provideDshServices(root: Context, resolveExtensionId: () => string, options: DshServicesOptions): void {
   const { call } = options;
+  // root 上的实现只用于「服务存在性」判定（fiber inject 门禁）与激活窗口外的兜底解析；
+  // 插件 ctx 在激活期被绑定到自己的 pluginServiceViews（见 host-runtime 的 bindPluginContext）。
   root.provide("llm", createLlmService(resolveExtensionId, call));
   root.provide("sessions", createSessionsService(resolveExtensionId, call));
   root.provide("storage", createStorageService(resolveExtensionId, call));
