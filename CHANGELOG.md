@@ -23,6 +23,7 @@
 
 - **修复 dsh 兼容模式开启时的启动崩溃**：dsh 运行期早于访问令牌解析构造，`const` 的暂时性死区直接让进程以 `ReferenceError` 退出（且即便不崩，端口也会拿到空令牌退化成免鉴权）。现在运行期与首次启停排在令牌解析之后，并加守卫：非回环监听且拿不到令牌时如实拒绝启动该端口，不裸开鉴权。
 - **修复 dsh 插件加载计划从未下发**：此前加载计划只在测试路径触发，真实进程不会加载任何 dsh 插件；现在启动按模式开关下发，开关热切换即时生效，宿主启动期间的并发同步会先等宿主初始化落地（避免加载计划被清空）。
+- **修复 dsh SPA 因「未挂载插件」整体起不来**：vendor 的插件 roster 此前按依赖闭包全量装载，把只作为依赖存在、官方并未挂载的包（`dsh-client-ui-directory-picker-{browse,native}`）也当插件激活——browse 在启动自检里 `entry did not activate: failed`，dsh UI 直接落到「Failed to load plugins」错误页。现在按官方挂载规则筛选（`cordis.patch.yml` 名单 ∪ 被其它插件 `inject`/`external` 引用的依赖行），插件数 60 → 58，并加回归用例（inject 目标必须在图中或由 shell 静态播种、未挂载包不得进图）。
 - **修复 dsh UI vendor 漏装关键插件**：roster 改按依赖闭包（`dependencies` + `peerDependencies`）推导，修掉提供 WS 连接与 `ctx.remote` 的 `@deepseek-ai/dsh-api-gateway` 等包漏装导致的 SPA 启动阻断（插件 56 → 60）；新增 boot 完整性测试守住启动级不变量（bundle 存在且自注册 id 一致、external 目标在图中、注入行覆盖每条 batch）。
 - 缓存命中率读数统一保留一位小数（会话顶栏、上下文面板、成本面板与悬浮明细口径一致）。
 - 死代码门禁恢复：knip 存量归零（server 76 → 0）；新增 max-depth 上限（server 5、web 4）阻止新增深嵌套。

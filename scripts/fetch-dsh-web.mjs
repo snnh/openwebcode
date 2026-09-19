@@ -267,32 +267,61 @@ async function main() {
   console.log(`dsh UI vendor：version=${options.version} out=${display(out)}`);
 
   const cacheDirectory = path.join(out, ".cache");
+  // 重新生成前清空插件与许可目录：roster 变化（如某插件被移出挂载名单）时不留旧产物
+  for (const sub of ["plugins", "licenses"]) {
+    await rm(path.join(out, sub), { recursive: true, force: true });
+  }
   const rosterEntries = await fetchTarball(options.registry, ROSTER_PACKAGE, options.version, cacheDirectory);
   const patchRoster = parseRoster(rosterEntries.get("package/cordis.patch.yml")?.toString("utf8") ?? "");
   const closure = await resolveRoster(options.registry, ROSTER_PACKAGE, options.version, cacheDirectory);
   console.log(`roster：依赖闭包 ${closure.versions.size} 个包（其中 ${closure.webPlugins.length} 个声明 dsh.client.platform=web）+ patch.yml ${patchRoster.length} 个补充候选`);
 
-  // 插件候选 = 闭包内 web 插件 ∪ patch.yml 名单（后者可能含闭包外的包）
+  // 插件候选 = 闭包内声明 dsh.client.platform=web 的包（+ 模块系统本身）
   const webPluginSet = new Set(closure.webPlugins);
-  const candidates = [...new Set([...webPluginSet, ...patchRoster, MODULES_PACKAGE])]
+  const candidates = [...new Set([...webPluginSet, MODULES_PACKAGE])]
     .filter((name) => options.only === undefined || options.only.has(name));
-  const plugins = [];
+
+  // 第一遍：读每个候选的 `dsh.client` 声明，收集依赖引用。
+  // 依赖闭包会带上「作为依赖存在但官方并未挂载」的包（实测 @deepseek-ai/dsh-client-ui-
+  // directory-picker-{browse,native}）：把它们当插件激活会在 dsh 的启动自检里报
+  // `entry did not activate: failed`（browse 的 locale/slot 注册在未挂载前提下抛错），
+  // 进而让整个 SPA 落到错误页。挂载规则因此收敛为：
+  //   patch.yml 名单（官方挂载的插件） ∪ 被其它插件 inject/external 引用的依赖行（如 api-gateway）。
+  const parsed = new Map();
+  const referenced = new Set();
   for (const name of candidates) {
-    // 闭包内已知非 web 插件的包直接跳过（省一次 tarball 下载）
     const resolvedVersion = closure.versions.get(name);
     const known = resolvedVersion === undefined ? undefined : closure.packuments.get(name)?.versions?.[resolvedVersion];
-    if (known !== undefined && known.dsh?.client?.platform !== "web" && !webPluginSet.has(name)) continue;
+    if (known !== undefined && known.dsh?.client?.platform !== "web" && name !== MODULES_PACKAGE) continue;
     const entries = await fetchTarball(options.registry, name, resolvedVersion ?? options.version, cacheDirectory);
     const pkg = await readJson(entries, "package/package.json");
     const declaration = pkg.dsh?.client;
     if (declaration?.platform !== "web") continue;
+    parsed.set(name, { entries, pkg, declaration });
+    for (const dependency of [...stringList(declaration.inject), ...stringList(declaration.external)]) {
+      referenced.add(packageNameOf(dependency));
+    }
+  }
+  const patchSet = new Set(patchRoster);
+  const mounted = [...parsed.keys()].filter((name) => patchSet.has(name) || referenced.has(name));
+  const skipped = [...parsed.keys()].filter((name) => !mounted.includes(name));
+  console.log(`挂载规则：patch.yml 名单命中 ${mounted.filter((name) => patchSet.has(name)).length} 个，`
+    + `依赖行补入 ${mounted.filter((name) => !patchSet.has(name)).length} 个`
+    + `（${mounted.filter((name) => !patchSet.has(name)).join(", ") || "无"}）`);
+  if (skipped.length > 0) console.log(`  跳过未挂载的候选 ${skipped.length} 个：${skipped.join(", ")}`);
+
+  // 第二遍：只写挂载集合的产物（tarball 已进磁盘缓存，命中即读）
+  const plugins = [];
+  for (const name of mounted) {
+    const { entries, pkg, declaration } = parsed.get(name);
+    const entryBody = entries.get("package/lib/client.js");
     const files = [];
     for (const [member, body] of entries) {
       if (!member.startsWith("package/lib/") || member.includes("/types/") || !member.endsWith(".js")) continue;
       const relative = member.slice("package/lib/".length);
       files.push({ relative, body });
     }
-    const entry = files.find((file) => file.relative === "client.js");
+    const entry = entryBody === undefined ? undefined : { relative: "client.js", body: entryBody };
     if (entry === undefined) throw new Error(`${name} 声明了 dsh.client 但 tarball 内没有 lib/client.js`);
     const directory = path.join(out, "plugins", name);
     for (const file of files) await writeOut(path.join(directory, file.relative), file.body);
