@@ -6,11 +6,28 @@ import { BtrfsBackend } from "./btrfs.js";
 import { GitShadowSnapshots, type GitShadowOptions } from "./git-shadow.js";
 import { OverlayfsBackend, probeOverlayfsSupport, type OverlayfsCore } from "./overlayfs.js";
 import { RefsBackend, refsScriptPath } from "./refs.js";
+import type { SnapshotDiffExcludes } from "./tree-diff.js";
 import { ZfsBackend } from "./zfs.js";
 
 export interface CommandRunner {
   run(cmd: string, args: string[], options?: { timeoutMs?: number }): Promise<{ stdout: string; code: number; stderr?: string }>;
 }
+
+/** 会话上下文的快照策略（探测出来的实例必须与 constructByName 构造的实例同参数）。 */
+interface SnapshotProbeContext {
+  /** diff 排除项（relativeExcludes 的结果）：探测实例同样携带，否则首次 diff 会展示 deny/排除路径。 */
+  excludes?: SnapshotDiffExcludes;
+  /** 会话 deny 路径（绝对）：btrfs/zfs 的整卷回退据此保留当前 deny 文件。 */
+  denyPaths?: readonly string[];
+}
+
+/** 探测依赖 + 会话策略上下文（runner/platform/core 注入项与 SnapshotProbeContext 合并）。 */
+export type SnapshotProbeDeps = {
+  runner?: CommandRunner;
+  platform?: NodeJS.Platform;
+  core?: OverlayfsCore;
+  gitShadow?: GitShadowOptions;
+} & SnapshotProbeContext;
 
 /** 默认 runner：execFile 包装；非零退出/超时/命令不存在都归一为 code，不 throw。 */
 export function createExecFileRunner(): CommandRunner {
@@ -37,20 +54,20 @@ export function createExecFileRunner(): CommandRunner {
 export async function probeSnapshotBackend(
   sessionRoot: string,
   workspace: string,
-  deps: { runner?: CommandRunner; platform?: NodeJS.Platform; core?: OverlayfsCore; gitShadow?: GitShadowOptions },
+  deps: SnapshotProbeDeps,
 ): Promise<SnapshotBackend> {
   const runner = deps.runner ?? createExecFileRunner();
   const platform = deps.platform ?? process.platform;
   try {
     if (platform === "linux") {
-      const btrfs = await probeBtrfs(workspace, runner);
+      const btrfs = await probeBtrfs(workspace, runner, deps);
       if (btrfs) return btrfs;
-      const zfs = await probeZfs(sessionRoot, workspace, runner);
+      const zfs = await probeZfs(sessionRoot, workspace, runner, deps);
       if (zfs) return zfs;
       const overlay = await probeOverlayfs(sessionRoot, workspace, deps.core);
       if (overlay) return overlay;
     } else if (platform === "win32") {
-      const refs = await probeRefs(sessionRoot, workspace, runner);
+      const refs = await probeRefs(sessionRoot, workspace, runner, deps);
       if (refs) return refs;
     }
   } catch { /* 继续回落 */ }
@@ -66,16 +83,16 @@ export async function probeSnapshotBackendByName(
   name: string,
   sessionRoot: string,
   workspace: string,
-  deps: { runner?: CommandRunner; platform?: NodeJS.Platform; core?: OverlayfsCore; gitShadow?: GitShadowOptions },
+  deps: SnapshotProbeDeps,
 ): Promise<SnapshotBackend | undefined> {
   const runner = deps.runner ?? createExecFileRunner();
   const platform = deps.platform ?? process.platform;
   try {
     switch (name) {
-      case "btrfs": return platform === "linux" ? await probeBtrfs(workspace, runner) : undefined;
-      case "zfs": return platform === "linux" ? await probeZfs(sessionRoot, workspace, runner) : undefined;
+      case "btrfs": return platform === "linux" ? await probeBtrfs(workspace, runner, deps) : undefined;
+      case "zfs": return platform === "linux" ? await probeZfs(sessionRoot, workspace, runner, deps) : undefined;
       case "overlayfs": return platform === "linux" ? await probeOverlayfs(sessionRoot, workspace, deps.core) : undefined;
-      case "refs": return platform === "win32" ? await probeRefs(sessionRoot, workspace, runner) : undefined;
+      case "refs": return platform === "win32" ? await probeRefs(sessionRoot, workspace, runner, deps) : undefined;
       case "git-shadow": return new GitShadowSnapshots(sessionRoot, workspace, deps.gitShadow);
       default: return undefined;
     }
@@ -94,19 +111,21 @@ async function probeOverlayfs(sessionRoot: string, workspace: string, core: Over
   }
 }
 
-async function probeBtrfs(workspace: string, runner: CommandRunner): Promise<SnapshotBackend | undefined> {
+async function probeBtrfs(workspace: string, runner: CommandRunner, context: SnapshotProbeContext): Promise<SnapshotBackend | undefined> {
   try {
     const stat = await runner.run("stat", ["-f", "-c", "%T", workspace]);
     if (stat.code !== 0 || !stat.stdout.includes("btrfs")) return undefined;
     const show = await runner.run("btrfs", ["subvolume", "show", workspace]);
     if (show.code !== 0) return undefined;
-    return new BtrfsBackend(workspace, runner);
+    // 与 snapshots/index.ts constructByName 同一参数：探测实例也带会话 excludes/denyPaths，
+    // 否则首次 diff 会展示 deny/排除路径、首次回退会覆盖 deny 文件。
+    return new BtrfsBackend(workspace, runner, context.excludes, context.denyPaths);
   } catch {
     return undefined;
   }
 }
 
-async function probeZfs(sessionRoot: string, workspace: string, runner: CommandRunner): Promise<SnapshotBackend | undefined> {
+async function probeZfs(sessionRoot: string, workspace: string, runner: CommandRunner, context: SnapshotProbeContext): Promise<SnapshotBackend | undefined> {
   try {
     const fstype = await runner.run("findmnt", ["-n", "-o", "FSTYPE", "--target", workspace]);
     if (fstype.code !== 0 || fstype.stdout.trim() !== "zfs") return undefined;
@@ -118,13 +137,13 @@ async function probeZfs(sessionRoot: string, workspace: string, runner: CommandR
     // 数据集挂载点必须正是工作区本身（避免把父数据集误判为工作区快照对象）
     const mount = await runner.run("zfs", ["list", "-H", "-o", "mountpoint", dataset]);
     if (mount.code !== 0 || path.resolve(mount.stdout.trim()) !== path.resolve(workspace)) return undefined;
-    return new ZfsBackend(sessionRoot, workspace, dataset, runner);
+    return new ZfsBackend(sessionRoot, workspace, dataset, runner, context.excludes, context.denyPaths);
   } catch {
     return undefined;
   }
 }
 
-async function probeRefs(sessionRoot: string, workspace: string, runner: CommandRunner): Promise<SnapshotBackend | undefined> {
+async function probeRefs(sessionRoot: string, workspace: string, runner: CommandRunner, context: SnapshotProbeContext): Promise<SnapshotBackend | undefined> {
   try {
     if (!existsSync(refsScriptPath())) return undefined;
     // sessionRoot 与 workspace 必须同盘符，才可能落在同一 ReFS 卷
@@ -132,7 +151,7 @@ async function probeRefs(sessionRoot: string, workspace: string, runner: Command
     if (!drive || driveLetter(sessionRoot) !== drive) return undefined;
     const result = await runner.run("powershell", ["-NoProfile", "-Command", `(Get-Volume -DriveLetter ${drive}).FileSystem -eq 'ReFS'`]);
     if (result.code !== 0 || !result.stdout.trim().toLowerCase().startsWith("true")) return undefined;
-    return new RefsBackend(sessionRoot, workspace, runner);
+    return new RefsBackend(sessionRoot, workspace, runner, context.excludes);
   } catch {
     return undefined;
   }

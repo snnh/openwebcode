@@ -25,6 +25,7 @@ interface SnapshotBackendDeps {
  */
 export async function getSnapshotBackend(sessions: SessionStore, session: SessionMeta, deps: SnapshotBackendDeps = {}): Promise<SnapshotBackend> {
   const sessionRoot = sessions.contextRoot(session.id);
+  const denyPaths = session.sandbox?.denyPaths ?? [];
   if (session.snapshotBackend) {
     const backend = constructByName(session.snapshotBackend, session, sessionRoot, createExecFileRunner(), deps.core);
     if (backend) return backend;
@@ -34,6 +35,10 @@ export async function getSnapshotBackend(sessions: SessionStore, session: Sessio
     ...(deps.core ? { core: deps.core } : {}),
     ...(deps.platform ? { platform: deps.platform } : {}),
     gitShadow: gitShadowOptions(session, deps.core),
+    // 探测实例与 constructByName 同参数：首次 checkpoint/diff/restore 直接用它，
+    // 缺 excludes/denyPaths 会让首次 diff 展示 deny 路径、首次回退覆盖 deny 文件
+    excludes: relativeExcludes(session.cwd, denyPaths, session.contextExcludes ?? []),
+    denyPaths,
   });
   // overlayfs 的正确语义要求创建期挂接（cwd=merged 托管视图）；存量直接会话懒探测到
   // overlayfs 时无法安全切换 cwd，回落 git-shadow 保持检查点语义正确
@@ -51,11 +56,12 @@ function constructByName(stored: string, session: SessionMeta, sessionRoot: stri
   const name = separator === -1 ? stored : stored.slice(0, separator);
   const argument = separator === -1 ? "" : stored.slice(separator + 1);
   const workspace = session.cwd;
-  const excludes = relativeExcludes(workspace, session.sandbox?.denyPaths ?? [], session.contextExcludes ?? []);
+  const denyPaths = session.sandbox?.denyPaths ?? [];
+  const excludes = relativeExcludes(workspace, denyPaths, session.contextExcludes ?? []);
   switch (name) {
     case "git-shadow": return new GitShadowSnapshots(sessionRoot, workspace, gitShadowOptions(session, core));
-    case "btrfs": return new BtrfsBackend(workspace, runner, excludes);
-    case "zfs": return argument ? new ZfsBackend(sessionRoot, workspace, argument, runner, excludes) : undefined;
+    case "btrfs": return new BtrfsBackend(workspace, runner, excludes, denyPaths);
+    case "zfs": return argument ? new ZfsBackend(sessionRoot, workspace, argument, runner, excludes, denyPaths) : undefined;
     case "refs": return new RefsBackend(sessionRoot, workspace, runner, excludes);
     // 托管工作区（vhdx-chain/qcow2-chain）：创建时预设，免探测；路径按 sessions store 布局推导
     // （sessionRoot = <dataDir>/sessions/<id>，挂载点即会话 cwd）

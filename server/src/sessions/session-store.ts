@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile, appendFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, readdir, rm, stat, truncate, writeFile, appendFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
@@ -8,7 +8,7 @@ import { monotonicTimestamp } from "../monotonic-clock.js";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import { activePathMessages } from "./session-tree.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
-import { readMessagesTail, readMessagesBefore, checkRecoveryTail, DEFAULT_PAGE_SIZE } from "./message-reader.js";
+import { readMessagesTail, readMessagesBefore, checkRecoveryTail, invalidateMessageIndex, readLastRecordRange, DEFAULT_PAGE_SIZE } from "./message-reader.js";
 import { deriveTitleFromMessages, serializeByKey, titleFromContent } from "./store-utils.js";
 import type { BindLinkSpec, ChatMessage, FallbackModelEntry, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SandboxNetwork, SessionDetail, SessionMeta } from "./types.js";
 
@@ -307,6 +307,9 @@ export class SessionStore {
       ...(lineage?.turnId ? { turnId: lineage.turnId } : {}),
     };
     const appendedLine = `${JSON.stringify(message)}\n`;
+    // 尾行修复（B8）：必须发生在 append 之前——把一个损坏的尾记录留在中间后，
+    // 之后每次读取都升格 needs_repair 且无法再自愈。
+    await this.repairCorruptTail(sessionId);
     await appendFile(this.messagesPath(sessionId), appendedLine, "utf8");
     await this.noteAppendedMessage(sessionId, message, Buffer.byteLength(appendedLine, "utf8"));
     meta.updatedAt = now;
@@ -410,16 +413,33 @@ export class SessionStore {
     return deriveTitleFromMessages(messages, "New session");
   }
 
+  /**
+   * 检查点回退路径：把 messages.jsonl 截断到前 count 条消息（保留磁盘上已有的完整记录）。
+   *
+   * 三处纪律：
+   * - 走 appendMessage / transformMessages 同一 per-session 串行链：截断的「读整表 →
+   *   原子写回」与并发追加必须互斥，否则并发追加的消息会整条丢失（写回覆盖）；
+   * - 原子写（writeUtf8Atomically）：与全仓库其他写路径一致，崩溃不留半文件；
+   * - 截断后把 activeLeafId 重置为截断后最后一条消息的 id（空则删除）：旧叶子指向已删
+   *   消息时，后续 appendMessage 会以悬空 parentId 落盘，activePathMessages 回溯到断点
+   *   即止，模型上下文只剩新消息（历史还在盘上却不可达）。
+   */
   async truncateMessages(id: string, count: number): Promise<void> {
     if (!Number.isSafeInteger(count) || count < 0) throw new Error("Message count must be a non-negative integer");
-    const detail = await this.get(id);
-    if (!detail) throw new Error("Session not found");
-    const messages = detail.messages.slice(0, count);
-    await writeFile(this.messagesPath(id), messages.map((message) => JSON.stringify(message)).join("\n") + (messages.length ? "\n" : ""), "utf8");
-    this.messagesCache.delete(id);
-    const meta = await this.readMeta(id);
-    meta.updatedAt = monotonicTimestamp();
-    await this.writeMeta(meta);
+    return serializeByKey(this.appendChains, id, async () => {
+      const detail = await this.get(id);
+      if (!detail) throw new Error("Session not found");
+      const messages = detail.messages.slice(0, count);
+      await writeUtf8Atomically(this.messagesPath(id), serializeMessagesJsonl(messages), { mode: 0o600 });
+      this.messagesCache.delete(id);
+      invalidateMessageIndex(this.messagesPath(id));
+      const meta = await this.readMeta(id);
+      const leafId = messages.at(-1)?.id;
+      if (leafId) meta.activeLeafId = leafId;
+      else delete meta.activeLeafId;
+      meta.updatedAt = monotonicTimestamp();
+      await this.writeMeta(meta);
+    });
   }
 
   /**
@@ -444,10 +464,12 @@ export class SessionStore {
       await this.pruneUpgradeBackups(id);
       await writeUtf8Atomically(
         this.messagesPath(id),
-        result.messages.map((message) => JSON.stringify(message)).join("\n") + "\n",
+        serializeMessagesJsonl(result.messages),
         { mode: 0o600 },
       );
       this.messagesCache.delete(id);
+      // 格式升级改写字节偏移：message-reader 的分页索引必须主动失效（同尺寸改写时指纹可能不变）
+      invalidateMessageIndex(this.messagesPath(id));
       const meta = await this.readMeta(id);
       meta.updatedAt = monotonicTimestamp();
       await this.writeMeta(meta);
@@ -555,6 +577,7 @@ export class SessionStore {
 
   async delete(id: string): Promise<boolean> {
     this.messagesCache.delete(id);
+    invalidateMessageIndex(this.messagesPath(id));
     await this.forgetSessionCwd(id);
     try {
       await rm(this.sessionPath(id), { recursive: true, force: false });
@@ -614,11 +637,12 @@ export class SessionStore {
     await this.writeMeta(meta);
     await writeFile(
       this.messagesPath(id),
-      parsed.messages.map((message) => JSON.stringify(message)).join("\n") + (parsed.messages.length ? "\n" : ""),
+      serializeMessagesJsonl(parsed.messages),
       { encoding: "utf8", mode: 0o600 },
     );
     await chmodPrivate(this.messagesPath(id), 0o600);
     this.messagesCache.delete(id);
+    invalidateMessageIndex(this.messagesPath(id));
     this.noteSessionCwd(meta.cwd);
     return meta;
   }
@@ -807,6 +831,56 @@ export class SessionStore {
     }
   }
 
+  /**
+   * 追加前的尾行修复：messages.jsonl 只允许有一条「可能是损坏的」尾记录。
+   * 若把新记录追加到一条无法解析的损坏尾记录之后，坏行就变成中间行——之后每次读取
+   * 都升格 needs_repair 且永久残留（再没有写入点能自愈它）。
+   *
+   * 这里在写入前把无法解析的尾部字节原子截掉：截掉的是崩溃/中断留下的残缺字节，
+   * 属修复而非篡改历史（append-only 语义约束的是已落盘的完整记录；合法回退仍走
+   * truncateMessages）。判定来源两处：
+   * - 内存缓存已标记 recovered（本进程读到过损坏尾行）；
+   * - 文件末字节不是换行：被中断的 append 必然停在行中（\n 是记录的最后一个字节），
+   *   此时再读一次末记录分类：无法解析 → 截掉；可解析但缺终止换行（崩在写 \n 之前）
+   *   → 只补一个换行，不丢内容（否则新消息会与上一条记录拼成一行）。
+   * 正常文件总是以 \n 结尾，该分支只多一次 stat + 1 字节读，不扫尾窗口。
+   */
+  private async repairCorruptTail(id: string): Promise<void> {
+    const filePath = this.messagesPath(id);
+    const cachedCorrupt = this.messagesCache.get(id)?.recovery?.state === "recovered";
+    if (!cachedCorrupt) {
+      const info = await stat(filePath).catch(() => undefined);
+      if (!info || info.size === 0) return;
+      const handle = await open(filePath, "r");
+      try {
+        const lastByte = Buffer.allocUnsafe(1);
+        const { bytesRead } = await handle.read(lastByte, 0, 1, info.size - 1);
+        if (bytesRead === 1 && lastByte[0] === 0x0a) return;
+      } finally {
+        await handle.close();
+      }
+    }
+    // 读取失败（文件缺失/并发变动）按「无损坏」处理：不阻断追加，保持既有行为
+    const last = await readLastRecordRange(filePath).catch(() => undefined);
+    if (!last) return;
+    let parseable = true;
+    try {
+      JSON.parse(last.text);
+    } catch {
+      parseable = false;
+    }
+    if (parseable) {
+      // 记录完整、只是缺终止换行：补一个换行即可（不算改写历史）
+      if (!last.terminated) await appendFile(filePath, "\n", "utf8");
+      return;
+    }
+    // 损坏尾记录：截到该记录起始偏移（字节 shrink，单次 truncate 系统调用；
+    // 不重写整表，避免大历史全量搬运）
+    await truncate(filePath, last.start);
+    this.messagesCache.delete(id);
+    invalidateMessageIndex(filePath);
+  }
+
   private async writeMeta(meta: SessionMeta): Promise<void> {
     const target = this.metaPath(meta.id);
     // 紧凑序列化：meta.json 只被机器读取；读取侧 JSON.parse 兼容存量美化格式。
@@ -816,4 +890,9 @@ export class SessionStore {
     // 若只靠指纹自动失配会误命中陈旧缓存（activeLeafId 落后）——写入侧必须主动删除。
     this.metaCache.delete(meta.id);
   }
+}
+
+/** 消息整表序列化为 JSONL 文本（每条一行，含终止换行；空表为空串）。整表重写的唯一序列化入口。 */
+function serializeMessagesJsonl(messages: readonly ChatMessage[]): string {
+  return messages.map((message) => JSON.stringify(message)).join("\n") + (messages.length ? "\n" : "");
 }

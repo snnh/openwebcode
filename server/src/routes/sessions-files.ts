@@ -6,8 +6,9 @@ import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import { ContextManager } from "../context/context-manager.js";
 import { SubAgentLaunchError } from "../agent/agent-runner.js";
 import { errorMessage } from "../error-utils.js";
+import { acquireSnapshotSessionLock } from "../snapshots/session-lock.js";
 import { RAW_PREVIEW_MIME } from "./route-context.js";
-import type { RouteContext } from "./route-context.js";
+import type { ManagedSession, RouteContext } from "./route-context.js";
 
 export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContext): void {
   const { dependencies } = ctx;
@@ -16,8 +17,36 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
     configuredSessions, restoringSessions,
     acquireManagedWorkspaceUse, acquireManagedWorkspaceExclusive,
     resolveSnapshotBackend, isShellPending, hasRunningBackgroundTask,
-    managedSyncingSessions, managedCheckpointingSessions,
+    managedSyncingSessions, managedCheckpointingSessions, isManagedSession,
   } = ctx;
+
+  /**
+   * 检查点写操作的互斥获取：托管闸门（保持托管语义与 409 文案）+ 全后端 per-session
+   * 快照锁（B2：非托管会话的托管闸门是 no-op，git-shadow 等后端并发会被 git index.lock
+   * 与 checkpoints.json 读改写丢条目）。两处获取之间无 await，不会漏出竞态缝隙；
+   * 先取托管闸门，托管会话在「工作区被占用/已在检查点」时仍返回原有 409 文案。
+   */
+  const acquireCheckpointExclusive = (session: ManagedSession): (() => void) | undefined => {
+    const releaseWorkspace = acquireManagedWorkspaceExclusive(session, "checkpoint");
+    if (!releaseWorkspace) return undefined;
+    const releaseSnapshot = acquireSnapshotSessionLock(session.id);
+    if (!releaseSnapshot) {
+      releaseWorkspace();
+      return undefined;
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      releaseSnapshot();
+      releaseWorkspace();
+    };
+  };
+
+  /** 检查点写操作被互斥挡下时的 409 文案：托管会话保持原文案，非托管会话如实描述。 */
+  const checkpointConflictMessage = (session: ManagedSession): string => isManagedSession(session)
+    ? "Managed workspace is in use or its checkpoint is already in progress"
+    : "A checkpoint operation is already in progress for this session";
 
 
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/sessions/:id/files", async (request, reply) => {
@@ -153,8 +182,8 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
     if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
     if (hasRunningBackgroundTask(session.id)) return reply.code(409).send({ error: "A background task is still using this session" });
     const label = request.body?.label ?? "Manual checkpoint"; if (typeof label !== "string" || !label.trim()) return reply.code(400).send({ error: "label must be a non-empty string" });
-    const releaseWorkspace = acquireManagedWorkspaceExclusive(session, "checkpoint");
-    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is already in progress" });
+    const releaseWorkspace = acquireCheckpointExclusive(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: checkpointConflictMessage(session) });
     try {
       const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
       const backend = await resolveSnapshotBackend(session);
@@ -174,10 +203,10 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
     if (request.body?.confirm !== true) return reply.code(400).send({ error: "confirm must be true" });
     // 回退全程持有互斥标记：上方 guard 与此处之间无 await，新 run 无法从缝隙起跑
     restoringSessions.add(session.id);
-    const releaseWorkspace = acquireManagedWorkspaceExclusive(session, "checkpoint");
+    const releaseWorkspace = acquireCheckpointExclusive(session);
     if (!releaseWorkspace) {
       restoringSessions.delete(session.id);
-      return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is already in progress" });
+      return reply.code(409).send({ error: checkpointConflictMessage(session) });
     }
     try {
       const backend = await resolveSnapshotBackend(session);
@@ -202,8 +231,8 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
     if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
     if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
     if (hasRunningBackgroundTask(session.id)) return reply.code(409).send({ error: "A background task is still using this session" });
-    const releaseWorkspace = acquireManagedWorkspaceExclusive(session, "checkpoint");
-    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is already in progress" });
+    const releaseWorkspace = acquireCheckpointExclusive(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: checkpointConflictMessage(session) });
     try {
       const backend = await resolveSnapshotBackend(session);
       await backend.delete(request.params.checkpointId);

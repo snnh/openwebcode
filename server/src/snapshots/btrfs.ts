@@ -1,5 +1,7 @@
-import { mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, rename } from "node:fs/promises";
 import path from "node:path";
+import { errorMessage } from "../error-utils.js";
 import {
   newSnapshotId,
   readCheckpoints,
@@ -10,6 +12,7 @@ import {
   type SnapshotBackend,
   type SnapshotCapabilityInfo,
 } from "./backend.js";
+import { captureDenyFiles, restoreDenyFiles } from "./deny-preserve.js";
 import type { CommandRunner } from "./probe.js";
 import { diffTrees, type SnapshotDiffExcludes } from "./tree-diff.js";
 
@@ -19,7 +22,13 @@ export class BtrfsBackend implements SnapshotBackend {
   private readonly snapRoot: string;
   private readonly metadataPath: string;
 
-  constructor(private readonly workspace: string, private readonly runner: CommandRunner, private readonly excludes: SnapshotDiffExcludes = { excludePrefixes: [], excludeGlobs: [] }) {
+  constructor(
+    private readonly workspace: string,
+    private readonly runner: CommandRunner,
+    private readonly excludes: SnapshotDiffExcludes = { excludePrefixes: [], excludeGlobs: [] },
+    /** 会话 deny 路径（绝对）：整卷回退不覆盖/不删除这些文件，见 restore。 */
+    private readonly denyPaths: readonly string[] = [],
+  ) {
     // 快照必须与工作区同卷，且不能放在工作区内部（会递归进快照）
     this.snapRoot = path.join(path.dirname(workspace), ".owc-snapshots", path.basename(workspace));
     this.metadataPath = path.join(this.snapRoot, "checkpoints.json");
@@ -59,12 +68,40 @@ export class BtrfsBackend implements SnapshotBackend {
     return truncateLines(result.stdout);
   }
 
+  /**
+   * 回退 = 用只读快照重建工作区子卷（原实现「先删工作区再重建」在重建失败时数据全丢）。
+   * 可回滚流程：
+   * 1) 先验证快照源本身可用（btrfs subvolume show）——快照损坏/被删时在动工作区之前就失败；
+   * 2) 暂存当前 deny 文件（整卷替换不得覆盖/删除 .env 等）；
+   * 3) 旧工作区子卷改名到同父目录的临时名（btrfs 的 rename 约束是「同父目录/同一父子卷」，
+   *    这里两个路径同父，故可行；rename 是元数据操作，不搬数据）；
+   * 4) 从只读快照重建到工作区路径；失败则把旧子卷改名回原位（工作区数据仍在）后抛错；
+   * 5) 成功后删除旧子卷（best-effort：新工作区已就位，删不掉只是多留一份旧树，记 stderr）。
+   */
   async restore(id: string): Promise<void> {
     validateSnapshotId(id);
     if (!(await this.list()).some((item) => item.id === id)) throw new Error("Checkpoint not found");
-    // 先删工作区再从只读快照建可写快照；删除失败则中止，不做第二步
-    await this.must("delete", ["subvolume", "delete", this.workspace]);
-    await this.must("snapshot", ["subvolume", "snapshot", path.join(this.snapRoot, id), this.workspace]);
+    const snapshotPath = path.join(this.snapRoot, id);
+    await this.must("subvolume show", ["subvolume", "show", snapshotPath]);
+    const preserved = await captureDenyFiles(this.workspace, this.denyPaths);
+    const previous = path.join(path.dirname(this.workspace), `${path.basename(this.workspace)}.owc-restore-${randomUUID()}`);
+    await rename(this.workspace, previous);
+    try {
+      await this.must("snapshot", ["subvolume", "snapshot", snapshotPath, this.workspace]);
+    } catch (error) {
+      try {
+        await rename(previous, this.workspace);
+      } catch (rollbackError) {
+        throw new Error(`btrfs restore failed (${errorMessage(error)}) and the previous workspace is left at ${previous} (rollback failed: ${errorMessage(rollbackError)})`);
+      }
+      throw error;
+    }
+    try {
+      await this.must("subvolume delete", ["subvolume", "delete", previous]);
+    } catch (error) {
+      process.stderr.write(`[snapshots] btrfs restore succeeded but the previous workspace could not be deleted at ${previous}: ${errorMessage(error)}\n`);
+    }
+    await restoreDenyFiles(preserved);
   }
 
   async delete(id: string): Promise<void> {
