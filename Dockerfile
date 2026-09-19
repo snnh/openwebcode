@@ -40,6 +40,11 @@ RUN npm run build --prefix server
 COPY web web
 RUN npm run build --prefix web
 
+# dsh UI vendor：抓钉版 dsh 前端与 client 插件 bundle -> server/assets/dsh-web/
+# （dsh 兼容模式的可选产物；仅在 dshCompatEnabled 打开时被 server 读取）
+COPY scripts scripts
+RUN node scripts/fetch-dsh-web.mjs
+
 # 裁剪 server 生产依赖（devDependencies 不进镜像）
 RUN npm prune --prefix server --omit=dev
 
