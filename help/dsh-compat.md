@@ -100,11 +100,12 @@ dsh 插件**只在「启用 dsh 兼容模式」打开时加载**（它们是可�
 | 已支持 | 说明 |
 |---|---|
 | 会话列表 / 新建 | `session/list`、`session/create`（按 id 幂等；新建后与主工作台同一条可见性链路，侧边栏即时出现） |
-| 打开会话与历史 | `session/follow`（快照 + 轮次结束后的增量事件；不做逐 token 流式，见下「已知限制」）、`session/page`（向前翻旧历史） |
+| 打开会话与历史 | `session/follow`（快照 + 增量事件 + **回合内助手流式**：思考/正文逐字渲染）、`session/page`（向前翻旧历史） |
 | 发消息 / 中断 / 队列 | `session/prompt`（`queue` / `steer`）、`session/cancel`、`session/updateQueue` |
 | 运行态 | `session/control`（投影基线；后台任务见下） |
 | 模型选择 | `session/modelCatalog`（服务商分组的模型目录 + 部署默认 + 可路由服务商）、`session/selectModel`（空闲时切模型，校验口径与主工作台一致：服务商须已配置、模型须在目录中、力度须在模型声明档位内）、会话 `modelSelection` 投影（composer 的模型座位显示当前会话模型） |
-| 插件清单 | `pluginInventory/list`（只读投影 `<dataDir>/dsh-plugins` 里的 dsh 插件与启停状态；`managementAvailable=false`——插件安装/启停在 owc 侧管理） |
+| 插件清单 | `pluginInventory/list`、`pluginManager/listBundles`、`pluginManager/listPlugins`（投影 `<dataDir>/dsh-plugins` 的插件包、条目与运行相位；**面板只读**：开关置灰并给出原因，启停在 owc 侧 `<数据目录>/dsh.json`） |
+| 设置与凭据（只读） | `llm/listProviders`、`llm/listConfigurableProviders`、`settings/describe`、`credentials/describe`：把 owc 服务商档案投影成只读设置命名空间（列出服务商与「是否已配置」，不泄漏密钥、不接受写入——`writable: false`） |
 | 历史图片 | `session/attachment`（owc 内联 base64 图片可回读；仅落盘引用的图片返回明确错误） |
 | 审批与提问 | `$events` 逻辑流 + `POST /api/$events/result` 回路：dsh UI 里点「允许/拒绝」会真正作用于 owc 权限链 |
 | 工作区视图 | `workspace/follow`（按会话 cwd 派生工作区条目） |
@@ -118,8 +119,9 @@ dsh 插件**只在「启用 dsh 兼容模式」打开时加载**（它们是可�
 
 以下 dsh 端点 v1 返回明确错误（不会静默给假数据），多数在 dsh UI 里表现为报错卡片或空面板：
 
-- **设置与凭据面**：`settings/*`、`credentials/*`、`llm/*`、`agentPresets/*`
-- **插件与文件面**：`pluginManager/*`（dsh 面板里的插件安装/启停管理）、`workspaceFiles/*`、`directoryPicker/*`、`fileReferences/*`
+- **设置与凭据写入**：`settings/mutate`、`credentials/set|unset`、`llm/discoverModels`、`agentPresets/*`（读取面见上方「设置与凭据（只读）」；配置请回主工作台）
+- **插件安装/卸载**：`pluginManager/installBundle|removeBundle|setPluginEnabled|setBundleEnabled` 如实返回 `management-required` / `not-removable`（不做面板内包管理与启停；包放进 `<数据目录>/dsh-plugins/`，启停改 `<数据目录>/dsh.json`）
+- **文件面**：`workspaceFiles/*`、`directoryPicker/*`、`fileReferences/*`
 - **工作区写操作**：`workspace/create|rename|delete|insertBefore|insertSessionBefore|archiveSession|unarchiveSession`
 - **会话扩展操作**：`session/search|rename|fork|openWorkspacePath|canOpenWorkspacePath`
 - **其它**：`goal/*`、`skills/list`、`subagents/*`、`terminal/*`、`messageFeedback/*`、`sessionFeedback/record`、`dynamicCordisRunner/*`
@@ -131,7 +133,7 @@ dsh 插件**只在「启用 dsh 兼容模式」打开时加载**（它们是可�
 | 限制 | 表现 | 原因 |
 |---|---|---|
 | **运行中消息不支持图片** | 会话正在跑时发带图消息会明确报错（`session/unsupported`：「运行中消息不支持图片附件」），不会被静默接受 | owc 的排队/插话入参只有文本；图片要等本轮结束后作为新消息发送 |
-| **助手输出不做逐 token 流式** | 回复在本轮结束时一次性出现（不逐字冒出）；打开会话时也不回放历史增量 | 翻译层不编造 token 级增量，只下发已落盘的完整事件 |
+| **重连不回放流式前缀** | 回合进行中打开/重连会话时，已生成的瞬态增量不回放（随后续增量继续逐字出现，落盘后的完整消息照常显示） | 快照的 `assistantStream.activeAttempt` 前缀压缩 v1 不下发（只给 revision 基线）；不做第二份增量存储 |
 | **提问一次只承载一问** | dsh 侧一次提问请求对应一个 owc 交互（`ask_user` 多题时逐题串行） | owc 的交互应答是一问一答；多出来的答案写日志后丢弃（不会假装已接受） |
 | **答案形状按题目类型收敛** | 选择题：选中的选项 label + 「其他」自定义文本（按上游约定编码为 `other:<文本>`）；是/否题按文本判定肯定/否定（不匹配即否定）；自由文本原样传递 | 两端答案形状不同，翻译层按 owc 交互契约映射，见 `docs/dsh-wire-contract.md` §5.1 |
 

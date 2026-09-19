@@ -10,6 +10,7 @@ import type { SessionStore } from "../../sessions/session-store.js";
 import { wireError, type DshWireError } from "./wire.js";
 import { modelSelectionValue, type DshModelSelection } from "./models.js";
 import {
+  currentTurnStep,
   deriveSessionRecords,
   pageWindow,
   sessionLastSeq,
@@ -482,6 +483,13 @@ export async function projectSessionPage(deps: DshProjectionDeps, args: Record<s
  */
 function attributionOf(meta: SessionMeta | undefined): DshMessageAttribution {
   return { provider: meta?.provider ?? "", model: meta?.model ?? "" };
+}
+
+/** 当前末轮的 turn/step（流式 attempt 的 start 帧与结算记录必须同口径）。 */
+export async function sessionTurnStep(deps: DshProjectionDeps, sessionId: string): Promise<{ turn: number; step: number }> {
+  const detail = await deps.sessions.get(sessionId);
+  if (detail === undefined) return { turn: 1, step: 1 };
+  return currentTurnStep(detail.messages);
 }
 
 /** 会话当前完整事件记录（供 follow 增量去重：seq ≤ cursor 的都已下发过）。 */
