@@ -157,7 +157,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
                 request->write_roots, request->write_root_count,
                 request->deny_paths, request->deny_path_count,
                 request->allow_paths, request->allow_path_count,
-                request->allow_network, shell_argv);
+                request->allow_network, /* new_session */ 1, shell_argv);
     }
     child = fork();
     if (child < 0) {

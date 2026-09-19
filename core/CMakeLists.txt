@@ -62,6 +62,27 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME path-policy COMMAND test-path-policy)
 
+    # fs internals: glob matcher timing/equivalence (fs.c) and the
+    # thread-local deny-root contract (fs_posix.c).  POSIX-only: the Windows
+    # deny/bind tables live in fs_win.c with their own target.
+    if(NOT WIN32)
+        add_executable(test-fs-internals tests/test_fs_internals.c
+            src/fs.c src/path_policy.c src/platform/fs_posix.c)
+        target_compile_definitions(test-fs-internals PRIVATE _POSIX_C_SOURCE=200809L _GNU_SOURCE)
+        target_include_directories(test-fs-internals PRIVATE src)
+        target_compile_options(test-fs-internals PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        add_test(NAME fs-internals COMMAND test-fs-internals)
+    endif()
+
+    add_executable(test-json tests/test_json.c src/json.c)
+    target_include_directories(test-json PRIVATE src)
+    if(MSVC)
+        target_compile_options(test-json PRIVATE /W4 /WX)
+    else()
+        target_compile_options(test-json PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME json COMMAND test-json)
+
     add_executable(test-sandbox tests/test_sandbox.c)
     if(WIN32)
         target_sources(test-sandbox PRIVATE src/platform/sandbox_win.c)

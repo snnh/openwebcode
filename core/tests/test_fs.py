@@ -116,6 +116,37 @@ def main_fs():
                 # tolerates unreadable directories, not reparse points.
                 os.rmdir(root/"private-link")
             assert fs(182,"fs.read",{"path":"private./secret.txt"})["error"]["code"]==-32002
+        # --- FIFO hang regression (open_item O_NONBLOCK) ---
+        # A FIFO used to park fs.read/fs.stat/fs.hash inside open(2) forever:
+        # the dispatch loop is single-threaded, so one FIFO in the workspace
+        # stalled every session.  stat must report it as "other"; the read
+        # paths must refuse it with an error (no hang, no bogus content), and
+        # the loop must stay responsive afterwards.
+        if os.name != "nt":
+            os.mkfifo(str(root/"pipe.fifo"))
+            fifo_stat=fs(190,"fs.stat",{"path":"pipe.fifo"})
+            assert fifo_stat["result"]["type"]=="other",fifo_stat
+            for fifo_id,fifo_method,fifo_params in [
+                (191,"fs.read",{"path":"pipe.fifo"}),
+                (192,"fs.hash",{"path":"pipe.fifo"}),
+                (193,"fs.readBase64",{"path":"pipe.fifo"}),
+                (194,"fs.edit",{"path":"pipe.fifo","oldText":"a","newText":"b"}),
+                (195,"fs.list",{"path":"pipe.fifo"}),
+            ]:
+                fifo_response=fs(fifo_id,fifo_method,fifo_params)
+                assert "error" in fifo_response,(fifo_method,fifo_response)
+            assert fs(196,"fs.stat",{"path":"目录"})["result"]["type"]=="directory","dispatch loop stalled"
+        # --- backtracking glob regression ---
+        # "*a" repeated 20 times against a long run of 'a's: the old recursive
+        # matcher explored every grouping of the stars (exponential) and hung
+        # the dispatch thread.  send() fails the test if the reply takes
+        # longer than 5 seconds.
+        (root/("a"*60 + ".txt")).write_text("x")
+        glob_started=time.monotonic()
+        backtracked=fs(197,"fs.glob",{"path":".","pattern":"*a"*20+"b"})
+        assert "result" in backtracked,backtracked
+        assert time.monotonic()-glob_started < 5,"glob matcher backtracked exponentially"
+        assert backtracked["result"]["paths"]==[],backtracked
         first_write=fs(1,"fs.write",{"path":"目录/文件.txt","content":"一\n二\n三"})
         assert first_write.get("result",{}).get("ok"),first_write
         assert fs(101,"fs.write",{"path":"新/深/文件.txt","content":"alpha\nbeta","createDirs":True})["result"]["ok"]

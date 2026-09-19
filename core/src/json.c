@@ -1,6 +1,7 @@
 #include "json.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -245,7 +246,19 @@ const owc_json *owc_json_object_get(const owc_json *object, const char *key) {
     return NULL;
 }
 const char *owc_json_get_string(const owc_json *value) { return value && value->type == OWC_JSON_STRING ? value->value.string : NULL; }
-int owc_json_get_int(const owc_json *value, int fallback) { return value && value->type == OWC_JSON_NUMBER ? (int)value->value.number : fallback; }
+/* Non-integer and out-of-range numbers fall back instead of being cast: a
+ * conversion of an out-of-range double to int is undefined behavior, and a
+ * silent truncation of 1e300 or 2.5 would hide a caller's bounds/unit bug.
+ * Non-numbers keep the same fallback as before. */
+int owc_json_get_int(const owc_json *value, int fallback) {
+    double number;
+    if (!value || value->type != OWC_JSON_NUMBER) return fallback;
+    number = value->value.number;
+    /* Range check first: the casts below are only defined inside it. */
+    if (!(number >= (double)INT_MIN && number <= (double)INT_MAX)) return fallback;
+    if (number != (double)(int)number) return fallback;
+    return (int)number;
+}
 int owc_json_get_bool(const owc_json *value, int fallback) { return value && value->type == OWC_JSON_BOOL ? value->value.boolean : fallback; }
 
 char *owc_json_escape_string(const char *value) {

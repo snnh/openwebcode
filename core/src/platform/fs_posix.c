@@ -30,7 +30,21 @@ static owc_fs_error parent_fd_create(const char *root,const char *path,int creat
  if(path[0]=='/'){fd=open("/",O_RDONLY|O_DIRECTORY|O_CLOEXEC);p=path+1;}else fd=open(root,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);if(fd<0)return err();
  while((slash=strchr(p,'/'))!=NULL){n=(size_t)(slash-p);if(component_bad(p,n)){close(fd);return OWC_FS_OUTSIDE_ROOT;}part=(char*)malloc(n+1);if(!part){close(fd);return OWC_FS_NO_MEMORY;}memcpy(part,p,n);part[n]=0;nfd=openat(fd,part,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);if(nfd<0&&errno==ENOENT&&create_dirs){if(mkdirat(fd,part,0700)==0)nfd=openat(fd,part,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);}free(part);if(nfd<0){owc_fs_error e=err();close(fd);return e;}close(fd);fd=nfd;p=slash+1;}
  n=strlen(p);if(component_bad(p,n)){close(fd);return OWC_FS_OUTSIDE_ROOT;}*leaf=(char*)malloc(n+1);if(!*leaf){close(fd);return OWC_FS_NO_MEMORY;}memcpy(*leaf,p,n+1);*parent=fd;return OWC_FS_OK;}
-static owc_fs_error open_item(const char *root,const char *path,int flags,int *fd){int p=-1;char *leaf=NULL;owc_fs_error e;if(!strcmp(path,".")){*fd=open(root,flags|O_CLOEXEC|O_NOFOLLOW);}else{e=parent_fd(root,path,&p,&leaf);if(e)return e;*fd=openat(p,leaf,flags|O_CLOEXEC|O_NOFOLLOW);free(leaf);close(p);}if(*fd<0)return err();if(deny_hit(*fd)){close(*fd);return OWC_FS_OUTSIDE_ROOT;}return OWC_FS_OK;}
+/* O_NONBLOCK on purpose: open(2) on a FIFO blocks until a writer appears, and
+ * the S_ISREG check that rejects FIFOs/self-pipes/sockets ran only after a
+ * successful open - one FIFO in the workspace hung fs.read / fs.stat /
+ * fs.hash forever and, since the RPC dispatch loop is single-threaded,
+ * stalled every session with it.  With O_NONBLOCK the open returns
+ * immediately; regular files and directories get the flag cleared again so
+ * downstream reads keep their blocking semantics (it is a no-op for regular
+ * files on Linux, the explicit clear keeps the intent readable).  Non-regular,
+ * non-directory objects stay open just long enough for fstat: the read paths
+ * reject them via their S_ISREG check, fs.stat reports type "other". */
+static owc_fs_error open_item(const char *root,const char *path,int flags,int *fd){int p=-1;char *leaf=NULL;owc_fs_error e;struct stat st;
+ if(!strcmp(path,".")){*fd=open(root,flags|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);}else{e=parent_fd(root,path,&p,&leaf);if(e)return e;*fd=openat(p,leaf,flags|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);free(leaf);close(p);}
+ if(*fd<0)return err();
+ if(fstat(*fd,&st)==0&&(S_ISREG(st.st_mode)||S_ISDIR(st.st_mode))){int state=fcntl(*fd,F_GETFL);if(state>=0)(void)fcntl(*fd,F_SETFL,state&~O_NONBLOCK);}
+ if(deny_hit(*fd)){close(*fd);return OWC_FS_OUTSIDE_ROOT;}return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_read(const char *root,const char *path,owc_fs_bytes *b){int fd;struct stat st;size_t used=0,cap;ssize_t n;owc_fs_error e=open_item(root,path,O_RDONLY,&fd);if(e)return e;if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<0||(unsigned long long)st.st_size>OWC_FS_MAX_FILE_SIZE){close(fd);return OWC_FS_IO_ERROR;}cap=st.st_size>0?(size_t)st.st_size:1;b->data=(unsigned char*)malloc(cap+1);if(!b->data){close(fd);return OWC_FS_NO_MEMORY;}while((n=read(fd,b->data+used,cap-used))>0){used+=(size_t)n;if(used==cap){unsigned char *q;if(cap>=OWC_FS_MAX_FILE_SIZE){free(b->data);close(fd);return OWC_FS_IO_ERROR;}cap=cap>OWC_FS_MAX_FILE_SIZE/2?OWC_FS_MAX_FILE_SIZE:cap*2;q=(unsigned char*)realloc(b->data,cap+1);if(!q){free(b->data);close(fd);return OWC_FS_NO_MEMORY;}b->data=q;}}close(fd);if(n<0){free(b->data);return err();}b->length=used;b->data[used]=0;return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_read_binary(const char *root,const char *path,size_t limit,owc_fs_bytes *b,int *truncated){int fd;struct stat st;size_t want;ssize_t n;owc_fs_error e=open_item(root,path,O_RDONLY,&fd);if(e)return e;if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_size<0){close(fd);return OWC_FS_IO_ERROR;}*truncated=(unsigned long long)st.st_size>(unsigned long long)limit;want=*truncated?limit:(size_t)st.st_size;b->data=(unsigned char*)malloc(want+1);if(!b->data){close(fd);return OWC_FS_NO_MEMORY;}b->length=0;while(b->length<want){n=read(fd,b->data+b->length,want-b->length);if(n<=0){free(b->data);b->data=NULL;b->length=0;close(fd);return n<0?err():OWC_FS_IO_ERROR;}b->length+=(size_t)n;}close(fd);b->data[b->length]=0;return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_write(const char *root,const char *path,const unsigned char *data,size_t length,int create_dirs){int p=-1,fd=-1;char *leaf=NULL,*tmp=NULL;owc_fs_error e=parent_fd_create(root,path,create_dirs,&p,&leaf);size_t i,done=0;ssize_t n;if(e)return e;tmp=(char*)malloc(strlen(leaf)+64);if(!tmp){close(p);free(leaf);return OWC_FS_NO_MEMORY;}for(i=0;i<128;i++){snprintf(tmp,strlen(leaf)+64,".%s.owc-%ld-%llu.tmp",leaf,(long)getpid(),(unsigned long long)i);fd=openat(p,tmp,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);if(fd>=0)break;if(errno!=EEXIST)break;}if(fd<0){e=err();goto done;}while(done<length){n=write(fd,data+done,length-done);if(n<=0){e=OWC_FS_IO_ERROR;goto done;}done+=(size_t)n;}if(fsync(fd)||close(fd)){fd=-1;e=OWC_FS_IO_ERROR;goto done;}fd=-1;if(renameat(p,tmp,p,leaf)){e=err();goto done;}e=OWC_FS_OK;done:if(fd>=0)close(fd);if(e!=OWC_FS_OK&&tmp)unlinkat(p,tmp,0);close(p);free(tmp);free(leaf);return e;}
@@ -54,11 +68,19 @@ void owc_fs_platform_watch_close(owc_fs_watch *watch){if(!watch)return;if(watch-
  * on macOS).  Directories cannot be hard linked, so an inode hit on the final
  * component is sufficient for the file-shaped deny entries (".env" etc.);
  * the resolved-path prefix check covers bind mounts of denied directories. */
-static pthread_mutex_t deny_mutex = PTHREAD_MUTEX_INITIALIZER;
 typedef struct { char *path; unsigned long long dev, ino; int has_ino; } deny_root_entry;
-static deny_root_entry *g_deny = NULL;
-static size_t g_deny_count = 0;
-static int deny_hit(int fd){size_t i;int hit=0;pthread_mutex_lock(&deny_mutex);if(g_deny_count){struct stat st;char resolved[PATH_MAX];ssize_t len=-1;if(fstat(fd,&st)==0){for(i=0;i<g_deny_count;i++)if(g_deny[i].has_ino&&g_deny[i].dev==(unsigned long long)st.st_dev&&g_deny[i].ino==(unsigned long long)st.st_ino){hit=1;break;}}
+/* Thread-local exactly like the Windows counterpart (fs_win.c): background
+ * index/grep/glob job worker threads and the RPC dispatch thread publish the
+ * policy of the session they work for.  A process-wide list let a worker's
+ * publish overwrite (or clear) the main thread's roots, so fs.* deny checks
+ * ran against the wrong policy set and the worker's narrower list let
+ * hard-link/bind-mount aliases of a denied path slip through on the main
+ * thread.  Each thread owns its copies and frees them on its next publish;
+ * every worker clears its own list before returning. */
+#define OWC_THREAD_LOCAL _Thread_local
+static OWC_THREAD_LOCAL deny_root_entry *g_deny = NULL;
+static OWC_THREAD_LOCAL size_t g_deny_count = 0;
+static int deny_hit(int fd){size_t i;int hit=0;if(g_deny_count){struct stat st;char resolved[PATH_MAX];ssize_t len=-1;if(fstat(fd,&st)==0){for(i=0;i<g_deny_count;i++)if(g_deny[i].has_ino&&g_deny[i].dev==(unsigned long long)st.st_dev&&g_deny[i].ino==(unsigned long long)st.st_ino){hit=1;break;}}
  if(!hit){
 #ifdef __APPLE__
   if(fcntl(fd,F_GETPATH,resolved)==0)len=(ssize_t)strlen(resolved);
@@ -67,10 +89,11 @@ static int deny_hit(int fd){size_t i;int hit=0;pthread_mutex_lock(&deny_mutex);i
 #endif
   if(len>0){for(i=0;i<g_deny_count;i++)if(g_deny[i].path&&owc_path_is_within(resolved,g_deny[i].path)){hit=1;break;}}
  }}
- pthread_mutex_unlock(&deny_mutex);return hit;}
+ return hit;}
 void owc_fs_platform_set_deny_roots(const char *const *roots,size_t count){deny_root_entry *list=NULL;size_t i;if(count){list=(deny_root_entry*)calloc(count,sizeof(*list));if(!list)count=0;}
  for(i=0;i<count;i++){char *resolved=realpath(roots[i],NULL);struct stat st;list[i].path=resolved?resolved:strdup(roots[i]);if(!list[i].path)continue;if(stat(list[i].path,&st)==0){list[i].dev=(unsigned long long)st.st_dev;list[i].ino=(unsigned long long)st.st_ino;list[i].has_ino=1;}}
- pthread_mutex_lock(&deny_mutex);for(i=0;i<g_deny_count;i++)free(g_deny[i].path);free(g_deny);g_deny=list;g_deny_count=count;pthread_mutex_unlock(&deny_mutex);}
+ for(i=0;i<g_deny_count;i++)free(g_deny[i].path);
+ free(g_deny);g_deny=list;g_deny_count=count;}
 /* Bind links are a Windows-only feature; no redirection exemption is ever
  * needed on POSIX. */
 void owc_fs_platform_set_bind_links(const char *const *virt_paths,const char *const *backing_paths,size_t count){(void)virt_paths;(void)backing_paths;(void)count;}

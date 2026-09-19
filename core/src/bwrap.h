@@ -34,13 +34,22 @@ void owc_bwrap_probe(owc_sandbox_result *result);
  * thread may hold the malloc arena lock at fork, deadlocking the child
  * before it ever execs).  Returns NULL on allocation failure; the caller
  * owns and frees the vector (the entries borrow the caller's strings).
- * The forked child only execvp()s the result. */
+ * The forked child only execvp()s the result.
+ *
+ * new_session adds --new-session (bwrap setsid()s the sandbox, so TIOCSTI
+ * from inside cannot inject input into the caller's terminal).  exec.run and
+ * the job workers pass 1; the pty channel passes 0 because there the sandbox
+ * must keep the pty as its controlling terminal - --new-session detaches it
+ * and interactive shells then print "cannot access tty; job control turned
+ * off" (measured).  The probe always exercises the flag, so it validates a
+ * superset of every argv built here. */
 char **owc_bwrap_build_argv(const char *cwd,
                             const char *const *read_roots, size_t read_root_count,
                             const char *const *read_only_paths, size_t read_only_count,
                             const char *const *write_roots, size_t write_root_count,
                             const char *const *deny_paths, size_t deny_path_count,
                             const char *const *allow_paths, size_t allow_path_count,
-                            int allow_network, char *const *command_argv);
+                            int allow_network, int new_session,
+                            char *const *command_argv);
 
 #endif

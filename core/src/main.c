@@ -208,6 +208,10 @@ int main(int argc, char **argv) {
     while(!rpc.shutting_down) {
         char *body=NULL; size_t length=0; int status=owc_rpc_read(&rpc,&body,&length);
         if(status==0) break;
+        /* Malformed frame or an over-long header line (>1023 bytes, see
+         * owc_rpc_read): a broken stream cannot be resynchronized safely, and
+         * both transports here carry exactly one peer, so "disconnect" means
+         * exiting with 2 - the server observes core exit and respawns it. */
         if(status<0) { fprintf(stderr,"owc-exec: invalid RPC frame\n"); free(body);
 #ifndef _WIN32
             owc_platform_exec_terminate_all();

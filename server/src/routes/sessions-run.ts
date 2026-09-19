@@ -536,7 +536,7 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
       const toClose = ptyId;
       ptyId = undefined;
       core.removePtyEvents?.(toClose);
-      core.closePty?.({ ptyId: toClose }).catch(() => undefined);
+      core.closePty?.({ ptyId: toClose, sessionId }).catch(() => undefined);
     };
     socket.on("close", closePty);
     const dimension = (value: unknown): number | undefined =>
@@ -576,7 +576,7 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
             if (ptyId === undefined) { send({ type: "error", message: "Terminal is not open" }); return; }
             // core 侧还会再做规范 base64 + 解码后 ≤8KB 校验，这里只做形状预检
             if (typeof frame.data !== "string" || frame.data.length === 0 || frame.data.length > 16384) { send({ type: "error", message: "in requires non-empty base64 data" }); return; }
-            await core.inputPty!({ ptyId, data: frame.data });
+            await core.inputPty!({ ptyId, sessionId, data: frame.data });
             return;
           }
           if (frame.type === "resize") {
@@ -584,7 +584,7 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
             const cols = dimension(frame.cols);
             const rows = dimension(frame.rows);
             if (cols === undefined || rows === undefined) { send({ type: "error", message: "resize requires integer cols/rows from 1 to 512" }); return; }
-            await core.resizePty!({ ptyId, cols, rows });
+            await core.resizePty!({ ptyId, sessionId, cols, rows });
             return;
           }
           if (frame.type === "close") {

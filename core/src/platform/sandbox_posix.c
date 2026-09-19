@@ -117,14 +117,23 @@ void owc_landlock_probe(int allow_network, owc_sandbox_result *result) {
     }
 #if defined(LANDLOCK_ACCESS_NET_BIND_TCP) && defined(LANDLOCK_ACCESS_NET_CONNECT_TCP)
     if (!allow_network && abi < 4) {
-        set_result(result, OWC_SANDBOX_PARTIAL, abi, 0,
-                   "filesystem isolation available; network denial requires Landlock ABI 4");
+        /* Fail closed.  The session asked for network isolation and this
+         * kernel's ABI cannot express it: reporting PARTIAL used to let the
+         * exec/pty gate run the command anyway (only ADVISORY is refused)
+         * with full network access - the session silently got the opposite of
+         * what it asked for.  ABI 0 with ADVISORY makes the callers refuse to
+         * run the command (child exit 126) and report this reason verbatim,
+         * so the caller can fall back to bubblewrap or fail loudly. */
+        set_result(result, OWC_SANDBOX_ADVISORY, 0, 0,
+                   "network denial requires Landlock ABI 4; refusing to run with network access "
+                   "(use sandbox mode bubblewrap for network isolation)");
         return;
     }
 #else
     if (!allow_network) {
-        set_result(result, OWC_SANDBOX_PARTIAL, abi, 0,
-                   "filesystem isolation available; build headers lack Landlock network support");
+        set_result(result, OWC_SANDBOX_ADVISORY, 0, 0,
+                   "network denial needs Landlock network support, absent from these build headers; "
+                   "refusing to run with network access (use sandbox mode bubblewrap)");
         return;
     }
 #endif
