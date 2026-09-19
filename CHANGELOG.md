@@ -2,6 +2,31 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.12.0]
+
+### 新功能
+
+- **dsh 兼容模式（实验，默认关闭）**：在独立端口（默认 3211）托管 dsh（DeepSeek Harness）官方 Web 界面，并把 owc 的会话/事件/审批投影成 dsh 的协议，让 dsh 生态插件直接跑在 owc 上。开启方式：设置 → 通用 → 「启用 dsh 兼容模式」，活动栏底部出现 `layers` 图标，点击在新标签打开。会话、模型配置、权限模式与主工作台共用同一套状态，agent 循环、上下文账本、工具执行、流式、快照与索引仍全部走 owc 自有实现——翻译层只做投影，不引入第二套状态机。
+  - **插件面**：把插件包放进 `<数据目录>/dsh-plugins/` 即被识别（启用态与配置在 `<数据目录>/dsh.json`，缺省全部启用）；插件注册的工具以 `ext__dsh-<插件id>__<工具>` 注入 owc 工具表并被 agent 调用，走同一套权限与沙盒门禁；支持 `tools/pre-execute`（放行 / 拒绝 / 取消；`ask` 降级为放行 + 审计日志）与 `tools/post-execute`（改结果 / 否决）钩子；兼容探测只放行 cordis / schemastery / dsh-tools 三个垫片包，插件依赖其它 `@deepseek-ai/*` 运行期包时如实报 `incompatible`；加载计划跟随模式开关（关闭即下发空计划、卸载插件并回滚工具），扩展宿主崩溃重启后自动重放。
+  - **协议面**：会话列表 / 新建 / 打开（快照 + 增量 + 助手流式）/ 向前翻页、发消息（`queue` / `steer`）/ 中断 / 队列编辑、审批与提问回路（`$events` 逻辑流 + `$events/result` 应答）、工作区视图、历史图片回读；未实现的端点（设置、凭据、终端、工作区写操作等）返回明确错误而不是假数据。
+  - **托管与桥接**：自渲染 index 并注入 boot graph（按需分块、`rev` 校验）、`/plugins` 支持单文件与 combo 两种形态；随包发布 `owc-dsh-bridge` 插件提供「返回 Workbench」入口与 `/dsh-owc/status` 事实端点；dsh 端口复用主端口访问令牌（同 host cookie，`?token=` 换 HttpOnly cookie）。
+  - **边界**：dsh 插件（Host 与 Client 入口）与 v1 扩展同档——**可信代码（≈ yolo），不经沙盒与权限确认链**，界面如实展示隔离状态；插件拿不到 core 通道、数据目录与原始 API Key。默认关闭，关闭时进程内零常驻（端口不监听、不加载 vendor、不建事件桥）。
+  - **版本与产物**：协议翻译层钉死 dsh **0.1.6-alpha.2**；vendor（前端 dist + 60 个插件 bundle）由 `scripts/fetch-dsh-web.mjs` 按依赖闭包抓取，发布包与镜像内置、源码构建需自行执行一次；许可随产物携带 `THIRD_PARTY_NOTICES.md` 与各包 LICENSE。设置 `dshUiPath` 指向自选 UI 目录时按「尽力兼容」对待，不提供维护承诺。
+  - 详见 [help/dsh-compat.md](./help/dsh-compat.md)。
+
+### 安全
+
+- **依赖安全审计归零**：server 生产依赖 1 high + 1 moderate → 0（fastify 升级修 schema 校验绕过与 `X-Forwarded-*` 伪造、fast-uri 升级修 SSRF/主机混淆、vitest 系列修 `@vitest/mocker` 路径穿越）；web 生产依赖 1 moderate → 0（对 monaco 精确 pin 的 dompurify 走包级覆盖修 XSS / hook 污染）。
+- **dsh 回跳 URL 不再携带令牌**：dsh UI 的「返回 Workbench」在已带访问令牌 cookie 时省略 `?token=` 参数（凭据不写进 URL 与浏览器历史），仅无 cookie 的直接探测路径才回带兜底。
+
+### 修复与优化
+
+- **修复 dsh 兼容模式开启时的启动崩溃**：dsh 运行期早于访问令牌解析构造，`const` 的暂时性死区直接让进程以 `ReferenceError` 退出（且即便不崩，端口也会拿到空令牌退化成免鉴权）。现在运行期与首次启停排在令牌解析之后，并加守卫：非回环监听且拿不到令牌时如实拒绝启动该端口，不裸开鉴权。
+- **修复 dsh 插件加载计划从未下发**：此前加载计划只在测试路径触发，真实进程不会加载任何 dsh 插件；现在启动按模式开关下发，开关热切换即时生效，宿主启动期间的并发同步会先等宿主初始化落地（避免加载计划被清空）。
+- **修复 dsh UI vendor 漏装关键插件**：roster 改按依赖闭包（`dependencies` + `peerDependencies`）推导，修掉提供 WS 连接与 `ctx.remote` 的 `@deepseek-ai/dsh-api-gateway` 等包漏装导致的 SPA 启动阻断（插件 56 → 60）；新增 boot 完整性测试守住启动级不变量（bundle 存在且自注册 id 一致、external 目标在图中、注入行覆盖每条 batch）。
+- 缓存命中率读数统一保留一位小数（会话顶栏、上下文面板、成本面板与悬浮明细口径一致）。
+- 死代码门禁恢复：knip 存量归零（server 76 → 0）；新增 max-depth 上限（server 5、web 4）阻止新增深嵌套。
+
 ## [1.11.0]
 
 ### 新功能
