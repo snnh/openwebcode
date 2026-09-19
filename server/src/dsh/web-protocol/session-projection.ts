@@ -8,6 +8,7 @@ import type { AgentRunner } from "../../agent/agent-runner.js";
 import type { ChatMessage, MessageContent, SessionMeta } from "../../sessions/types.js";
 import type { SessionStore } from "../../sessions/session-store.js";
 import { wireError, type DshWireError } from "./wire.js";
+import { deriveSessionRecords, pageWindow, snapshotWindow } from "./session-events.js";
 
 /** 投影所需的最小依赖面（便于单测注入假对象）。 */
 export interface DshProjectionDeps {
@@ -335,4 +336,67 @@ export async function projectSessionAttachment(deps: DshProjectionDeps, args: Re
     }
   }
   return { error: wireError("session/attachment-not-found", "附件不存在", { sessionId, attachmentId }) };
+}
+
+/**
+ * `session/follow` 快照帧：header + cursor + records(事件序列) + hasMore + projections。
+ * `assistantStream` 省略（v1 不做 token 级增量，见 session-events.ts 头部说明）。
+ */
+export async function projectSessionFollowSnapshot(deps: DshProjectionDeps, args: Record<string, unknown>): Promise<DshProjected<Record<string, unknown>>> {
+  const request = isRecord(args.request) ? args.request : {};
+  const address = isRecord(request.address) ? request.address : {};
+  if (address.kind !== "session") {
+    // 子代理地址（kind=subagent）v1 不支持：dsh 把子代理当独立会话展示，owc 侧需要另行映射
+    return { error: wireError("session/unsupported", "v1 仅支持 kind=session 的 follow 地址", { kind: String(address.kind) }) };
+  }
+  const sessionId = asString(address.sessionId);
+  if (sessionId === undefined) return { error: wireError("session/arguments-invalid", "address.sessionId 缺失") };
+  const meta = await deps.sessions.getMeta(sessionId);
+  if (meta === undefined) return { error: wireError("session/not-found", "会话不存在", { sessionId }) };
+  const detail = await deps.sessions.get(sessionId);
+  if (detail === undefined) return { error: wireError("session/not-found", "会话不存在", { sessionId }) };
+  const maxMessages = typeof request.maxMessages === "number" ? request.maxMessages : undefined;
+  const window = snapshotWindow(detail.messages, maxMessages);
+  const tail = { messages: detail.messages, truncated: window.hasMore };
+  return {
+    value: {
+      type: "snapshot",
+      header: {
+        version: 1,
+        id: meta.id,
+        createdAt: toMillis(meta.createdAt),
+        ...(meta.cwd === undefined ? {} : { cwd: meta.cwd }),
+        isSeeded: false,
+      },
+      cursor: window.cursor,
+      records: window.records,
+      hasMore: window.hasMore,
+      projections: { asOfSeq: window.totalRecords, values: projectionValues(deps, meta, tail) },
+    },
+  };
+}
+
+/** `session/page`：向前翻旧历史（对齐消息边界）。 */
+export async function projectSessionPage(deps: DshProjectionDeps, args: Record<string, unknown>): Promise<DshProjected<Record<string, unknown>>> {
+  const request = isRecord(args.request) ? args.request : {};
+  const address = isRecord(request.address) ? request.address : {};
+  if (address.kind !== "session") {
+    return { error: wireError("session/unsupported", "v1 仅支持 kind=session 的分页地址", { kind: String(address.kind) }) };
+  }
+  const sessionId = asString(address.sessionId);
+  if (sessionId === undefined) return { error: wireError("session/arguments-invalid", "address.sessionId 缺失") };
+  const throughSeq = typeof request.throughSeq === "number" ? request.throughSeq : 0;
+  const beforeSeq = typeof request.beforeSeq === "number" ? request.beforeSeq : undefined;
+  const maxMessages = typeof request.maxMessages === "number" ? request.maxMessages : undefined;
+  const detail = await deps.sessions.get(sessionId);
+  if (detail === undefined) return { error: wireError("session/not-found", "会话不存在", { sessionId }) };
+  const window = pageWindow(detail.messages, throughSeq, beforeSeq, maxMessages);
+  return { value: { records: window.records, hasMore: window.hasMore } };
+}
+
+/** 会话当前完整事件记录（供 follow 增量去重：seq ≤ cursor 的都已下发过）。 */
+export async function sessionRecordsSince(deps: DshProjectionDeps, sessionId: string, cursor: number): Promise<Array<Record<string, unknown>>> {
+  const detail = await deps.sessions.get(sessionId);
+  if (detail === undefined) return [];
+  return deriveSessionRecords(detail.messages).records.filter((record) => record.event.seq > cursor) as unknown as Array<Record<string, unknown>>;
 }

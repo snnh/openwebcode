@@ -9,12 +9,15 @@ import { DshEventStream, parseEventResult, type DshEventResult, type DshWaterfal
 import {
   projectSessionAttachment,
   projectSessionCancel,
+  projectSessionFollowSnapshot,
+  projectSessionPage,
   projectSessionControlBaseline,
   projectSessionCreate,
   projectSessionList,
   projectSessionPrompt,
   projectSessionUpdateQueue,
   projectWorkspaceBaseline,
+  sessionRecordsSince,
   type DshProjected,
   type DshProjectionDeps,
 } from "./session-projection.js";
@@ -50,6 +53,7 @@ export function buildUnaryHandlers(deps: DshWireDeps): Map<string, DshUnaryHandl
   handlers.set("session/cancel", (args) => projectSessionCancel(deps.projection, args));
   handlers.set("session/updateQueue", (args) => projectSessionUpdateQueue(deps.projection, args));
   handlers.set("session/attachment", (args) => projectSessionAttachment(deps.projection, args));
+  handlers.set("session/page", (args) => projectSessionPage(deps.projection, args));
   return handlers;
 }
 
@@ -259,6 +263,48 @@ export function buildStreamHandlers(deps: DshWireDeps, bridge: DshEventBridge): 
     }
     handle.send(baseline.value);
     // 增量（queue/jobs 变化）v1 不发：dsh UI 侧以 follow 的会话事件为准，见 docs
+  });
+  handlers.set("session/follow", async (handle) => {
+    const address = asRecord(asRecord(handle.args.request).address);
+    const sessionId = typeof address.sessionId === "string" ? address.sessionId : undefined;
+    if (address.kind !== "session" || sessionId === undefined) {
+      handle.fail(wireError("session/unsupported", "v1 仅支持 kind=session 的 follow 地址"));
+      return;
+    }
+    const snapshot = await projectSessionFollowSnapshot(deps.projection, handle.args);
+    if ("error" in snapshot) {
+      handle.fail(snapshot.error);
+      return;
+    }
+    handle.send(snapshot.value);
+    const cursorValue = (snapshot.value as { cursor?: unknown }).cursor;
+    let cursor = typeof cursorValue === "number" ? cursorValue : 0;
+    // 增量：owc 侧回合结束（agent.state → idle）或会话更新时，重派生事件并只发 seq > cursor 的记录。
+    // 逐 token 的 assistant-stream 帧 v1 不发（如实：不编造增量），完成后的完整消息立即下发。
+    let sending = false;
+    const listener = (event: AppEvent): void => {
+      if (event.sessionId !== sessionId) return;
+      if (event.type !== "agent.state" && event.type !== "session.updated") return;
+      if (sending) return;
+      sending = true;
+      void (async () => {
+        try {
+          const records = await sessionRecordsSince(deps.projection, sessionId, cursor);
+          for (const record of records) {
+            if (handle.cancelled) return;
+            handle.send(record);
+            const seq = (record.event as { seq?: unknown }).seq;
+            if (typeof seq === "number") cursor = seq;
+          }
+        } catch (error) {
+          deps.logger.warn(`dsh session/follow 增量失败：${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          sending = false;
+        }
+      })();
+    };
+    deps.events.on("event", listener);
+    handle.onCancel(() => deps.events.off("event", listener));
   });
   handlers.set("workspace/follow", async (handle) => {
     handle.send(await projectWorkspaceBaseline(deps.projection));
