@@ -23,7 +23,7 @@ import {
   type DshProjectionDeps,
 } from "../src/dsh/web-protocol/session-projection.js";
 import type { ChatMessage, SessionDetail, SessionMeta } from "../src/sessions/types.js";
-import { deriveSessionRecords, sessionRecordsCount } from "../src/dsh/web-protocol/session-events.js";
+import { deriveSessionRecords, pageWindow, sessionRecordsCount, snapshotWindow } from "../src/dsh/web-protocol/session-events.js";
 
 const SERVER_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const VENDOR_PLUGINS = path.join(SERVER_ROOT, "assets", "dsh-web", "plugins");
@@ -183,7 +183,7 @@ describe("dsh 会话投影", () => {
     expect(published).toHaveLength(1);
   });
 
-  it("D9：列表摘要的 asOfSeq 与记录 seq 同口径（不再是消息条数）", async () => {
+  it("D9：列表摘要的 asOfSeq 与记录 seq 同口径（水位 = 末条记录 seq，非消息条数）", async () => {
     const messages = [
       message("m1", "user", [{ type: "text", text: "hi" }]),
       message("m2", "assistant", [{ type: "tool_call", id: "c1", name: "bash", input: {} }, { type: "text", text: "yo" }]),
@@ -191,9 +191,67 @@ describe("dsh 会话投影", () => {
     const fake = deps({ metas: [meta("s1")], details: { s1: detail("s1", messages) } });
     const projected = await projectSessionList(fake.projection);
     const items = ("value" in projected ? projected.value.items : []) as Array<{ projections: { asOfSeq: number } }>;
-    const expected = deriveSessionRecords(messages).records.length;
-    expect(expected).toBe(sessionRecordsCount(messages));
+    const expected = deriveSessionRecords(messages).records.length - 1; // 水位 = 末条记录 seq（0 基）
+    expect(expected).toBe(sessionRecordsCount(messages) - 1);
     expect(items[0]?.projections.asOfSeq).toBe(expected);
+  });
+
+  /**
+   * vendor 分页不变量（真实缺陷回归）：客户端 RemoteJournalStream
+   * （dsh-api-gateway/client.js）要求
+   *   - 空窗口 cursor === emptyCursor(-1)；
+   *   - `assertPageThrough`：分页返回记录的最后一条 seq **严格等于**请求的 throughSeq
+   *     （replaceThrough 修复路径），差一即抛 "page did not end at its requested cursor"；
+   *   - `prepend`（loadOlder）：返回页的连续性与 `follows(tail, beforeSeq)`（tail + 1 === beforeSeq）；
+   *   - 记录 seq 从 0 起连续（compare/follows 是纯差值比较）。
+   * 这些不变量此前被 1 基 seq + 非对称窗口违反，表现为 dsh 界面「历史加载失败」。
+   */
+  it("分页/快照游标满足 vendor 不变量（0 基连续 seq、through 严格相等、空窗口 -1、prepend 衔接）", () => {
+    const messages = [
+      message("m1", "user", [{ type: "text", text: "u1" }]),
+      message("m2", "assistant", [{ type: "tool_call", id: "c1", name: "bash", input: {} }, { type: "text", text: "a1" }]),
+      message("m3", "tool", [{ type: "tool_result", toolCallId: "c1", content: "ok" }]),
+      message("m4", "user", [{ type: "text", text: "u2" }]),
+      message("m5", "assistant", [{ type: "text", text: "a2" }]),
+    ];
+    const { records } = deriveSessionRecords(messages);
+    // 0 基连续
+    expect(records.map((record) => record.event.seq)).toEqual(records.map((_, index) => index));
+
+    // 空会话：cursor = -1（vendor emptyCursor），记录为空
+    const empty = snapshotWindow([], 50);
+    expect(empty.records).toEqual([]);
+    expect(empty.cursor).toBe(-1);
+    expect(empty.hasMore).toBe(false);
+
+    // 快照 cursor 恒等于窗口内末条记录 seq
+    const full = snapshotWindow(messages, 50);
+    expect(full.cursor).toBe(records[records.length - 1]?.event.seq);
+    expect(full.totalRecords).toBe(records.length);
+    expect(full.hasMore).toBe(false);
+
+    // 截断窗口：cursor 仍是末条记录 seq，hasMore 置位
+    const truncated = snapshotWindow(messages, 2);
+    expect(truncated.cursor).toBe(records[records.length - 1]?.event.seq);
+    expect(truncated.hasMore).toBe(true);
+
+    // through 语义（断流修复）：分页必须**恰好止于** throughSeq（含），含消息内部截断
+    for (const through of [0, 3, records[records.length - 1]?.event.seq ?? 0]) {
+      const page = pageWindow(messages, through, undefined, 50);
+      if (page.records.length > 0) {
+        expect(page.records[page.records.length - 1]?.event.seq).toBe(through);
+        // 连续（vendor assertPage: follows(previous.last, range.first)）
+        const seqs = page.records.map((record) => record.event.seq);
+        expect(seqs).toEqual(seqs.map((_, index) => (seqs[0] ?? 0) + index));
+      }
+    }
+
+    // beforeSeq 语义（loadOlder 前置）：tail + 1 === beforeSeq
+    const before = 4;
+    const older = pageWindow(messages, records[records.length - 1]?.event.seq ?? 0, before, 50);
+    if (older.records.length > 0) {
+      expect(older.records[older.records.length - 1]?.event.seq).toBe(before - 1);
+    }
   });
 
   it("content 映射与 updateQueue（edit/remove/steer）", () => {

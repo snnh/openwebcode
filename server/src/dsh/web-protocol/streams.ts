@@ -196,6 +196,21 @@ export class DshEventBridge {
         this.pendingBySource.set(this.sourceKey(sessionId, requestId), { clientId: stream.clientId, eventId });
         return;
       }
+      case "agent.error": {
+        if (sessionId === undefined) return;
+        // 与上游 `api-session/error(sessionId, message)` 同签名：UI 的「无回合位置的实时失败」出口
+        // （dsh-client-ui-chat 的错误位 / session-controller 的 handleSessionError）
+        const message = asRecord(event.payload).message;
+        if (typeof message !== "string" || message === "") return;
+        stream.emit("api-session/error", [sessionId, message]);
+        return;
+      }
+      case "session.deleted": {
+        if (sessionId === undefined) return;
+        // 删除后侧边栏条目必须消失（`api-session/removed` 此前从不发，条目会残留到下次刷新）
+        stream.emit("api-session/removed", [sessionId]);
+        return;
+      }
       case "permission.resolved": {
         if (sessionId === undefined) return;
         const requestId = asRecord(event.payload).requestId;
@@ -346,7 +361,7 @@ export function buildStreamHandlers(deps: DshWireDeps, bridge: DshEventBridge): 
     }
     handle.send(snapshot.value);
     const cursorValue = (snapshot.value as { cursor?: unknown }).cursor;
-    let cursor = typeof cursorValue === "number" ? cursorValue : 0;
+    let cursor = typeof cursorValue === "number" ? cursorValue : -1;
     // 增量：owc 侧回合结束（agent.state → idle）或会话更新时，重派生事件并只发 seq > cursor 的记录。
     // 逐 token 的 assistant-stream 帧 v1 不发（如实：不编造增量），完成后的完整消息立即下发。
     let sending = false;

@@ -17,6 +17,8 @@ import {
   wireError,
 } from "../src/dsh/web-protocol/wire.js";
 import { buildStreamHandlers, DshEventBridge, type DshWireDeps } from "../src/dsh/web-protocol/streams.js";
+import { buildUnaryHandlers } from "../src/dsh/web-protocol/streams.js";
+import { deriveSessionRecords } from "../src/dsh/web-protocol/session-events.js";
 import { EventBus } from "../src/events/event-bus.js";
 import type { DshProjectionDeps } from "../src/dsh/web-protocol/session-projection.js";
 import type { SessionMeta } from "../src/sessions/types.js";
@@ -69,6 +71,65 @@ function wireDeps(): DshWireDeps & { respondInteraction: ReturnType<typeof vi.fn
     logger: { warn: () => {} },
   } as never;
 }
+
+describe("dsh 会话主路径的实机缺陷回归", () => {
+  it("session/prompt 不等待整轮：agent.run 未被 await（与 REST 202 语义一致）", async () => {
+    const deps = wireDeps();
+    const handlers = buildUnaryHandlers(deps);
+    let release: (() => void) | undefined;
+    // run 永不 resolve（模拟长回合/等待审批）：prompt 必须立刻返回 accepted
+    (deps.projection.agent.run as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<void>((resolve) => { release = () => resolve(); }),
+    );
+    const started = Date.now();
+    const projected = await handlers.get("session/prompt")!({
+      request: { sessionId: "s1", content: [{ type: "text", text: "你好" }] },
+    });
+    expect(projected).toMatchObject({ value: { accepted: true } });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(deps.projection.agent.run).toHaveBeenCalledTimes(1);
+    release?.();
+  });
+
+  it("session/prompt 的后台 run 失败不外泄为 RPC 错误（走日志 + agent.error 事件）", async () => {
+    const deps = wireDeps();
+    const warn = vi.fn();
+    (deps as { projection: DshProjectionDeps }).projection.logger = { warn };
+    (deps.projection.agent.run as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("fetch failed"));
+    const handlers = buildUnaryHandlers(deps);
+    const projected = await handlers.get("session/prompt")!({
+      request: { sessionId: "s1", content: [{ type: "text", text: "你好" }] },
+    });
+    expect(projected).toMatchObject({ value: { accepted: true } });
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+  });
+
+  it("assistant/message 带 source.provider/model（vendor messageRoute 直接读 .length，缺失即整条渲染抛错）", () => {
+    const records = deriveSessionRecords(
+      [{ id: "a1", role: "assistant", content: [{ type: "text", text: "回复" }], createdAt: "2026-01-01T00:00:00.000Z" }],
+      { provider: "mock", model: "mock-chat" },
+    ).records;
+    const message = records.find((record) => record.event.type === "assistant/message")!;
+    const data = message.event.data as { message: { source: { kind: string; provider: string; model: string } }; stream: unknown[] };
+    expect(data.message.source).toEqual({ kind: "model", provider: "mock", model: "mock-chat" });
+    expect(Array.isArray(data.stream)).toBe(true);
+  });
+
+  it("agent.error → api-session/error、session.deleted → api-session/removed（UI 的错误位与侧边栏收敛）", () => {
+    const deps = wireDeps();
+    const bridge = new DshEventBridge(deps);
+    const streams = buildStreamHandlers(deps, bridge);
+    const { frames, sink } = channel();
+    const mux = new DshMuxSession(sink, (endpoint) => streams.get(endpoint));
+    mux.handleText(JSON.stringify({ type: "open", streamId: "1", endpoint: "$events", payload: { args: {} } }));
+    deps.events.publish({ source: "agent", type: "agent.error", sessionId: "s1", payload: { message: "fetch failed", retryable: false } });
+    deps.events.publish({ source: "session", type: "session.deleted", sessionId: "s1", payload: {} });
+    const emits = frames.filter((frame) => frame.type === "item" && (frame as { value?: { type?: string } }).value?.type === "emit")
+      .map((frame) => (frame as unknown as { value: { type: string; event: string; args: unknown[] } }).value);
+    expect(emits).toContainEqual({ type: "emit", event: "api-session/error", args: ["s1", "fetch failed"] });
+    expect(emits).toContainEqual({ type: "emit", event: "api-session/removed", args: ["s1"] });
+  });
+});
 
 describe("dsh unary 信封", () => {
   it("解析合法请求并取 args", () => {
@@ -250,8 +311,8 @@ describe("dsh 真实逻辑流端点（不经假解析器）", () => {
     expect(value.value.jobs).toEqual({});
     // Host 级：覆盖全部会话（该端点没有 sessionId 参数，不能只给一个会话）
     expect(Object.keys(value.value.projections)).toEqual(["s1"]);
-    // asOfSeq 口径 = 记录 seq（1 条 user 消息 → turn/start+step/start+user/message+step/end+turn/end = 5）
-    expect(value.value.projections.s1).toMatchObject({ asOfSeq: 5 });
+    // asOfSeq 口径 = 末条记录 seq（1 条 user 消息 → 5 条记录，seq 0 基 → 水位 4）
+    expect(value.value.projections.s1).toMatchObject({ asOfSeq: 4 });
     expect(frames.some((frame) => frame.type === "error")).toBe(false);
   });
 
