@@ -246,6 +246,8 @@ interface ActiveCommand {
 interface ShellRecord {
   key: string;
   ptyId: number;
+  /** core pty.* 归属校验的显式会话 id（core 侧必填并与 pty.open 登记比对）。 */
+  sessionId: string;
   shell: ResolvedShell;
   dead: boolean;
   active: ActiveCommand | null;
@@ -303,6 +305,11 @@ export class PersistentShellManager {
     // destroy 的 exit/abort 路径结算，删除条目不影响其收尾）
     for (const key of [...this.queues.keys()]) {
       if (key.startsWith(prefix)) this.queues.delete(key);
+    }
+    // 初始化失败缓存（key = session:backend）同步清理：环境修复（如后端/沙盒配置切换）
+    // 后再命令必须能重试建壳；不清理既是无界增长，也让整个会话永久退化到一次性 exec。
+    for (const key of [...this.initFailed]) {
+      if (key.startsWith(prefix)) this.initFailed.delete(key);
     }
   }
 
@@ -390,6 +397,7 @@ export class PersistentShellManager {
     const record: ShellRecord = {
       key,
       ptyId: opened.ptyId,
+      sessionId: session.id,
       shell,
       dead: false,
       active: null,
@@ -560,7 +568,7 @@ export class PersistentShellManager {
 
   private closePty(record: ShellRecord): void {
     this.core.removePtyEvents?.(record.ptyId);
-    void this.core.closePty?.({ ptyId: record.ptyId }).catch(() => undefined);
+    void this.core.closePty?.({ ptyId: record.ptyId, sessionId: record.sessionId }).catch(() => undefined);
   }
 
   private destroy(record: ShellRecord): void {
@@ -576,14 +584,14 @@ export class PersistentShellManager {
     for (const char of payload) {
       const size = Buffer.byteLength(char, "utf8");
       if (bytes + size > INPUT_CHUNK_BYTES && chunk) {
-        await this.core.inputPty({ ptyId: shell.ptyId, data: Buffer.from(chunk, "utf8").toString("base64") });
+        await this.core.inputPty({ ptyId: shell.ptyId, data: Buffer.from(chunk, "utf8").toString("base64"), sessionId: shell.sessionId });
         chunk = "";
         bytes = 0;
       }
       chunk += char;
       bytes += size;
     }
-    if (chunk) await this.core.inputPty({ ptyId: shell.ptyId, data: Buffer.from(chunk, "utf8").toString("base64") });
+    if (chunk) await this.core.inputPty({ ptyId: shell.ptyId, data: Buffer.from(chunk, "utf8").toString("base64"), sessionId: shell.sessionId });
   }
 }
 

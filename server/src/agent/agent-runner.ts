@@ -9,6 +9,7 @@ import { fetchMedia } from "../media-fetch.js";
 import { MAX_IMAGE_BASE64_CHARS, MAX_VIDEO_BYTES } from "../media-limits.js";
 import { sniffMedia } from "../media-sniff.js";
 import { ContextManager, selectCacheBreakpoints, type TurnLedger } from "../context/context-manager.js";
+import type { ContextLedger } from "../context/context-types.js";
 import { evictContext } from "../extensions/context-saver/index.js";
 import type { Compactor, CompactResult } from "../context/compactor.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
@@ -723,10 +724,17 @@ function activePathOf(session: { messages: ChatMessage[]; activeLeafId?: string 
   return activePathMessages(session.messages, session.activeLeafId ?? session.messages.at(-1)?.id);
 }
 
-/** 活动路径上最后一次 kind=plan/date 的注入消息索引；无则 -1。 */
-function lastInjectionIndex(path: ChatMessage[], kind: "plan" | "goal" | "date"): number {
+/**
+ * 活动路径上最后一次 kind=plan/goal/date 的注入消息索引；无则 -1。
+ * excludeVariant：跳过该变体（plan 的 "exit" 提醒不算「plan 引导」——否则 exit 注入
+ * 自身会成为 lastPlan，planExit 判定里 exitAfter 恒 false，每次 run 重复注入 exit 提醒）。
+ */
+function lastInjectionIndex(path: ChatMessage[], kind: "plan" | "goal" | "date", excludeVariant?: string): number {
   for (let index = path.length - 1; index >= 0; index -= 1) {
-    if (path[index]!.id.startsWith(`${INJECTION_ID_PREFIX}${kind}:`)) return index;
+    const id = path[index]!.id;
+    if (!id.startsWith(`${INJECTION_ID_PREFIX}${kind}:`)) continue;
+    if (excludeVariant !== undefined && id.startsWith(`${INJECTION_ID_PREFIX}${kind}:${excludeVariant}:`)) continue;
+    return index;
   }
   return -1;
 }
@@ -808,6 +816,9 @@ interface RunPerfRecord {
 
 const PERF_RING_SIZE = 20;
 
+/** persist=false 的 usage 中间帧复用成本快照的 TTL：窗口内不重复 load ledger。 */
+const USAGE_COST_SNAPSHOT_TTL_MS = 2_000;
+
 export class AgentRunner {
   private readonly running = new Map<string, AbortController>();
   private readonly coreGateway: CoreGateway;
@@ -828,6 +839,8 @@ export class AgentRunner {
   /** read_artifact 粘性注入集：视图出现 artifact 引用后该会话持续注入（防工具表逐轮翻转击穿前缀缓存）。 */
   private readonly artifactToolSticky = new Set<string>();
   private readonly mcpWarningSignatures = new Map<string, string>();
+  /** 会话累计成本快照（sessionId → {at, cost}）：persist=false 的 usage 中间帧取 sessionCost 用，见 recordUsageEvent。 */
+  private readonly usageCostSnapshots = new Map<string, { at: number; cost: ContextLedger["cost"] }>();
   /** 可编辑提示词覆盖：按 cwd 缓存一次，避免每轮 IO；首次构建时读取。 */
   private readonly promptOverrideCache = new Map<string, PromptOverride>();
   /** 工具形态别名与参数归一（实现见 tool-alias.ts）：每轮随工具表重建，run 结束清理。 */
@@ -1129,7 +1142,9 @@ export class AgentRunner {
   private async refreshInjectionsMidLoop(sessionId: string, session: { messages: ChatMessage[]; activeLeafId?: string | null; agentMode?: string }, toolsEnabled: boolean): Promise<void> {
     if (session.agentMode !== "plan") {
       if (session.agentMode === "goal") return; // goal 引导按用户消息 full，轮内不刷新
-      await this.writeInjectionsForSession(sessionId, session, {}, toolsEnabled, { dateOnly: true });
+      // flags 必须带 dateRefresh：日期块本身由 `if (flags.dateRefresh)` 门控，
+      // 传空对象会让轮内日期刷新成为空操作（长运行跨午夜拿不到新日期锚点）。
+      await this.writeInjectionsForSession(sessionId, session, { dateRefresh: true }, toolsEnabled, { dateOnly: true });
       return;
     }
     const path = activePathOf(session);
@@ -1163,7 +1178,9 @@ export class AgentRunner {
         if (flags.planFull) queue.push({ kind: "plan", variant: "full", text: planFullReminder(toolsEnabled) });
         if (flags.goalFull) queue.push({ kind: "goal", variant: "full", text: goalModeReminder() });
         if (flags.planExit) {
-          const lastPlan = lastInjectionIndex(path, "plan");
+          // lastPlan 必须排除 exit 注入：exit 的 id 也以 inj:plan: 开头，
+          // 把它当 lastPlan 会让「exit 之后没有 exit」恒成立 → 每轮 run 重复注入。
+          const lastPlan = lastInjectionIndex(path, "plan", "exit");
           let exitAfter = false;
           for (let index = lastPlan + 1; index < path.length; index += 1) {
             if (path[index]!.id.startsWith(`${INJECTION_ID_PREFIX}plan:exit:`)) { exitAfter = true; break; }
@@ -2818,6 +2835,10 @@ export class AgentRunner {
       ...(session.reviewModel ? { reviewModel: session.reviewModel } : {}),
       ...(session.toolsAllow ? { toolsAllow: session.toolsAllow } : {}),
       ...(session.toolsDeny ? { toolsDeny: session.toolsDeny } : {}),
+      // updateConfig 对这两项是「undefined = 清除」语义：不透传会在每次批准计划时静默
+      // 抹掉会话的模型降级链与 ~/.ssh 沙盒挂载配置（与上方逐项透传同一纪律）。
+      ...(session.fallbackModels?.length ? { fallbackModels: session.fallbackModels } : {}),
+      ...(session.sshCredentials ? { sshCredentials: true } : {}),
     });
     this.events.publish({ source: "session", type: "session.config_updated", sessionId, payload: updated });
   }
@@ -2854,6 +2875,13 @@ export class AgentRunner {
     const prepared: Array<{ call: (typeof toolCalls)[number]; result?: ToolResult; run?: () => Promise<ToolResult> }> = [];
     for (const call of toolCalls) {
       const entry: { call: (typeof toolCalls)[number]; result?: ToolResult; run?: () => Promise<ToolResult> } = { call };
+      // 拦截路径（不可用/扩展 beforeTool/重复调用/权限拒绝/PreToolUse 否决）也要进 prepared：
+      // 「每条落盘 tool_call 必须有对应 tool_result」的不变量对 fan-out 与串行路径同等成立，
+      // 直接 continue 会让模型看不到拒绝原因且历史形状非法。
+      const blocked = (content: string): void => {
+        entry.result = { type: "tool_result", toolCallId: call.id, content, isError: true };
+        prepared.push(entry);
+      };
       try {
         // 1) 可用性 + 扩展前处理 + 重复守卫：与串行路径同一顺序与判定
         const advertisedName = isSubagentToolName(call.name) ? SUBAGENT_TOOL : call.name;
@@ -2865,14 +2893,14 @@ export class AgentRunner {
               ? `Tool is not available in this turn: ${call.name}`
               : `Tool calls are disabled for the selected model: ${call.name}`;
           this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId: call.id, error: content } });
-          entry.result = { type: "tool_result", toolCallId: call.id, content, isError: true };
+          blocked(content);
           continue;
         }
         const extensionOutcome = this.extensions
           ? await this.extensions.beforeTool({ sessionId, cwd: session.cwd, tool: call.name, input: call.input })
           : { sessionId, cwd: session.cwd, tool: call.name, input: call.input };
         if (extensionOutcome.blocked) {
-          entry.result = { type: "tool_result", toolCallId: call.id, content: extensionOutcome.reason ?? "Blocked by extension", isError: true };
+          blocked(extensionOutcome.reason ?? "Blocked by extension");
           continue;
         }
         const effectiveInput = normalizeBuiltinToolInput(
@@ -2883,13 +2911,13 @@ export class AgentRunner {
         if (repeated >= 3) {
           const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
           this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, ...boundToolEventInput(effectiveInput), count: repeated } });
-          entry.result = { type: "tool_result", toolCallId: call.id, content, isError: true };
+          blocked(content);
           continue;
         }
         // 2) 授权（plan 门禁/权限链，可挂起）与 PreToolUse 钩子：逐调用串行
         const permission = await this.authorizeTool(sessionId, call.name, effectiveInput, controller.signal);
         if (!permission.allowed) {
-          entry.result = { type: "tool_result", toolCallId: call.id, content: permission.reason ?? "Tool permission denied", isError: true };
+          blocked(permission.reason ?? "Tool permission denied");
           continue;
         }
         const builtinName = this.toolAliases.resolveBuiltinToolName(sessionId, call.name);
@@ -2897,7 +2925,7 @@ export class AgentRunner {
           ? await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: builtinName, input: effectiveInput, ...(builtinName !== call.name ? { toolAlias: call.name } : {}) })
           : undefined;
         if (outcome?.blocked) {
-          entry.result = { type: "tool_result", toolCallId: call.id, content: outcome.reason ?? "Blocked by hook", isError: true };
+          blocked(outcome.reason ?? "Blocked by hook");
           continue;
         }
         entry.run = () => this.executeTool(sessionId, call.name, call.id, effectiveInput, controller.signal, {
@@ -4208,8 +4236,11 @@ export class AgentRunner {
     this.perfRecords.delete(sessionId);
     this.mcpWarningSignatures.delete(sessionId);
     this.artifactToolSticky.delete(sessionId);
+    this.usageCostSnapshots.delete(sessionId);
     this.todos.delete(sessionId);
     if (cwd) this.promptOverrideCache.delete(cwd);
+    // 记忆文件指纹缓存按路径共享（不按会话）：cwd 级条目随会话回收，cwd 未知时全清（纯缓存，代价仅一次重读）
+    this.memorySections.discard(cwd);
   }
 
   /**
@@ -4352,7 +4383,9 @@ export class AgentRunner {
     // sessionCost 取当前已记账累计，本轮最后一条（persist）才落账。
     // 主循环经轮级句柄记账（commitTurn 统一落盘）；子代理不传句柄，保持自载自存即时落盘。
     const persist = options.persist !== false;
-    const ledger = persist ? await context.recordUsage(event, recordedCost, options.turn) : await context.load();
+    const ledgerCost = persist
+      ? this.rememberSessionCost(sessionId, (await context.recordUsage(event, recordedCost, options.turn)).cost)
+      : await this.sessionCostSnapshot(sessionId, context);
     if (persist) {
       // 全局用量日志（成本报表数据源）：失败只记 stderr，不阻断会话
       void this.usageLog?.record({
@@ -4383,9 +4416,26 @@ export class AgentRunner {
           ...(usageCost.usd ? { usd: usageCost.usd.amount } : {}),
           ...(usageCost.cny ? { cny: usageCost.cny.amount } : {}),
         },
-        sessionCost: ledger.cost,
+        sessionCost: ledgerCost,
       },
     });
+  }
+
+  /**
+   * persist=false（逐 chunk 的 usage 中间帧）只经 WS 转发、不落账，但事件载荷要带会话
+   * 累计成本。逐帧都 context.load() 会读盘 + 克隆整本 ledger（中介帧可达每 turn 数十次），
+   * 成本又只在 commitTurn/其它记账路径落盘后变化，故按短 TTL 复用上一次快照：
+   * 落账路径（persist）每次都会刷新它，中间帧最多 O(TTL) 陈旧，终态由最后一条 persist 事件给出。
+   */
+  private async sessionCostSnapshot(sessionId: string, context: ContextManager): Promise<ContextLedger["cost"]> {
+    const cached = this.usageCostSnapshots.get(sessionId);
+    if (cached && Date.now() - cached.at < USAGE_COST_SNAPSHOT_TTL_MS) return cached.cost;
+    return this.rememberSessionCost(sessionId, (await context.load()).cost);
+  }
+
+  private rememberSessionCost(sessionId: string, cost: ContextLedger["cost"]): ContextLedger["cost"] {
+    this.usageCostSnapshots.set(sessionId, { at: Date.now(), cost });
+    return cost;
   }
 
   private recordToolCall(sessionId: string, name: string, input: Record<string, unknown>): number {
@@ -4547,8 +4597,12 @@ export class AgentRunner {
     // Keep the legacy UI/CLI completion signal while REST snapshots expose the
     // terminal state above. This event intentionally does not mutate the Run.
     this.events.publish({ source: "agent", type: "agent.state", sessionId, runId: run.id, payload: { state: "idle" } });
-    this.runs.delete(sessionId);
-    this.runWrites.delete(sessionId);
+    // 身份比较后再删：本 run 的收尾 writeRun 期间 running 已放行，同会话可能已经建起新 run
+    //（startFollowUp/用户新消息）；无条件 delete 会把新 run 的内存快照与写链一起抹掉。
+    if (this.runs.get(sessionId) === run) {
+      this.runs.delete(sessionId);
+      this.runWrites.delete(sessionId);
+    }
   }
 
   private queueRunWrite(sessionId: string, run: AgentRunSnapshot, publishState: boolean): void {

@@ -4,6 +4,12 @@ import path from "node:path";
 const MEMORY_SECTION_LIMIT = 8_000;
 
 /**
+ * 记忆文件指纹缓存条目上限：缓存按绝对路径跨会话共享，长期运行会随访问过的
+ * cwd/dataDir 无界增长；超限逐出最旧条目（LRU，纯缓存逐出只多一次重读）。
+ */
+const MEMORY_FILE_CACHE_LIMIT = 64;
+
+/**
  * 长期记忆/项目约定注入段构建（自 agent-runner.ts 抽出的纯代码移动，行为不变）：
  * host fs 直读 CLAUDE.md、AGENTS.md、项目 .owc/memory.md 与全局 <dataDir>/memory.md；
  * 每节独立标题、上限 8000 字符，读失败一律按不存在处理，绝不 throw 阻断 agent 循环。
@@ -13,6 +19,18 @@ export class MemorySectionBuilder {
   private readonly memoryFileCache = new Map<string, { mtimeMs: number; size: number; content: string }>();
 
   constructor(private readonly dataDir?: string) {}
+
+  /** 会话销毁/工作区回收时清理缓存：cwd 缺失时全清（缓存可重建，不影响正确性）。 */
+  discard(cwd?: string): void {
+    if (!cwd) {
+      this.memoryFileCache.clear();
+      return;
+    }
+    const prefix = `${cwd}${path.sep}`;
+    for (const filePath of [...this.memoryFileCache.keys()]) {
+      if (filePath === cwd || filePath.startsWith(prefix)) this.memoryFileCache.delete(filePath);
+    }
+  }
 
   async build(cwd: string): Promise<string> {
     const sections: string[] = [];
@@ -43,7 +61,12 @@ export class MemorySectionBuilder {
       return "";
     }
     const cached = this.memoryFileCache.get(filePath);
-    if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) return cached.content;
+    if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+      // LRU 接触：命中的条目移到最新位（Map 保留插入顺序，逐出取最旧）
+      this.memoryFileCache.delete(filePath);
+      this.memoryFileCache.set(filePath, cached);
+      return cached.content;
+    }
     let content = "";
     try {
       content = await readFile(filePath, "utf8");
@@ -53,6 +76,11 @@ export class MemorySectionBuilder {
       return "";
     }
     this.memoryFileCache.set(filePath, { mtimeMs: stats.mtimeMs, size: stats.size, content });
+    while (this.memoryFileCache.size > MEMORY_FILE_CACHE_LIMIT) {
+      const oldest = this.memoryFileCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.memoryFileCache.delete(oldest);
+    }
     return content;
   }
 }
