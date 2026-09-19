@@ -393,7 +393,10 @@ describe("ZfsBackend", () => {
     expect(await readFile(path.join(workspace, "mod.txt"), "utf8")).toBe("old");
     // deny 文件保持回退前的内容与权限位（不被快照旧值覆盖）
     expect(await readFile(path.join(workspace, ".env"), "utf8")).toBe("SECRET=current");
-    expect((await stat(path.join(workspace, ".env"))).mode & 0o777).toBe(0o600);
+    // 权限位只在 POSIX 断言：Windows 的 stat().mode 是合成值（全部 0o666），chmod 语义也不同
+    if (process.platform !== "win32") {
+      expect((await stat(path.join(workspace, ".env"))).mode & 0o777).toBe(0o600);
+    }
     expect(await readFile(path.join(workspace, ".owc", "mcp.json"), "utf8")).toBe("current-mcp");
     // 回退前不存在的 deny 文件不凭空造出
     await expect(stat(path.join(workspace, ".owc", "hooks.json"))).rejects.toThrow();
