@@ -29,10 +29,16 @@ function fiberPhaseOf(status: DshPluginStatus, enabled: boolean): DshPluginFiber
   }
 }
 
-/** `pluginInventory/list` 的返回值（`PluginInventorySnapshot`）。 */
-export function projectPluginInventory(plugins: readonly DshPluginInfo[]): Record<string, unknown> {
+/**
+ * `pluginInventory/list` 的返回值（`PluginInventorySnapshot`）。
+ *
+ * `managementAvailable`：该部署是否开放插件管理（启停）。false 时 vendor UI 会**整页**显示
+ * 「本部署没有可管理的 profile，无法安装或启停插件」（连条目都不列），因此只要装了插件的部署
+ * 就该按实际能力上报 —— 见 {@link DshPluginManagerDeps.setEnabled}。
+ */
+export function projectPluginInventory(plugins: readonly DshPluginInfo[], managementAvailable = false): Record<string, unknown> {
   return {
-    managementAvailable: false,
+    managementAvailable: managementAvailable,
     entries: plugins.map((plugin) => ({
       entryId: plugin.id,
       moduleName: plugin.name,

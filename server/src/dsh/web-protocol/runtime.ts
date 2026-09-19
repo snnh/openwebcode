@@ -24,6 +24,7 @@ import { buildOwcStatus, loadBridgePlugin } from "./bridge.js";
 import { projectModelCatalog, projectSelectModel, type DshModelBridge } from "./models.js";
 import type { DshWireDeps } from "./streams.js";
 import type { DshPluginInfo } from "../loader.js";
+import type { DshSettingsSources } from "./settings-face.js";
 
 export interface DshCompatRuntimeOptions {
   /** 内置 vendor 目录（`server/assets/dsh-web`）。 */
@@ -40,8 +41,10 @@ export interface DshCompatRuntimeOptions {
   home: string;
   /** 模型事实（`session/modelCatalog` / `session/selectModel` / 新建会话默认模型）；缺省则模型面不下发。 */
   models?: DshModelBridge;
-  /** dsh 插件清单（`pluginInventory/list`）；缺省则端点不下发。 */
+  /** dsh 插件清单（`pluginInventory/list` 与 `pluginManager/*` 的事实来源）；缺省则端点不下发。 */
   dshPlugins?: () => readonly DshPluginInfo[];
+  /** 设置/凭据面的事实来源（`settings/describe`、`credentials/describe`、`llm/listConfigurableProviders`）。 */
+  settings?: DshSettingsSources;
   /** owc 服务版本（`/dsh-owc/status` 与桥接插件展示用）。 */
   version: () => string;
   /** owc 主端口（桥接插件回跳 URL 用）。 */
@@ -185,9 +188,15 @@ export class DshCompatRuntime {
         models: {
           catalog: () => projectModelCatalog(models),
           select: (args) => projectSelectModel(this.modelSelectDeps(models), args),
+          providers: () => models.providers(),
         },
       }),
-      ...(this.options.dshPlugins === undefined ? {} : { pluginInventory: this.options.dshPlugins }),
+      ...(this.options.dshPlugins === undefined ? {} : {
+        pluginInventory: this.options.dshPlugins,
+        // 插件管理面（只读）：列出插件、开关置灰并给出原因；启停在 owc 侧 dsh.json
+        pluginManager: { plugins: this.options.dshPlugins },
+      }),
+      ...(this.options.settings === undefined ? {} : { settings: this.options.settings }),
       logger: { warn: (message) => this.warn(message) },
     };
     // 桥接插件产物与 vendor 同级（server/assets/dsh-bridge/client.js）；缺失时不阻塞 dsh 模式

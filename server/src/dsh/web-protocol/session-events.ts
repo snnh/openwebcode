@@ -275,6 +275,29 @@ export function sessionRecordsCount(messages: readonly ChatMessage[], closeLastT
   return records;
 }
 
+/**
+ * 当前（末轮）回合的 turn/step：流式 attempt 的 start 帧必须与随后 assistant/message 记录的
+ * `data.turn/step` 一致（vendor 客户端按二者匹配结算），因此这里从同一套派生规则里取。
+ */
+export function currentTurnStep(messages: readonly ChatMessage[]): { turn: number; step: number } {
+  const { records } = deriveSessionRecords(messages);
+  let turn = 1;
+  let step = 1;
+  for (const record of records) {
+    if (record.event.type === "turn/start") {
+      const value = (record.event.data as { turn?: unknown }).turn;
+      if (typeof value === "number") turn = value;
+      step = 1;
+      continue;
+    }
+    if (record.event.type === "step/start") {
+      const value = (record.event.data as { step?: unknown }).step;
+      if (typeof value === "number") step = value;
+    }
+  }
+  return { turn, step };
+}
+
 /** 末条记录的 seq（水位口径，空会话 = -1 = vendor 的 emptyCursor）。 */
 export function sessionLastSeq(messages: readonly ChatMessage[], closeLastTurn = true): number {
   return sessionRecordsCount(messages, closeLastTurn) - 1;

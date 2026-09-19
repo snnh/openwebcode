@@ -360,6 +360,17 @@ const dshCompat = new DshCompatRuntime({
   // 模型面：dsh 模型选择器（catalog/selectModel）与新建会话的默认模型，事实来源与 REST 同一套
   models: createDshModelBridge({ providers, models, settings }),
   dshPlugins: () => extensions.dshPlugins(),
+  // 设置/凭据面：owc 服务商档案（provider-profiles.json）的只读投影
+  settings: {
+    profiles: () =>
+      providerProfiles.view().modelProviders.map((profile) => ({
+        id: profile.id,
+        enabled: profile.enabled,
+        interfaceType: profile.interfaceType,
+        ...(profile.baseURL === undefined ? {} : { baseURL: profile.baseURL }),
+        hasApiKey: profile.hasApiKey,
+      })),
+  },
   version: () => getServerVersion(),
   mainPort: () => settings.effective().port,
   logger: {

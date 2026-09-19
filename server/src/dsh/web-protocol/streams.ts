@@ -9,6 +9,21 @@ import type { DshMuxEndpointHandler, DshStreamHandle } from "./mux.js";
 import { DshEventStream, parseEventResult, type DshEventResult, type DshWaterfallOutcome } from "./events.js";
 import { projectPluginInventory } from "./plugin-inventory.js";
 import {
+  applyBundleEnabled,
+  applyPluginEnabled,
+  projectPluginBundles,
+  projectPluginEntries,
+  rejectedBundleMutation,
+  type DshPluginManagerDeps,
+} from "./plugin-manager.js";
+import {
+  parseCredentialRefs,
+  projectConfigurableProviders,
+  projectCredentialsDescribe,
+  projectSettingsDescribe,
+  type DshSettingsSources,
+} from "./settings-face.js";
+import {
   projectSessionAttachment,
   projectSessionCancel,
   projectSessionFollowSnapshot,
@@ -20,11 +35,14 @@ import {
   projectSessionUpdateQueue,
   projectWorkspaceBaseline,
   sessionRecordsSince,
+  sessionTurnStep,
   type DshProjected,
   type DshProjectionDeps,
 } from "./session-projection.js";
 import type { DshModelSelection } from "./models.js";
 import { DSH_EVENTS_STREAM, wireError } from "./wire.js";
+import { DshAssistantStreamTracker, type DshAssistantStreamFrame } from "./assistant-stream.js";
+import { randomUUID } from "node:crypto";
 
 /** 翻译层依赖（owc 侧能力的窄接口）。 */
 export interface DshWireDeps {
@@ -39,9 +57,18 @@ export interface DshWireDeps {
   models?: {
     catalog(): Record<string, unknown>;
     select(args: Record<string, unknown>): Promise<DshProjected<{ selected: DshModelSelection }>>;
+    /** 已注册（可路由）服务商名：`llm/listProviders` 的事实来源。 */
+    providers(): string[];
   };
   /** dsh 插件清单投影（`pluginInventory/list`）；缺省时该端点不下发。 */
   pluginInventory?: () => readonly DshPluginInfo[];
+  /**
+   * dsh 插件管理面（`pluginManager/*`）：缺省时端点不下发（客户端报未实现）。
+   * 只注入 `plugins()` 而无 `setEnabled` 时清单仍可显示，但 UI 会按只读渲染。
+   */
+  pluginManager?: DshPluginManagerDeps;
+  /** 设置 / 凭据面（`settings/describe`、`credentials/describe`）；缺省时端点不下发。 */
+  settings?: DshSettingsSources;
   /** 应答 owc 待审批（decision: allow 时会恢复工具执行）。 */
   respondPermission(sessionId: string, requestId: string, decision: "allow" | "deny", reason?: string): Promise<void>;
   /** 应答 owc 待回答提问。 */
@@ -91,6 +118,44 @@ export function buildUnaryHandlers(deps: DshWireDeps): Map<string, DshUnaryHandl
   handlers.set("session/prompt", (args) => projectSessionPrompt(deps.projection, args));
   handlers.set("session/cancel", (args) => projectSessionCancel(deps.projection, args));
   handlers.set("session/updateQueue", (args) => projectSessionUpdateQueue(deps.projection, args));
+  if (deps.pluginManager !== undefined) {
+    const manager = deps.pluginManager;
+    handlers.set("pluginManager/listBundles", async () => ({ value: projectPluginBundles(manager) }));
+    // 位置参数：descriptor 的 parameters 是 [name]（可选），客户端 wire 成 args = { name? }
+    handlers.set("pluginManager/listPlugins", async (args) => {
+      const name = typeof args.name === "string" && args.name !== "" ? args.name : undefined;
+      return { value: projectPluginEntries(manager, name) };
+    });
+    handlers.set("pluginManager/setPluginEnabled", async (args) => {
+      const id = typeof args.id === "string" ? args.id : undefined;
+      return { value: await applyPluginEnabled(manager, id, args.enabled) };
+    });
+    handlers.set("pluginManager/setBundleEnabled", async (args) => {
+      const name = typeof args.name === "string" ? args.name : undefined;
+      return { value: await applyBundleEnabled(manager, name, args.enabled) };
+    });
+    // 安装/卸载：owc 侧不做面板内包管理，如实回 not-removable（不改状态、不假装成功）
+    handlers.set("pluginManager/installBundle", async (args) => ({
+      value: rejectedBundleMutation(typeof args.spec === "string" ? args.spec : "unknown", "management-required"),
+    }));
+    handlers.set("pluginManager/removeBundle", async (args) => ({
+      value: rejectedBundleMutation(typeof args.name === "string" ? args.name : "unknown", "not-removable"),
+    }));
+  }
+  if (deps.settings !== undefined) {
+    const settings = deps.settings;
+    handlers.set("llm/listProviders", async () => ({
+      value: deps.models === undefined ? [] : deps.models.providers().map((id) => ({ id, name: id })),
+    }));
+    handlers.set("llm/listConfigurableProviders", async () => ({ value: projectConfigurableProviders(settings) }));
+    handlers.set("settings/describe", async () => ({ value: projectSettingsDescribe(settings) }));
+    handlers.set("credentials/describe", async (args) => {
+      const parsed = parseCredentialRefs(args.refs);
+      return "error" in parsed
+        ? { error: wireError("gateway/bad-request", parsed.error, { endpoint: "credentials/describe" }) }
+        : { value: projectCredentialsDescribe(settings, parsed) };
+    });
+  }
   handlers.set("session/attachment", (args) => projectSessionAttachment(deps.projection, args));
   handlers.set("session/page", (args) => projectSessionPage(deps.projection, args));
   const models = deps.models;
@@ -100,7 +165,11 @@ export function buildUnaryHandlers(deps: DshWireDeps): Map<string, DshUnaryHandl
   }
   const inventory = deps.pluginInventory;
   if (inventory !== undefined) {
-    handlers.set("pluginInventory/list", () => Promise.resolve({ value: projectPluginInventory(inventory()) }));
+    handlers.set("pluginInventory/list", () => Promise.resolve({
+      // managementAvailable 决定 vendor 插件页是否**列表**（false 时整页显示「无可管理 profile」）；
+      // 逐条开关的可用性由 pluginManager/listPlugins 的 readOnlyReason 表达（本部署只读）
+      value: projectPluginInventory(inventory(), true),
+    }));
   }
   return handlers;
 }
@@ -362,11 +431,41 @@ export function buildStreamHandlers(deps: DshWireDeps, bridge: DshEventBridge): 
     handle.send(snapshot.value);
     const cursorValue = (snapshot.value as { cursor?: unknown }).cursor;
     let cursor = typeof cursorValue === "number" ? cursorValue : -1;
-    // 增量：owc 侧回合结束（agent.state → idle）或会话更新时，重派生事件并只发 seq > cursor 的记录。
-    // 逐 token 的 assistant-stream 帧 v1 不发（如实：不编造增量），完成后的完整消息立即下发。
+    /**
+     * 助手流式增量（`assistant-stream` 帧）：把 owc 的正文/思考 delta 逐字投影给 dsh UI。
+     *
+     * 一致性约束（vendor 客户端）：① 每帧 revision = 上一帧 + 1；② chunk 的 index 在 attempt 内密排；
+     * ③ 开了 attempt 就必须发 `end`（否则落盘的 assistant/message 会被客户端挂起而不显示）。
+     * 因此 durable 记录下发路径与 end 帧在同一循环里联动（见下）。
+     */
+    const stream = new DshAssistantStreamTracker(() => randomUUID());
+    const sendFrames = (frames: readonly DshAssistantStreamFrame[]): void => {
+      for (const frame of frames) if (!handle.cancelled) handle.send(frame);
+    };
+    // 增量：owc 侧回合结束（agent.state）或会话更新时，重派生事件并只发 seq > cursor 的记录。
     let sending = false;
     const listener = (event: AppEvent): void => {
       if (event.sessionId !== sessionId) return;
+      // 正文/思考 delta：直接投影为瞬态帧（不等落盘，实现回合内逐字渲染）
+      if (event.type === "message.delta" || event.type === "message.thinking_delta") {
+        const text = asRecord(event.payload).text;
+        if (typeof text !== "string" || text === "") return;
+        void (async () => {
+          try {
+            const turnStep = await sessionTurnStep(deps.projection, sessionId);
+            sendFrames(stream.onDelta(
+              event.type === "message.delta" ? "text" : "reasoning",
+              text,
+              Date.parse(event.createdAt) || Date.now(),
+              cursor,
+              turnStep,
+            ));
+          } catch (error) {
+            deps.logger.warn(`dsh assistant-stream 增量失败：${error instanceof Error ? error.message : String(error)}`);
+          }
+        })();
+        return;
+      }
       if (event.type !== "agent.state" && event.type !== "session.updated") return;
       if (sending) return;
       sending = true;
@@ -377,8 +476,16 @@ export function buildStreamHandlers(deps: DshWireDeps, bridge: DshEventBridge): 
             if (handle.cancelled) return;
             handle.send(record);
             const seq = (record.event as { seq?: unknown }).seq;
-            if (typeof seq === "number") cursor = seq;
+            if (typeof seq === "number") {
+              cursor = seq;
+              // 助手消息落盘即结算本次流式 attempt（顺序：durable 记录在前、end 帧在后，
+              // 与 vendor 客户端的 pending→settlement 折叠一致）
+              if ((record.event as { type?: unknown }).type === "assistant/message") sendFrames(stream.onSettled(seq));
+            }
           }
+          // 回合结束仍未结算（被中断 / 无助手消息）：以 abandoned 收尾，客户端丢弃瞬态内容
+          const state = asRecord(event.payload).state;
+          if (event.type === "agent.state" && state === "idle" && stream.active) sendFrames(stream.onAbandoned());
         } catch (error) {
           deps.logger.warn(`dsh session/follow 增量失败：${error instanceof Error ? error.message : String(error)}`);
         } finally {
