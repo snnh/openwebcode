@@ -93,8 +93,28 @@ function toDshBlocks(message: ChatMessage, blocks: readonly MessageContent[]): u
   return result;
 }
 
+/**
+ * 消息的模型归属（会话级 provider/model）：`assistant/message.message.source` 的
+ * `provider`/`model` 是 vendor UI 的**必读字段**（`dsh-client-ui-chat` 的 `messageRoute()` 直接
+ * `message.source.provider.length`），缺失即整条会话渲染抛错。owc 消息不逐条记录归属，
+ * 用会话当前 provider/model 投影（会话内切模型时历史条目的归属如实取当前值——比留白崩溃好，
+ * 也与「模型徽标」的展示意图一致）。
+ */
+export interface DshMessageAttribution {
+  provider: string;
+  model: string;
+}
+
+/** 无归属信息时的兜底：空串（vendor 侧 `messageRoute` 对空串返回 undefined = 不显示徽标）。 */
+const NO_ATTRIBUTION: DshMessageAttribution = { provider: "", model: "" };
+
 /** 一条消息产生的 wire 事件（turn/step 由调用方给出）；surface-eligible 的事件带 surfaceOp。 */
-function eventsForMessage(message: ChatMessage, turn: number, step: number): Array<{ type: string; time: number; data: unknown; surfaceOp?: "append" }> {
+function eventsForMessage(
+  message: ChatMessage,
+  turn: number,
+  step: number,
+  attribution: DshMessageAttribution = NO_ATTRIBUTION,
+): Array<{ type: string; time: number; data: unknown; surfaceOp?: "append" }> {
   const time = Date.parse(message.createdAt) || 0;
   if (message.role === "assistant") {
     // 先补 tool/call（顺序与真实会话一致：调用先于汇总消息），再发汇总消息
@@ -118,8 +138,8 @@ function eventsForMessage(message: ChatMessage, turn: number, step: number): Arr
             id: message.id,
             role: "assistant",
             content: toDshBlocks(message, message.content),
-            // 产出方归属：owc 消息不带 provider/model，按会话级信息无法逐条还原，留空如实
-            source: { kind: "model" },
+            // 产出方归属：provider/model 必填（vendor UI 直接读 .length）；owc 不逐条记录，用会话级归属
+            source: { kind: "model", provider: attribution.provider, model: attribution.model },
           },
           // 精确增量打包（assistant-stream）v1 为空数组：不编造 token 级增量
           stream: [],
@@ -167,16 +187,24 @@ function firstToolCallId(message: ChatMessage): string {
 
 /**
  * 全量派生（确定性）：同一消息列表必得同一 seq 序列，因此快照与分页的 cursor 天然一致。
- * @returns records（seq 从 1 起连续）与每条记录所属的消息下标（用于按 maxMessages 切窗口）。
+ * seq **从 0 起**连续：vendor 客户端的分页日志 `emptyCursor = -1`、`follows(l, r) = r === l + 1`
+ * （dsh-api-gateway/client.js RemoteJournalStream + session-controller 的 first/last=event.seq），
+ * 空会话快照 cursor 必须为 -1、首条记录 seq 必须为 0，否则首帧校验
+ * 「page did not end at its requested cursor」直接拒收。
+ * @returns records（seq 从 0 起连续）与每条记录所属的消息下标（用于按 maxMessages 切窗口）。
  */
-export function deriveSessionRecords(messages: readonly ChatMessage[]): { records: DshWireRecord[]; messageStarts: number[] } {
+export function deriveSessionRecords(
+  messages: readonly ChatMessage[],
+  attribution: DshMessageAttribution = NO_ATTRIBUTION,
+  closeLastTurn = true,
+): { records: DshWireRecord[]; messageStarts: number[] } {
   const records: DshWireRecord[] = [];
   const messageStarts: number[] = [];
   let turn = 0;
   let step = 0;
   let turnOpen = false;
   const push = (type: string, time: number, data: unknown, surfaceOp?: "append"): void => {
-    records.push({ type: "event", event: { type, seq: records.length + 1, time, data, ...(surfaceOp === undefined ? {} : { surfaceOp }) } });
+    records.push({ type: "event", event: { type, seq: records.length, time, data, ...(surfaceOp === undefined ? {} : { surfaceOp }) } });
   };
   for (const message of messages) {
     const isPrompt = message.role === "user";
@@ -200,9 +228,15 @@ export function deriveSessionRecords(messages: readonly ChatMessage[]): { record
       }
       messageStarts.push(records.length);
     }
-    for (const event of eventsForMessage(message, turn, step)) push(event.type, event.time, event.data, event.surfaceOp);
+    for (const event of eventsForMessage(message, turn, step, attribution)) push(event.type, event.time, event.data, event.surfaceOp);
   }
-  if (turnOpen) {
+  // 末轮的收尾记录只在**回合确实结束**时才追加（`closeLastTurn`）。
+  //
+  // 这是 append-only 稳定性的硬要求：回合进行中若先发 step/end + turn/end，等 assistant 消息落盘后
+  // 同一 seq 位置会被重新解释成 assistant/message，客户端按 seq 去重时会把真正的回复吞掉
+  // （表现为「问了没反应、刷新才出现」）。因此运行中的末轮保持「未收尾」，收尾记录随回合结束
+  // 作为**尾部追加**出现——已下发记录的 seq 永不变动。
+  if (turnOpen && closeLastTurn) {
     const last = messages[messages.length - 1];
     const time = last === undefined ? 0 : Date.parse(last.createdAt) || 0;
     push("step/end", time, { turn, step });
@@ -212,13 +246,14 @@ export function deriveSessionRecords(messages: readonly ChatMessage[]): { record
 }
 
 /**
- * 消息列表派生出的记录条数（= 末条记录的 seq），不物化事件。
+ * 消息列表派生出的记录条数（= 末条记录的 seq + 1），不物化事件。
  *
  * 口径与 {@link deriveSessionRecords} 的 seq 编号严格一致（有等价性测试）；会话列表/控制基线
  * 只读尾部 50 条消息，为了不为此解析图片字节等重活，这里用计数推导而不是重跑一遍事件投影。
- * `projections.asOfSeq` 与 follow cursor / page cursor 必须同一口径，否则客户端比较投影权威性时误判。
+ * `projections.asOfSeq` 是「水位 seq」（末条记录 seq，空会话 -1），用 {@link sessionLastSeq} 取，
+ * 与 follow cursor / page cursor 同一口径，否则客户端比较投影权威性时误判。
  */
-export function sessionRecordsCount(messages: readonly ChatMessage[]): number {
+export function sessionRecordsCount(messages: readonly ChatMessage[], closeLastTurn = true): number {
   let records = 0;
   let turnOpen = false;
   for (const message of messages) {
@@ -236,18 +271,28 @@ export function sessionRecordsCount(messages: readonly ChatMessage[]): number {
     turnOpen = true;
     records += own;
   }
-  if (turnOpen) records += 2;
+  if (turnOpen && closeLastTurn) records += 2;
   return records;
 }
 
+/** 末条记录的 seq（水位口径，空会话 = -1 = vendor 的 emptyCursor）。 */
+export function sessionLastSeq(messages: readonly ChatMessage[], closeLastTurn = true): number {
+  return sessionRecordsCount(messages, closeLastTurn) - 1;
+}
+
 /** 快照：取末尾 `maxMessages` 条消息对应的记录（seq 与全量派生一致，分页 cursor 不会错位）。 */
-export function snapshotWindow(messages: readonly ChatMessage[], maxMessages: number | undefined): {
+export function snapshotWindow(
+  messages: readonly ChatMessage[],
+  maxMessages: number | undefined,
+  attribution: DshMessageAttribution = NO_ATTRIBUTION,
+  closeLastTurn = true,
+): {
   records: DshWireRecord[];
   hasMore: boolean;
   cursor: number;
   totalRecords: number;
 } {
-  const { records, messageStarts } = deriveSessionRecords(messages);
+  const { records, messageStarts } = deriveSessionRecords(messages, attribution, closeLastTurn);
   const limit = maxMessages !== undefined && Number.isInteger(maxMessages) && maxMessages > 0 ? maxMessages : 50;
   const startIndex = Math.max(0, messages.length - limit);
   const startRecord = messageStarts[startIndex] ?? 0;
@@ -255,19 +300,33 @@ export function snapshotWindow(messages: readonly ChatMessage[], maxMessages: nu
   return {
     records: windowRecords,
     hasMore: startIndex > 0,
-    cursor: records[records.length - 1]?.event.seq ?? 0,
+    // 空会话水位 = -1（vendor emptyCursor）：客户端 assertPageThrough 要求 tail === cursor，
+    // 空记录数组的 tail 恒为 -1，这里回 0 会被直接拒收
+    cursor: records[records.length - 1]?.event.seq ?? -1,
     totalRecords: records.length,
   };
 }
 
-/** 向前翻旧历史（`session/page`）：取 `throughSeq` 之前（不含）的 `maxMessages` 条消息记录。 */
-export function pageWindow(messages: readonly ChatMessage[], throughSeq: number, beforeSeq: number | undefined, maxMessages: number | undefined): {
+/**
+ * 向前翻旧历史（`session/page`）。两种口径：
+ * - 带 `beforeSeq`（loadOlder/loadThrough  prepend）：取 seq < beforeSeq 的旧记录（左开）。
+ * - 不带 `beforeSeq`（断流修复 replaceThrough）：必须**恰好止于 throughSeq（含）**——
+ *   客户端 `assertPageThrough` 要求页尾 cursor 与请求的 through 严格相等，差一即协议违规。
+ */
+export function pageWindow(
+  messages: readonly ChatMessage[],
+  throughSeq: number,
+  beforeSeq: number | undefined,
+  maxMessages: number | undefined,
+  attribution: DshMessageAttribution = NO_ATTRIBUTION,
+  closeLastTurn = true,
+): {
   records: DshWireRecord[];
   hasMore: boolean;
 } {
-  const { records, messageStarts } = deriveSessionRecords(messages);
+  const { records, messageStarts } = deriveSessionRecords(messages, attribution, closeLastTurn);
   const limit = maxMessages !== undefined && Number.isInteger(maxMessages) && maxMessages > 0 ? maxMessages : 50;
-  const upper = beforeSeq ?? throughSeq;
+  const upper = beforeSeq ?? throughSeq + 1;
   // 只保留 seq < upper 的记录
   const eligible = records.filter((record) => record.event.seq < upper);
   if (eligible.length === 0) return { records: [], hasMore: false };

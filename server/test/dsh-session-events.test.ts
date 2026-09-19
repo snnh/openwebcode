@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { deriveSessionRecords, pageWindow, snapshotWindow } from "../src/dsh/web-protocol/session-events.js";
+import { deriveSessionRecords, pageWindow, sessionLastSeq, sessionRecordsCount, snapshotWindow } from "../src/dsh/web-protocol/session-events.js";
 import { projectSessionFollowSnapshot, projectSessionPage } from "../src/dsh/web-protocol/session-projection.js";
 import type { ChatMessage } from "../src/sessions/types.js";
 
@@ -61,7 +61,8 @@ describe("dsh 会话事件序列投影", () => {
       "turn/start", "step/start", "user/message",
       "step/end", "turn/end",
     ]);
-    expect(records.map((record) => record.event.seq)).toEqual([...Array(records.length).keys()].map((index) => index + 1));
+    // seq 从 0 起连续（vendor 的 emptyCursor = -1、follows(l, r) = r === l + 1 都以此为前提）
+    expect(records.map((record) => record.event.seq)).toEqual([...Array(records.length).keys()]);
     // turn 序号 = 用户消息序号；step 恒为 1（owc 无 step 概念）
     const userEvents = records.filter((record) => record.event.type === "user/message");
     expect(userEvents.map((record) => (record.event.data as { id: string }).id)).toEqual(["m1", "m5"]);
@@ -110,16 +111,50 @@ describe("dsh 会话事件序列投影", () => {
     expect(snapshotWindow(messages, 50).hasMore).toBe(false);
   });
 
-  it("分页：throughSeq 之前取一页，消息边界对齐且 hasMore 正确", () => {
+  it("分页：throughSeq 含端点取一页、beforeSeq 严格向前，消息边界对齐且 hasMore 正确", () => {
     const messages = history();
     const full = deriveSessionRecords(messages);
     const cursor = full.records.at(-1)?.event.seq ?? 0;
+    // 断流修复路径（replaceThrough）：页尾必须**恰好**是请求的 throughSeq（vendor assertPageThrough）
     const firstPage = pageWindow(messages, cursor, undefined, 2);
     expect(firstPage.records.length).toBeGreaterThan(0);
-    // 第一页不含最后一页的首条记录（按 seq 严格向前）
-    const nextPage = pageWindow(messages, cursor, firstPage.records[0]?.event.seq, 2);
-    expect(nextPage.records.every((record) => record.event.seq < (firstPage.records[0]?.event.seq ?? 0))).toBe(true);
-    expect(pageWindow(messages, 1, undefined, 2).records).toEqual([]);
+    expect(firstPage.records.at(-1)?.event.seq).toBe(cursor);
+    // loadOlder 路径（prepend）：tail + 1 === beforeSeq
+    const older = pageWindow(messages, cursor, firstPage.records[0]?.event.seq, 2);
+    expect(older.records.every((record) => record.event.seq < (firstPage.records[0]?.event.seq ?? 0))).toBe(true);
+    expect(older.records.at(-1)?.event.seq).toBe((firstPage.records[0]?.event.seq ?? 0) - 1);
+    // 空窗口：空会话（throughSeq = -1）没有任何记录
+    expect(pageWindow(messages, -1, undefined, 2).records).toEqual([]);
+  });
+});
+
+describe("dsh 增量稳定性（回合进行中不预发收尾记录）", () => {
+  it("运行中的末轮不收尾：已有记录的 seq 不随新消息落盘而变动（否则客户端吞掉回复）", () => {
+    const prompts = [
+      { id: "u1", role: "user" as const, content: [{ type: "text" as const, text: "一" }], createdAt: "2026-01-01T00:00:00.000Z" },
+    ];
+    // 运行中（回合未结束）：末轮无 step/end + turn/end
+    const mid = deriveSessionRecords(prompts, undefined, false).records;
+    expect(mid.map((record) => record.event.type)).toEqual(["turn/start", "step/start", "user/message"]);
+    // 回复落盘后：新记录**追加**在尾部，已下发记录的 seq 完全不变
+    const withReply = deriveSessionRecords([
+      ...prompts,
+      { id: "a1", role: "assistant" as const, content: [{ type: "text" as const, text: "答" }], createdAt: "2026-01-01T00:00:01.000Z" },
+    ], undefined, false).records;
+    expect(withReply.slice(0, mid.length).map((record) => [record.event.seq, record.event.type]))
+      .toEqual(mid.map((record) => [record.event.seq, record.event.type]));
+    expect(withReply.at(-1)).toMatchObject({ event: { seq: mid.length, type: "assistant/message" } });
+    // 回合结束（idle）后追加收尾：仍是尾部追加
+    const closed = deriveSessionRecords([
+      ...prompts,
+      { id: "a1", role: "assistant" as const, content: [{ type: "text" as const, text: "答" }], createdAt: "2026-01-01T00:00:01.000Z" },
+    ], undefined, true).records;
+    expect(closed.slice(0, withReply.length).map((record) => record.event.type)).toEqual(withReply.map((record) => record.event.type));
+    expect(closed.slice(withReply.length).map((record) => record.event.type)).toEqual(["step/end", "turn/end"]);
+    // 计数口径随之一致（水位 = 末条记录 seq）
+    expect(sessionRecordsCount(prompts, false)).toBe(mid.length);
+    expect(sessionLastSeq(prompts, false)).toBe(mid.length - 1);
+    expect(sessionRecordsCount(prompts, true)).toBe(mid.length + 2);
   });
 });
 

@@ -9,7 +9,13 @@ import type { ChatMessage, SessionMeta } from "../../sessions/types.js";
 import type { SessionStore } from "../../sessions/session-store.js";
 import { wireError, type DshWireError } from "./wire.js";
 import { modelSelectionValue, type DshModelSelection } from "./models.js";
-import { deriveSessionRecords, pageWindow, sessionRecordsCount, snapshotWindow } from "./session-events.js";
+import {
+  deriveSessionRecords,
+  pageWindow,
+  sessionLastSeq,
+  snapshotWindow,
+  type DshMessageAttribution,
+} from "./session-events.js";
 
 /** 投影所需的最小依赖面（便于单测注入假对象）。 */
 export interface DshProjectionDeps {
@@ -18,6 +24,11 @@ export interface DshProjectionDeps {
     AgentRunner,
     "run" | "isRunning" | "abort" | "enqueueSteering" | "enqueueFollowUp" | "listQueue" | "updateQueue" | "removeQueue"
   >;
+  /**
+   * 非阻塞 run 的失败留痕（与 REST `/messages` 路径同语义：浏览器已拿到 accepted，
+   * 详细失败留在 server 日志与 `agent.error` 事件里）。
+   */
+  logger?: { warn(message: string): void };
   /** 未显式指定 cwd 时使用的默认工作目录（会话创建）。 */
   defaultCwd: string;
   /**
@@ -94,7 +105,8 @@ function sessionSummary(deps: DshProjectionDeps, meta: SessionMeta, tail: { mess
     ...(meta.cwd === undefined ? {} : { cwd: meta.cwd }),
     // asOfSeq：投影基线序号，口径 = 记录 seq（与 follow cursor / page cursor 一致）。
     // 只读尾部窗口时得到的水位偏小（见 projectionEntry 注释）：偏小只会被判为「较旧」，不会覆盖更新的值。
-    projections: { asOfSeq: sessionRecordsCount(tail.messages), values: projectionValues(deps, meta, tail) },
+    // `running` 时末轮不收尾（append-only 稳定性，见 deriveSessionRecords 注释），水位随之少 2。
+    projections: { asOfSeq: sessionLastSeq(tail.messages, !running), values: projectionValues(deps, meta, tail) },
   };
 }
 
@@ -105,7 +117,11 @@ function sessionSummary(deps: DshProjectionDeps, meta: SessionMeta, tail: { mess
  * 客户端按 `asOfSeq` 比较投影新旧（小 = 旧 = 不覆盖已有值），因此偏小的水位只会让这条更「保守」。
  */
 function projectionEntry(deps: DshProjectionDeps, meta: SessionMeta, tail: { messages: readonly ChatMessage[]; truncated: boolean }): Record<string, unknown> {
-  return { asOfSeq: sessionRecordsCount(tail.messages), values: projectionValues(deps, meta, tail) };
+  return {
+    // isRunning 允许缺省（部分测试替身只实现投影所需子集）：缺省按「已结束」收尾
+    asOfSeq: sessionLastSeq(tail.messages, !(deps.agent.isRunning?.(meta.id) ?? false)),
+    values: projectionValues(deps, meta, tail),
+  };
 }
 
 /** 读尾部消息并标注是否被截断（列表页每会话 50 条，附件回读除外）。 */
@@ -212,7 +228,15 @@ export async function projectSessionPrompt(deps: DshProjectionDeps, args: Record
     if (mode === "steer") await deps.agent.enqueueSteering(sessionId, mapped.text);
     else await deps.agent.enqueueFollowUp(sessionId, mapped.text);
   } else {
-    await deps.agent.run(sessionId, mapped.text, mapped.images.length === 0 ? {} : { images: mapped.images });
+    // **不等待整轮**：与 REST `/api/sessions/:id/messages` 的 202 语义一致（那里也是
+    // `void agent.run(...).catch(...)`）。此前的实现 await 到整轮结束，导致
+    // ① dsh UI 的发送请求被整轮阻塞（长回合/等待审批时会一直挂着）；
+    // ② provider 错误被当作 RPC 错误抛出，而不是走 `agent.error` 事件（UI 有专门的错误位）。
+    // 会话存在性与「是否在跑」已在上方校验，其余失败由 AgentRunner 自行发 `agent.error`。
+    void deps.agent.run(sessionId, mapped.text, mapped.images.length === 0 ? {} : { images: mapped.images })
+      .catch((error: unknown) => {
+        deps.logger?.warn(`dsh session/prompt 后台 run 失败：${error instanceof Error ? error.message : String(error)}`);
+      });
   }
   return { value: { accepted: true } };
 }
@@ -410,7 +434,9 @@ export async function projectSessionFollowSnapshot(deps: DshProjectionDeps, args
   const detail = await deps.sessions.get(sessionId);
   if (detail === undefined) return { error: wireError("session/not-found", "会话不存在", { sessionId }) };
   const maxMessages = typeof request.maxMessages === "number" ? request.maxMessages : undefined;
-  const window = snapshotWindow(detail.messages, maxMessages);
+  const attribution = attributionOf(meta);
+  const running = deps.agent.isRunning?.(sessionId) ?? false;
+  const window = snapshotWindow(detail.messages, maxMessages, attribution, !running);
   const tail = { messages: detail.messages, truncated: window.hasMore };
   return {
     value: {
@@ -425,7 +451,7 @@ export async function projectSessionFollowSnapshot(deps: DshProjectionDeps, args
       cursor: window.cursor,
       records: window.records,
       hasMore: window.hasMore,
-      projections: { asOfSeq: window.totalRecords, values: projectionValues(deps, meta, tail) },
+      projections: { asOfSeq: window.cursor, values: projectionValues(deps, meta, tail) },
       assistantStream: { revision: 0 },
     },
   };
@@ -445,13 +471,24 @@ export async function projectSessionPage(deps: DshProjectionDeps, args: Record<s
   const maxMessages = typeof request.maxMessages === "number" ? request.maxMessages : undefined;
   const detail = await deps.sessions.get(sessionId);
   if (detail === undefined) return { error: wireError("session/not-found", "会话不存在", { sessionId }) };
-  const window = pageWindow(detail.messages, throughSeq, beforeSeq, maxMessages);
+  const meta = await deps.sessions.getMeta(sessionId);
+  const window = pageWindow(detail.messages, throughSeq, beforeSeq, maxMessages, attributionOf(meta), !(deps.agent.isRunning?.(sessionId) ?? false));
   return { value: { records: window.records, hasMore: window.hasMore } };
+}
+
+/**
+ * 会话级模型归属（`assistant/message.message.source` 的 provider/model）：
+ * vendor UI 的 `messageRoute()` 直接读这两个字段（缺失即渲染抛错），owc 不逐条记录归属，用会话值。
+ */
+function attributionOf(meta: SessionMeta | undefined): DshMessageAttribution {
+  return { provider: meta?.provider ?? "", model: meta?.model ?? "" };
 }
 
 /** 会话当前完整事件记录（供 follow 增量去重：seq ≤ cursor 的都已下发过）。 */
 export async function sessionRecordsSince(deps: DshProjectionDeps, sessionId: string, cursor: number): Promise<Array<Record<string, unknown>>> {
   const detail = await deps.sessions.get(sessionId);
   if (detail === undefined) return [];
-  return deriveSessionRecords(detail.messages).records.filter((record) => record.event.seq > cursor) as unknown as Array<Record<string, unknown>>;
+  const meta = await deps.sessions.getMeta(sessionId);
+  return deriveSessionRecords(detail.messages, attributionOf(meta), !(deps.agent.isRunning?.(sessionId) ?? false)).records
+    .filter((record) => record.event.seq > cursor) as unknown as Array<Record<string, unknown>>;
 }

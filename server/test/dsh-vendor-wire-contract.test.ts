@@ -160,7 +160,7 @@ describe.skipIf(!VENDOR_READY)("dsh 线格式（vendor 真实校验）", () => {
     expect(value).toMatchObject({ type: "baseline", value: { jobs: {} } });
   });
 
-  it("D9：asOfSeq 与记录 seq 同口径（列表/控制基线 = 记录条数 = 快照 cursor）", async () => {
+  it("D9：asOfSeq 与记录 seq 同口径（列表/控制基线 = 末条记录 seq = 快照 cursor）", async () => {
     const messages = history();
     const full = deriveSessionRecords(messages);
     // 计数推导与事件投影严格等价（列表/基线用前者，省掉逐条物化）
@@ -171,10 +171,10 @@ describe.skipIf(!VENDOR_READY)("dsh 线格式（vendor 真实校验）", () => {
     const deps = projectionDeps(messages);
     const control = await projectSessionControlBaseline(deps as never);
     const entry = (("value" in control ? control.value : {}) as { value: { projections: Record<string, { asOfSeq: number }> } }).value.projections.s1;
-    expect(entry?.asOfSeq).toBe(full.records.length);
+    expect(entry?.asOfSeq).toBe(full.records.length - 1);
     const follow = await projectSessionFollowSnapshot(deps as never, { request: { address: { kind: "session", sessionId: "s1" }, maxMessages: 50 } });
     const snapshot = (("value" in follow ? follow.value : {}) as { cursor: number; projections: { asOfSeq: number } });
     expect(snapshot.projections.asOfSeq).toBe(snapshot.cursor);
-    expect(snapshot.projections.asOfSeq).toBe(full.records.length);
+    expect(snapshot.projections.asOfSeq).toBe(full.records.length - 1);
   });
 });
