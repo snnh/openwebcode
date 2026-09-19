@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
-import { normalizeProviderError, type ProviderError } from "./provider-error.js";
+import { normalizeProviderError, ProviderError } from "./provider-error.js";
 
 interface RetryInfo {
   attemptId: string;
@@ -41,6 +41,10 @@ export async function collectProviderTurn(
         events.push(event);
         options.onEvent?.(event);
       }
+      // 端点静默截断（SSE 到 EOF、既无 finish_reason 也无 [DONE] 哨兵）不会抛 transport 异常，
+      // 只体现为 done.stopReason="error"：必须在重试层当失败处理，否则被当作正常空回合结束。
+      const truncated = truncatedStreamError(events);
+      if (truncated) throw truncated;
       return { attemptId, events };
     } catch (error) {
       const normalized = normalizeProviderError(error, events.length > 0);
@@ -56,6 +60,27 @@ export async function collectProviderTurn(
     }
   }
   throw new Error("Provider retry loop exhausted unexpectedly");
+}
+
+/**
+ * 从本轮事件里识别「协议正常收尾但 stopReason=error」的静默截断：provider 约定在
+ * 无 finish_reason/[DONE] 终态时以 done.stopReason="error" 收尾（见两家 OpenAI 系
+ * provider 的 mapStopReason）。这类回合没有 transport 异常，只用 done 事件表达失败，
+ * 因此在此归为可重试的 stream_interrupted——重试耗尽后由 catch 分支抛出，交给上层
+ * 异常路径上报（而不是被当作正常空回合结束：不重试也不报错）。
+ */
+function truncatedStreamError(events: ProviderEvent[]): ProviderError | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event || event.type !== "done") continue;
+    if (event.stopReason !== "error") return undefined;
+    return new ProviderError(
+      "stream_interrupted",
+      "Provider stream ended with stopReason=error (no finish_reason/[DONE] terminal signal): the response was likely truncated",
+      true,
+    );
+  }
+  return undefined;
 }
 
 function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {

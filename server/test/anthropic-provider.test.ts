@@ -577,6 +577,44 @@ describe("collectProviderTurn", () => {
     expect(immediateAttempts).toBe(1);
   });
 
+  it("done.stopReason=error（无终态 EOF 的静默截断）按可重试失败处理：重试耗尽后抛明确错误", async () => {
+    // 无 transport 异常：SSE 正常到 EOF，但 provider 以 done.stopReason="error" 表达
+    // 「无 finish_reason/[DONE] 终态」。旧实现只重试抛出的异常，这种回合被当作正常空回合结束。
+    let attempts = 0;
+    const retriedAttempts: number[] = [];
+    const truncated: Provider = {
+      name: "truncated-eof",
+      async *streamChat() {
+        attempts += 1;
+        yield { type: "text_delta", text: "半截回答" };
+        yield { type: "done", stopReason: "error" };
+      },
+    };
+    const failure = await collectProviderTurn(truncated, retryRequest(new AbortController().signal), {
+      maxAttempts: 3,
+      baseDelayMs: 1,
+      onRetry: ({ attempt }) => retriedAttempts.push(attempt),
+    }).then(() => undefined, (error: unknown) => error);
+    expect(failure).toMatchObject({ kind: "stream_interrupted", retryable: true });
+    expect(String((failure as Error).message)).toMatch(/stopReason=error/);
+    expect(attempts).toBe(3);
+    expect(retriedAttempts).toEqual([1, 2]);
+
+    // 重试后拿到正常终态：返回该轮事件（截断轮的事件被丢弃）
+    let recovered = 0;
+    const flaky: Provider = {
+      name: "truncated-then-ok",
+      async *streamChat() {
+        recovered += 1;
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "done", stopReason: recovered === 1 ? "error" : "end_turn" };
+      },
+    };
+    const turn = await collectProviderTurn(flaky, retryRequest(new AbortController().signal), { maxAttempts: 2, baseDelayMs: 1 });
+    expect(recovered).toBe(2);
+    expect(turn.events.at(-1)).toEqual({ type: "done", stopReason: "end_turn" });
+  });
+
   it("abortableDelay 进入前检查 signal：重试等待期间已中止则立即抛出，不白等", async () => {
     const controller = new AbortController();
     const provider: Provider = {

@@ -77,6 +77,11 @@ export function getModelProfile(model: string): ModelProfile {
   };
 }
 
+/** 单字符（ASCII）与单码点（非 ASCII，含 CJK）的 token 折算速率：estimateTokens 与
+ * maxPrefixWithinTokenBudget 共用同一口径，任何一侧改动都必须同步另一侧。 */
+const ASCII_UNITS = 1 / 4;
+const NON_ASCII_UNITS = 1 / 1.5;
+
 export function estimateTokens(value: string): number {
   // ASCII 约 4 字符/token；非 ASCII（CJK 等）实际约 1~1.5 字符/token，
   // 统一按 4 字符/token 会把中文会话低估 3-4 倍（85% 强制压缩不触发 → context-length 400）。
@@ -87,16 +92,47 @@ export function estimateTokens(value: string): number {
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
     if (code > 0x7f) {
-      units += 1 / 1.5;
+      units += NON_ASCII_UNITS;
       if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
         const low = value.charCodeAt(index + 1);
         if (low >= 0xdc00 && low <= 0xdfff) index += 1;
       }
     } else {
-      units += 1 / 4;
+      units += ASCII_UNITS;
     }
   }
   return Math.max(1, Math.ceil(units));
+}
+
+/**
+ * estimateTokens 口径下 ≤ budgetTokens 的最大前缀长度（码元数，不切开 surrogate pair）。
+ * 按预算截断工具结果时用它替代「budget × 4 字符」这种 ASCII 假设：中文约 1.5 字符/token，
+ * 按 4 字符截断会超预算约 2.7 倍。增量累加（与 estimateTokens 逐码点同序求和，Math.ceil
+ * 边界逐位一致）且只扫到预算耗尽处即返回，大文本不做全量估算、也不逐字符重新估算。
+ */
+export function maxPrefixWithinTokenBudget(value: string, budgetTokens: number): number {
+  if (budgetTokens < 1) return 0;
+  let units = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    let unitsAdded = ASCII_UNITS;
+    if (code > 0x7f) {
+      unitsAdded = NON_ASCII_UNITS;
+      if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+        const low = value.charCodeAt(index + 1);
+        // 成对代理：整对只计一次，且预算不足时不切在中间（避免产出孤立代理码元）
+        if (low >= 0xdc00 && low <= 0xdfff) {
+          if (Math.ceil(units + unitsAdded) > budgetTokens) return index;
+          units += unitsAdded;
+          index += 1;
+          continue;
+        }
+      }
+    }
+    if (Math.ceil(units + unitsAdded) > budgetTokens) return index;
+    units += unitsAdded;
+  }
+  return value.length;
 }
 
 /** 图片按固定定额计入水位估算（典型 ~1.2k tokens/张），而非 base64 长度。 */

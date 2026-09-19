@@ -116,11 +116,19 @@ export class OpenAICompatibleProvider implements Provider {
 
     const tools = new Map<number, ToolAccumulator>();
     let stopReason: string | null = null;
+    // 是否收到显式流结束哨兵（[DONE]）与是否已有产出：用于区分「端点不发 finish_reason
+    // 但正常收尾」与「连接被截断/代理中断」——后者保持 error 以走 collectProviderTurn 重试
+    // （与 openai-responses-provider 同口径）。
+    let sawStreamEnd = false;
+    let sawOutput = false;
     let streamStarted = false;
     try {
       for await (const data of readSseData(body, { idleTimeoutMs: this.options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS })) {
         streamStarted = true;
-        if (data === "[DONE]") break;
+        if (data === "[DONE]") {
+          sawStreamEnd = true;
+          break;
+        }
         const chunk = JSON.parse(data) as OpenAIChunk;
         if (chunk.usage) {
           const cachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
@@ -137,8 +145,12 @@ export class OpenAICompatibleProvider implements Provider {
         }
         for (const choice of chunk.choices ?? []) {
           stopReason = choice.finish_reason ?? stopReason;
-          if (choice.delta.content) yield { type: "text_delta", text: choice.delta.content };
+          if (choice.delta.content) {
+            sawOutput = true;
+            yield { type: "text_delta", text: choice.delta.content };
+          }
           if (choice.delta.reasoning_content) {
+            sawOutput = true;
             yield { type: "thinking_delta", text: choice.delta.reasoning_content };
           }
           for (const call of choice.delta.tool_calls ?? []) {
@@ -149,6 +161,7 @@ export class OpenAICompatibleProvider implements Provider {
             tools.set(call.index, current);
             // 参数流式分片：id 就绪后上报（首个分片通常即携带 id/name）
             if (current.id) {
+              sawOutput = true;
               yield {
                 type: "tool_call_delta",
                 id: current.id,
@@ -171,7 +184,7 @@ export class OpenAICompatibleProvider implements Provider {
         input: parseArguments(call.arguments),
       };
     }
-    yield { type: "done", stopReason: mapStopReason(stopReason) };
+    yield { type: "done", stopReason: mapStopReason(stopReason, sawStreamEnd, sawOutput, tools.size > 0) };
   }
 }
 
@@ -346,11 +359,20 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
   return result;
 }
 
-function mapStopReason(reason: string | null): "end_turn" | "tool_use" | "max_tokens" | "refusal" | "error" {
+/** finish_reason 缺失/未知时不能一概判失败：收到显式结束哨兵（[DONE]）且已有产出即为正常
+ * 收尾（兼容只发哨兵、不发 finish_reason 的网关，与 openai-responses-provider 同判定）；
+ * 无哨兵的 EOF 视作连接截断，保持 error 以走 collectProviderTurn 重试。 */
+function mapStopReason(
+  reason: string | null,
+  sawStreamEnd: boolean,
+  sawOutput: boolean,
+  hasToolCalls: boolean,
+): "end_turn" | "tool_use" | "max_tokens" | "refusal" | "error" {
   if (reason === "tool_calls" || reason === "function_call") return "tool_use";
   if (reason === "length") return "max_tokens";
   if (reason === "content_filter") return "refusal";
   if (reason === "stop") return "end_turn";
+  if (sawStreamEnd && sawOutput) return hasToolCalls ? "tool_use" : "end_turn";
   return "error";
 }
 
