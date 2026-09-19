@@ -50,6 +50,8 @@ export const DEFAULT_DSH_PORT = 3211;
 export class DshCompatRuntime {
   private server: DshServer | undefined;
   private starting: Promise<void> | undefined;
+  /** 上次成功监听的地址（`<host>:<port>`；未监听为 undefined）。 */
+  private currentAddress: string | undefined;
   /** 上次尝试的 (enabled, vendorDirectory, port) 组合，用于幂等判断。 */
   private applied: string | undefined;
 
@@ -58,6 +60,11 @@ export class DshCompatRuntime {
   /** 当前是否在监听（诊断/测试用）。 */
   get listening(): boolean {
     return this.server !== undefined;
+  }
+
+  /** 当前监听地址（`<host>:<port>`；未监听为 undefined；诊断/测试用）。 */
+  get address(): string | undefined {
+    return this.currentAddress;
   }
 
   /** 按当前设置对齐运行状态（幂等；并发调用合并）。 */
@@ -79,6 +86,7 @@ export class DshCompatRuntime {
   async close(): Promise<void> {
     const server = this.server;
     this.server = undefined;
+    this.currentAddress = undefined;
     this.applied = undefined;
     if (server !== undefined) await server.close();
   }
@@ -89,7 +97,6 @@ export class DshCompatRuntime {
     return {
       providers: () => models.providers(),
       models: () => models.models(),
-      defaults: () => models.defaults(),
       selectionOf: async (sessionId) => {
         const meta = await sessions.getMeta(sessionId);
         return meta === undefined ? undefined : { provider: meta.provider, model: meta.model, ...(meta.effort === undefined ? {} : { reasoningEffort: meta.effort }) };
@@ -97,11 +104,14 @@ export class DshCompatRuntime {
       isRunning: (sessionId) => this.options.agent.isRunning(sessionId),
       apply: async (sessionId, selection) => {
         // updateConfig 的 undefined=清除语义：未带 reasoningEffort 时清掉旧 effort（与 REST 收口一致）
-        await sessions.updateConfig(sessionId, {
+        const updated = await sessions.updateConfig(sessionId, {
           provider: selection.provider,
           model: selection.model,
           ...(selection.reasoningEffort === undefined ? {} : { effort: selection.reasoningEffort as NonNullable<SessionMeta["effort"]> }),
         });
+        // 与 REST /api/sessions/:id/config、agent-runner 切 build 的模式切换同一条可见性链路：
+        // 不发布该事件时主工作台的会话列表/详情不感知 dsh 侧的模型切换（要等刷新）
+        this.options.events.publish({ source: "session", type: "session.config_updated", sessionId, payload: updated });
       },
     };
   }
@@ -126,6 +136,7 @@ export class DshCompatRuntime {
     if (this.server !== undefined) {
       await this.server.close();
       this.server = undefined;
+      this.currentAddress = undefined;
     }
     if (!wantEnabled) {
       this.applied = this.desiredKey();
@@ -146,7 +157,7 @@ export class DshCompatRuntime {
         sessions: this.options.sessions,
         agent: this.options.agent,
         defaultCwd: this.options.home,
-        ...(models === undefined ? {} : { defaultSelection: () => models.defaults() }),
+        ...(models === undefined ? {} : { defaultSelection: () => models.sessionDefault() }),
         ...(this.options.imageLimits === undefined ? {} : { imageLimits: this.options.imageLimits }),
       },
       events: this.options.events,
@@ -199,6 +210,7 @@ export class DshCompatRuntime {
     }
     const address = await server.listen(this.options.host(), this.options.port());
     this.server = server;
+    this.currentAddress = address;
     this.applied = this.desiredKey();
     this.log(`[dsh] 兼容模式已启动：http://${address}/ （dsh UI ${server.manifest.dshVersion}，${server.manifest.plugins.length} 个插件）`);
   }

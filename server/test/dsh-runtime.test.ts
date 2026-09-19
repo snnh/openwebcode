@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DshCompatRuntime } from "../src/dsh/web-protocol/runtime.js";
+import { DshCompatRuntime, type DshCompatRuntimeOptions } from "../src/dsh/web-protocol/runtime.js";
 import { EventBus } from "../src/events/event-bus.js";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import type { SessionStore } from "../src/sessions/session-store.js";
@@ -41,8 +41,12 @@ function makeRuntime(overrides: {
   accessToken?: string;
   warnings?: string[];
   logs?: string[];
+  sessions?: SessionStore;
+  agent?: AgentRunner;
+  events?: EventBus;
+  models?: DshCompatRuntimeOptions["models"];
 }): DshCompatRuntime {
-  const agent = {
+  const agent = overrides.agent ?? {
     preparePermissionResponse: vi.fn(async () => undefined),
     respondInteraction: vi.fn(async () => undefined),
   } as unknown as AgentRunner;
@@ -53,9 +57,10 @@ function makeRuntime(overrides: {
     uiPath: overrides.uiPath ?? (() => null),
     host: () => overrides.host ?? "127.0.0.1",
     accessToken: () => overrides.accessToken,
-    sessions: {} as SessionStore,
+    sessions: overrides.sessions ?? ({} as SessionStore),
     agent,
-    events: new EventBus(),
+    events: overrides.events ?? new EventBus(),
+    ...(overrides.models === undefined ? {} : { models: overrides.models }),
     home: "/home/tester",
     version: () => "1.12.0-test",
     mainPort: () => 3210,
@@ -118,6 +123,46 @@ describe("dsh 兼容模式运行期", () => {
     const withToken = makeRuntime({ vendor, enabled: () => true, host: "0.0.0.0", accessToken: "t".repeat(32) });
     await withToken.sync();
     expect(withToken.listening).toBe(true);
+  });
+
+  it("session/selectModel 端到端：落盘并发布 session.config_updated（主工作台实时感知）", async () => {
+    const vendor = await fakeVendor();
+    const published: Array<{ source: string; type: string; sessionId?: string; payload: unknown }> = [];
+    const updateConfig = vi.fn(async () => ({ id: "s1" }));
+    const runtime = makeRuntime({
+      vendor,
+      enabled: () => true,
+      accessToken: "t".repeat(32),
+      sessions: {
+        getMeta: async () => ({ id: "s1", provider: "openai", model: "gpt-4.1" }),
+        updateConfig,
+      } as unknown as SessionStore,
+      agent: { isRunning: () => false } as unknown as AgentRunner,
+      models: {
+        providers: () => ["deepseek"],
+        models: () => [{ provider: "deepseek", id: "deepseek-reasoner", capabilities: { thinking: ["enabled"], effort: ["low", "medium", "high"] } }],
+        defaults: () => undefined,
+        sessionDefault: () => undefined,
+      },
+      events: {
+        publish: (event: { type: string; sessionId?: string; payload: unknown }) => { published.push(event); },
+      } as unknown as EventBus,
+    });
+    await runtime.sync();
+    expect(runtime.listening).toBe(true);
+    expect(runtime.address).toMatch(/^127\.0\.0\.1:\d+$/);
+    const response = await fetch(`http://${runtime.address}/api/session/selectModel`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: `owc_access_token=${"t".repeat(32)}` },
+      body: JSON.stringify({ type: "client-request", rpcId: "r1", method: "session/selectModel", payload: { args: { request: { sessionId: "s1", provider: "deepseek", model: "deepseek-reasoner", reasoningEffort: "high" } } } }),
+    });
+    expect(response.status).toBe(200);
+    const envelope = await response.json() as { result: { ok: boolean; value?: unknown } };
+    expect(envelope.result.ok).toBe(true);
+    expect(envelope.result.value).toEqual({ selected: { provider: "deepseek", model: "deepseek-reasoner", reasoningEffort: "high" } });
+    expect(updateConfig).toHaveBeenCalledWith("s1", { provider: "deepseek", model: "deepseek-reasoner", effort: "high" });
+    // 与 REST /agent-runner 同一条可见性链路：不发该事件时主工作台要等刷新才看到模型切换
+    expect(published).toEqual([{ source: "session", type: "session.config_updated", sessionId: "s1", payload: { id: "s1" } }]);
   });
 
   it("vendor 缺失：不监听并如实记录原因（不半启动）", async () => {

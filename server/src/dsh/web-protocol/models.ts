@@ -25,14 +25,27 @@ export interface DshCatalogModel {
   capabilities?: { thinking?: readonly string[]; effort?: readonly string[] };
 }
 
-/** 翻译层需要的模型事实来源（由 index.ts 装配，测试可注入假对象）。 */
-export interface DshModelBridge {
+/**
+ * 模型事实的最小公共面（catalog / selectModel 都要用）。
+ * 不导出：只作为 {@link DshModelBridge} 与 {@link DshModelSelectDeps} 的基座在本模块内使用。
+ */
+interface DshModelFacts {
   /** 当前可路由（已配置凭据）的服务商名。 */
   providers(): string[];
   /** 模型目录。 */
   models(): readonly DshCatalogModel[];
+}
+
+/** 翻译层需要的模型事实来源（由 index.ts 装配，测试可注入假对象）。 */
+export interface DshModelBridge extends DshModelFacts {
   /** 部署默认选择（settings defaultModel + 能力白名单校验过的 defaultEffort）。 */
   defaults(): DshModelSelection | undefined;
+  /**
+   * 新建会话用的默认选择：默认模型若指向**未配置凭据**的服务商，回落到首个可路由服务商的模型
+   * （与 REST 校验「provider 必须已配置」同一口径——否则新建会话一运行就报 provider 未配置）；
+   * 无可路由服务商时 undefined（不写 provider/model，如实无默认）。
+   */
+  sessionDefault(): DshModelSelection | undefined;
 }
 
 /** effort 档位展示名（id 是契约，name 只是 dsh UI 的标题）。 */
@@ -76,10 +89,13 @@ function catalogModel(model: DshCatalogModel, defaults: DshModelSelection | unde
   return row;
 }
 
-/** 无默认设置时的回退：优先「可路由服务商」的第一条模型，其次是目录第一条（都没有则如实留空）。 */
-function fallbackSelection(routable: readonly string[], models: readonly DshCatalogModel[]): DshModelSelection {
+/**
+ * 无默认设置时的回退：优先「可路由服务商」的第一条模型，其次是目录第一条。
+ * 目录为空且无可路由服务商时返回 undefined（如实：没有可用模型，不编造空串选择）。
+ */
+export function fallbackSelection(routable: readonly string[], models: readonly DshCatalogModel[]): DshModelSelection | undefined {
   const preferred = models.find((model) => routable.includes(model.provider)) ?? models[0];
-  if (preferred === undefined) return { provider: routable[0] ?? "", model: "" };
+  if (preferred === undefined) return undefined;
   return { provider: preferred.provider, model: preferred.id };
 }
 
@@ -102,7 +118,8 @@ export function projectModelCatalog(bridge: DshModelBridge): Record<string, unkn
     group.models.push(catalogModel(model, defaults));
   }
   return {
-    default: defaults ?? fallbackSelection(routable, bridge.models()),
+    // 空 catalog 也要给合法值（schema 的 default 为必填 string）：无模型时如实空串
+    default: defaults ?? fallbackSelection(routable, bridge.models()) ?? { provider: "", model: "" },
     routableProviders: routable,
     groups: [...groups.values()],
     failures: [],
@@ -125,7 +142,7 @@ export function modelSelectionValue(meta: Pick<SessionMeta, "provider" | "model"
 }
 
 /** `session/selectModel` 的落盘侧依赖（runtime 装配；单测注入假对象）。 */
-export interface DshModelSelectDeps extends DshModelBridge {
+export interface DshModelSelectDeps extends DshModelFacts {
   /** 读会话当前选择；会话不存在返回 undefined。 */
   selectionOf(sessionId: string): Promise<DshModelSelection | undefined>;
   /** 会话是否在跑（owc 只在空闲时允许切模型，与 REST 一致）。 */
