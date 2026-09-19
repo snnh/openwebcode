@@ -2,7 +2,7 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
-## [1.12.0-beta]
+## [1.12.0]
 
 ### 新功能
 
@@ -27,6 +27,15 @@
 - **补齐 dsh 模型面与插件清单**：dsh UI 的模型选择器此前报 `gateway/method-unavailable: 未实现端点：session/modelCatalog`、设置页「插件」报「暂时无法读取插件」。现在 `session/modelCatalog`（按服务商分组的模型目录 + 部署默认 + 可路由服务商）与 `session/selectModel`（空闲时切模型，校验口径与主工作台一致）落地，并新增会话 `modelSelection` 投影——它正是 dsh `ModelDirectory` resolve 的前提（缺它时 composer 的模型座位一直为空）；`pluginInventory/list` 只读投影 `<dataDir>/dsh-plugins` 的插件与启停状态（不宣称可管理）。顺带修掉一个主路径缺陷：从 dsh UI 新建的会话此前没写 provider/model（无法运行），现在按主工作台同一套默认（`settings.defaultModel` + 校验过的 `defaultEffort`）补齐。
 - **修复 dsh SPA 因「未挂载插件」整体起不来**：vendor 的插件 roster 此前按依赖闭包全量装载，把只作为依赖存在、官方并未挂载的包（`dsh-client-ui-directory-picker-{browse,native}`）也当插件激活——browse 在启动自检里 `entry did not activate: failed`，dsh UI 直接落到「Failed to load plugins」错误页。现在按官方挂载规则筛选（`cordis.patch.yml` 名单 ∪ 被其它插件 `inject`/`external` 引用的依赖行），插件数 60 → 58，并加回归用例（inject 目标必须在图中或由 shell 静态播种、未挂载包不得进图）。
 - **修复 dsh UI vendor 漏装关键插件**：roster 改按依赖闭包（`dependencies` + `peerDependencies`）推导，修掉提供 WS 连接与 `ctx.remote` 的 `@deepseek-ai/dsh-api-gateway` 等包漏装导致的 SPA 启动阻断（插件 56 → 60）；新增 boot 完整性测试守住启动级不变量（bundle 存在且自注册 id 一致、external 目标在图中、注入行覆盖每条 batch）。
+- **修复 dsh 兼容模式「根本没法正常对话」的四处协议口径错误**（浏览器实测发现，逐条用 vendor 客户端的真实校验代码补了回归）：
+  - 打开任意会话即报「历史加载失败」：记录 seq 此前从 **1** 起，而 vendor 客户端的日志游标约定空窗口为 `-1`、连续性判定为 `next === prev + 1`，因此首帧校验必然失败。现在 seq 从 **0** 起、空会话 cursor 为 `-1`、`session/page` 的 `throughSeq` 改为**含端点**（断流修复路径要求页尾严格等于请求游标）。
+  - 回复要点刷新才出现：回合进行中预先下发了 `step/end` + `turn/end`，assistant 消息落盘后同一 seq 位置被重新解释，客户端按 seq 去重直接把回复吞掉。现已改为 **append-only** 派生——运行中的末轮不收尾，收尾记录作为尾部追加出现，已下发记录的 seq 永不变动。
+  - 会话打开后消息区崩溃（`Cannot read properties of undefined (reading 'length')`）：`assistant/message` 的 `message.source` 缺 `provider`/`model`，而 vendor 的 `messageRoute()` 直接读 `.length`；现按会话级模型归属补齐。
+  - 发送请求被整轮阻塞：`session/prompt` 此前 `await` 到整轮结束（长回合/等待审批时输入框一直挂着），且 provider 错误被当成 RPC 错误抛出。现改为**不等待整轮**（与 REST 的 202 + 后台 run 同语义），失败经 `agent.error → api-session/error` 事件呈现。
+- **dsh 兼容模式：回合内助手流式**：`session/follow` 现在下发 `assistant-stream` 帧（`start` / `chunk` / `end`），思考与正文在生成过程中逐字出现；帧的 revision（逐帧 +1）与 index（attempt 内密排）按 vendor 客户端校验规则生成，并在助手消息落盘时联动发出 `committed` 结算帧——已用 vendor 的 strict codec 逐帧校验 + 客户端折叠语义回归钉住（含「缺 end 帧会把回复挂住」的反向用例）。
+- **dsh 兼容模式：插件页与设置页不再报错**：新增 `pluginManager/listBundles|listPlugins` 投影（此前 `managementAvailable=false` 让插件页整页显示「本部署没有可管理的 profile」）、`llm/listProviders`、`llm/listConfigurableProviders`、`settings/describe`、`credentials/describe` 只读投影（此前设置页报「加载提供方目录失败：未实现端点」）。插件列表可见、开关置灰并给出原因，安装/卸载/启停动词如实返回管理受限错误；设置面只读（`writable: false`，不泄漏密钥），写入仍回主工作台。
+- **dsh 兼容模式：删除会话后侧边栏条目即时消失**（补发 `session.deleted → api-session/removed`；该事件此前根本不存在）。
+- **流式投影的序列化口径统一**：`projections.asOfSeq` 在列表/控制基线与 follow/page 游标统一为「末条记录 seq」。
 - 缓存命中率读数统一保留一位小数（会话顶栏、上下文面板、成本面板与悬浮明细口径一致）。
 - 死代码门禁恢复：knip 存量归零（server 76 → 0）；新增 max-depth 上限（server 5、web 4）阻止新增深嵌套。
 
