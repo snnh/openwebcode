@@ -32,6 +32,8 @@ interface UiState {
   mode: "chat" | "workbench";
   /** 聊天模式开关（由服务端设置 chatModeEnabled 同步，见 app/chat-mode-sync.ts） */
   chatModeEnabled: boolean;
+  /** dsh 兼容模式（由服务端设置 dshCompatEnabled/dshPort 同步，见 app/dsh-mode-sync.ts） */
+  dshCompat: { enabled: boolean; port: number };
 }
 
 const INITIAL_UI_STATE: UiState = {
@@ -42,6 +44,7 @@ const INITIAL_UI_STATE: UiState = {
   notifications: [],
   mode: "workbench",
   chatModeEnabled: false,
+  dshCompat: { enabled: false, port: 3211 },
 };
 
 export const uiStore = createStore<UiState>(INITIAL_UI_STATE);
@@ -81,6 +84,9 @@ export const ui = {
   },
   setChatModeEnabled(enabled: boolean): void {
     uiStore.set({ chatModeEnabled: enabled });
+  },
+  setDshCompat(dshCompat: { enabled: boolean; port: number }): void {
+    uiStore.set({ dshCompat });
   },
   /** 失败类提示用 error（红色、role=alert），成功/进度类用 info；同时汇入通知中心 */
   notify(text: string, kind: NotificationKind = "info"): void {

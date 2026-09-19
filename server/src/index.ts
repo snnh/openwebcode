@@ -52,6 +52,8 @@ import { RemoteSyncScheduler } from "./remote-sync-scheduler.js";
 import { CronScheduler } from "./cron-scheduler.js";
 import { EvalEvaluator } from "./eval/evaluator.js";
 import { ChatAssistantStore, ChatConfigService, ChatPythonEnv, ChatRunner, ChatSessionStore } from "./chat/index.js";
+import { DEFAULT_DSH_PORT, DshCompatRuntime } from "./dsh/web-protocol/runtime.js";
+import { homedir } from "node:os";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const resolveFromServer = (value: string) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
@@ -277,6 +279,31 @@ events.on("event", (event) => {
   remoteSyncScheduler.refreshAfterSettingsChange();
 });
 remoteSyncScheduler.start();
+// dsh 兼容模式（默认关闭）：按设置启停独立端口的 dsh SPA + 协议翻译层；关闭时零常驻
+const dshCompat = new DshCompatRuntime({
+  vendorDirectory: path.resolve(moduleDirectory, "../assets/dsh-web"),
+  enabled: () => settings.effective().dshCompat.enabled,
+  port: () => settings.effective().dshCompat.port || DEFAULT_DSH_PORT,
+  uiPath: () => settings.effective().dshCompat.uiPath,
+  host: () => settings.effective().host,
+  accessToken: () => authState?.accessToken,
+  sessions,
+  agent,
+  events,
+  home: homedir(),
+  logger: {
+    info: (message) => console.log(message),
+    warn: (message) => process.stderr.write(`${message}\n`),
+  },
+});
+events.on("event", (event) => {
+  if (event.type !== "server.settings_updated" || !event.payload || typeof event.payload !== "object") return;
+  const keys = (event.payload as { keys?: unknown }).keys;
+  if (!Array.isArray(keys) || !keys.some((key) => key === "dshCompatEnabled" || key === "dshPort" || key === "dshUiPath")) return;
+  void dshCompat.sync().catch((error: unknown) => process.stderr.write(`[dsh] 启停失败：${error instanceof Error ? error.message : String(error)}\n`));
+});
+await dshCompat.sync();
+
 await core.start();
 // cron 恢复需在 sessions/core 就绪之后：load 会 coalesce 补发停机期间错过的触发（经 follow-up 队列起 run）
 await cron.load();
@@ -409,6 +436,7 @@ const app = await buildServer({
 
 async function shutdown(): Promise<void> {
   clearInterval(gcTimer);
+  await dshCompat.close().catch(() => {});
   cron.stop();
   indexManager.stop();
   remoteSyncScheduler.stop();

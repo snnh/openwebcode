@@ -29,6 +29,8 @@ export interface ServerConfig {
   /** usage-events 保留天数（配合清理模式；immediate 分支忽略）。 */
   usageLogRetentionDays: number;
   defaultLanguage: string;
+  /** dsh 兼容模式：独立端口托管 dsh SPA 与插件（默认关闭；关闭时零常驻）。 */
+  dshCompat: { enabled: boolean; port: number; uiPath: string | null };
   defaultCurrency: "USD" | "CNY";
   /** 单条用户消息允许的最大 agent 轮次，达到后以失败收尾；设置页可调（热生效）。 */
   agentMaxTurns: number;
@@ -295,6 +297,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     compactionThresholdPercent: (() => { const parsed = boundedInteger(env.OWC_COMPACTION_THRESHOLD_PERCENT, 100); if (parsed !== undefined && parsed < 50) throw new Error(`Expected an integer >= 50, received ${env.OWC_COMPACTION_THRESHOLD_PERCENT}`); return parsed ?? 85; })(),
     compactMaxTokens: (() => { const parsed = boundedInteger(env.OWC_COMPACT_MAX_TOKENS, 256_000); if (parsed !== undefined && parsed < 1024) throw new Error(`Expected an integer >= 1024, received ${env.OWC_COMPACT_MAX_TOKENS}`); return parsed ?? 65_536; })(),
     defaultLanguage: env.OWC_DEFAULT_LANGUAGE ?? "zh-CN",
+    dshCompat: {
+      enabled: (env.OWC_DSH_COMPAT_ENABLED ?? "").trim().toLowerCase() === "true",
+      port: (() => {
+        const raw = env.OWC_DSH_PORT;
+        if (raw === undefined || raw.trim() === "") return 3211;
+        const parsed = Number(raw);
+        if (!Number.isInteger(parsed) || parsed < 1024 || parsed > 65535) {
+          throw new Error(`Expected an integer port 1024-65535, received ${raw}`);
+        }
+        return parsed;
+      })(),
+      uiPath: env.OWC_DSH_UI_PATH?.trim() ? env.OWC_DSH_UI_PATH.trim() : null,
+    },
     defaultCurrency: currency(env.OWC_DEFAULT_CURRENCY),
     pythonEnv: pythonEnv(env.OWC_PYTHON_ENV),
     nodeEnv: nodeEnv(env.OWC_NODE_ENV),
