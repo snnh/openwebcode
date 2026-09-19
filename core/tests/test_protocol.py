@@ -5,12 +5,12 @@ import json
 import os
 import pathlib
 import re
-import select
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 
@@ -53,10 +53,29 @@ def receive_or_fail(proc, timeout=5.0):
     """Read one frame, failing fast when core sends nothing at all.
 
     Used for malformed-request cases: a dropped reply must fail the test, not
-    block it forever."""
-    ready, _, _ = select.select([proc.stdout], [], [], timeout)
-    assert ready, "core sent no reply frame (malformed requests must still be answered)"
-    return receive(proc)
+    block it forever.
+
+    Implementation note: `select` cannot be used here — on Windows it accepts
+    sockets only and raises WSAENOTSOCK/WSAStartup errors for pipes. A reader
+    thread joined with a timeout is portable across both supported platforms.
+    """
+    result = {}
+    done = threading.Event()
+
+    def read() -> None:
+        try:
+            result["message"] = receive(proc)
+        except BaseException as error:  # noqa: BLE001 - re-raised on the test thread
+            result["error"] = error
+        finally:
+            done.set()
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    assert done.wait(timeout), "core sent no reply frame (malformed requests must still be answered)"
+    if "error" in result:
+        raise result["error"]
+    return result["message"]
 
 
 def collect_until_response(proc, request_id):
