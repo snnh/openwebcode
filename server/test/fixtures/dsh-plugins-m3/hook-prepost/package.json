@@ -1,0 +1,10 @@
+{
+  "name": "hook-prepost",
+  "version": "0.1.0",
+  "description": "dsh 兼容层 M3 fixture：tools/pre-execute（deny/ask）与 tools/post-execute（accept/block）",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  }
+}
