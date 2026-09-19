@@ -12,6 +12,8 @@ import path from "node:path";
 /** vendor 清单（`scripts/fetch-dsh-web.mjs` 产出）。 */
 export interface DshVendorPlugin {
   id: string;
+  /** 产物所在目录（缺省 = vendor/plugins/<id>；桥接插件指向自带目录）。 */
+  originDirectory?: string;
   version: string;
   rev: string;
   entry: string;

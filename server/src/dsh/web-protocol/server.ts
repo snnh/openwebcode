@@ -55,6 +55,10 @@ export interface DshServerOptions {
   deps: DshWireDeps;
   /** 随 owc 发布注入的 bridge 插件（步骤 18）；缺省则只跑 dsh 官方 roster。 */
   bridgePlugin?: DshVendorPlugin;
+  /** 桥接插件产物目录（默认与 vendor 同级：`<assets>/dsh-bridge`）。 */
+  bridgeDirectory?: string;
+  /** `/dsh-owc/status` 的响应体构造（拿到真实 owc 版本/端口后由 runtime 注入）。 */
+  owcStatus?: () => Promise<Record<string, unknown>> | Record<string, unknown>;
   logger: { warn(message: string): void; info(message: string): void };
 }
 
@@ -135,7 +139,10 @@ export async function buildDshServer(options: DshServerOptions): Promise<DshServ
       // rev 过期说明前端持有旧图：如实回 404 让它重新拉图
       return reply.code(404).send({ error: `rev 不匹配：${rev} ≠ ${declared.rev}` });
     }
-    const body = await readFile(path.join(options.vendorDirectory, "plugins", id, normalized)).catch(() => undefined);
+    const pluginPath = declared.originDirectory === undefined
+      ? path.join(options.vendorDirectory, "plugins", id, normalized)
+      : path.join(declared.originDirectory, normalized);
+    const body = await readFile(pluginPath).catch(() => undefined);
     if (body === undefined) return reply.code(404).send({ error: `插件文件读取失败：${id}/${normalized}` });
     return reply.type(normalized.endsWith(".js") ? "text/javascript; charset=utf-8" : "application/octet-stream").send(body);
   };
@@ -146,6 +153,13 @@ export async function buildDshServer(options: DshServerOptions): Promise<DshServ
     const slash = rest.lastIndexOf("/");
     if (slash <= 0 || slash === rest.length - 1) return reply.code(404).send({ error: `插件路径不合法：${rest}` });
     return sendPluginFile(rest.slice(0, slash), rest.slice(slash + 1), request.query.rev, reply as never);
+  });
+
+  // 桥接插件同源端点：owc 事实（需鉴权；内容不含密钥，令牌仅用于回跳换 cookie）
+  app.get("/dsh-owc/status", async (_request, reply) => {
+    if (!options.enabled()) return disabled(reply);
+    const status = options.owcStatus === undefined ? {} : await options.owcStatus();
+    return reply.type("application/json; charset=utf-8").send({ dshVersion: manifest.dshVersion, ...status });
   });
 
   // `$events/result` 与普通 unary 共用派发路径（端点名里含 `$`，单独注册更清晰）
