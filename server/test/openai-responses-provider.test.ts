@@ -1206,6 +1206,31 @@ describe("readSseData 边界", () => {
       { type: "done", stopReason: "end_turn" },
     ]);
   });
+
+  it("provider 级回归：finish_reason 缺失时按 [DONE] 哨兵区分正常收尾与静默截断", async () => {
+    const compat = (payload: string) =>
+      new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(payload) });
+    const data = (value: Record<string, unknown>) => `data: ${JSON.stringify(value)}\n\n`;
+
+    // 只发哨兵不发 finish_reason 的网关：正常收尾（不得误判为截断而重试）
+    const sentinel = await collect(compat(
+      data({ choices: [{ delta: { content: "hi" } }] }) + "data: [DONE]\n\n",
+    ).streamChat(errorRequest()));
+    expect(sentinel.at(-1)).toEqual({ type: "done", stopReason: "end_turn" });
+
+    // 仅工具调用分片 + 哨兵：按 tool_use 收尾（agent 循环据 done 判定后续调度）
+    const toolOnly = await collect(compat(
+      data({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "bash", arguments: "{}" } }] } }] })
+      + "data: [DONE]\n\n",
+    ).streamChat(errorRequest()));
+    expect(toolOnly.at(-1)).toEqual({ type: "done", stopReason: "tool_use" });
+
+    // 无 finish_reason 也无哨兵的 EOF：静默截断保持 error（collectProviderTurn 据此当失败重试）
+    const truncated = await collect(compat(
+      data({ choices: [{ delta: { content: "半截" } }] }),
+    ).streamChat(errorRequest()));
+    expect(truncated.at(-1)).toEqual({ type: "done", stopReason: "error" });
+  });
 });
 
 describe("工具参数 JSON 解析失败归不可重试", () => {
