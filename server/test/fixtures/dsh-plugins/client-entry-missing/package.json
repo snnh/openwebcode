@@ -1,0 +1,12 @@
+{
+  "name": "dsh-client-entry-missing",
+  "version": "0.1.0",
+  "description": "dsh 兼容层集成测试 fixture：platform=web 但 exports[\"./client\"] 缺失（清单非法）",
+  "type": "module",
+  "exports": { ".": { "default": "./index.js" } },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  }
+}

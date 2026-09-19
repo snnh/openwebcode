@@ -29,8 +29,12 @@ describe("dsh 最小 semver 范围匹配", () => {
   it("接受与垫片兼容面相交的范围", () => {
     expect(matchesDshRange("4.0.2", "^4.0.2")).toBe(true);
     expect(matchesDshRange("0.1.6", "^0.1.6")).toBe(true);
-    // 上游钉版是 0.1.6-alpha.1：声明为 0.1.6 时两类写法都应命中
+    // 上游钉版是 0.1.6-alpha.1/alpha.2：声明为 0.1.6 时各类写法都应命中
     expect(matchesDshRange("0.1.6", "^0.1.6-alpha.1")).toBe(true);
+    expect(matchesDshRange("0.1.6", "^0.1.6-alpha.2")).toBe(true);
+    // 精确预发布范围（`=0.1.6-alpha.2`）不兼容正式版 0.1.6：按 npm 语义判不匹配并如实展示
+    expect(matchesDshRange("0.1.6", "0.1.6-alpha.2")).toBe(false);
+    expect(matchesDshRange("0.1.6", ">=0.1.6-alpha.2")).toBe(true);
     expect(matchesDshRange("0.1.6", "~0.1.6")).toBe(true);
     expect(matchesDshRange("3.18.2", "^3.18.0")).toBe(true);
     expect(matchesDshRange("4.0.2", ">=3 <5")).toBe(true);
@@ -42,6 +46,9 @@ describe("dsh 最小 semver 范围匹配", () => {
   it("拒绝不匹配的范围", () => {
     expect(matchesDshRange("4.0.2", "^5.0.0")).toBe(false);
     expect(matchesDshRange("0.1.6", "^0.2.0")).toBe(false);
+    // 预发布下界：正式版 0.1.6 高于任何 0.1.6-alpha.N，故仍命中（npm 语义）
+    expect(matchesDshRange("0.1.6", "^0.1.6-alpha.3")).toBe(true);
+    expect(matchesDshRange("0.1.6", ">0.1.6")).toBe(false);
     expect(matchesDshRange("4.0.2", "~4.1.0")).toBe(false);
     expect(matchesDshRange("4.0.2", "1.x")).toBe(false);
     expect(matchesDshRange("4.0.2", ">=5")).toBe(false);
@@ -87,13 +94,24 @@ describe("dsh 插件扫描", () => {
     const byId = new Map(scan.entries.map((entry) => [entry.id, entry]));
 
     expect([...byId.keys()].sort()).toEqual([
-      "broken-entry", "client-probe", "config-fail", "hello", "hook-gate", "incompatible-dep", "missing-service", "tool-hello",
+      "broken-entry", "client-entry-missing", "client-platform-missing", "client-probe", "client-worker",
+      "config-fail", "hello", "hook-gate", "incompatible-dep", "missing-service", "tool-hello",
     ]);
     expect(byId.get("hello")?.entry).toBe("index.js");
     expect(byId.get("hello")?.problem).toBeUndefined();
     expect(byId.get("client-probe")?.clientEntry).toBe("client.js");
     expect(byId.get("client-probe")?.entry).toBe("index.js");
     expect(byId.get("client-probe")?.problem).toBeUndefined();
+    expect(byId.get("client-probe")?.client).toEqual({ platform: "web" });
+    // platform 非 web：记录声明，但不解析 client 入口（本层不装载 worker 半边）
+    expect(byId.get("client-worker")?.client).toEqual({ platform: "worker", inject: ["connection"], immediately: true });
+    expect(byId.get("client-worker")?.clientEntry).toBeUndefined();
+    expect(byId.get("client-worker")?.problem).toBeUndefined();
+    // 声明非法：缺 platform / platform=web 但缺 exports["./client"] → 清单无效
+    expect(byId.get("client-platform-missing")?.problem?.kind).toBe("invalid");
+    expect(byId.get("client-platform-missing")?.problem?.message).toContain("platform");
+    expect(byId.get("client-entry-missing")?.problem?.kind).toBe("invalid");
+    expect(byId.get("client-entry-missing")?.problem?.message).toContain("./client");
     // 认不出 main → 缺省 index.js
     expect(byId.get("missing-service")?.entry).toBe("index.js");
 
@@ -101,9 +119,9 @@ describe("dsh 插件扫描", () => {
     expect(byId.get("broken-entry")?.problem?.kind).toBe("invalid");
     expect(byId.get("broken-entry")?.problem?.message).toContain("入口无效");
 
-    // 计划只含可加载插件（两个问题插件不在内）
+    // 计划只含可加载插件（三个问题插件不在内）
     const planned = scan.plan.map((item) => item.id).sort();
-    expect(planned).toEqual(["client-probe", "config-fail", "hello", "hook-gate", "missing-service", "tool-hello"]);
+    expect(planned).toEqual(["client-probe", "client-worker", "config-fail", "hello", "hook-gate", "missing-service", "tool-hello"]);
     expect(scan.plan.find((item) => item.id === "hello")?.directory).toBe(path.join(dshPluginsRoot(dataDir), "hello"));
   });
 

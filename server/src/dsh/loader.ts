@@ -5,7 +5,9 @@
  * （上游经 cordis.yml 的 `name:` 挂载同样的包）：
  * - host 入口 = `main` 或 `exports["."]`（缺省 `index.js`），必须落在包目录内；
  * - client 入口 = `exports["./client"]`，仅当 package.json 声明了 `dsh.client`（上游约定，
- *   供 M4 的 `/plugins` combo 路由使用；本模块只解析不加载）。
+ *   供 M4 的 `/plugins` combo 路由使用；本模块只解析不加载）。`dsh.client.platform` 非 `web`
+ *   （如 worker 面）时上游不装载 client 半边，本层同样不记录 clientEntry；`inject`/`external`/
+ *   `immediately` 修饰字段随声明记录，供 M4 组合 wire 用。
  *
  * 配置文件 `<dataDir>/dsh.json` 保存每插件的 enabled/config；config 的校验与默认值填充由
  * 插件自己的 schemastery `Config` 在宿主激活时完成（垫片在 Extension Host 子进程内）。
@@ -30,9 +32,10 @@ const DSH_TOOL_SOURCE_PREFIX = "dsh-";
 const MAX_PLUGIN_ID_LENGTH = 60;
 
 /**
- * 翻译层声明的 dsh API 兼容面（垫片实现对齐的上游钉版 0d1f50007f）：
- * cordis 4.0.2（vendor/cordis）、schemastery 3.18.2、dsh-tools 0.1.6-alpha.1。
- * dsh-tools 声明为 `0.1.6`（而非 alpha 串）：使 `^0.1.6` 与 `^0.1.6-alpha.1` 两类范围都命中。
+ * 翻译层声明的 dsh API 兼容面（垫片实现对齐的上游钉版 `ddefc45fbc` = 0.1.6-alpha.2）：
+ * cordis 4.0.2（vendor/cordis）、schemastery 3.18.2、dsh-tools 0.1.6-alpha.2。
+ * dsh-tools 声明为 `0.1.6`（而非 alpha 串）：使 `^0.1.6`、`^0.1.6-alpha.1`、`^0.1.6-alpha.2`
+ * 各类范围都命中（0.1.6 ≥ 任一 0.1.6-alpha.N 预发布）。
  */
 const DSH_SUPPORTED_PACKAGES: Readonly<Record<string, string>> = {
   "@deepseek-ai/cordis": "4.0.2",
@@ -43,6 +46,47 @@ const DSH_SUPPORTED_PACKAGES: Readonly<Record<string, string>> = {
 /** 插件状态：running 已激活；missing-services 依赖服务缺失（未激活）；incompatible 版本不兼容。 */
 type DshPluginStatus = "running" | "disabled" | "error" | "missing-services" | "incompatible";
 
+/**
+ * `dsh.client` 声明（上游 `packages/client/modules/src/client/manifest.ts` 的 parseDshClient 子集）。
+ * platform 为 `web` 时 client 半边可被 SPA 装载；其余平台（如 worker 面）本层不装载。
+ */
+export interface DshClientDeclaration {
+  platform: string;
+  inject?: string[];
+  external?: string[];
+  immediately?: boolean;
+}
+
+/**
+ * 解析 `dsh.client`：返回 undefined（未声明）、声明对象，或错误文案（形状非法）。
+ * 形状规则与上游 parseDshClient 对齐：platform 必填字符串；inject/external 为字符串数组；
+ * immediately 为布尔。
+ */
+function parseDshClientDeclaration(pluginId: string, value: unknown): DshClientDeclaration | string | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return `${pluginId}: dsh.client 必须是对象`;
+  }
+  const decl = value as Record<string, unknown>;
+  if (typeof decl.platform !== "string") return `${pluginId}: dsh.client.platform 必须是字符串`;
+  const strings = (field: unknown, name: string): string[] | string | undefined => {
+    if (field === undefined) return undefined;
+    if (!Array.isArray(field) || field.some((entry) => typeof entry !== "string")) return `${pluginId}: dsh.client.${name} 必须是字符串数组`;
+    return field as string[];
+  };
+  const inject = strings(decl.inject, "inject");
+  if (typeof inject === "string") return inject;
+  const external = strings(decl.external, "external");
+  if (typeof external === "string") return external;
+  if (decl.immediately !== undefined && typeof decl.immediately !== "boolean") return `${pluginId}: dsh.client.immediately 必须是布尔`;
+  return {
+    platform: decl.platform,
+    ...(inject ? { inject } : {}),
+    ...(external ? { external } : {}),
+    ...(decl.immediately !== undefined ? { immediately: decl.immediately } : {}),
+  };
+}
+
 /** 发现结果（清单静态解析）：problem 非空表示不可加载（清单无效或版本不兼容）。 */
 interface DshPluginEntry {
   id: string;
@@ -52,8 +96,10 @@ interface DshPluginEntry {
   directory: string;
   /** host 入口（相对包目录）；清单无效时缺省。 */
   entry?: string;
-  /** client 入口（相对包目录）；未声明 `dsh.client` 时缺省。 */
+  /** client 入口（相对包目录）；未声明 `dsh.client` 或 platform 非 web 时缺省。 */
   clientEntry?: string;
+  /** `dsh.client` 声明（含 platform 修饰字段）；未声明或缺省时无。 */
+  client?: DshClientDeclaration;
   enabled: boolean;
   /** 运行期依赖（dependencies + peerDependencies，仅字符串声明）。 */
   dependencies: Record<string, string>;
@@ -94,7 +140,10 @@ export interface DshPluginInfo {
   description: string;
   directory: string;
   entry?: string;
+  /** client 入口（仅 `dsh.client.platform === "web"` 时有）。 */
   clientEntry?: string;
+  /** `dsh.client` 声明原文（platform/inject/external/immediately）；M4 生成 boot graph 用。 */
+  client?: DshClientDeclaration;
   enabled: boolean;
   status: DshPluginStatus;
   /** 状态说明（清单无效 / 版本不兼容 / 激活失败）。 */
@@ -438,13 +487,20 @@ async function readDshPluginEntry(directory: string, directoryName: string, id: 
     return { ...declaration, problem: { kind: "invalid", message: `插件入口无效或越出包目录：${declared}` } };
   }
   // client 入口：仅当声明 `dsh.client`（上游双面包约定：exports["./client"] → lib/client.js）
-  if ((pkg.dsh as { client?: unknown } | undefined)?.client !== undefined) {
-    const clientEntry = exportSubpath(pkg.exports, "./client");
-    const resolvedClient = clientEntry === undefined ? undefined : safeRelativeEntry(clientEntry);
-    if (resolvedClient === undefined) {
-      return { ...declaration, problem: { kind: "invalid", message: "声明了 dsh.client 但 exports[\"./client\"] 缺失或非法" } };
+  const clientDecl = parseDshClientDeclaration(id, (pkg.dsh as { client?: unknown } | undefined)?.client);
+  if (typeof clientDecl === "string") {
+    return { ...declaration, problem: { kind: "invalid", message: clientDecl } };
+  }
+  if (clientDecl) {
+    declaration.client = clientDecl;
+    if (clientDecl.platform === "web") {
+      const clientEntry = exportSubpath(pkg.exports, "./client");
+      const resolvedClient = clientEntry === undefined ? undefined : safeRelativeEntry(clientEntry);
+      if (resolvedClient === undefined) {
+        return { ...declaration, problem: { kind: "invalid", message: "声明了 dsh.client 但 exports[\"./client\"] 缺失或非法" } };
+      }
+      declaration.clientEntry = resolvedClient;
     }
-    declaration.clientEntry = resolvedClient;
   }
   const compatibility = checkDshCompatibility(dependencies);
   if (!compatibility.compatible) {
@@ -517,6 +573,7 @@ export function dshPluginInfos(scan: DshPluginScan, reports: readonly DshPluginR
       directory: entry.directory,
       ...(entry.entry !== undefined ? { entry: entry.entry } : {}),
       ...(entry.clientEntry !== undefined ? { clientEntry: entry.clientEntry } : {}),
+      ...(entry.client !== undefined ? { client: entry.client } : {}),
       enabled: entry.enabled,
       status: "disabled",
       dependencies: entry.dependencies,
