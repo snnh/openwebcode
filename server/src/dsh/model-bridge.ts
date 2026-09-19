@@ -7,7 +7,7 @@
 import type { ModelProfile, EffortLevel } from "../context/model-profile.js";
 import type { ModelSelection } from "../config.js";
 import type { CatalogModel } from "../context/model-registry.js";
-import type { DshCatalogModel, DshModelBridge, DshModelSelection } from "./web-protocol/models.js";
+import { fallbackSelection, type DshCatalogModel, type DshModelBridge, type DshModelSelection } from "./web-protocol/models.js";
 
 /** 装配所需的最小事实来源面（index.ts 传入真实对象；测试可注入假对象）。 */
 export interface DshModelSources {
@@ -59,5 +59,12 @@ export function createDshModelBridge(sources: DshModelSources): DshModelBridge {
     providers: () => sources.providers.list(),
     models: () => sources.models.list().map(toCatalogModel),
     defaults: () => defaultDshSelection(sources),
+    sessionDefault: () => {
+      const declared = defaultDshSelection(sources);
+      const routable = sources.providers.list();
+      // 默认模型的服务商不可路由（凭据被删/被改）时不能拿它建会话——REST 会 400 拒绝；回落到首个可路由模型
+      if (declared !== undefined && routable.includes(declared.provider)) return declared;
+      return fallbackSelection(routable, sources.models.list().map(toCatalogModel));
+    },
   };
 }
