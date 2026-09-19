@@ -1,0 +1,17 @@
+{
+  "name": "@deepseek-ai/dsh-client-worker-probe",
+  "version": "0.1.0",
+  "description": "dsh 兼容层集成测试 fixture：dsh.client.platform 非 web（本层不装载 client 半边）",
+  "type": "module",
+  "exports": {
+    ".": { "default": "./index.js" },
+    "./client": { "default": "./client.js" }
+  },
+  "dsh": {
+    "client": {
+      "platform": "worker",
+      "inject": ["connection"],
+      "immediately": true
+    }
+  }
+}

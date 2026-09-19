@@ -1,0 +1,12 @@
+{
+  "name": "dsh-client-platform-missing",
+  "version": "0.1.0",
+  "description": "dsh 兼容层集成测试 fixture：dsh.client 缺 platform（清单非法）",
+  "type": "module",
+  "exports": { ".": { "default": "./index.js" } },
+  "dsh": {
+    "client": {
+      "inject": ["connection"]
+    }
+  }
+}
