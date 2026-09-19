@@ -76,6 +76,34 @@ describe.skipIf(!VENDOR_READY)("dsh boot 完整性（需 vendor）", () => {
     expect(missing).toEqual([]);
   });
 
+  it("inject 声明的目标也在图中（或由 shell 静态播种），且挂载集合不含未挂载的依赖闭包页", async () => {
+    const manifest = await loadVendorManifest(VENDOR);
+    const ids = new Set(manifest!.plugins.map((plugin) => plugin.id));
+    // shell 静态播种的模块（`PLATFORM_MODULES`）：它们不进图，但 inject 引用它们是合法的
+    const seeded = new Set([
+      "react", "react/jsx-runtime", "react-dom", "react-dom/client", "@deepseek-ai/cordis",
+      "@deepseek-ai/dsh-client-store", "@deepseek-ai/dsh-client-ui-slots",
+      "@deepseek-ai/dsh-client-ui-primitives", "@deepseek-ai/dsh-client-ui-dockkit",
+    ]);
+    const packageNameOf = (specifier: string): string => {
+      const parts = specifier.split("/");
+      return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0] ?? specifier;
+    };
+    const missing: string[] = [];
+    for (const plugin of manifest!.plugins) {
+      for (const inject of plugin.inject) {
+        const name = packageNameOf(inject);
+        if (!ids.has(name) && !seeded.has(name)) missing.push(`${plugin.id} → ${inject}`);
+      }
+    }
+    expect(missing).toEqual([]);
+
+    // 挂载规则回归：依赖闭包里「作为依赖存在但官方未挂载」的包不得进图。
+    // 实测踩过：directory-picker-browse 被当作插件激活时在启动自检里 failed（整个 SPA 落到错误页），
+    // 它与 native 都只作为依赖存在、不被任何插件 inject/external 引用 → 必须被排除。
+    expect(manifest!.plugins.some((plugin) => plugin.id.includes("directory-picker"))).toBe(false);
+  });
+
   it("注入行覆盖每条 batch：application 都有 preload、bootstrap 有阻塞脚本", async () => {
     const manifest = await loadVendorManifest(VENDOR);
     const graph = buildBootGraph(manifest!.plugins);
