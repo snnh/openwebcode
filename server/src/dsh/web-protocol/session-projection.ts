@@ -8,17 +8,23 @@ import type { AgentRunner } from "../../agent/agent-runner.js";
 import type { ChatMessage, SessionMeta } from "../../sessions/types.js";
 import type { SessionStore } from "../../sessions/session-store.js";
 import { wireError, type DshWireError } from "./wire.js";
+import { modelSelectionValue, type DshModelSelection } from "./models.js";
 import { deriveSessionRecords, pageWindow, snapshotWindow } from "./session-events.js";
 
 /** 投影所需的最小依赖面（便于单测注入假对象）。 */
 export interface DshProjectionDeps {
-  sessions: Pick<SessionStore, "list" | "create" | "getTail" | "get" | "getMeta">;
+  sessions: Pick<SessionStore, "list" | "create" | "getTail" | "get" | "getMeta" | "updateConfig">;
   agent: Pick<
     AgentRunner,
     "run" | "isRunning" | "abort" | "enqueueSteering" | "enqueueFollowUp" | "listQueue" | "updateQueue" | "removeQueue"
   >;
   /** 未显式指定 cwd 时使用的默认工作目录（会话创建）。 */
   defaultCwd: string;
+  /**
+   * 新建会话的隐式模型（settings defaultModel + 校验过的 defaultEffort）。
+   * 与 REST 路径同口径：会话不带 provider/model 就无法运行，故创建时补齐。
+   */
+  defaultSelection?: () => DshModelSelection | undefined;
   /** 图片上限投影（dsh 附件 UI 用来预校验；缺省则不下发该 projection）。 */
   imageLimits?: {
     maxImageBytes: number;
@@ -67,6 +73,8 @@ function projectionValues(deps: DshProjectionDeps, meta: SessionMeta, tail: { me
   return {
     title: meta.title ?? null,
     sessionListMetadata: { blank: isBlank(tail.messages, tail.truncated), lastPromptAt: lastPromptAt(tail.messages) },
+    // 模型选择器必读（缺该投影时 dsh 的 ModelDirectory 永不 resolve，composer 的模型座位一直空着）
+    modelSelection: modelSelectionValue(meta),
     ...(deps.imageLimits === undefined ? {} : { imageLimits: deps.imageLimits }),
   };
 }
@@ -112,7 +120,20 @@ export async function projectSessionCreate(deps: DshProjectionDeps, args: Record
     if (existing !== undefined) return { value: { sessionId: existing.id } };
   }
   const cwd = asString(request.cwd) ?? deps.defaultCwd;
-  const created = await deps.sessions.create({ cwd, ...(requested === undefined ? {} : { id: requested }) });
+  const selection = deps.defaultSelection?.();
+  const created = await deps.sessions.create({
+    cwd,
+    ...(requested === undefined ? {} : { id: requested }),
+    ...(selection === undefined ? {} : { provider: selection.provider, model: selection.model }),
+  });
+  // effort 不在 create 入参里：默认力度按 updateConfig 补一次（与 REST applySessionDefaults 同语义）
+  if (selection?.reasoningEffort !== undefined) {
+    await deps.sessions.updateConfig(created.id, {
+      provider: selection.provider,
+      model: selection.model,
+      effort: selection.reasoningEffort as NonNullable<SessionMeta["effort"]>,
+    });
+  }
   return { value: { sessionId: created.id } };
 }
 

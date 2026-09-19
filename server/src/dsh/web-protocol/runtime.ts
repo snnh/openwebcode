@@ -8,13 +8,16 @@
  *   - 热切换：设置更新事件触发 `sync()`，幂等（状态未变不动）。
  */
 import path from "node:path";
+import type { SessionMeta } from "../../sessions/types.js";
 import type { AgentRunner } from "../../agent/agent-runner.js";
 import type { EventBus } from "../../events/event-bus.js";
 import type { SessionStore } from "../../sessions/session-store.js";
 import { isLoopbackHost } from "../../config.js";
 import { buildDshServer, type DshServer } from "./server.js";
 import { buildOwcStatus, loadBridgePlugin } from "./bridge.js";
+import { projectModelCatalog, projectSelectModel, type DshModelBridge } from "./models.js";
 import type { DshWireDeps } from "./streams.js";
+import type { DshPluginInfo } from "../loader.js";
 
 export interface DshCompatRuntimeOptions {
   /** 内置 vendor 目录（`server/assets/dsh-web`）。 */
@@ -29,6 +32,10 @@ export interface DshCompatRuntimeOptions {
   agent: AgentRunner;
   events: EventBus;
   home: string;
+  /** 模型事实（`session/modelCatalog` / `session/selectModel` / 新建会话默认模型）；缺省则模型面不下发。 */
+  models?: DshModelBridge;
+  /** dsh 插件清单（`pluginInventory/list`）；缺省则端点不下发。 */
+  dshPlugins?: () => readonly DshPluginInfo[];
   /** owc 服务版本（`/dsh-owc/status` 与桥接插件展示用）。 */
   version: () => string;
   /** owc 主端口（桥接插件回跳 URL 用）。 */
@@ -76,6 +83,29 @@ export class DshCompatRuntime {
     if (server !== undefined) await server.close();
   }
 
+  /** `session/selectModel` 的落盘侧依赖（会话存储 + 运行态判断）。 */
+  private modelSelectDeps(models: DshModelBridge): Parameters<typeof projectSelectModel>[0] {
+    const sessions = this.options.sessions;
+    return {
+      providers: () => models.providers(),
+      models: () => models.models(),
+      defaults: () => models.defaults(),
+      selectionOf: async (sessionId) => {
+        const meta = await sessions.getMeta(sessionId);
+        return meta === undefined ? undefined : { provider: meta.provider, model: meta.model, ...(meta.effort === undefined ? {} : { reasoningEffort: meta.effort }) };
+      },
+      isRunning: (sessionId) => this.options.agent.isRunning(sessionId),
+      apply: async (sessionId, selection) => {
+        // updateConfig 的 undefined=清除语义：未带 reasoningEffort 时清掉旧 effort（与 REST 收口一致）
+        await sessions.updateConfig(sessionId, {
+          provider: selection.provider,
+          model: selection.model,
+          ...(selection.reasoningEffort === undefined ? {} : { effort: selection.reasoningEffort as NonNullable<SessionMeta["effort"]> }),
+        });
+      },
+    };
+  }
+
   private desiredKey(): string {
     const uiPath = this.options.uiPath();
     const vendor = uiPath !== null && uiPath.trim() !== "" ? path.resolve(uiPath) : this.options.vendorDirectory;
@@ -110,11 +140,13 @@ export class DshCompatRuntime {
     }
     const uiPath = this.options.uiPath();
     const vendorDirectory = uiPath !== null && uiPath.trim() !== "" ? path.resolve(uiPath) : this.options.vendorDirectory;
+    const models = this.options.models;
     const deps: DshWireDeps = {
       projection: {
         sessions: this.options.sessions,
         agent: this.options.agent,
         defaultCwd: this.options.home,
+        ...(models === undefined ? {} : { defaultSelection: () => models.defaults() }),
         ...(this.options.imageLimits === undefined ? {} : { imageLimits: this.options.imageLimits }),
       },
       events: this.options.events,
@@ -127,6 +159,13 @@ export class DshCompatRuntime {
       respondInteraction: async (sessionId, requestId, answer) => {
         await this.options.agent.respondInteraction(sessionId, requestId, answer);
       },
+      ...(models === undefined ? {} : {
+        models: {
+          catalog: () => projectModelCatalog(models),
+          select: (args) => projectSelectModel(this.modelSelectDeps(models), args),
+        },
+      }),
+      ...(this.options.dshPlugins === undefined ? {} : { pluginInventory: this.options.dshPlugins }),
       logger: { warn: (message) => this.warn(message) },
     };
     // 桥接插件产物与 vendor 同级（server/assets/dsh-bridge/client.js）；缺失时不阻塞 dsh 模式

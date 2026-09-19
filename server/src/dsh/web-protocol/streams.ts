@@ -4,8 +4,10 @@
  * 与 owc 的耦合集中在 {@link DshWireDeps}：审批/提问的应答由调用方注入（翻译层不直接持有 AgentRunner）。
  */
 import type { AppEvent, EventBus } from "../../events/event-bus.js";
+import type { DshPluginInfo } from "../loader.js";
 import type { DshMuxEndpointHandler, DshStreamHandle } from "./mux.js";
 import { DshEventStream, parseEventResult, type DshEventResult, type DshWaterfallOutcome } from "./events.js";
+import { projectPluginInventory } from "./plugin-inventory.js";
 import {
   projectSessionAttachment,
   projectSessionCancel,
@@ -21,6 +23,7 @@ import {
   type DshProjected,
   type DshProjectionDeps,
 } from "./session-projection.js";
+import type { DshModelSelection } from "./models.js";
 import { DSH_EVENTS_STREAM, wireError } from "./wire.js";
 
 /** 翻译层依赖（owc 侧能力的窄接口）。 */
@@ -29,6 +32,16 @@ export interface DshWireDeps {
   events: EventBus;
   /** dsh ready 帧的 host.home（仅用于路径缩写展示）。 */
   home: string;
+  /**
+   * 模型面（`session/modelCatalog` / `session/selectModel`）：缺省时两个端点不下发
+   * （客户端按 `gateway/method-unavailable` 如实报未实现）。
+   */
+  models?: {
+    catalog(): Record<string, unknown>;
+    select(args: Record<string, unknown>): Promise<DshProjected<{ selected: DshModelSelection }>>;
+  };
+  /** dsh 插件清单投影（`pluginInventory/list`）；缺省时该端点不下发。 */
+  pluginInventory?: () => readonly DshPluginInfo[];
   /** 应答 owc 待审批（decision: allow 时会恢复工具执行）。 */
   respondPermission(sessionId: string, requestId: string, decision: "allow" | "deny", reason?: string): Promise<void>;
   /** 应答 owc 待回答提问。 */
@@ -54,6 +67,15 @@ export function buildUnaryHandlers(deps: DshWireDeps): Map<string, DshUnaryHandl
   handlers.set("session/updateQueue", (args) => projectSessionUpdateQueue(deps.projection, args));
   handlers.set("session/attachment", (args) => projectSessionAttachment(deps.projection, args));
   handlers.set("session/page", (args) => projectSessionPage(deps.projection, args));
+  const models = deps.models;
+  if (models !== undefined) {
+    handlers.set("session/modelCatalog", () => Promise.resolve({ value: models.catalog() }));
+    handlers.set("session/selectModel", (args) => models.select(args));
+  }
+  const inventory = deps.pluginInventory;
+  if (inventory !== undefined) {
+    handlers.set("pluginInventory/list", () => Promise.resolve({ value: projectPluginInventory(inventory()) }));
+  }
   return handlers;
 }
 
