@@ -42,6 +42,7 @@ function bridge(overrides: Partial<DshModelBridge> = {}): DshModelBridge {
     providers: () => ["deepseek", "openai"],
     models: () => [THINKING_MODEL, PLAIN_MODEL],
     defaults: () => ({ provider: "deepseek", model: "deepseek-reasoner", reasoningEffort: "medium" }),
+    sessionDefault: () => ({ provider: "deepseek", model: "deepseek-reasoner", reasoningEffort: "medium" }),
     ...overrides,
   };
 }
@@ -190,10 +191,36 @@ describe("createDshModelBridge（owc 事实 → 桥）", () => {
     expect(defaultDshSelection(sources({ defaultEffort: "ultra" }))).toEqual({ provider: "deepseek", model: "m1" });
   });
 
-  it("未配置 defaultModel 时返回 undefined（不猜服务商）", () => {
+  it("sessionDefault：默认模型的服务商不可路由时回落到首个可路由模型；全不可用时 undefined", () => {
+    // settings.defaultModel 指向 deepseek，但只有 openai 配了凭据
+    const sourcesWithFallback = sources();
+    sourcesWithFallback.providers.list = () => ["openai"];
+    expect(defaultDshSelection(sourcesWithFallback)).toEqual({ provider: "deepseek", model: "m1" });
+    const bridgeFallback = createDshModelBridge(sourcesWithFallback);
+    expect(bridgeFallback.sessionDefault()).toEqual({ provider: "deepseek", model: "m1" });
+    // 目录里 deepseek 模型照常展示（客户端按 routable=false 展示不可用），但不会被用于建会话
+  });
+
+  it("未配置 defaultModel 时返回 undefined（不猜服务商）；catalog default 空串（如实）、建会话回退可路由模型", () => {
     const withoutDefault = { ...sources(), settings: { effective: () => ({}) } };
+    const wired = createDshModelBridge(withoutDefault);
     expect(defaultDshSelection(withoutDefault)).toBeUndefined();
-    expect(createDshModelBridge(withoutDefault).defaults()).toBeUndefined();
+    expect(wired.defaults()).toBeUndefined();
+    // catalog default：schema 要求 string → 无模型时如实空串
+    expect(projectModelCatalog(wired).default).toEqual({ provider: "deepseek", model: "m1" });
+    // 建会话回退到首个可路由模型（目录第一条），不落在空串上
+    expect(wired.sessionDefault()).toEqual({ provider: "deepseek", model: "m1" });
+  });
+
+  it("无任何可路由服务商与模型时 sessionDefault 为 undefined（不写 provider/model）", () => {
+    const bare: DshModelSources = {
+      providers: { list: () => [] },
+      models: { list: () => [], get: () => ({ capabilities: { effort: [] } } as never) },
+      settings: { effective: () => ({}) },
+    };
+    const wired = createDshModelBridge(bare);
+    expect(wired.sessionDefault()).toBeUndefined();
+    expect(projectModelCatalog(wired).default).toEqual({ provider: "", model: "" });
   });
 });
 
@@ -224,9 +251,44 @@ describe("pluginInventory/list 投影", () => {
   });
 });
 
+describe("unary 端点注册（deps 缺模型面时不下发，客户端收到 method-unavailable 而不是假数据）", () => {
+  function wireDeps(overrides: { models?: boolean; pluginInventory?: boolean } = {}) {
+    return {
+      projection: {} as DshProjectionDeps,
+      events: {} as never,
+      home: "/home",
+      respondPermission: async () => undefined,
+      respondInteraction: async () => undefined,
+      logger: { warn: () => undefined },
+      ...(overrides.models === true
+        ? { models: { catalog: () => ({}), select: async () => ({ value: { selected: { provider: "p", model: "m" } } }) } }
+        : {}),
+      ...(overrides.pluginInventory === true ? { pluginInventory: () => [] } : {}),
+    };
+  }
+
+  it("带 models / pluginInventory 时注册三个新端点；不带时一个都不注册", async () => {
+    const { buildUnaryHandlers } = await import("../src/dsh/web-protocol/streams.js");
+    const full = buildUnaryHandlers(wireDeps({ models: true, pluginInventory: true }));
+    expect([...full.keys()]).toContain("session/modelCatalog");
+    expect([...full.keys()]).toContain("session/selectModel");
+    expect([...full.keys()]).toContain("pluginInventory/list");
+
+    const bare = buildUnaryHandlers(wireDeps());
+    expect([...bare.keys()]).not.toContain("session/modelCatalog");
+    expect([...bare.keys()]).not.toContain("session/selectModel");
+    expect([...bare.keys()]).not.toContain("pluginInventory/list");
+    // 主路径端点不受影响
+    expect([...bare.keys()]).toContain("session/list");
+  });
+});
+
 describe.skipIf(VENDOR_SKIP !== undefined)("契约校验：vendor 生成 codec（strict schema）", () => {
-  async function loadDescriptors(): Promise<Map<string, { result: { create(): { parse(value: unknown): unknown } } }>> {
-    const module = await import(SESSION_CONTROLLER) as { default?: { descriptors?: Array<{ namespace: string; method: string; result: { create(): { parse(value: unknown): unknown } } }> } };
+  async function loadDescriptors(): Promise<Map<string, {
+    result: { create(): { parse(value: unknown): unknown } };
+    parameters?: Array<{ name: string; codec: { create(): { parse(value: unknown): unknown } } }>;
+  }>> {
+    const module = await import(SESSION_CONTROLLER) as { default?: { descriptors?: Array<{ namespace: string; method: string; result: { create(): { parse(value: unknown): unknown } }; parameters?: Array<{ name: string; codec: { create(): { parse(value: unknown): unknown } } }> }> } };
     const descriptors = module.default?.descriptors ?? [];
     return new Map(descriptors.map((item) => [`${item.namespace}/${item.method}`, item]));
   }
@@ -241,6 +303,10 @@ describe.skipIf(VENDOR_SKIP !== undefined)("契约校验：vendor 生成 codec�
     const selectDescriptor = descriptors.get("session/selectModel");
     expect(selectDescriptor, "vendor 缺少 session/selectModel").toBeDefined();
     expect(selectDescriptor?.result.create().parse({ selected: { provider: "deepseek", model: "deepseek-reasoner", reasoningEffort: "high" } })).toBeDefined();
+    // 入参同样过客户端的 request schema（我方消费的 shape 必须与 wire 契约一致）
+    const requestCodec = selectDescriptor?.parameters?.[0]?.codec;
+    expect(requestCodec, "session/selectModel 应有单个 request 参数").toBeDefined();
+    expect(requestCodec?.create().parse({ sessionId: "s1", provider: "deepseek", model: "deepseek-reasoner", reasoningEffort: "high" })).toBeDefined();
   });
 
   it("含 modelSelection 的 control 基线通过 strict schema", async () => {
