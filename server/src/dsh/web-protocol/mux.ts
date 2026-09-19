@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { parseMuxFrame, wireError, type DshMuxOutboundFrame, type DshWireError } from "./wire.js";
 
 /** 协议违规/帧过大等关闭码（与 dsh 一致：1003 二进制、1008 形状非法）。 */
-export const DSH_CLOSE_BINARY = 1003;
+const DSH_CLOSE_BINARY = 1003;
 export const DSH_CLOSE_PROTOCOL = 1008;
 
 /** 逻辑流的 Host 侧句柄（端点实现用它推送帧）。 */
@@ -46,10 +46,6 @@ interface ActiveStream {
   cancelled: boolean;
   ended: boolean;
   cancelListeners: Set<() => void>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** item 帧：值缺省（undefined）时省略 `value` 键（与上游 `JSON.stringify` 行为一致）。 */
@@ -188,12 +184,3 @@ export class DshMuxSession {
   }
 }
 
-/** 便捷构造：由端点表（`Map<endpoint, handler>`）得到 resolver。 */
-export function endpointResolver(handlers: ReadonlyMap<string, DshMuxEndpointHandler>): DshMuxEndpointResolver {
-  return (endpoint) => handlers.get(endpoint);
-}
-
-/** 供测试/诊断：校验帧是否为本模块会发出的形状。 */
-export function isOutboundFrame(value: unknown): value is DshMuxOutboundFrame {
-  return isRecord(value) && (value.type === "item" || value.type === "error" || value.type === "end") && typeof value.streamId === "string";
-}

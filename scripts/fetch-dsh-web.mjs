@@ -92,6 +92,113 @@ function readTarEntries(buffer) {
   return entries;
 }
 
+/** 带退避重试的 fetch（registry 偶发 5xx/连接重置时不要整体失败）。 */
+async function fetchWithRetry(url, init, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await fetch(url, init);
+      if (response.status >= 500 && attempt < attempts) {
+        lastError = new Error(`HTTP ${response.status}`);
+        await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+        continue;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+    }
+  }
+  throw lastError ?? new Error("fetch failed");
+}
+
+/** 取包的 packument（versions + dist-tags；纯 JSON，缓存到 .cache/）。 */
+async function fetchPackument(registry, name, cacheDirectory) {
+  const base = name.startsWith("@") ? name.slice(1) : name;
+  const slash = base.indexOf("/");
+  const url = `${registry}/@${base.slice(0, slash)}%2f${base.slice(slash + 1)}`;
+  const cacheFile = path.join(cacheDirectory, `packument_${name.replace(/[@/]/g, "_")}.json`);
+  const cached = await readFile(cacheFile, "utf8").catch(() => undefined);
+  if (cached !== undefined) return JSON.parse(cached);
+  const response = await fetchWithRetry(url, { headers: { accept: "application/json" } });
+  if (!response.ok) throw new Error(`读取 packument 失败 ${name}：HTTP ${response.status} ${url}`);
+  const text = await response.text();
+  await writeOut(cacheFile, text);
+  return JSON.parse(text);
+}
+
+/**
+ * 在 packument 里挑选落进声明范围的版本。
+ *
+ * 只做本场景够用的匹配：精确钉版直接用；`^`/`~`/`>=` 取「同 major.minor.patch 前缀」的最高版本
+ * （先正式版、再预发布）。dsh 生态各包独立发版（如 `@deepseek-ai/schemastery@3.18.x`），
+ * 不能一律按 web-app 的版本取。取不到就回落 dist-tags.latest。
+ */
+function pickVersion(packument, range) {
+  const versions = Object.keys(packument.versions ?? {});
+  if (versions.length === 0) return packument["dist-tags"]?.latest;
+  const cleaned = String(range ?? "").replace(/^[\^~>=<\s]+/, "");
+  if (versions.includes(cleaned)) return cleaned;
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(cleaned);
+  if (match !== null) {
+    const prefix = `${match[1]}.${match[2]}.${match[3]}`;
+    const samePrefix = versions.filter((version) => version === prefix || version.startsWith(`${prefix}-`));
+    const stable = samePrefix.filter((version) => !version.includes("-"));
+    if (stable.length > 0) return stable.sort().at(-1);
+    if (samePrefix.length > 0) return samePrefix.sort().at(-1);
+    const sameMinor = versions.filter((version) => version.startsWith(`${match[1]}.${match[2]}.`));
+    if (sameMinor.length > 0) return sameMinor.sort().at(-1);
+  }
+  return packument["dist-tags"]?.latest ?? versions.sort().at(-1);
+}
+
+/**
+ * dsh 前端插件 roster：从 `@deepseek-ai/dsh-web-app` 出发做 `@deepseek-ai/*` 依赖闭包遍历。
+ *
+ * 为什么不用 cordis.patch.yml：那张表只列该 app 显式 patch 的服务，会漏掉「只被其它包以
+ * `external` 引用」的客户端插件（实测漏了 `@deepseek-ai/dsh-api-gateway`——它提供 WS 连接与
+ * `ctx.remote`，漏装即 SPA 启动失败）。这里按 registry packument 的依赖声明递归（dependencies
+ * + peerDependencies），逐包用声明范围挑版本；`dsh.client.platform === "web"` 者即为插件。
+ * patch.yml 作为补充来源。
+ */
+async function resolveRoster(registry, rootName, rootVersion, cacheDirectory) {
+  const packuments = new Map();
+  const versions = new Map();
+  const pending = [[rootName, rootVersion]];
+  const seen = new Set([rootName]);
+  while (pending.length > 0) {
+    const [name, range] = pending.shift();
+    let packument = packuments.get(name);
+    if (packument === undefined) {
+      try {
+        packument = await fetchPackument(registry, name, cacheDirectory);
+      } catch (error) {
+        // 单个依赖取不到元数据（下架/网络抖动）不应中断整体：如实跳过并记一行
+        console.warn(`  跳过 ${name}：${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+      packuments.set(name, packument);
+    }
+    const version = name === rootName ? rootVersion : pickVersion(packument, range);
+    const manifest = version === undefined ? undefined : packument.versions?.[version];
+    if (manifest === undefined) continue;
+    versions.set(name, version);
+    // dependencies + peerDependencies：npm 7+ 会自动安装 peer，dsh 的客户端插件正是以
+    // peer 形式互相引用（如 controller → `@deepseek-ai/dsh-api-gateway`），只走 dependencies 会漏装
+    const declared = { ...(manifest.dependencies ?? {}), ...(manifest.peerDependencies ?? {}) };
+    for (const [dependency, dependencyRange] of Object.entries(declared)) {
+      if (!dependency.startsWith("@deepseek-ai/") || seen.has(dependency)) continue;
+      seen.add(dependency);
+      pending.push([dependency, dependencyRange]);
+    }
+  }
+  const webPlugins = [];
+  for (const [name, version] of versions) {
+    if (packuments.get(name)?.versions?.[version]?.dsh?.client?.platform === "web") webPlugins.push(name);
+  }
+  return { packuments, versions, webPlugins };
+}
+
 async function fetchTarball(registry, name, version, cacheDirectory) {
   const cacheFile = path.join(cacheDirectory, `${name.replace(/[@/]/g, "_")}-${version}.tgz`);
   if (cacheDirectory !== undefined) {
@@ -161,14 +268,21 @@ async function main() {
 
   const cacheDirectory = path.join(out, ".cache");
   const rosterEntries = await fetchTarball(options.registry, ROSTER_PACKAGE, options.version, cacheDirectory);
-  const roster = parseRoster(rosterEntries.get("package/cordis.patch.yml")?.toString("utf8") ?? "");
-  if (roster.length === 0) throw new Error(`${ROSTER_PACKAGE} 的 cordis.patch.yml 未解析出任何包名`);
-  console.log(`roster：${roster.length} 个包（来自 ${ROSTER_PACKAGE}）`);
+  const patchRoster = parseRoster(rosterEntries.get("package/cordis.patch.yml")?.toString("utf8") ?? "");
+  const closure = await resolveRoster(options.registry, ROSTER_PACKAGE, options.version, cacheDirectory);
+  console.log(`roster：依赖闭包 ${closure.versions.size} 个包（其中 ${closure.webPlugins.length} 个声明 dsh.client.platform=web）+ patch.yml ${patchRoster.length} 个补充候选`);
 
-  const candidates = [...new Set([...roster, MODULES_PACKAGE])].filter((name) => options.only === undefined || options.only.has(name));
+  // 插件候选 = 闭包内 web 插件 ∪ patch.yml 名单（后者可能含闭包外的包）
+  const webPluginSet = new Set(closure.webPlugins);
+  const candidates = [...new Set([...webPluginSet, ...patchRoster, MODULES_PACKAGE])]
+    .filter((name) => options.only === undefined || options.only.has(name));
   const plugins = [];
   for (const name of candidates) {
-    const entries = await fetchTarball(options.registry, name, options.version, cacheDirectory);
+    // 闭包内已知非 web 插件的包直接跳过（省一次 tarball 下载）
+    const resolvedVersion = closure.versions.get(name);
+    const known = resolvedVersion === undefined ? undefined : closure.packuments.get(name)?.versions?.[resolvedVersion];
+    if (known !== undefined && known.dsh?.client?.platform !== "web" && !webPluginSet.has(name)) continue;
+    const entries = await fetchTarball(options.registry, name, resolvedVersion ?? options.version, cacheDirectory);
     const pkg = await readJson(entries, "package/package.json");
     const declaration = pkg.dsh?.client;
     if (declaration?.platform !== "web") continue;

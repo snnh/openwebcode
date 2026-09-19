@@ -10,10 +10,10 @@ import path from "node:path";
 import type { DshVendorPlugin } from "./boot-graph.js";
 
 /** 桥接插件 id（boot graph 里的 entry 名，也是 `/plugins/<id>/client.js` 的路径段）。 */
-export const OWC_BRIDGE_ID = "owc-dsh-bridge";
+const OWC_BRIDGE_ID = "owc-dsh-bridge";
 
 /** 桥接插件 bundle 相对桥接目录的文件名（目录本身由调用方给出：`server/assets/dsh-bridge`）。 */
-export const OWC_BRIDGE_FILE = "client.js";
+const OWC_BRIDGE_FILE = "client.js";
 
 /** owc 事实（dsh 端口同源端点 `/dsh-owc/status` 的响应体）。 */
 export interface DshOwcStatus {

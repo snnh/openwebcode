@@ -21,7 +21,7 @@ import {
   type DshProjected,
   type DshProjectionDeps,
 } from "./session-projection.js";
-import { wireError, type DshWireError } from "./wire.js";
+import { DSH_EVENTS_STREAM, wireError } from "./wire.js";
 
 /** 翻译层依赖（owc 侧能力的窄接口）。 */
 export interface DshWireDeps {
@@ -249,7 +249,7 @@ export class DshEventBridge {
 /** 逻辑流端点表。 */
 export function buildStreamHandlers(deps: DshWireDeps, bridge: DshEventBridge): Map<string, DshMuxEndpointHandler> {
   const handlers = new Map<string, DshMuxEndpointHandler>();
-  handlers.set("$events", (handle) => bridge.open(handle));
+  handlers.set(DSH_EVENTS_STREAM, (handle) => bridge.open(handle));
   handlers.set("session/control", async (handle) => {
     const sessionId = typeof handle.args.sessionId === "string" ? handle.args.sessionId : undefined;
     if (sessionId === undefined) {
@@ -312,7 +312,3 @@ export function buildStreamHandlers(deps: DshWireDeps, bridge: DshEventBridge): 
   return handlers;
 }
 
-/** wire 错误 → 翻译层统一形状（供 server 直接回信封）。 */
-export function asWireError(error: DshWireError): DshWireError {
-  return error;
-}

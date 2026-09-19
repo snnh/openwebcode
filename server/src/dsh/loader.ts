@@ -50,7 +50,7 @@ type DshPluginStatus = "running" | "disabled" | "error" | "missing-services" | "
  * `dsh.client` 声明（上游 `packages/client/modules/src/client/manifest.ts` 的 parseDshClient 子集）。
  * platform 为 `web` 时 client 半边可被 SPA 装载；其余平台（如 worker 面）本层不装载。
  */
-export interface DshClientDeclaration {
+interface DshClientDeclaration {
   platform: string;
   inject?: string[];
   external?: string[];

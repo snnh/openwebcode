@@ -36,7 +36,7 @@ export interface DshVendorManifest {
 export const DSH_MODULES_ID = "@deepseek-ai/dsh-client-modules";
 
 /** boot graph wire。 */
-export interface DshBootEntry {
+interface DshBootEntry {
   id: string;
   url: string;
   rev: string;
@@ -45,7 +45,7 @@ export interface DshBootEntry {
   external?: string[];
 }
 
-export interface DshBootBatch {
+interface DshBootBatch {
   phase: "bootstrap" | "application";
   url: string;
   rev: string;
