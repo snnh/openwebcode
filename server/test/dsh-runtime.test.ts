@@ -37,6 +37,8 @@ function makeRuntime(overrides: {
   enabled: () => boolean;
   port?: () => number;
   uiPath?: () => string | null;
+  host?: string;
+  accessToken?: string;
   warnings?: string[];
   logs?: string[];
 }): DshCompatRuntime {
@@ -49,8 +51,8 @@ function makeRuntime(overrides: {
     enabled: overrides.enabled,
     port: overrides.port ?? (() => 0),
     uiPath: overrides.uiPath ?? (() => null),
-    host: () => "127.0.0.1",
-    accessToken: () => undefined,
+    host: () => overrides.host ?? "127.0.0.1",
+    accessToken: () => overrides.accessToken,
     sessions: {} as SessionStore,
     agent,
     events: new EventBus(),
@@ -102,6 +104,20 @@ describe("dsh 兼容模式运行期", () => {
     enabled = false;
     await runtime.sync();
     expect(runtime.listening).toBe(false);
+  });
+
+  it("非回环 host 且拿不到访问令牌：拒绝启动该端口（不裸开鉴权）", async () => {
+    const vendor = await fakeVendor();
+    const warnings: string[] = [];
+    const runtime = makeRuntime({ vendor, enabled: () => true, host: "0.0.0.0", warnings });
+    await runtime.sync();
+    expect(runtime.listening).toBe(false);
+    expect(warnings.some((line) => line.includes("非回环"))).toBe(true);
+
+    // 有令牌即可正常启动（守卫只在缺少令牌时生效）
+    const withToken = makeRuntime({ vendor, enabled: () => true, host: "0.0.0.0", accessToken: "t".repeat(32) });
+    await withToken.sync();
+    expect(withToken.listening).toBe(true);
   });
 
   it("vendor 缺失：不监听并如实记录原因（不半启动）", async () => {

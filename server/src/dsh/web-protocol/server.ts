@@ -56,8 +56,11 @@ export interface DshServerOptions {
   bridgePlugin?: DshVendorPlugin;
   /** 桥接插件产物目录（默认与 vendor 同级：`<assets>/dsh-bridge`）。 */
   bridgeDirectory?: string;
-  /** `/dsh-owc/status` 的响应体构造（拿到真实 owc 版本/端口后由 runtime 注入）。 */
-  owcStatus?: () => Promise<Record<string, unknown>> | Record<string, unknown>;
+  /**
+   * `/dsh-owc/status` 的响应体构造（拿到真实 owc 版本/端口后由 runtime 注入）。
+   * `context.cookieAuthenticated` 由本层按请求 cookie 判定，供实现决定回跳 URL 是否还需带令牌参数。
+   */
+  owcStatus?: (context: { cookieAuthenticated: boolean }) => Promise<Record<string, unknown>> | Record<string, unknown>;
   logger: { warn(message: string): void; info(message: string): void };
 }
 
@@ -155,9 +158,10 @@ export async function buildDshServer(options: DshServerOptions): Promise<DshServ
   });
 
   // 桥接插件同源端点：owc 事实（需鉴权；内容不含密钥，令牌仅用于回跳换 cookie）
-  app.get("/dsh-owc/status", async (_request, reply) => {
+  app.get("/dsh-owc/status", async (request, reply) => {
     if (!options.enabled()) return disabled(reply);
-    const status = options.owcStatus === undefined ? {} : await options.owcStatus();
+    const cookieAuthenticated = parseCookies(request.headers.cookie ?? "").get(ACCESS_COOKIE) !== undefined;
+    const status = options.owcStatus === undefined ? {} : await options.owcStatus({ cookieAuthenticated });
     return reply.type("application/json; charset=utf-8").send({ dshVersion: manifest.dshVersion, ...status });
   });
 

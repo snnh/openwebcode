@@ -561,8 +561,12 @@ export async function scanDshPlugins(dataDir: string): Promise<DshPluginScan> {
   return { entries, plan };
 }
 
-/** 发现结果 + 宿主回报 → 供 REST/UI 的最终状态表（顺序与 entries 一致）。 */
-export function dshPluginInfos(scan: DshPluginScan, reports: readonly DshPluginReport[] | undefined, hostError?: string): DshPluginInfo[] {
+/**
+ * 发现结果 + 宿主回报 → 最终状态表（顺序与 entries 一致）。
+ * `modeEnabled=false`（设置 `dshCompatEnabled` 关闭）时不下发加载计划：全部插件标 `disabled`
+ * 并给出原因，避免把「模式没开」误报成插件自身错误。
+ */
+export function dshPluginInfos(scan: DshPluginScan, reports: readonly DshPluginReport[] | undefined, hostError?: string, modeEnabled = true): DshPluginInfo[] {
   const byId = new Map((reports ?? []).map((report) => [report.id, report]));
   return scan.entries.map((entry) => {
     const base: DshPluginInfo = {
@@ -578,6 +582,10 @@ export function dshPluginInfos(scan: DshPluginScan, reports: readonly DshPluginR
       status: "disabled",
       dependencies: entry.dependencies,
     };
+    if (!modeEnabled) {
+      // 模式未启用：优先级高于其它判定（插件根本没被下发），原因如实展示
+      return { ...base, error: "dsh 兼容模式未启用（dshCompatEnabled=false）" };
+    }
     if (!entry.enabled) {
       // 停用优先于其它判定（用户意图）：不可用原因留在 error 字段里如实展示。
       return entry.problem === undefined ? base : { ...base, error: entry.problem.message };

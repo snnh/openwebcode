@@ -48,7 +48,13 @@ export async function loadBridgePlugin(assetsDirectory: string): Promise<DshVend
   };
 }
 
-/** 构造 `/dsh-owc/status` 响应体（令牌只在主端口首次换 cookie 时需要，故按需带上）。 */
+/**
+ * 构造 `/dsh-owc/status` 响应体。
+ *
+ * `workbenchUrl` 只在**必要**时才带 `?token=`：请求已由访问令牌 cookie 鉴权时（浏览器常规路径，
+ * cookie 按 host 共享、不按端口隔离）主端口同样认这张 cookie，把令牌写进 URL 只会泄漏到历史/日志，
+ * 故此时省略；调用方未携带 cookie（例如用 Bearer 头直接探接口）才带上令牌兜底。
+ */
 export function buildOwcStatus(input: {
   version: string;
   dshVersion: string;
@@ -56,9 +62,10 @@ export function buildOwcStatus(input: {
   protocol: string;
   host: string;
   accessToken?: string | undefined;
+  cookieAuthenticated?: boolean;
   label?: string;
 }): DshOwcStatus {
-  const token = input.accessToken === undefined ? "" : `?token=${encodeURIComponent(input.accessToken)}`;
+  const token = input.accessToken === undefined || input.cookieAuthenticated === true ? "" : `?token=${encodeURIComponent(input.accessToken)}`;
   return {
     version: input.version,
     dshVersion: input.dshVersion,

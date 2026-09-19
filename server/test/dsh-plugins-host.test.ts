@@ -115,6 +115,32 @@ describe("dsh 插件宿主集成", () => {
     await expect(manager.invokeTool("ext__dsh-tool-hello__hello_greet", { who: "again" })).resolves.toEqual({ content: "hello, again!" });
   });
 
+  it("模式开关：syncDsh(false) 下发空计划，插件与工具全部卸载且状态如实标注原因", async () => {
+    await manager.syncDsh(true);
+    expect(manager.registeredTools().filter((tool) => tool.name.startsWith("ext__dsh-")).length).toBe(3);
+
+    const off = await manager.syncDsh(false);
+    expect(off.every((info) => info.status === "disabled")).toBe(true);
+    expect(off.find((info) => info.id === "tool-hello")?.error).toContain("dshCompatEnabled=false");
+    expect(manager.registeredTools().filter((tool) => tool.name.startsWith("ext__dsh-"))).toEqual([]);
+    await expect(manager.invokeTool("ext__dsh-tool-hello__hello_greet", { who: "world" })).rejects.toThrow(/Unknown extension tool|disabled/);
+
+    // 宿主崩溃重启：重放的是空计划，插件不会被偷偷带回来（等宿主真换成新进程）
+    const internals = manager as unknown as { child?: { connected: boolean; pid?: number; kill(): void } };
+    const oldPid = internals.child?.pid;
+    internals.child?.kill();
+    await vi.waitFor(() => {
+      expect(internals.child?.connected).toBe(true);
+      expect(internals.child?.pid).not.toBe(oldPid);
+    }, { timeout: 20_000 });
+    await manager.syncDsh(false);
+    expect(manager.registeredTools().filter((tool) => tool.name.startsWith("ext__dsh-"))).toEqual([]);
+
+    // 重新开启：同一份加载计划可逆地装回来
+    await manager.syncDsh(true);
+    await expect(manager.invokeTool("ext__dsh-tool-hello__hello_greet", { who: "back" })).resolves.toEqual({ content: "hello, back!" });
+  });
+
   it("宿主重启后自动重放加载计划（dsh 插件随之重新激活）", async () => {
     await manager.syncDsh();
     expect(manager.registeredTools().filter((tool) => tool.name.startsWith("ext__dsh-")).length).toBe(3);

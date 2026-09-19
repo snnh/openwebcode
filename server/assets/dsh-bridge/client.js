@@ -6,7 +6,7 @@
  * 由翻译层自动追加进 boot graph（application phase）。
  *
  * 职责（v1）：
- *   1. 从同源 `/dsh-owc/status` 取 owc 事实（版本、权限模式、快照后端、Workbench 回跳 URL）；
+ *   1. 从同源 `/dsh-owc/status` 取 owc 事实（owc 版本、dsh UI 版本、Workbench 回跳 URL 与按钮文案）；
  *   2. 注入 `globalThis.__OWC_DSH__`（供 dsh 侧脚本/其它插件读取，只读快照）；
  *   3. 右下角悬浮「返回 Workbench」入口（dsh UI 无该插槽时的兜底；不覆盖 dsh 自身 UI）。
  *
