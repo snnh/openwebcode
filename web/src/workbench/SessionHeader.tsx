@@ -321,7 +321,7 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
             title={formatCacheTitle(cache, { cumulative: cumulativeUsage !== undefined }, t, formatTokensShort)}
           >
             <span className="window-usage-text">
-              {t("缓存", "cache")} {Math.round(cache.rate * 100)}%
+              {t("缓存", "cache")} {(cache.rate * 100).toFixed(1)}%
               <span className="unit-full"> · {cumulativeUsage !== undefined ? t("累计", "sess") : t("本轮", "last")}</span>
             </span>
           </span>

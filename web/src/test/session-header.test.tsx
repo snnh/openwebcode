@@ -222,7 +222,7 @@ describe("缓存与成本 pill", () => {
     vi.spyOn(api, "context").mockResolvedValue(contextViewWith({ inputTokens: 26_000, outputTokens: 100, cacheRead: 74_000, cacheWrite: 8_000 }) as never);
     renderHeader();
     const pill = await screen.findByTestId("cache-usage");
-    expect(pill.textContent).toContain("缓存 74%");
+    expect(pill.textContent).toContain("缓存 74.0%");
     expect(pill.textContent).toContain("累计");
     expect(pill.getAttribute("data-tone")).toBe("good");
     expect(pill.getAttribute("title")).toContain("累计缓存命中 74.0%");
@@ -232,7 +232,7 @@ describe("缓存与成本 pill", () => {
     vi.spyOn(api, "context").mockResolvedValue(contextViewWith({ inputTokens: 90_000, outputTokens: 100, cacheRead: 10_000, cacheWrite: 0 }) as never);
     renderHeader();
     const low = await screen.findByTestId("cache-usage");
-    expect(low.textContent).toContain("缓存 10%");
+    expect(low.textContent).toContain("缓存 10.0%");
     expect(low.getAttribute("data-tone")).toBe("bad");
   });
 
