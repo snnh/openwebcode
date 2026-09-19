@@ -3,9 +3,9 @@ import { pathToFileURL } from "node:url";
 import { OFFICIAL_EXTENSIONS, optimizeAttention } from "./official.js";
 import { RECALL_MEMORY_SPEC, recallMemory, reinjectVaultIndex, type VaultHostApi } from "./compact-vault-host.js";
 import { DESCRIBE_IMAGE_SPEC, bridgeVisionImages, describeImage, type VisionToolsHostApi } from "./vision-tools-host.js";
-import { isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolHookResult } from "./types.js";
+import { isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolAfterHookPayload, type ToolHookPayload, type ToolHookResult } from "./types.js";
 import type { DshHostRuntime } from "../dsh/host-runtime.js";
-import type { DshPluginReport, DshSyncItem } from "../dsh/loader.js";
+import { dshToolSourceId, type DshPluginReport, type DshSyncItem } from "../dsh/loader.js";
 
 type Handler = (payload: unknown, config: Record<string, unknown>) => unknown | Promise<unknown>;
 type ToolHandler = (input: Record<string, unknown>, config: Record<string, unknown>, sessionId?: string) => unknown | Promise<unknown>;
@@ -25,6 +25,7 @@ const HOOK_PERMISSIONS: Record<ExtensionHook, ExtensionPermission[]> = {
   "context.beforeBuild": ["context:read", "context:mutate"],
   "message.beforeSend": ["context:read", "context:mutate"],
   "tool.beforeExecute": ["tools:register"],
+  "tool.afterExecute": ["tools:register"],
   // prompt.beforeBuild 不暴露消息内容，仅提示词字段；1.1.0 起要求 prompt:shape 权限。
   "prompt.beforeBuild": ["prompt:shape"],
 };
@@ -128,6 +129,8 @@ async function loadDshRuntime(): Promise<DshHostRuntime> {
     const { createDshHostRuntime } = await import("../dsh/host-runtime.js");
     return createDshHostRuntime({
       log: (message) => process.stderr.write(`[dsh] ${message}\n`),
+      audit: (message) => process.stderr.write(`[dsh:audit] ${message}\n`),
+      call: (extensionId, api, params, timeoutMs) => callApi(extensionId, api as ExtensionApiMethod, params, timeoutMs),
       publish: (sourceId, state) => {
         if (!state) {
           states.delete(sourceId);
@@ -144,12 +147,38 @@ async function loadDshRuntime(): Promise<DshHostRuntime> {
   return dshRuntimePromise;
 }
 
+/** dsh 事件派发的候选来源（已同步过的 dsh 伪扩展 id；逐事件按订阅类型过滤）。 */
+const dshEventSourceIds = new Set<string>();
+
 async function syncDsh(params: Record<string, unknown> | undefined): Promise<{ plugins: DshPluginReport[]; tools: Record<string, ExtensionToolSpec[]> }> {
   const runtime = await loadDshRuntime();
   const plugins = (Array.isArray(params?.plugins) ? params.plugins : []) as DshSyncItem[];
+  for (const item of plugins) dshEventSourceIds.add(dshToolSourceId(item.id));
   const reports = await runtime.sync(plugins);
   // 计划外的 dsh 伪扩展（上一轮已卸载的）不应留在工具表里：runtime 已逐个 publish(undefined)。
   return { plugins: reports, tools: serializedTools() };
+}
+
+/** tool.beforeExecute 的 dsh 投影：任一插件监听 tools/pre-execute 时按上游判别式取 deny/ask/cancel。 */
+async function dshBeforeTool(params: Record<string, unknown> | undefined): Promise<unknown> {
+  const runtime = await loadDshRuntime();
+  const sessionId = typeof params?.sessionId === "string" ? params.sessionId : "";
+  const cwd = typeof params?.cwd === "string" ? params.cwd : "";
+  const tool = typeof params?.tool === "string" ? params.tool : "";
+  const input = params?.input && typeof params.input === "object" ? params.input as Record<string, unknown> : {};
+  return runtime.beforeTool({ sessionId, cwd, tool, input });
+}
+
+/** tool.afterExecute 的 dsh 投影：tools/post-execute waterfall 变换（accept 替换 / block 转错误）。 */
+async function dshAfterTool(params: Record<string, unknown> | undefined): Promise<unknown> {
+  const runtime = await loadDshRuntime();
+  const sessionId = typeof params?.sessionId === "string" ? params.sessionId : "";
+  const cwd = typeof params?.cwd === "string" ? params.cwd : "";
+  const tool = typeof params?.tool === "string" ? params.tool : "";
+  const input = params?.input && typeof params.input === "object" ? params.input as Record<string, unknown> : {};
+  const content = typeof params?.content === "string" ? params.content : "";
+  const isError = params?.isError === true;
+  return runtime.afterTool({ sessionId, cwd, tool, input }, { content, ...(isError ? { isError: true } : {}) });
 }
 
 function normalizeToolResult(value: unknown): ExtensionToolResult {
@@ -172,7 +201,7 @@ async function loadThirdParty(manifests: Array<ExtensionManifest & { directory?:
       await activate({
         manifest: Object.freeze({ ...manifest }),
         on(hook: ExtensionHook, handler: Handler): void {
-          if (!["context.beforeBuild", "tool.beforeExecute", "message.beforeSend", "prompt.beforeBuild"].includes(hook) || typeof handler !== "function") {
+          if (!["context.beforeBuild", "tool.beforeExecute", "tool.afterExecute", "message.beforeSend", "prompt.beforeBuild"].includes(hook) || typeof handler !== "function") {
             throw new Error(`Unsupported extension hook: ${hook}`);
           }
           const missing = HOOK_PERMISSIONS[hook].filter((permission) => !manifest.permissions.includes(permission));
@@ -352,6 +381,16 @@ async function runHook(hook: ExtensionHook, original: unknown): Promise<unknown>
           ...(value.messages ? { messages: value.messages } : {}),
           ...(value.metadata ? { metadata: { ...((current as { metadata?: Record<string, unknown> }).metadata ?? {}), ...value.metadata } } : {}),
         };
+      } else if (hook === "tool.afterExecute") {
+        // afterExecute：结果只读通知——dsh post-execute 可经 result.content/isError 变换（waterfall 语义），
+        // 其余扩展收到的是不可变副本。content 经「最后一个非空值」合并（变更内容对后续 handler 可见）。
+        const value = result as { result?: { content?: unknown; isError?: unknown } };
+        if (value.result && typeof value.result === "object") {
+          const patch: { content?: string; isError?: boolean } = {};
+          if (typeof value.result.content === "string") patch.content = value.result.content;
+          if (value.result.isError === true) patch.isError = true;
+          current = { ...(current as ToolAfterHookPayload), result: { ...((current as ToolAfterHookPayload).result ?? {}), ...patch } };
+        }
       } else {
         const value = result as ToolHookResult;
         current = { ...(current as ToolHookPayload), ...(value.input ? { input: value.input } : {}), ...(value.blocked ? { blocked: true, reason: value.reason } : {}) };
@@ -392,6 +431,12 @@ async function invokeRoute(params: Record<string, unknown> | undefined): Promise
 process.on("message", (message: HostRequest | EventMessage | ApiResponse) => {
   // server→host 事件推送：按订阅类型分发给扩展本地 handler，无应答。
   if ("event" in message) {
+    // dsh 插件的 dshEvents 订阅（宿主运行时侧，独立于第三方扩展的 events.subscribe）。
+    void dshRuntimePromise?.then((runtime) => {
+      for (const sourceId of dshEventSourceIds) {
+        runtime.dispatchEvent(sourceId, { type: message.event, ...(message.sessionId ? { sessionId: message.sessionId } : {}), payload: message.payload });
+      }
+    }).catch(() => undefined);
     for (const subscriptions of eventSubscriptions.values()) {
       for (const subscription of subscriptions) {
         if (!subscription.types.includes(message.event)) continue;
@@ -434,6 +479,10 @@ process.on("message", (message: HostRequest | EventMessage | ApiResponse) => {
       result = { ready: true, errors, tools: serializedTools() };
     } else if (request.method === "hook") {
       result = await runHook(request.params?.hook as ExtensionHook, request.params?.payload);
+    } else if (request.method === "dsh.beforeTool") {
+      result = await dshBeforeTool(request.params);
+    } else if (request.method === "dsh.afterTool") {
+      result = await dshAfterTool(request.params);
     } else if (request.method === "tool.invoke") {
       result = await invokeTool(request.params);
     } else if (request.method === "http.request") {

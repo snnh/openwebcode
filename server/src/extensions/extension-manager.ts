@@ -14,9 +14,10 @@ import type { ProviderRegistry, ProviderTool } from "../providers/provider.js";
 import type { ChatMessage, SessionDetail, SessionMeta } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { ContextManager } from "../context/context-manager.js";
-import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionRoute, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
+import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionRoute, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolAfterHookPayload, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
 import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
 import { dshPluginInfos, dshToolSourceId, scanDshPlugins, type DshPluginInfo, type DshPluginReport } from "../dsh/loader.js";
+import { DSH_SERVICE_APIS } from "../dsh/services.js";
 import { setSimulatedUserAgent } from "../user-agent.js";
 import { BUILTIN_PERSONAS, getPersona, listPersonas, resolvePersona, personasDir, saveUserPreset, deleteUserPreset, type PersonaDetail, type PersonaPreset, type PersonaSummary } from "./env-sim/index.js";
 import type { CompactVaultService } from "./compact-vault.js";
@@ -117,9 +118,10 @@ export class ExtensionManager {
   private dshSyncRequested = false;
   private dshSyncInFlight: Promise<DshPluginInfo[]> | undefined;
 
-  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike; models?: ModelRegistry } = {}) {
+  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike; models?: ModelRegistry; events?: EventBus } = {}) {
     this.root = path.join(dataDir, "extensions");
     this.configPath = path.join(this.root, "extensions.json");
+    if (this.events && !this.deps.events) this.deps.events = this.events;
   }
 
   async initialize(): Promise<void> {
@@ -231,8 +233,53 @@ export class ExtensionManager {
     return { messages: result.messages, ...(result.metadata ? { metadata: result.metadata } : {}) };
   }
 
-  async beforeTool(payload: ToolHookPayload): Promise<ToolHookPayload & { blocked?: boolean; reason?: string }> {
+  async beforeTool(payload: ToolHookPayload): Promise<ToolHookPayload & { blocked?: boolean; reason?: string; audit?: string }> {
+    // dsh 兼容模式（M3）：任一 dsh 插件监听 tools/pre-execute 时走宿主 waterfall，
+    // 按上游判别式取 deny/ask/cancel（ask 降级为放行 + 审计）；无监听快速回落到通用扩展链。
+    if (this.dshInfos.some((info) => info.status === "running")) {
+      const dshOutcome = await this.dshToolHook("dsh.beforeTool", payload) as { blocked?: boolean; reason?: string; audit?: string } | undefined;
+      if (dshOutcome?.blocked) return { ...payload, blocked: true, ...(dshOutcome.reason ? { reason: dshOutcome.reason } : {}) };
+    }
     return this.hook("tool.beforeExecute", payload) as Promise<ToolHookPayload & { blocked?: boolean; reason?: string }>;
+  }
+
+  /** tool.afterExecute（M3）：工具执行完成通知；dsh post-execute 可变换 content/isError（失败只记录不阻断）。 */
+  async afterTool(payload: ToolAfterHookPayload): Promise<ToolAfterHookPayload> {
+    if (this.dshInfos.some((info) => info.status === "running")) {
+      const dshOutcome = await this.dshToolHook("dsh.afterTool", payload) as { content?: string; isError?: boolean } | undefined;
+      if (dshOutcome && (typeof dshOutcome.content === "string" || dshOutcome.isError === true)) {
+        return {
+          ...payload,
+          result: {
+            ...payload.result,
+            ...(typeof dshOutcome.content === "string" ? { content: dshOutcome.content } : {}),
+            ...(dshOutcome.isError === true ? { isError: true } : {}),
+          },
+        };
+      }
+    }
+    const result = await this.hook("tool.afterExecute", payload) as { result?: { content?: string; isError?: boolean } };
+    if (result?.result && (typeof result.result.content === "string" || result.result.isError === true)) {
+      return {
+        ...payload,
+        result: {
+          ...payload.result,
+          ...(typeof result.result.content === "string" ? { content: result.result.content } : {}),
+          ...(result.result.isError === true ? { isError: true } : {}),
+        },
+      };
+    }
+    return payload;
+  }
+
+  /** dsh 工具钩子：走宿主专设通道（dsh.beforeTool/dsh.afterTool），失败只记录不变换。 */
+  private async dshToolHook(method: "dsh.beforeTool" | "dsh.afterTool", payload: ToolHookPayload | ToolAfterHookPayload): Promise<unknown> {
+    try {
+      return await this.request(method, { ...payload }, 5500);
+    } catch (error) {
+      this.events?.publish({ source: "server", type: "extension.hook_failed", payload: { hook: method, message: error instanceof Error ? error.message : String(error) } });
+      return undefined;
+    }
   }
 
   /**
@@ -519,13 +566,18 @@ export class ExtensionManager {
   }
 
   private async dispatchApi(request: ApiRequest): Promise<unknown> {
+    const params = request.params ?? {};
+    // dsh 兼容模式（M3）：dsh 插件以伪扩展 id 调用宿主能力——不经 manifest 权限表，
+    // 只放行 DSH_SERVICE_APIS 白名单（llm/sessions/storage/events.subscribe），存储按伪 id 隔离。
+    if (request.extensionId.startsWith("dsh-")) {
+      return this.dispatchDshApi(request.extensionId, request.api, params);
+    }
     const manifest = this.manifests.find((item) => item.id === request.extensionId);
     if (!manifest) throw new Error(`Unknown extension: ${request.extensionId}`);
     if (!(request.api in API_PERMISSIONS)) throw new Error(`Unsupported extension api: ${request.api}`);
     const required = API_PERMISSIONS[request.api];
     if (required && !manifest.permissions.includes(required)) throw new Error(`Extension ${manifest.id} lacks permission: ${required}`);
     const sessions = this.deps.sessions;
-    const params = request.params ?? {};
     switch (request.api) {
       case "sessions.list": {
         if (!sessions) throw new Error("Session store is not configured");
@@ -620,6 +672,65 @@ export class ExtensionManager {
         };
       }
     }
+  }
+
+  /**
+   * dsh 伪扩展的能力分发（M3）：白名单 DSH_SERVICE_APIS，不经 manifest 权限表。
+   * llm 走模型网关（model.complete/model.vision，不暴露 Key）；sessions 只读元信息白名单；
+   * storage 复用扩展私有存储（按伪 id `dsh-<pluginId>` 隔离）；events.subscribe 走 EventBus 白名单。
+   */
+  private async dispatchDshApi(extensionId: string, api: ExtensionApiMethod, params: Record<string, unknown>): Promise<unknown> {
+    const allowed = (DSH_SERVICE_APIS as readonly string[]).includes(api);
+    if (!allowed) throw new Error(`dsh plugin lacks api access: ${api}`);
+    const sessions = this.deps.sessions;
+    switch (api) {
+      case "model.complete":
+        return this.modelComplete(params);
+      case "model.vision":
+        return this.modelVision(params);
+      case "sessions.list": {
+        if (!sessions) throw new Error("Session store is not configured");
+        return (await sessions.list()).map((meta) => publicSessionMeta(meta));
+      }
+      case "sessions.get": {
+        if (!sessions) throw new Error("Session store is not configured");
+        const detail = await sessions.get(String(params.id ?? ""));
+        if (!detail) throw new Error("Session not found");
+        return this.publicSessionDetail(detail);
+      }
+      case "storage.read":
+        return this.storageRead(extensionId, String(params.path ?? ""));
+      case "storage.write":
+        return this.storageWrite(extensionId, String(params.path ?? ""), params.content);
+      case "storage.delete":
+        return this.storageDelete(extensionId, String(params.path ?? ""));
+      case "storage.list":
+        return this.storageList(extensionId, typeof params.prefix === "string" ? params.prefix : "");
+      case "events.subscribe": {
+        const requested = Array.isArray(params.types) ? params.types.filter((type): type is string => typeof type === "string") : [];
+        const allowedTypes = requested.filter(isExtensionEventAllowed);
+        const bus = this.dshEventBus;
+        if (bus) {
+          const existing = this.eventSubscriptions.get(extensionId);
+          if (existing) {
+            for (const type of allowedTypes) existing.add(type);
+          } else if (allowedTypes.length > 0) {
+            this.eventSubscriptions.set(extensionId, new Set(allowedTypes));
+          }
+          this.attachBusListener();
+        }
+        return { subscribed: allowedTypes };
+      }
+    }
+    throw new Error(`Unsupported dsh api: ${api}`);
+  }
+
+  /**
+   * dsh EventBus：显式注入优先（测试可控），缺省回落构造器事件总线。
+   * dsh 事件订阅经此推送——宿主进程把 EventMessage 转发到插件的 dshEvents handler。
+   */
+  private get dshEventBus(): EventBus | undefined {
+    return this.deps.events ?? this.events;
   }
 
   /** 扩展私有存储根：<dataDir>/extensions-data/<extensionId>/。无需权限——私有目录天然隔离。 */

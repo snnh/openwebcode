@@ -15,7 +15,7 @@ export type ExtensionPermission =
   | "prompt:shape"
   | "tools:shaping";
 
-export type ExtensionHook = "context.beforeBuild" | "tool.beforeExecute" | "message.beforeSend" | "prompt.beforeBuild";
+export type ExtensionHook = "context.beforeBuild" | "tool.beforeExecute" | "tool.afterExecute" | "message.beforeSend" | "prompt.beforeBuild";
 
 /** 工具形态别名：把内置工具 from 以新名字 as 暴露给模型。 */
 export interface ToolShapingAlias {
@@ -104,6 +104,15 @@ export interface ToolHookResult {
   reason?: string;
 }
 
+/** tool.afterExecute 载荷：工具执行完成（成功或失败）后通知；结果只读，扩展不可经此改写已落盘内容。 */
+export interface ToolAfterHookPayload {
+  sessionId: string;
+  cwd: string;
+  tool: string;
+  input: Record<string, unknown>;
+  result: { content: string; isError?: boolean };
+}
+
 /** prompt.beforeBuild 载荷：basePrompt 是文件覆盖解析之后的基线。 */
 export interface PromptHookPayload {
   sessionId: string;
@@ -126,7 +135,7 @@ export interface PromptHookResult {
 export interface HostRequest {
   id: string;
   /** stats 为 server↔宿主框架的内部消息（不暴露给扩展代码）：宿主 RSS 供性能面板展示。 */
-  method: "initialize" | "reload" | "hook" | "tool.invoke" | "http.request" | "dsh.sync" | "shutdown" | "stats";
+  method: "initialize" | "reload" | "hook" | "tool.invoke" | "http.request" | "dsh.sync" | "dsh.beforeTool" | "dsh.afterTool" | "shutdown" | "stats";
   params?: Record<string, unknown>;
 }
 

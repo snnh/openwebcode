@@ -13,9 +13,9 @@
  * 4. 工具经伪扩展 id `dsh-<pluginId>` 上报宿主工具表（agent 侧 `ext__dsh-<pluginId>__<tool>`），
  *    执行链路 agent → 宿主 `tool.invoke` → 本模块（结果经 `output.render` 文本化）。
  *
- * 未覆盖（M3/M4 按需补）：llm/sessions/storage/agent/compact/fs/shell 等服务缝、
- * `tools/pre-execute` 等 dsh 事件到 owc 钩子链的映射、`presentCall`/`presentResult` 卡片、
- * client 入口（M4 的 `/plugins` 路由）。
+ * 未覆盖（M4 按需补）：agent/compact/fs/shell 等服务缝、`presentCall`/`presentResult` 卡片、
+ * client 入口（M4 的 `/plugins` 路由）。M3 已接入：llm/sessions/storage/timer/dshEvents
+ * 服务缝（services.ts）与 tools/pre-execute、tools/post-execute agent 钩子桥。
  */
 import * as nodeModule from "node:module";
 import path from "node:path";
@@ -23,6 +23,9 @@ import { pathToFileURL } from "node:url";
 import { Context } from "./cordis-shim.js";
 import type { Fiber, LoggerMessage, LoggerSink, Plugin } from "./cordis-shim.js";
 import type { ToolDefinition, ToolRenderBlock } from "./dsh-tools-shim.js";
+import type { DshHostCall } from "./services.js";
+import { provideDshServices, runDshPostExecute, runDshPreExecute } from "./services.js";
+import type { DshPostToolOutcome, DshPreToolOutcome } from "./services.js";
 import { dshToolSourceId, type DshPluginReport, type DshSyncItem } from "./loader.js";
 import type { ExtensionToolResult, ExtensionToolSpec } from "../extensions/types.js";
 
@@ -43,6 +46,10 @@ interface DshHostState {
 export interface DshHostBridge {
   log(message: string): void;
   publish(sourceId: string, state: DshHostState | undefined): void;
+  /** M3 服务缝：宿主能力调用（绑定到具体伪扩展 id → server dispatchApi）。 */
+  call?: DshHostCall;
+  /** M3 审计日志（ask 降级等）。 */
+  audit?: (message: string) => void;
 }
 
 export interface DshHostRuntime {
@@ -50,6 +57,15 @@ export interface DshHostRuntime {
   sync(plugins: readonly DshSyncItem[]): Promise<DshPluginReport[]>;
   /** dsh 工具执行（宿主 tool.invoke 通道）。 */
   invoke(sourceId: string, tool: string, input: Record<string, unknown>, sessionId?: string): Promise<ExtensionToolResult>;
+  /**
+   * M3 agent 钩子桥：tools/pre-execute waterfall → owc beforeTool 语义。
+   * 任一插件监听 tools/pre-execute 时按上游判别式取 deny/ask/cancel；无监听快速返回放行。
+   */
+  beforeTool(payload: { sessionId: string; cwd: string; tool: string; input: Record<string, unknown> }): Promise<DshPreToolOutcome>;
+  /** M3：tools/post-execute waterfall → 结果变换（accept 替换内容 / block 转错误）。 */
+  afterTool(payload: { sessionId: string; cwd: string; tool: string; input: Record<string, unknown> }, result: { content: string; isError?: boolean }): Promise<DshPostToolOutcome | undefined>;
+  /** M3：把 server EventBus 白名单事件派发到订阅的插件 ctx（handler 抛错由宿主隔离）。 */
+  dispatchEvent(sourceId: string, event: { type: string; sessionId?: string; payload: unknown }): void;
   /** 关闭：卸载全部插件并释放 root context。 */
   dispose(): Promise<void>;
 }
@@ -202,12 +218,45 @@ class DshRuntime implements DshHostRuntime {
   private readonly root: Context;
   private readonly loaded = new Map<string, LoadedDshPlugin>();
   private readonly registry = new Map<string, RegisteredDshTool>();
+  /** 插件 dshEvents 订阅（pluginId → 订阅集）；插件卸载/宿主关闭时统一解除。 */
+  private readonly eventSubscriptions = new Map<string, Set<{ types: string[]; dispatch: (event: { type: string; sessionId?: string; payload: unknown }) => void }>>();
+  /** 当前正在激活的插件 id（激活窗口内 dshEvents.subscribe 的归属判定）。 */
+  private currentActivatingPluginId = "";
+  /** dshEvents server 订阅是否已注册（首个插件激活后一次性注册；pull 失败逐事件空转）。 */
+  private dshEventsRegistered = false;
   private disposed = false;
 
   constructor(private readonly bridge: DshHostBridge) {
     this.root = new Context({ logger: logSink((message) => this.bridge.log(message)) });
     // root 上的 tools 服务：插件经派生 ctx 拿到各自绑定的 façade；这里只用于解析 `inject: ['tools']`。
     this.root.provide("tools", this.createFacade(undefined));
+    // M3 服务缝：llm/sessions/storage/timer/dshEvents（宿主提供能力调用时绑定；插件卸载不移除）。
+    if (this.bridge.call) {
+      provideDshServices(this.root, () => this.resolveCallSourceId(), {
+        call: this.bridge.call,
+        subscribeEvents: () => (types, dispatch) => this.subscribePluginEvents(types, dispatch),
+        ...(this.bridge.audit ? { audit: this.bridge.audit } : {}),
+      });
+    }
+  }
+
+  /** 首个插件激活后注册 server 侧 EventBus 白名单订阅（pull 模型：server 按白名单推全量事件）。 */
+  private ensureDshEventsRegistered(): void {
+    if (this.dshEventsRegistered || !this.bridge.call) return;
+    this.dshEventsRegistered = true;
+    void this.bridge.call(this.resolveCallSourceId(), "events.subscribe", { types: ["agent.state", "tool.start", "tool.end", "context.", "checkpoint.", "subagent."] })
+      .catch((error: unknown) => this.bridge.log(`dshEvents server 订阅注册失败：${errorMessage(error)}`));
+  }
+
+  /** 插件 dshEvents 订阅登记（归属当前激活插件）；返回解除订阅 disposer。 */
+  private subscribePluginEvents(types: string[], dispatch: (event: { type: string; sessionId?: string; payload: unknown }) => void): () => void {
+    this.ensureDshEventsRegistered();
+    const pluginId = this.currentActivatingPluginId;
+    const set = this.eventSubscriptions.get(pluginId) ?? new Set();
+    const entry = { types: [...types], dispatch };
+    set.add(entry);
+    this.eventSubscriptions.set(pluginId, set);
+    return () => set.delete(entry);
   }
 
   async sync(plugins: readonly DshSyncItem[]): Promise<DshPluginReport[]> {
@@ -253,6 +302,50 @@ class DshRuntime implements DshHostRuntime {
     }
   }
 
+  /** 解析宿主能力调用的伪扩展 id：激活窗口用正在激活的插件，否则用任一已激活插件。 */
+  private resolveCallSourceId(): string {
+    if (this.currentActivatingPluginId) return dshToolSourceId(this.currentActivatingPluginId);
+    const first = this.loaded.keys().next().value;
+    return first !== undefined ? dshToolSourceId(first) : "";
+  }
+
+  async beforeTool(payload: { sessionId: string; cwd: string; tool: string; input: Record<string, unknown> }): Promise<DshPreToolOutcome> {
+    try {
+      return await runDshPreExecute(this.root, payload, this.bridge.audit);
+    } catch (error) {
+      // 钩子失败不阻断工具执行（与 owc beforeTool 失败降级一致），记审计日志。
+      this.bridge.log(`dsh tools/pre-execute 执行失败：${errorMessage(error)}`);
+      return { blocked: false };
+    }
+  }
+
+  async afterTool(payload: { sessionId: string; cwd: string; tool: string; input: Record<string, unknown> }, result: { content: string; isError?: boolean }): Promise<DshPostToolOutcome | undefined> {
+    try {
+      return await runDshPostExecute(this.root, payload, result, this.bridge.audit);
+    } catch (error) {
+      // post-execute 失败只记录、不变换结果（计划：失败只记录不阻断）。
+      this.bridge.log(`dsh tools/post-execute 执行失败：${errorMessage(error)}`);
+      return undefined;
+    }
+  }
+
+  /** server EventBus 白名单事件 → 订阅插件的 ctx（按当前激活插件过滤；handler 抛错隔离到本插件）。 */
+  dispatchEvent(sourceId: string, event: { type: string; sessionId?: string; payload: unknown }): void {
+    // sourceId 为伪扩展 id（dsh-<pluginId>）；订阅表按裸插件 id 键（subscribe 发生在激活窗口）。
+    const bareId = sourceId.startsWith("dsh-") ? sourceId.slice(4) : sourceId;
+    const target = this.currentActivatingPluginId || bareId;
+    const subscriptions = this.eventSubscriptions.get(target);
+    if (!subscriptions) return;
+    for (const subscription of [...subscriptions]) {
+      if (!subscription.types.includes(event.type)) continue;
+      try {
+        subscription.dispatch(event);
+      } catch (error) {
+        this.bridge.log(`dsh 插件 ${target} 事件 handler 抛错：${errorMessage(error)}`);
+      }
+    }
+  }
+
   async dispose(): Promise<void> {
     if (this.disposed) return;
     for (const id of [...this.loaded.keys()]) await this.unload(id);
@@ -272,12 +365,15 @@ class DshRuntime implements DshHostRuntime {
     const plugin = normalizeDshPlugin(namespace);
     if (!plugin) return { id: item.id, status: "error", error: "插件入口未导出 apply() 或默认插件函数/类" };
     let fiber: Fiber;
+    this.currentActivatingPluginId = item.id;
     try {
       // prepare：插件 ctx 的 tools 指向本插件绑定的 façade（注册归属插件 fiber + 卸载自动回滚）。
       fiber = this.root.plugin(plugin, item.config, { prepare: (ctx) => bindPluginTools(ctx, this.createFacade(sourceId, ctx)) });
       await fiber.await();
     } catch (error) {
       return { id: item.id, status: "error", error: `插件激活失败：${errorMessage(error)}` };
+    } finally {
+      this.currentActivatingPluginId = "";
     }
     this.loaded.set(item.id, { key: pluginKey(item), item, fiber });
     return this.reportFor(item, fiber);
@@ -295,6 +391,7 @@ class DshRuntime implements DshHostRuntime {
       this.bridge.log(`卸载插件 ${id} 失败：${errorMessage(error)}`);
     }
     this.purgeTools(sourceId);
+    this.eventSubscriptions.delete(sourceId);
     this.bridge.publish(sourceId, undefined);
   }
 

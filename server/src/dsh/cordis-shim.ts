@@ -75,6 +75,20 @@ export class CordisError extends Error {
   }
 }
 
+/**
+ * 服务缝参数/能力错误（上游 HarnessError/LlmError 风格）：带稳定 code 的可辨识错误类，
+ * 供插件按 `error.code` 判别（与上游 `HarnessError` 的 `name`/`code` 语义对齐）。
+ */
+export class DshServiceError extends Error {
+  readonly code: string;
+
+  constructor(message: string, code = "ERR_DSH_SERVICE") {
+    super(message);
+    this.name = "DshServiceError";
+    this.code = code;
+  }
+}
+
 /** Standard Schema V1 最小接口（schemastery 垫片的 `~standard` 即此形态）。 */
 export interface StandardSchemaV1 {
   readonly "~standard": {

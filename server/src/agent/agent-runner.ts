@@ -2010,6 +2010,20 @@ export class AgentRunner {
               result = { type: "tool_result", toolCallId: call.id, content, isError: true };
             }
           }
+          // tool.afterExecute 扩展钩子（M3）：dsh tools/post-execute 与扩展的完成通知；
+          // 结果只读——dsh post-execute 可经 waterfall 变换 content/isError，失败只记录不阻断。
+          if (this.extensions) {
+            try {
+              const afterOutcome = await this.extensions.afterTool({ sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput, result: { content: result.content, ...(result.isError ? { isError: true } : {}) } });
+              result = {
+                ...result,
+                content: afterOutcome.result.content,
+                ...(afterOutcome.result.isError === true ? { isError: true } : {}),
+              };
+            } catch {
+              /* afterTool 失败只记录（manager 内已发布 hook_failed 事件），不变换结果 */
+            }
+          }
           await this.sessions.appendMessage(sessionId, "tool", [result], this.messageLineage(sessionId));
           // PostToolUse 钩子：仅写类工具成功后触发（format-on-write 等），不阻断；
           // tool 按内置名判定与透传（matcher 与权限同名空间），别名经 toolAlias 附带
@@ -2919,6 +2933,22 @@ export class AgentRunner {
         }
       }
     }));
+    // tool.afterExecute 扩展钩子（M3）：与串行路径同一语义——dsh post-execute 可变换结果，失败只记录。
+    if (this.extensions) {
+      for (const entry of prepared) {
+        if (!entry.result) continue;
+        try {
+          const afterOutcome = await this.extensions.afterTool({ sessionId, cwd: session.cwd, tool: entry.call.name, input: entry.call.input, result: { content: entry.result.content, ...(entry.result.isError ? { isError: true } : {}) } });
+          entry.result = {
+            ...entry.result,
+            content: afterOutcome.result.content,
+            ...(afterOutcome.result.isError === true ? { isError: true } : {}),
+          };
+        } catch {
+          /* afterTool 失败只记录，不变换结果 */
+        }
+      }
+    }
     // 4) 按原调用顺序落盘 tool_result（appendMessage 对同会话串行化，逐条等待保证顺序）
     for (const entry of prepared) {
       if (entry.result) {
