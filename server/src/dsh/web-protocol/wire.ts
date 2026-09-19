@@ -11,7 +11,7 @@
  */
 
 /** dsh 侧固定 RPC 前缀（根绝对路径；独立端口方案下与 owc 主端口无关）。 */
-export const DSH_API_PREFIX = "/api";
+const DSH_API_PREFIX = "/api";
 
 /** 唯一逻辑流复用通道路径。 */
 export const DSH_MUX_PATH = "/api/remote.mux";

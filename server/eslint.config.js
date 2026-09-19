@@ -8,7 +8,8 @@ import tseslint from "typescript-eslint";
 export default tseslint.config(
   {
     // dist/ 为 tsc 产物（含生成的 config/）；coverage/ 为测试覆盖率产物
-    ignores: ["dist/", "node_modules/", "coverage/"],
+    // assets/dsh-web 为 scripts/fetch-dsh-web.mjs 生成的第三方产物（gitignored），不参与本项目 lint
+    ignores: ["dist/", "node_modules/", "coverage/", "assets/dsh-web/"],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,

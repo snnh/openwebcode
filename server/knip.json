@@ -13,7 +13,8 @@
     "test/fixtures/fake-mcp-env.mjs",
     "test/fixtures/fake-mcp-server.mjs",
     "test/fixtures/dsh-plugins/**",
-    "test/fixtures/dsh-plugins-m3/**"
+    "test/fixtures/dsh-plugins-m3/**",
+    "assets/dsh-bridge/client.js"
   ],
   "ignoreDependencies": [
     "playwright"

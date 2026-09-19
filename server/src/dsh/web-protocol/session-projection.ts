@@ -5,7 +5,7 @@
  * 原则：只做只读投影，不落盘、不建第二份会话存储；不可如实表达的能力返回 wire 错误而不是编造值。
  */
 import type { AgentRunner } from "../../agent/agent-runner.js";
-import type { ChatMessage, MessageContent, SessionMeta } from "../../sessions/types.js";
+import type { ChatMessage, SessionMeta } from "../../sessions/types.js";
 import type { SessionStore } from "../../sessions/session-store.js";
 import { wireError, type DshWireError } from "./wire.js";
 import { deriveSessionRecords, pageWindow, snapshotWindow } from "./session-events.js";
@@ -46,14 +46,6 @@ function toMillis(iso: string | undefined): number {
   if (iso === undefined) return 0;
   const parsed = Date.parse(iso);
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-/** 消息内容里的文本（拼接全部 text 块）。 */
-export function messageText(content: readonly MessageContent[]): string {
-  return content
-    .filter((block): block is Extract<MessageContent, { type: "text" }> => block.type === "text")
-    .map((block) => block.text)
-    .join("\n\n");
 }
 
 /** 会话是否「空白」（无用户消息）；尾部消息被截断时保守判为「非空白」。 */

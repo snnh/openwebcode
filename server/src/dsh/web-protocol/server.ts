@@ -18,17 +18,16 @@ import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { parseCookies, safeTokenEqual } from "../../routes/route-context.js";
 import {
+  DSH_EVENTS_RESULT,
   DSH_MUX_PATH,
   encodeUnaryError,
   encodeUnaryValue,
-  parseEndpointPath,
   parseUnaryRequest,
   wireError,
   type DshMuxOutboundFrame,
 } from "./wire.js";
 import { DshMuxSession, type DshMuxChannel } from "./mux.js";
 import {
-  DSH_MODULES_ID,
   bootInjections,
   buildBootGraph,
   loadVendorManifest,
@@ -172,7 +171,7 @@ export async function buildDshServer(options: DshServerOptions): Promise<DshServ
     }
     const { rpcId, args } = parsed.request;
     try {
-      if (endpoint === "$events/result") {
+      if (endpoint === DSH_EVENTS_RESULT) {
         const result = await bridge.resolveResult(args);
         return { status: 200, body: "error" in result ? encodeUnaryError(rpcId, result.error) : encodeUnaryValue(rpcId, result.value) };
       }
@@ -249,8 +248,3 @@ export async function buildDshServer(options: DshServerOptions): Promise<DshServ
   return server;
 }
 
-/** boot graph 里的模块系统 id（诊断用；保证 vendor 完整性）。 */
-export const DSH_BOOT_MODULES_ID = DSH_MODULES_ID;
-
-/** 路径解析辅助：把 URL path 转成端点（server 内联逻辑的导出便于测试）。 */
-export { parseEndpointPath };
