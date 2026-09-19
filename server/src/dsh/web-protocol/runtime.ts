@@ -11,6 +11,7 @@ import path from "node:path";
 import type { AgentRunner } from "../../agent/agent-runner.js";
 import type { EventBus } from "../../events/event-bus.js";
 import type { SessionStore } from "../../sessions/session-store.js";
+import { isLoopbackHost } from "../../config.js";
 import { buildDshServer, type DshServer } from "./server.js";
 import { buildOwcStatus, loadBridgePlugin } from "./bridge.js";
 import type { DshWireDeps } from "./streams.js";
@@ -100,6 +101,13 @@ export class DshCompatRuntime {
       this.applied = this.desiredKey();
       return;
     }
+    // 防御：dsh 端口复用主端口访问令牌，非回环监听且拿不到令牌时绝不裸开该端口
+    // （否则 index/API 会退化成免鉴权；此时如实不启动并记原因，与「缺 vendor」同一处理方式）
+    if (this.options.accessToken() === undefined && !isLoopbackHost(this.options.host())) {
+      this.warn(`[dsh] 未取得访问令牌（host=${this.options.host()}，非回环）：为免裸开鉴权，不启动 dsh 兼容模式`);
+      this.applied = this.desiredKey();
+      return;
+    }
     const uiPath = this.options.uiPath();
     const vendorDirectory = uiPath !== null && uiPath.trim() !== "" ? path.resolve(uiPath) : this.options.vendorDirectory;
     const deps: DshWireDeps = {
@@ -131,7 +139,7 @@ export class DshCompatRuntime {
       accessToken: this.options.accessToken(),
       deps,
       ...(bridgePlugin === undefined ? {} : { bridgePlugin }),
-      owcStatus: () => {
+      owcStatus: (context) => {
         const token = this.options.accessToken();
         return buildOwcStatus({
           version: this.options.version(),
@@ -140,6 +148,7 @@ export class DshCompatRuntime {
           protocol: "http:",
           host: this.options.host(),
           ...(token === undefined ? {} : { accessToken: token }),
+          cookieAuthenticated: context.cookieAuthenticated,
         });
       },
       logger: { warn: (message) => this.warn(message), info: (message) => this.log(message) },

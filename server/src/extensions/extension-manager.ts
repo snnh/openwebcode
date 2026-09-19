@@ -116,6 +116,12 @@ export class ExtensionManager {
   private dshInfos: DshPluginInfo[] = [];
   /** 已请求过 dsh 同步：宿主崩溃重启 / 热重载后自动重放最近一次加载计划。 */
   private dshSyncRequested = false;
+  /** 上次同步时 dsh 兼容模式的开关态（决定下发真实计划还是空计划）。 */
+  private dshSyncEnabled = false;
+  /** 宿主启动中的 promise（含 initialize + 启动期重放），供 dsh 插件同步等待。 */
+  private hostStarting: Promise<void> | undefined;
+  /** 当前这次 dsh 同步是否由宿主启动流程（重放）驱动：是则不再等 `hostStarting`。 */
+  private dshSyncFromHostStart = false;
   private dshSyncInFlight: Promise<DshPluginInfo[]> | undefined;
 
   constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike; models?: ModelRegistry; events?: EventBus } = {}) {
@@ -402,8 +408,12 @@ export class ExtensionManager {
    * dsh 兼容模式插件同步（M2）：扫描 `<dataDir>/dsh-plugins` + `<dataDir>/dsh.json` 合成加载计划，
    * 下发 Extension Host（插件激活在子进程内逐插件隔离），再与宿主回报合并为最终状态。
    * 再次调用即全量重放（停用的插件自动卸载并回滚已注册的工具）；宿主重启 / 热重载后自动重放。
+   *
+   * `enabled` 对应设置 `dshCompatEnabled`（默认关闭）：关闭时下发**空计划**，把已加载的 dsh 插件
+   * 全部卸载并回滚工具——dsh 插件是可信代码，加载与否由用户显式开关决定，而不是「装了就生效」。
    */
-  async syncDsh(): Promise<DshPluginInfo[]> {
+  async syncDsh(enabled = true): Promise<DshPluginInfo[]> {
+    this.dshSyncEnabled = enabled;
     this.dshSyncRequested = true;
     const previous = this.dshSyncInFlight;
     const next = (previous ? previous.catch(() => undefined) : Promise.resolve([])).then(() => this.runDshSync());
@@ -421,22 +431,29 @@ export class ExtensionManager {
   }
 
   private async runDshSync(): Promise<DshPluginInfo[]> {
+    // 宿主正在启动（initialize + 启动期重放）时先等它落地：启动流程自己调用时用 fromHostStart 跳过，
+    // 避免自等死锁（resyncDsh 由 startHostProcess 内部调用）。
+    if (!this.dshSyncFromHostStart && this.hostStarting !== undefined) {
+      await this.hostStarting.catch(() => undefined);
+    }
     const scan = await scanDshPlugins(this.dataDir);
+    // 模式关闭：空计划 = 卸载全部 dsh 插件（含工具回滚），状态表如实标注原因
+    const plan = this.dshSyncEnabled ? scan.plan : [];
     const child = this.child;
     if (!child?.connected) {
-      this.dshInfos = dshPluginInfos(scan, undefined, "Extension Host 未连接，dsh 插件未加载");
+      this.dshInfos = dshPluginInfos(scan, undefined, "Extension Host 未连接，dsh 插件未加载", this.dshSyncEnabled);
       return this.dshInfos;
     }
     let failure: string | undefined;
     try {
-      const response = await this.request("dsh.sync", { plugins: scan.plan }, DSH_SYNC_TIMEOUT_MS) as { plugins?: DshPluginReport[]; tools?: Record<string, ExtensionToolSpec[]> };
+      const response = await this.request("dsh.sync", { plugins: plan }, DSH_SYNC_TIMEOUT_MS) as { plugins?: DshPluginReport[]; tools?: Record<string, ExtensionToolSpec[]> };
       this.replaceTools(response.tools);
-      this.dshInfos = dshPluginInfos(scan, response.plugins);
+      this.dshInfos = dshPluginInfos(scan, response.plugins, undefined, this.dshSyncEnabled);
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
       const message = `dsh 插件同步失败：${failure}`;
       this.events?.publish({ source: "server", type: "extension.warning", payload: { message } });
-      this.dshInfos = dshPluginInfos(scan, undefined, message);
+      this.dshInfos = dshPluginInfos(scan, undefined, message, this.dshSyncEnabled);
     }
     return this.dshInfos;
   }
@@ -444,7 +461,12 @@ export class ExtensionManager {
   /** 宿主重启 / 热重载后重放 dsh 加载计划（未同步过则跳过）。 */
   private async resyncDsh(): Promise<void> {
     if (!this.dshSyncRequested) return;
-    await this.runDshSync().catch(() => undefined);
+    this.dshSyncFromHostStart = true;
+    try {
+      await this.runDshSync().catch(() => undefined);
+    } finally {
+      this.dshSyncFromHostStart = false;
+    }
   }
 
   /** env-sim 预设清单 + 用户预设目录绝对路径（UI 展示「把分享的预设 JSON 放到这里」）。 */
@@ -1004,7 +1026,22 @@ export class ExtensionManager {
     await this.startHost();
   }
 
+  /**
+   * 启动宿主：并发调用合并，且把「启动中」的状态暴露给 dsh 插件同步（`runDshSync`）——
+   * 否则宿主 initialize 完成时会清空 dsh 伪扩展状态，把启动期并发下发的加载计划悄悄抹掉。
+   */
   private async startHost(): Promise<void> {
+    const previous = this.hostStarting;
+    const next = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() => this.startHostProcess());
+    this.hostStarting = next;
+    try {
+      await next;
+    } finally {
+      if (this.hostStarting === next) this.hostStarting = undefined;
+    }
+  }
+
+  private async startHostProcess(): Promise<void> {
     const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const worker = fileURLToPath(new URL(`./extension-host-process.${extension}`, import.meta.url));
     // dist 运行直接 fork 编译后的 JS；tsx 开发/测试运行显式安装 loader，确保 NodeNext 的 .js specifier 可解析到 .ts 源文件。

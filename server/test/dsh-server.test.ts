@@ -265,7 +265,7 @@ describe.skipIf(!VENDOR_READY)("dsh 端口服务（需 vendor）", () => {
       accessToken: TOKEN,
       deps: fakeDeps(),
       bridgePlugin: bridge,
-      owcStatus: () => buildOwcStatus({ version: "1.12.0", dshVersion: "0.1.6-alpha.2", mainPort: 3210, protocol: "http:", host: "127.0.0.1", accessToken: TOKEN }),
+      owcStatus: (context) => buildOwcStatus({ version: "1.12.0", dshVersion: "0.1.6-alpha.2", mainPort: 3210, protocol: "http:", host: "127.0.0.1", accessToken: TOKEN, cookieAuthenticated: context.cookieAuthenticated }),
       logger: { warn: () => {}, info: () => {} },
     });
     servers.push(server as DshServer);
@@ -277,7 +277,12 @@ describe.skipIf(!VENDOR_READY)("dsh 端口服务（需 vendor）", () => {
     expect((await (server as DshServer).app.inject({ method: "GET", url: "/dsh-owc/status" })).statusCode).toBe(401);
     const status = await (server as DshServer).app.inject({ method: "GET", url: "/dsh-owc/status", headers: { cookie: `owc_access_token=${TOKEN}` } });
     expect(status.statusCode).toBe(200);
-    expect(JSON.parse(status.body)).toMatchObject({ version: "1.12.0", dshVersion: "0.1.6-alpha.2", workbenchUrl: `http://127.0.0.1:3210/?token=${TOKEN}` });
+    // cookie 已鉴权：回跳 URL 不带令牌（凭据不进 URL/历史）；Bearer 直探（无 cookie）才带令牌兜底
+    expect(JSON.parse(status.body)).toMatchObject({ version: "1.12.0", dshVersion: "0.1.6-alpha.2", workbenchUrl: "http://127.0.0.1:3210/" });
+    const bearer = await (server as DshServer).app.inject({ method: "GET", url: "/dsh-owc/status", headers: { authorization: `Bearer ${TOKEN}` } });
+    expect(JSON.parse(bearer.body)).toMatchObject({ workbenchUrl: `http://127.0.0.1:3210/?token=${TOKEN}` });
+    // 无访问令牌的部署（回环免鉴权）：不追加空令牌参数
+    expect(buildOwcStatus({ version: "1.12.0", dshVersion: "0.1.6-alpha.2", mainPort: 3210, protocol: "http:", host: "127.0.0.1" }).workbenchUrl).toBe("http://127.0.0.1:3210/");
   });
 
   it("可注入 bridge 插件：graph 追加 application batch", async () => {
