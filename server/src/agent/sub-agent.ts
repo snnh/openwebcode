@@ -227,7 +227,6 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
       turns += 1;
       const assistantContent: MessageContent[] = [];
       let text = "";
-      let stopReason: string | undefined;
       // 当前流式 thinking/text 块索引（thinking_delta/text_delta 分片合并；thinking_end/text_end 收尾成块）：
       // 与主循环一致，thinking 块带 provider 字段落盘，供 OpenAI 兼容接口的思维链回传
       // （DeepSeek 思维模式强制每个 function_call 前带 reasoning item，缺素材会 400）；
@@ -307,18 +306,16 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
           }
         } else if (event.type === "usage") {
           await options.onUsage?.(event);
-        } else if (event.type === "done") {
-          stopReason = event.stopReason;
         }
+        // done 的 stopReason 不参与收尾判定：兼容 provider 会在给出 tool_call 的同时报
+        // end_turn（见下方 toolCalls 判定），是否继续循环只看本轮有没有工具调用。
       }
       if (assistantContent.length > 0) messages.push(subMessage("assistant", assistantContent));
       lastText = text || lastText;
       options.onProgress?.({ turns, toolsUsed: [...toolsUsed] });
-      if (stopReason !== "tool_use") {
-        finished = true;
-        break;
-      }
       const toolCalls = assistantContent.filter((block) => block.type === "tool_call");
+      // 兼容 provider 可能给出非 tool_use 的 stop reason 但已产生 tool_call：与主循环一致，
+      // 仍执行这些调用并落盘 tool_result（丢弃会让下一轮请求的历史形状非法）。
       if (toolCalls.length === 0) {
         finished = true;
         break;

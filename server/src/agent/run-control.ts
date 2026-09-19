@@ -1,7 +1,7 @@
 import type { EventBus } from "../events/event-bus.js";
 import { errorMessage } from "../error-utils.js";
 import type { HookPayload } from "../hooks.js";
-import { activePathMessages } from "../sessions/session-tree.js";
+import { activePathMessages, isInjectionMessageId } from "../sessions/session-tree.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { MessageQueue, type QueueItem } from "./message-queue.js";
 import { InteractionCoordinator, type InteractionKind, type InteractionRequest } from "./interaction-coordinator.js";
@@ -138,14 +138,13 @@ export class RunControl {
   /**
    * 等待 ask_user 交互被回答；run abort 或交互已取消时解析为 { cancelled: true }，
    * 工具结果按 { cancelled: true } 返回（非错误），agent 可自行决定继续或收尾。
+   *
+   * 顺序纪律：先注册 waiter、再复查一次持久状态。反向顺序（先 list 再注册）在
+   * REST respond 落在两者之间的微任务窗口时会漏掉应答而永久挂起；注册是同步的，
+   * 之后的 respondInteraction 一定能看到 waiter（应答先到则由复查兜底）。
    */
   async waitForInteractionAnswer(sessionId: string, interactionId: string, signal: AbortSignal): Promise<{ cancelled: true } | { cancelled: false; answer: unknown }> {
     if (signal.aborted) return { cancelled: true };
-    // 竞态防护：REST respond 可能先于 waiter 注册完成（事件发布与注册之间存在微任务窗口）
-    const existing = (await this.interactions.list(sessionId)).find((item) => item.id === interactionId);
-    if (existing && existing.status !== "pending") {
-      return existing.status === "cancelled" ? { cancelled: true } : { cancelled: false, answer: existing.answer };
-    }
     return new Promise((resolve) => {
       const abort = () => {
         this.interactionWaiters.delete(interactionId);
@@ -153,10 +152,24 @@ export class RunControl {
       };
       this.interactionWaiters.set(interactionId, { sessionId, resolve: (answer) => resolve({ cancelled: false, answer }), signal, abort });
       signal.addEventListener("abort", abort, { once: true });
-      // 注册后复检：abort 可能在上面 signal.aborted 检查与本注册之间触发，
-      // AbortSignal 事件已错过且不会再发，不复检则 waiter 永久挂起。
-      // abort() 路径另由 cancelInteractionWaiters 主动解除兜底。
-      if (signal.aborted) abort();
+      void (async () => {
+        // 注册后复查：应答/取消可能已经先于注册落盘（respondInteraction 只看 waiter 表，
+        // 复查时把它当成“晚到的应答”结算；resolve 幂等，重复结算无害）。
+        const existing = (await this.interactions.list(sessionId)).find((item) => item.id === interactionId);
+        if (existing && existing.status !== "pending") {
+          const waiter = this.interactionWaiters.get(interactionId);
+          if (waiter) {
+            this.interactionWaiters.delete(interactionId);
+            waiter.signal.removeEventListener("abort", waiter.abort);
+          }
+          if (existing.status === "cancelled") resolve({ cancelled: true });
+          else resolve({ cancelled: false, answer: existing.answer });
+          return;
+        }
+        // abort 可能在上面 signal.aborted 检查与本注册之间触发，AbortSignal 事件已错过
+        // 且不会再发，不复检则 waiter 永久挂起。abort() 路径另由 cancelInteractionWaiters 兜底。
+        if (signal.aborted) abort();
+      })();
     });
   }
 
@@ -238,6 +251,9 @@ export class RunControl {
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i];
       if (message?.role !== "user") continue;
+      // 每轮 run 启动时落盘的注入消息（inj:goal:full 引导、日期锚点）不参与计数：
+      // 它们夹在续跑消息之间，会把「连续 [goal-continuation]」从尾部截断，计数永远 ≤1。
+      if (isInjectionMessageId(message.id)) continue;
       const textBlock = message.content.find((block) => block.type === "text");
       const text = textBlock?.type === "text" ? textBlock.text : "";
       // 遇到最近的普通用户消息即停止：更早的续跑属于上一个目标
@@ -260,7 +276,12 @@ export class RunControl {
     const item = await this.messageQueue.take(sessionId, "follow_up");
     if (!item) return;
     this.deps.events.publish({ source: "agent", type: "queue.consuming", sessionId, payload: item });
-    void this.deps.run(sessionId, item.content, { queueItemId: item.id }).catch((error: unknown) => {
+    void this.deps.run(sessionId, item.content, { queueItemId: item.id }).catch(async (error: unknown) => {
+      // run() 的三互斥守卫（running/shells/workspaceWrites）在它的 try/catch 之前抛出，
+      // 队列项此时仍是 consuming 且不会被 run 内的 requeue 兜住——这里统一回退，
+      // 保证消费失败（含守卫失败）的项回到 queued 而不是永久卡死丢内容。
+      // 项已 applied/取消时 requeue 是空操作，重复调用安全。
+      await this.messageQueue.requeue(sessionId, item.id).catch(() => undefined);
       this.deps.events.publish({
         source: "agent",
         type: "queue.run_failed",
