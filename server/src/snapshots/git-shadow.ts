@@ -66,6 +66,10 @@ export class GitShadowSnapshots implements SnapshotBackend {
     await this.initialize();
     const files = await this.scanWorkspace();
     await this.git(["add", "-u"]);
+    // `add -u` 只认「已跟踪」：检查点创建后才被加入 deny/contextExcludes 的路径改动
+    // 仍会被暂存进快照（跟踪是历史事实，扫描侧的排除管不到暂存区）。这里用 pathspec
+    // 精准把这些排除项从暂存区撤出；下面的 add -f 只加扫描到的文件，排除项不进快照。
+    await this.unstageExcluded();
     for (let index = 0; index < files.length; index += 200) {
       await this.git(["add", "-f", "--", ...files.slice(index, index + 200)]);
     }
@@ -141,6 +145,19 @@ export class GitShadowSnapshots implements SnapshotBackend {
   }
 
   /**
+   * 撤销 `git add -u` 对排除路径的暂存（excludes 目录/字面模式 + 会话 deny 相对路径）。
+   *
+   * 只把这些排除项作为 pathspec 传给 reset：不动其余已跟踪文件，避免对大仓库做全量
+   * 索引重写（无匹配的 pathspec 在 git 里是 no-op，不会报错）。glob 形态的
+   * contextExcludes 不参与（构造期只采纳无通配符的字面模式，见构造函数）。
+   */
+  private async unstageExcluded(): Promise<void> {
+    const patterns = [...this.excludes, ...this.denyPathRelatives()];
+    if (patterns.length === 0) return;
+    await this.git(["reset", "-q", "--", ...patterns], false);
+  }
+
+  /**
    * 收集工作区文件清单（相对 workspace 路径）。
    *
    * 走 core 的 index.scan 有界递归扫描原语：路径策略（denyPaths）一致、内存有界、
@@ -192,16 +209,18 @@ export class GitShadowSnapshots implements SnapshotBackend {
 
   /**
    * 无 core 时的回退：Node readdir+lstat 直遍历（core 缺失/残缺仅出现在测试与异常场景）。
-   * 生产路径总是走 index.scan（有界原语 + 路径策略一致）；回退路径与旧实现行为完全一致。
+   * 生产路径总是走 index.scan（有界原语 + 路径策略一致）；回退路径的收集结果与核心路径
+   * 对齐——同样跳过 excludes 与会话 deny 相对路径（否则 deny 文件会被 add -f 强行带进快照）。
    */
   private async scanWorkspaceFallback(): Promise<string[]> {
     const files: string[] = [];
     let bytes = 0;
+    const excluded = [...this.excludes, ...this.denyPathRelatives()];
     const visit = async (relative: string): Promise<void> => {
       const entries = await readdir(path.join(this.workspace, relative), { withFileTypes: true });
       for (const entry of entries) {
         const child = relative ? `${relative}/${entry.name}` : entry.name;
-        if (this.excludes.some((excluded) => child === excluded || child.startsWith(`${excluded}/`))) continue;
+        if (excluded.some((item) => child === item || child.startsWith(`${item}/`))) continue;
         const stat = await lstat(path.join(this.workspace, child));
         if (stat.isDirectory() && !stat.isSymbolicLink()) {
           await visit(child);

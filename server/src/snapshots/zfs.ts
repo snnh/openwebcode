@@ -1,5 +1,7 @@
-import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { errorMessage } from "../error-utils.js";
 import {
   newSnapshotId,
   readCheckpoints,
@@ -10,6 +12,7 @@ import {
   type SnapshotBackend,
   type SnapshotCapabilityInfo,
 } from "./backend.js";
+import { captureDenyFiles, restoreDenyFiles } from "./deny-preserve.js";
 import type { CommandRunner } from "./probe.js";
 import { diffTrees, type SnapshotDiffExcludes } from "./tree-diff.js";
 
@@ -24,6 +27,8 @@ export class ZfsBackend implements SnapshotBackend {
     readonly dataset: string,
     private readonly runner: CommandRunner,
     private readonly excludes: SnapshotDiffExcludes = { excludePrefixes: [], excludeGlobs: [] },
+    /** 会话 deny 路径（绝对）：整卷回退不覆盖/不删除这些文件，见 restore。 */
+    private readonly denyPaths: readonly string[] = [],
   ) {
     this.metadataPath = path.join(sessionRoot, "checkpoints.json");
   }
@@ -73,22 +78,76 @@ export class ZfsBackend implements SnapshotBackend {
     return truncateLines(result.stdout);
   }
 
+  /**
+   * 回退 = 从自动挂载的只读快照目录复制回写（原实现「先清空工作区再复制」在复制失败时
+   * 数据全丢）。可回滚流程：
+   * 1) 先验证快照源可读（.zfs/snapshot/<id> 是目录），不通过就不动当前工作区；
+   * 2) 暂存当前 deny 文件（整卷替换不得覆盖/删除 .env 等）；
+   * 3) 当前内容改名进工作区内的暂存目录（同一数据集内 rename，不跨设备、不搬字节），
+   *    再从快照目录复制回写；
+   * 4) 复制失败 → 清掉复制进来的半成品并把暂存内容改回原位后抛错（工作区数据仍在）；
+   * 5) 成功 → 删除暂存目录（best-effort），写回暂存的 deny 文件。
+   */
   async restore(id: string): Promise<void> {
     validateSnapshotId(id);
     if (!(await this.list()).some((item) => item.id === id)) throw new Error("Checkpoint not found");
-    // 清空工作区后从自动挂载的只读快照目录复制回写
     const snapshotDir = path.join(this.workspace, ".zfs", "snapshot", id);
-    for (const entry of await readdir(this.workspace)) {
-      if (entry === ".zfs") continue;
-      await rm(path.join(this.workspace, entry), { recursive: true, force: true });
+    const source = await stat(snapshotDir).catch(() => undefined);
+    if (!source?.isDirectory()) throw new Error(`zfs checkpoint ${id} is not accessible at ${snapshotDir}`);
+    const preserved = await captureDenyFiles(this.workspace, this.denyPaths);
+    const stashName = `.owc-restore-${randomUUID()}`;
+    const stash = path.join(this.workspace, stashName);
+    await mkdir(stash);
+    const moved: string[] = [];
+    try {
+      for (const entry of await readdir(this.workspace)) {
+        if (entry === ".zfs" || entry === stashName) continue;
+        await rename(path.join(this.workspace, entry), path.join(stash, entry));
+        moved.push(entry);
+      }
+      await this.copyFromSnapshot(snapshotDir);
+    } catch (error) {
+      const rollbackError = await this.rollbackRestore(stashName, stash, moved);
+      if (rollbackError) {
+        throw new Error(`zfs restore failed (${errorMessage(error)}) and the previous workspace is left at ${stash} (rollback failed: ${rollbackError})`);
+      }
+      throw error;
     }
-    await cp(snapshotDir, this.workspace, { recursive: true });
+    await rm(stash, { recursive: true, force: true }).catch((error: unknown) => {
+      // 暂存旧树删不掉不影响回退结果（新工作区已就位）：只记日志，不误报失败
+      process.stderr.write(`[snapshots] zfs restore succeeded but the previous workspace could not be deleted at ${stash}: ${errorMessage(error)}\n`);
+    });
+    await restoreDenyFiles(preserved);
   }
 
   async delete(id: string): Promise<void> {
     validateSnapshotId(id);
     await this.must("destroy", ["destroy", `${this.dataset}@${id}`]);
     await writeCheckpoints(this.metadataPath, (await this.list()).filter((item) => item.id !== id));
+  }
+
+  /** 从只读快照目录复制回写工作区（重建步骤；独立方法便于聚焦测试注入失败）。 */
+  protected async copyFromSnapshot(snapshotDir: string): Promise<void> {
+    await cp(snapshotDir, this.workspace, { recursive: true });
+  }
+
+  /** 回滚：清掉复制进来的半成品，把暂存内容改回原位；返回错误描述（成功返回 undefined）。 */
+  private async rollbackRestore(stashName: string, stash: string, moved: readonly string[]): Promise<string | undefined> {
+    const failures: string[] = [];
+    for (const entry of await readdir(this.workspace).catch(() => [] as string[])) {
+      if (entry === ".zfs" || entry === stashName) continue;
+      await rm(path.join(this.workspace, entry), { recursive: true, force: true })
+        .catch((error: unknown) => failures.push(`remove ${entry}: ${errorMessage(error)}`));
+    }
+    for (const entry of moved) {
+      await rename(path.join(stash, entry), path.join(this.workspace, entry))
+        .catch((error: unknown) => failures.push(`restore ${entry}: ${errorMessage(error)}`));
+    }
+    if (failures.length === 0) {
+      await rm(stash, { recursive: true, force: true }).catch(() => undefined);
+      return undefined;
+    }
+    return failures.join("; ");
   }
 
   private async must(operation: string, args: string[]): Promise<void> {

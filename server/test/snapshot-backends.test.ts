@@ -1,5 +1,8 @@
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import * as treeDiffModule from "../src/snapshots/tree-diff.js";
 import { buildServer } from "../src/app.js";
@@ -9,6 +12,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { activePathMessages } from "../src/sessions/session-tree.js";
 import { writeCheckpoints } from "../src/snapshots/backend.js";
 import { BtrfsBackend } from "../src/snapshots/btrfs.js";
 import { GitShadowSnapshots } from "../src/snapshots/git-shadow.js";
@@ -20,6 +24,8 @@ import { ZfsBackend } from "../src/snapshots/zfs.js";
 import { FAKE_CORE_INFO } from "./helpers/fake-core.js";
 import { recordingRunner, tableRunner } from "./helpers/recording-runner.js";
 import { tempRoot } from "./helpers/temp-roots.js";
+
+const execFileAsync = promisify(execFile);
 
 /** fake core：ping 按参数上报 features.overlay；linux 平台。 */
 function overlayCore(supported: boolean): OverlayfsCore {
@@ -122,6 +128,57 @@ describe("probeSnapshotBackend", () => {
     const backend = await probeSnapshotBackend("/data/sess", "/data/ws", { runner, platform: "linux" });
     expect(backend.name).toBe("git-shadow");
   });
+
+  // B10：现场探测出的实例必须与 constructByName 同参数携带 excludes/denyPaths，
+  // 否则「探测后首次」diff 会展示 deny/排除路径、首次回退会覆盖 deny 文件。
+  it("linux: 探测出的 btrfs 实例携带会话 excludes 与 denyPaths", async () => {
+    const root = await tempRoot("owc-probe-deny-");
+    const workspace = path.join(root, "ws");
+    await mkdir(workspace);
+    await writeFile(path.join(workspace, ".env"), "SECRET=current", "utf8");
+    const denyPaths = [path.join(workspace, ".env")];
+    const excludes = { excludePrefixes: [".env"], excludeGlobs: [] };
+    const spy = vi.spyOn(treeDiffModule, "diffTrees").mockResolvedValue("unified diff");
+    try {
+      const runner = recordingRunner((cmd, args) => {
+        if (cmd === "stat") return { stdout: "btrfs\n", code: 0 };
+        // 只在 restore 的 snapshot（无 -r）时物化「快照内容」，create 的 -r 快照不动工作区
+        if (args[1] === "snapshot" && args[2] !== "-r") {
+          // 模拟「快照内容」落进工作区（含旧 .env），等价真实重建
+          mkdirSync(workspace, { recursive: true });
+          writeFileSync(path.join(workspace, ".env"), "SECRET=snapshot-old");
+        }
+        return { code: 0 };
+      });
+      const probed = await probeSnapshotBackend(root, workspace, { runner: runner.runner, platform: "linux", excludes, denyPaths });
+      expect(probed.name).toBe("btrfs");
+      // 首次 diff 就走会话 excludes（.env 不出现）
+      await probed.diff("snap-1-abcdef");
+      expect(spy).toHaveBeenLastCalledWith(path.join(root, ".owc-snapshots", "ws", "snap-1-abcdef"), workspace, excludes);
+      // 首次回退保留 deny 文件当前内容
+      const checkpoint = await probed.create("label", 0);
+      await probed.restore(checkpoint.id);
+      expect(await readFile(path.join(workspace, ".env"), "utf8")).toBe("SECRET=current");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("win32: 探测出的 refs 实例携带会话 excludes", async () => {
+    const excludes = { excludePrefixes: [".env"], excludeGlobs: ["*.log"] };
+    const spy = vi.spyOn(treeDiffModule, "diffTrees").mockResolvedValue("unified diff");
+    try {
+      const { runner } = tableRunner({
+        "powershell -NoProfile -Command (Get-Volume -DriveLetter C).FileSystem -eq 'ReFS'": { stdout: "True\r\n", code: 0 },
+      });
+      const probed = await probeSnapshotBackend("C:\\owc\\sess", "C:\\data\\ws", { runner, platform: "win32", excludes });
+      expect(probed.name).toBe("refs");
+      await probed.diff("snap-1-abcdef");
+      expect(spy).toHaveBeenLastCalledWith(expect.stringContaining("refs-snaps"), "C:\\data\\ws", excludes);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe("probeSnapshotBackendByName（设置偏好的单后端探测）", () => {
@@ -184,7 +241,7 @@ describe("BtrfsBackend", () => {
     expect(await backend.list()).toHaveLength(0);
   });
 
-  it("restore 先 delete 工作区再 snapshot 回来；delete 失败则中止", async () => {
+  it("restore 先验证快照源、改名旧子卷再从快照重建，最后清理旧子卷", async () => {
     const root = await tempRoot("owc-btrfs-");
     const workspace = path.join(root, "ws");
     await mkdir(workspace);
@@ -195,15 +252,53 @@ describe("BtrfsBackend", () => {
 
     calls.length = 0;
     await backend.restore(checkpoint.id);
-    expect(calls).toEqual([
-      { cmd: "btrfs", args: ["subvolume", "delete", workspace] },
-      { cmd: "btrfs", args: ["subvolume", "snapshot", path.join(snapRoot, checkpoint.id), workspace] },
-    ]);
+    // 顺序：验证快照源可用 → 重建到工作区路径 → 清理改名后的旧子卷
+    expect(calls[0]).toEqual({ cmd: "btrfs", args: ["subvolume", "show", path.join(snapRoot, checkpoint.id)] });
+    expect(calls[1]).toEqual({ cmd: "btrfs", args: ["subvolume", "snapshot", path.join(snapRoot, checkpoint.id), workspace] });
+    expect(calls[2]).toMatchObject({ cmd: "btrfs", args: ["subvolume", "delete", expect.stringMatching(/ws\.owc-restore-/)] });
+    // 先删工作区再重建的旧序列不再出现（工作区路径不做 delete）
+    expect(calls.some((call) => call.args[1] === "delete" && call.args[2] === workspace)).toBe(false);
+  });
 
-    const failing = recordingRunner((cmd, args) => (args[1] === "delete" ? { code: 1 } : { code: 0 }));
-    calls.length = 0;
-    await expect(new BtrfsBackend(workspace, failing.runner).restore(checkpoint.id)).rejects.toThrow();
-    expect(failing.calls).toHaveLength(1);
+  it("restore 重建失败时回滚：旧工作区仍在（数据不丢）", async () => {
+    const root = await tempRoot("owc-btrfs-");
+    const workspace = path.join(root, "ws");
+    await mkdir(workspace);
+    await writeFile(path.join(workspace, "keep.txt"), "current", "utf8");
+    const { runner } = recordingRunner(() => ({ code: 0 }));
+    const checkpoint = await new BtrfsBackend(workspace, runner).create("label", 0);
+
+    const failing = recordingRunner((cmd, args) => (args[1] === "snapshot" ? { code: 1 } : { code: 0 }));
+    await expect(new BtrfsBackend(workspace, failing.runner).restore(checkpoint.id)).rejects.toThrow(/btrfs snapshot failed/);
+    // 旧工作区改名回了原位：内容与回退前一致
+    expect(await readFile(path.join(workspace, "keep.txt"), "utf8")).toBe("current");
+    // 临时改名残留已收回
+    expect((await readdir(root)).filter((entry) => entry.startsWith("ws.owc-restore-"))).toEqual([]);
+  });
+
+  it("restore 用当前 deny 内容回写（整卷回退不覆盖/不新增 deny 文件）", async () => {
+    const root = await tempRoot("owc-btrfs-");
+    const workspace = path.join(root, "ws");
+    await mkdir(path.join(workspace, ".owc"), { recursive: true });
+    await writeFile(path.join(workspace, ".env"), "SECRET=current", "utf8");
+    const denyPaths = [path.join(workspace, ".env"), path.join(workspace, ".owc", "hooks.json")];
+    const { runner } = recordingRunner(() => ({ code: 0 }));
+    const checkpoint = await new BtrfsBackend(workspace, runner, undefined, denyPaths).create("label", 0);
+
+    // mock：snapshot 子命令时物化「快照内容」（含旧 .env），模拟真实重建
+    const materialize = recordingRunner((_cmd, args) => {
+      if (args[1] === "snapshot") {
+        mkdirSync(workspace, { recursive: true });
+        writeFileSync(path.join(workspace, ".env"), "SECRET=snapshot-old");
+      }
+      return { code: 0 };
+    });
+    await new BtrfsBackend(workspace, materialize.runner, undefined, denyPaths).restore(checkpoint.id);
+
+    // 当前 deny 内容不被快照旧值覆盖
+    expect(await readFile(path.join(workspace, ".env"), "utf8")).toBe("SECRET=current");
+    // 回退前不存在的 deny 文件不会被凭空造出
+    await expect(stat(path.join(workspace, ".owc", "hooks.json"))).rejects.toThrow();
   });
 
   it("diff 退出码 1 视为有差异返回文本，>1 抛错（git 缺失时走摘要降级）", async () => {
@@ -270,6 +365,83 @@ describe("ZfsBackend", () => {
     await expect(stat(path.join(workspace, "sub"))).rejects.toThrow();
     // .zfs 目录本身保留
     expect((await stat(path.join(workspace, ".zfs"))).isDirectory()).toBe(true);
+    // 暂存目录不残留
+    expect((await readdir(workspace)).filter((entry) => entry.startsWith(".owc-restore-"))).toEqual([]);
+  });
+
+  it("restore 保留当前 deny 文件内容与权限位，不新增快照里没有的 deny 文件", async () => {
+    const root = await tempRoot("owc-zfs-");
+    const sessionRoot = path.join(root, "sess");
+    const workspace = path.join(root, "ws");
+    await mkdir(path.join(workspace, ".owc"), { recursive: true });
+    await writeFile(path.join(workspace, ".env"), "SECRET=current", { encoding: "utf8", mode: 0o600 });
+    await writeFile(path.join(workspace, ".owc", "mcp.json"), "current-mcp", "utf8");
+    await writeFile(path.join(workspace, "mod.txt"), "current", "utf8");
+    const id = "snap-1-abcdef";
+    const snapshotDir = path.join(workspace, ".zfs", "snapshot", id);
+    await mkdir(snapshotDir, { recursive: true });
+    await writeFile(path.join(snapshotDir, ".env"), "SECRET=snapshot-old", "utf8");
+    await writeFile(path.join(snapshotDir, "mod.txt"), "old", "utf8");
+    await mkdir(sessionRoot, { recursive: true });
+    await writeCheckpoints(path.join(sessionRoot, "checkpoints.json"), [{ id, label: "l", createdAt: new Date().toISOString(), messageCount: 1 }]);
+
+    const denyPaths = [path.join(workspace, ".env"), path.join(workspace, ".owc", "mcp.json"), path.join(workspace, ".owc", "hooks.json")];
+    const { runner } = recordingRunner(() => ({ code: 0 }));
+    await new ZfsBackend(sessionRoot, workspace, "tank/ws", runner, undefined, denyPaths).restore(id);
+
+    // 普通文件回到快照内容
+    expect(await readFile(path.join(workspace, "mod.txt"), "utf8")).toBe("old");
+    // deny 文件保持回退前的内容与权限位（不被快照旧值覆盖）
+    expect(await readFile(path.join(workspace, ".env"), "utf8")).toBe("SECRET=current");
+    expect((await stat(path.join(workspace, ".env"))).mode & 0o777).toBe(0o600);
+    expect(await readFile(path.join(workspace, ".owc", "mcp.json"), "utf8")).toBe("current-mcp");
+    // 回退前不存在的 deny 文件不凭空造出
+    await expect(stat(path.join(workspace, ".owc", "hooks.json"))).rejects.toThrow();
+  });
+
+  it("restore 复制失败时回滚：旧工作区仍在（数据不丢）", async () => {
+    const root = await tempRoot("owc-zfs-");
+    const sessionRoot = path.join(root, "sess");
+    const workspace = path.join(root, "ws");
+    await mkdir(path.join(workspace, "sub"), { recursive: true });
+    await writeFile(path.join(workspace, "a.txt"), "current", "utf8");
+    await writeFile(path.join(workspace, "sub", "b.txt"), "extra", "utf8");
+    const id = "snap-1-abcdef";
+    const snapshotDir = path.join(workspace, ".zfs", "snapshot", id);
+    await mkdir(snapshotDir, { recursive: true });
+    await writeFile(path.join(snapshotDir, "a.txt"), "old", "utf8");
+    await mkdir(sessionRoot, { recursive: true });
+    await writeCheckpoints(path.join(sessionRoot, "checkpoints.json"), [{ id, label: "l", createdAt: new Date().toISOString(), messageCount: 1 }]);
+
+    class FailingZfs extends ZfsBackend {
+      protected override async copyFromSnapshot(): Promise<void> {
+        throw new Error("copy failed");
+      }
+    }
+    const { runner } = recordingRunner(() => ({ code: 0 }));
+    await expect(new FailingZfs(sessionRoot, workspace, "tank/ws", runner).restore(id)).rejects.toThrow(/copy failed/);
+
+    // 回滚后当前内容仍在，暂存目录已收回，.zfs 保留
+    expect(await readFile(path.join(workspace, "a.txt"), "utf8")).toBe("current");
+    expect(await readFile(path.join(workspace, "sub", "b.txt"), "utf8")).toBe("extra");
+    expect((await readdir(workspace)).filter((entry) => entry.startsWith(".owc-restore-"))).toEqual([]);
+    expect((await stat(path.join(workspace, ".zfs"))).isDirectory()).toBe(true);
+  });
+
+  it("restore 快照源不可读时不动工作区", async () => {
+    const root = await tempRoot("owc-zfs-");
+    const sessionRoot = path.join(root, "sess");
+    const workspace = path.join(root, "ws");
+    await mkdir(workspace, { recursive: true });
+    await writeFile(path.join(workspace, "a.txt"), "current", "utf8");
+    const id = "snap-1-abcdef";
+    await mkdir(sessionRoot, { recursive: true });
+    await writeCheckpoints(path.join(sessionRoot, "checkpoints.json"), [{ id, label: "l", createdAt: new Date().toISOString(), messageCount: 1 }]);
+
+    const { runner } = recordingRunner(() => ({ code: 0 }));
+    const backend = new ZfsBackend(sessionRoot, workspace, "tank/ws", runner);
+    await expect(backend.restore(id)).rejects.toThrow(/not accessible/);
+    expect(await readFile(path.join(workspace, "a.txt"), "utf8")).toBe("current");
   });
 });
 
@@ -306,6 +478,84 @@ describe("snapshot routes", () => {
 
       const listed = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/checkpoints` });
       expect(listed.json()).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // B2：非托管会话的 acquireManagedWorkspaceExclusive 是 no-op，git-shadow 等后端并发
+  // POST /checkpoints 会撞 git index.lock、checkpoints.json 读改写丢条目 —— per-session
+  // 快照锁必须让并发请求一个成功、一个 409，且元数据只剩一条。
+  it("并发 POST /checkpoints 串行化：一个 201 一个 409，条目不丢", async () => {
+    const root = await tempRoot("owc-snaproute-");
+    const workspace = path.join(root, "ws");
+    await mkdir(workspace);
+    await writeFile(path.join(workspace, "a.txt"), "one", "utf8");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const events = new EventBus();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const agent = { isRunning: () => false } as AgentRunner;
+    const app = await buildServer({ core: {} as CoreClient, sessions, agent, events, providers: new ProviderRegistry(), pricing });
+    try {
+      const session = await sessions.create({ cwd: workspace });
+      const [first, second] = await Promise.all([
+        app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints`, payload: { label: "c1" } }),
+        app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints`, payload: { label: "c2" } }),
+      ]);
+      expect([first.statusCode, second.statusCode].sort()).toEqual([201, 409]);
+      // 非托管会话（git-shadow）如实描述冲突来源
+      const conflict = first.statusCode === 409 ? first : second;
+      expect(conflict.json()).toMatchObject({ error: "A checkpoint operation is already in progress for this session" });
+      const listed = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/checkpoints` });
+      expect(listed.json()).toHaveLength(1);
+      // 锁在请求结束后释放：串行再建一个检查点仍可成功
+      const third = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints`, payload: { label: "c3" } });
+      expect(third.statusCode).toBe(201);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // B1 路由侧回归：建检查点 → 再发消息 → 回退 → 再发消息，活动路径必须完整
+  it("POST restore 回退消息后活动叶子重置，后续追加的活动路径完整", async () => {
+    const root = await tempRoot("owc-snaproute-");
+    const workspace = path.join(root, "ws");
+    await mkdir(workspace);
+    await writeFile(path.join(workspace, "a.txt"), "one", "utf8");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const events = new EventBus();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const agent = { isRunning: () => false } as AgentRunner;
+    const app = await buildServer({ core: {} as CoreClient, sessions, agent, events, providers: new ProviderRegistry(), pricing });
+    try {
+      const session = await sessions.create({ cwd: workspace });
+      const early = [];
+      for (let index = 0; index < 3; index++) {
+        early.push(await sessions.appendMessage(session.id, "user", [{ type: "text", text: `m${index}` }]));
+      }
+      const created = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints`, payload: { label: "cp" } });
+      expect(created.statusCode).toBe(201);
+      const checkpoint = created.json<{ id: string; messageCount: number }>();
+      expect(checkpoint.messageCount).toBe(3);
+
+      await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "later" }]);
+      const restored = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${session.id}/checkpoints/${checkpoint.id}/restore`,
+        payload: { confirm: true },
+      });
+      expect(restored.statusCode).toBe(200);
+
+      const afterRestore = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "after" }]);
+      const detail = await sessions.get(session.id);
+      expect(detail!.messages).toHaveLength(4);
+      expect(detail!.activeLeafId).toBe(afterRestore.id);
+      expect(activePathMessages(detail!.messages, detail!.activeLeafId).map((message) => message.id))
+        .toEqual([...early.map((message) => message.id), afterRestore.id]);
     } finally {
       await app.close();
     }
@@ -362,4 +612,34 @@ describe("GitShadowSnapshots", () => {
     await expect(readFile(path.join(workspace, "new.cache"), "utf8")).rejects.toThrow();
     await expect(readFile(path.join(workspace, "new.txt"), "utf8")).rejects.toThrow();
   });
+
+  // B9：`add -u` 会把「已被跟踪、检查点之后才加入 deny」的路径改动也暂存进快照。
+  it("检查点之后加入 deny 的已跟踪文件改动不进快照", async () => {
+    const root = await tempRoot("owc-shadow-deny-");
+    const workspace = path.join(root, "workspace");
+    const session = path.join(root, "session");
+    await mkdir(workspace);
+    await writeFile(path.join(workspace, ".env"), "SECRET=original", "utf8");
+    await writeFile(path.join(workspace, "app.txt"), "v1", "utf8");
+    // 首个检查点：.env 尚未被 deny（git-shadow 默认排除项不含 .env）→ 正常跟踪进快照
+    const baseline = new GitShadowSnapshots(session, workspace);
+    const first = await baseline.create("baseline", 1);
+    expect(await gitShow(session, workspace, `${first.id}:.env`)).toBe("SECRET=original");
+
+    await writeFile(path.join(workspace, ".env"), "SECRET=changed", "utf8");
+    await writeFile(path.join(workspace, "app.txt"), "v2", "utf8");
+    // 此时 .env 加入会话 deny：add -u 的暂存必须在提交前撤出该路径
+    const guarded = new GitShadowSnapshots(session, workspace, { denyPaths: [path.join(workspace, ".env")] });
+    const second = await guarded.create("guarded", 2);
+    expect(await gitShow(session, workspace, `${second.id}:.env`)).toBe("SECRET=original");
+    expect(await gitShow(session, workspace, `${second.id}:app.txt`)).toBe("v2");
+    // 工作区里的改动仍在（只是没进快照）
+    expect(await readFile(path.join(workspace, ".env"), "utf8")).toBe("SECRET=changed");
+  });
 });
+
+/** 读影子仓库里某个检查点版本的路径内容（git show <sha>:<path>）。 */
+async function gitShow(sessionRoot: string, workspace: string, spec: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["--git-dir", path.join(sessionRoot, "shadow.git"), "--work-tree", workspace, "show", spec]);
+  return stdout;
+}

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { activePathMessages } from "../src/sessions/session-tree.js";
 import type { ChatMessage } from "../src/sessions/types.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
@@ -395,21 +396,103 @@ describe("session messages cache (readMessages whole-list cache)", () => {
     expect(cached!.messages).toHaveLength(5);
   });
 
-  it("append after a corrupt tail escalates to needs_repair and equals fresh read", async () => {
+  it("append after a corrupt tail repairs the tail record instead of burying it", async () => {
     const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await seedMessages(store, session.id, 5);
     await appendFile(messagesPathOf(root, session.id), "{corrupt-tail\n", "utf8");
-    await store.get(session.id); // 缓存 recovery=recovered
+    await store.get(session.id); // 缓存 recovery=recovered（已知尾行损坏）
 
-    // 追加后损坏行不再处于尾部 → needs_repair；缓存必须失效重建而非增量
+    // 追加前先截掉损坏尾行：坏行不再变成中间行，读取也就不再升格 needs_repair
     await store.appendMessage(session.id, "user", [{ type: "text", text: "after-corrupt" }]);
     const cached = await store.get(session.id);
     const fresh = await freshRead(root, session.id);
     expect(cached).toEqual(fresh);
-    expect(cached!.recovery).toMatchObject({ state: "needs_repair" });
+    expect(cached!.recovery).toBeUndefined();
     expect(cached!.messages).toHaveLength(6);
+    // 盘上不再残留坏行
+    expect(await readFile(messagesPathOf(root, session.id), "utf8")).not.toContain("corrupt-tail");
+  });
+
+  it("append after an interrupted tail repairs the record boundary", async () => {
+    const root = await tempRoot("owc-msgcache-");
+    const store = await storeAt(root);
+
+    // 崩溃中断在行中：末记录是无终止换行的残缺字节 → 追加前截掉
+    const broken = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
+    await seedMessages(store, broken.id, 3);
+    const brokenPath = messagesPathOf(root, broken.id);
+    await appendFile(brokenPath, '{"id":"partial","role":"user"', "utf8");
+    // 全新实例追加：没有内存缓存，靠「末字节不是 \n」照样识别
+    const freshStore = await storeAt(root);
+    await freshStore.appendMessage(broken.id, "user", [{ type: "text", text: "after-partial" }]);
+    expect(await readFile(brokenPath, "utf8")).not.toContain('"id":"partial"');
+    const repaired = await freshStore.get(broken.id);
+    expect(repaired!.recovery).toBeUndefined();
+    expect(repaired!.messages).toHaveLength(4);
+
+    // 末记录完整但缺终止换行（崩在写 \n 之前）：只补换行——不丢记录、不与下一条拼行
+    const unterminated = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
+    const kept = await seedMessages(store, unterminated.id, 2);
+    const unterminatedPath = messagesPathOf(root, unterminated.id);
+    await writeFile(unterminatedPath, JSON.stringify(kept[1]), "utf8");
+    const storeB = await storeAt(root);
+    await storeB.appendMessage(unterminated.id, "user", [{ type: "text", text: "third" }]);
+    const lines = (await readFile(unterminatedPath, "utf8")).split("\n").filter((line) => line.trim());
+    expect(lines).toHaveLength(2);
+    expect((JSON.parse(lines[0]!) as { id: string }).id).toBe(kept[1]!.id);
+    const detail = await storeB.get(unterminated.id);
+    expect(detail!.recovery).toBeUndefined();
+    expect(detail!.messages).toHaveLength(2);
+  });
+
+  // B1 回归：截断（检查点回退的消息侧）后不重置 activeLeafId 会留下悬空父链，
+  // 后续 appendMessage 的 parentId 指向已删消息，activePathMessages 回溯中途截断
+  // ——模型上下文只剩新消息（历史还在盘上却不可达）。
+  it("truncateMessages 后接续追加保持活动路径完整（检查点回退回归）", async () => {
+    const root = await tempRoot("owc-msgcache-");
+    const store = await storeAt(root);
+    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
+
+    // 建会话 → 多条消息 → 记检查点（messageCount 取此刻消息数，与路由侧一致）
+    const early = await seedMessages(store, session.id, 3);
+    const checkpointMessageCount = (await store.get(session.id))!.messages.length;
+    // 检查点之后继续对话（回退时这些消息要被截掉）
+    await store.appendMessage(session.id, "assistant", [{ type: "text", text: "later-1" }]);
+    await store.appendMessage(session.id, "user", [{ type: "text", text: "later-2" }]);
+
+    // 回退到早期检查点：消息侧动作与 POST /checkpoints/:id/restore 相同
+    await store.truncateMessages(session.id, checkpointMessageCount);
+
+    // 回退后发新消息：parentId 必须接在截断后的最后一条上，活动路径完整
+    const afterRestore = await store.appendMessage(session.id, "user", [{ type: "text", text: "after-restore" }]);
+    const detail = await store.get(session.id);
+    expect(detail!.messages).toHaveLength(4);
+    expect(detail!.activeLeafId).toBe(afterRestore.id);
+    expect(afterRestore.parentId).toBe(early[2]!.id);
+    expect(activePathMessages(detail!.messages, detail!.activeLeafId).map((message) => message.id))
+      .toEqual([early[0]!.id, early[1]!.id, early[2]!.id, afterRestore.id]);
+    // 与全新实例（空缓存、纯磁盘读）一致
+    expect(detail).toEqual(await freshRead(root, session.id));
+  });
+
+  // B7：整表改写（截断/格式升级）必须让 message-reader 的分页索引失效——改写后
+  // getTail/getMessagesBefore 的字节偏移索引不得指向旧内容。
+  it("truncate 后分页索引失效：getTail/getMessagesBefore 读到的是截断后的内容", async () => {
+    const root = await tempRoot("owc-msgcache-");
+    const store = await storeAt(root);
+    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
+    const all = await seedMessages(store, session.id, 6);
+    // 先建索引（分页路径）
+    expect((await store.getTail(session.id, 2))!.messages.map((message) => message.id)).toEqual([all[4]!.id, all[5]!.id]);
+
+    await store.truncateMessages(session.id, 3);
+    const tail = await store.getTail(session.id, 10);
+    expect(tail!.messages.map((message) => message.id)).toEqual([all[0]!.id, all[1]!.id, all[2]!.id]);
+    expect(tail!.messageCount).toBe(3);
+    // 已截掉的消息不再可定位（索引按新文件重建）
+    expect((await store.getMessagesBefore(session.id, all[5]!.id, 10))!.messages).toEqual([]);
   });
 
   it("corrupt middle record: needs_repair, equals fresh read", async () => {

@@ -85,7 +85,7 @@ export async function checkRecoveryTail(filePath: string): Promise<{ recovery?: 
     const last = await readLastRecord(handle, info.size);
     if (last === undefined) return {};
     try {
-      JSON.parse(last);
+      JSON.parse(last.text);
       return {};
     } catch {
       return { recovery: { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" } };
@@ -95,17 +95,49 @@ export async function checkRecoveryTail(filePath: string): Promise<{ recovery?: 
   }
 }
 
+/** 末条非空记录的位置与文本（text 不含换行符）。 */
+export interface LastRecordRange {
+  /** 记录首字节的文件偏移。 */
+  start: number;
+  /** 记录末字节之后的文件偏移（不含终止换行）。 */
+  end: number;
+  text: string;
+  /** 记录之后是否紧跟换行符（false 表示文件未以 \n 终止）。 */
+  terminated: boolean;
+}
+
+/**
+ * 读文件末条非空记录的位置与文本；文件不存在或无记录返回 undefined。
+ * 供读侧恢复检测（checkRecoveryTail）与写侧的尾行修复（截掉损坏尾记录）共用。
+ */
+export async function readLastRecordRange(filePath: string): Promise<LastRecordRange | undefined> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(filePath, "r");
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+    return undefined;
+  }
+  try {
+    const info = await handle.stat();
+    return await readLastRecord(handle, info.size);
+  } finally {
+    await handle.close();
+  }
+}
+
 const TAIL_WINDOW_BYTES = 256 * 1024;
 
 /** 读文件末条非空记录（不含换行符）；文件无记录返回 undefined。窗口不足时指数扩大至全文件。 */
-async function readLastRecord(handle: Awaited<ReturnType<typeof open>>, size: number): Promise<string | undefined> {
+async function readLastRecord(handle: Awaited<ReturnType<typeof open>>, size: number): Promise<LastRecordRange | undefined> {
   let window = Math.min(size, TAIL_WINDOW_BYTES);
   for (;;) {
     if (window === 0) return undefined;
+    const base = size - window;
     const buffer = Buffer.allocUnsafe(window);
     let read = 0;
     while (read < window) {
-      const result = await handle.read(buffer, read, window - read, size - window + read);
+      const result = await handle.read(buffer, read, window - read, base + read);
       if (result.bytesRead === 0) throw new Error("messages.jsonl changed while checking its tail");
       read += result.bytesRead;
     }
@@ -118,7 +150,7 @@ async function readLastRecord(handle: Awaited<ReturnType<typeof open>>, size: nu
       if (text.trim()) {
         // 记录起点不在窗口内（窗口未覆盖其开头的 \n）说明记录比窗口长：扩大窗口重读
         if (newline < 0 && window < size) break;
-        return text;
+        return { start: base + start, end: base + end, text, terminated: end < buffer.length };
       }
       if (newline < 0) break;
       end = newline;
@@ -126,6 +158,18 @@ async function readLastRecord(handle: Awaited<ReturnType<typeof open>>, size: nu
     if (window === size) return undefined;
     window = Math.min(size, window * 4);
   }
+}
+
+/**
+ * 主动失效某文件的字节索引缓存（B7）。
+ *
+ * 索引缓存只以 size+mtimeMs+ctimeMs 指纹判定，改写路径（truncate/格式升级/
+ * 尾行修复/导入）在「同尺寸」或「同毫秒」落盘时指纹可能不变（见 session-store
+ * writeMeta 的同款注释），缓存会误命中陈旧索引（分页读到旧偏移）。写入侧改写
+ * 完成后必须显式调用本函数，不只依赖指纹自动失配。
+ */
+export function invalidateMessageIndex(filePath: string): void {
+  indexes.delete(filePath);
 }
 
 async function getIndex(filePath: string): Promise<MessageFileIndex> {
