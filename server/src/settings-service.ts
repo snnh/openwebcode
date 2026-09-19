@@ -347,6 +347,13 @@ function envCurrency(raw: string): SettingValue | undefined {
   return undefined;
 }
 
+/** dsh 兼容模式端口：1024–65535（低端口需要特权，不提供）。 */
+function requireDshPort(raw: unknown): string | null {
+  if (typeof raw !== "number" || !Number.isInteger(raw)) return "必须是整数端口号";
+  if (raw < 1024 || raw > 65535) return "端口范围 1024–65535";
+  return null;
+}
+
 function envBoolean(raw: string): SettingValue | undefined {
   if (raw === "1" || raw === "true") return true;
   if (raw === "0" || raw === "false") return false;
@@ -387,6 +394,9 @@ const FIELDS: FieldSpec[] = [
   { key: "defaultLanguage", group: "general", label: "默认语言", type: "select", env: "OWC_DEFAULT_LANGUAGE", defaultValue: "zh-CN", restartRequired: false, options: LANGUAGE_OPTIONS },
   { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
   // Chat 模式开关（热生效）：web 侧据此显示 chat/workbench 切换，默认关闭
+  { key: "dshCompatEnabled", group: "general", label: "启用 dsh 兼容模式", type: "boolean", env: "OWC_DSH_COMPAT_ENABLED", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "默认关闭；开启后在独立端口托管 dsh 官方 SPA 并加载 dsh 插件（Host 与 Client 插件均为可信代码，≈ yolo，不经沙盒与权限链）；关闭时进程内零常驻，端口不监听" },
+  { key: "dshPort", group: "general", label: "dsh 兼容模式端口", type: "number", env: "OWC_DSH_PORT", defaultValue: 3211, restartRequired: false, fromEnv: envNumber, validate: requireDshPort, description: "dsh 兼容模式独立监听端口（1024–65535，默认 3211）；与主端口分离，避免 /api 与 /plugins 前缀冲突" },
+  { key: "dshUiPath", group: "general", label: "自选 dsh UI 目录", type: "text", env: "OWC_DSH_UI_PATH", defaultValue: null, restartRequired: false, description: "留空 = 使用内置 vendor（scripts/fetch-dsh-web.mjs 产出的 server/assets/dsh-web）；填目录则用该目录下的 manifest.json + static/ + plugins/。自选 UI 不受本项目维护承诺，仅按协议面尽力兼容" },
   { key: "chatModeEnabled", group: "general", label: "启用 Chat 模式", type: "boolean", env: "OWC_CHAT_MODE_ENABLED", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "默认关闭；开启后界面显示 Chat / Workbench 模式切换，可使用 ChatGPT 风格对话模式" },
   // 出站 User-Agent（热生效）：留空使用官方默认 owc/openwebcode{version}；env-sim 扩展的拟态 UA 优先于自定义值；
   // 更新检查/更新应用链路恒走官方 UA，不受此项影响
@@ -614,6 +624,8 @@ export class SettingsService {
       ...(typeof allowedOriginsText === "string" && allowedOriginsText.trim() !== "" ? { OWC_ALLOWED_ORIGINS: allowedOriginsText } : {}),
     });
     const userAgent = value("userAgent");
+    const dshPort = value("dshPort");
+    const dshUiPath = value("dshUiPath");
     const providerStreamIdleMs = value("providerStreamIdleMs");
     // userAgent 允许首尾空白由保存校验把关；此处再归一 trim 一次，防 env 直写携带空白进请求头
     const normalizedUserAgent = typeof userAgent === "string" ? userAgent.trim() : null;
@@ -638,6 +650,11 @@ export class SettingsService {
       compactionThresholdPercent: value("compactionThresholdPercent") as number,
       compactMaxTokens: value("compactMaxTokens") as number,
       defaultLanguage: value("defaultLanguage") as string,
+      dshCompat: {
+        enabled: value("dshCompatEnabled") as boolean,
+        port: typeof dshPort === "number" ? dshPort : 3211,
+        uiPath: typeof dshUiPath === "string" && dshUiPath.trim() !== "" ? dshUiPath.trim() : null,
+      },
       defaultCurrency: value("defaultCurrency") as "USD" | "CNY",
       pythonEnv: value("pythonEnv") as PythonEnv,
       nodeEnv: value("nodeEnv") as NodeEnv,

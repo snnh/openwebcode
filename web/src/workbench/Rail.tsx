@@ -29,6 +29,8 @@ export interface RailActions {
   onOpenSettings(): void;
   /** 切到聊天模式（仅聊天模式启用时由 Workbench 注入；活动栏底部入口） */
   onShowChat?(): void;
+  /** dsh 兼容模式入口（服务端设置 dshCompatEnabled 开启且 vendor 就绪时才传入）。 */
+  onOpenDsh?(): void;
 }
 
 interface ActivityBarProps extends RailActions {
@@ -38,7 +40,7 @@ interface ActivityBarProps extends RailActions {
   onToggleSidebar(): void;
 }
 
-export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, notificationsBadge = 0, onShowView, onToggleSidebar, onShowHelp, onShowNotifications, onOpenSettings, onShowChat }: ActivityBarProps): ReactElement {
+export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, notificationsBadge = 0, onShowView, onToggleSidebar, onShowHelp, onShowNotifications, onOpenSettings, onShowChat, onOpenDsh }: ActivityBarProps): ReactElement {
   const { t } = useI18n();
   return (
     <div className="activity-bar">
@@ -72,6 +74,16 @@ export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, not
         <Icon name={sidebarVisible ? "chevrons-left" : "chevrons-right"} size={20} />
       </button>
       <div className="activity-bar-bottom">
+        {onOpenDsh && (
+          <button
+            className="activity-btn"
+            aria-label={t("dsh 兼容模式（新标签打开）", "dsh compatibility mode (opens in a new tab)")}
+            title={t("dsh 兼容模式（新标签打开）", "dsh compatibility mode (opens in a new tab)")}
+            onClick={onOpenDsh}
+          >
+            <Icon name="layers" size={20} />
+          </button>
+        )}
         {onShowChat && (
           <button
             className="activity-btn"
@@ -129,7 +141,7 @@ export function MobileNavTrigger({ onOpen }: { onOpen(): void }): ReactElement {
  * 移动端导航菜单（手机 ≤768px）：左上角触发、左侧滑出的竖向列表。
  * 替代窄屏上的桌面活动栏；Esc/遮罩关闭，Tab 焦点在菜单内循环。
  */
-export function MobileNavMenu({ open, onClose, activeView, problemsBadge = 0, notificationsBadge = 0, onShowView, onShowHelp, onShowNotifications, onOpenSettings, onShowChat }: RailActions & { open: boolean; onClose(): void }): ReactElement | null {
+export function MobileNavMenu({ open, onClose, activeView, problemsBadge = 0, notificationsBadge = 0, onShowView, onShowHelp, onShowNotifications, onOpenSettings, onShowChat, onOpenDsh }: RailActions & { open: boolean; onClose(): void }): ReactElement | null {
   const { t } = useI18n();
   const navRef = useRef<HTMLElement>(null);
 
@@ -201,6 +213,12 @@ export function MobileNavMenu({ open, onClose, activeView, problemsBadge = 0, no
           })}
         </div>
         <div className="mobile-nav-group mobile-nav-group-bottom">
+          {onOpenDsh && (
+            <button type="button" className="mobile-nav-item" onClick={action(onOpenDsh)}>
+              <Icon name="layers" size={18} />
+              {t("dsh 兼容模式", "dsh compatibility mode")}
+            </button>
+          )}
           {onShowChat && (
             <button type="button" className="mobile-nav-item" onClick={action(onShowChat)}>
               <Icon name="message" size={18} />
