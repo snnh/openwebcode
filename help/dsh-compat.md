@@ -103,6 +103,8 @@ dsh 插件**只在「启用 dsh 兼容模式」打开时加载**（它们是可�
 | 打开会话与历史 | `session/follow`（快照 + 增量事件 + 助手流式）、`session/page`（向前翻旧历史） |
 | 发消息 / 中断 / 队列 | `session/prompt`（`queue` / `steer`）、`session/cancel`、`session/updateQueue` |
 | 运行态 | `session/control`（待发送队列、投影基线；后台任务见下） |
+| 模型选择 | `session/modelCatalog`（服务商分组的模型目录 + 部署默认 + 可路由服务商）、`session/selectModel`（空闲时切模型，校验口径与主工作台一致：服务商须已配置、模型须在目录中、力度须在模型声明档位内）、会话 `modelSelection` 投影（composer 的模型座位显示当前会话模型） |
+| 插件清单 | `pluginInventory/list`（只读投影 `<dataDir>/dsh-plugins` 里的 dsh 插件与启停状态；`managementAvailable=false`——插件安装/启停在 owc 侧管理） |
 | 历史图片 | `session/attachment`（owc 内联 base64 图片可回读；仅落盘引用的图片返回明确错误） |
 | 审批与提问 | `$events` 逻辑流 + `POST /api/$events/result` 回路：dsh UI 里点「允许/拒绝」会真正作用于 owc 权限链 |
 | 工作区视图 | `workspace/follow`（按会话 cwd 派生工作区条目） |
@@ -117,14 +119,16 @@ dsh 插件**只在「启用 dsh 兼容模式」打开时加载**（它们是可�
 以下 dsh 端点 v1 返回明确错误（不会静默给假数据），多数在 dsh UI 里表现为报错卡片或空面板：
 
 - **设置与凭据面**：`settings/*`、`credentials/*`、`llm/*`、`agentPresets/*`
-- **插件与文件面**：`pluginInventory/list`、`workspaceFiles/*`、`directoryPicker/*`、`fileReferences/*`
+- **插件与文件面**：`pluginManager/*`（dsh 面板里的插件安装/启停管理）、`workspaceFiles/*`、`directoryPicker/*`、`fileReferences/*`
 - **工作区写操作**：`workspace/create|rename|delete|insertBefore|insertSessionBefore|archiveSession|unarchiveSession`
-- **会话扩展操作**：`session/search|rename|fork|selectModel|modelCatalog|openWorkspacePath|canOpenWorkspacePath`
+- **会话扩展操作**：`session/search|rename|fork|openWorkspacePath|canOpenWorkspacePath`
 - **其它**：`goal/*`、`skills/list`、`subagents/*`、`terminal/*`、`messageFeedback/*`、`sessionFeedback/record`、`dynamicCordisRunner/*`
 
 **后台任务不投影**：`session/control` 的 jobs 字段如实留空（owc 的后台任务只在主工作台可见）。
 
-需要模型配置、权限模式、扩展设置这些操作时，回主工作台做——dsh UI 的设置页不接 owc 的设置面。
+需要凭据配置、权限模式、扩展设置、dsh 插件安装这些操作时，回主工作台做——dsh UI 的设置页不接 owc 的设置面。
+
+**模型选择器**：dsh composer 的模型座位读 `session/modelCatalog` + 会话 `modelSelection` 投影；新建会话按主工作台同一套默认（`settings.defaultModel` + 校验过的 `defaultEffort`）落 provider/model，所以从 dsh UI 直接开新会话就能用。模型未配置 / 会话运行中切模型会给出明确 wire 错误，不静默改配置。
 
 ---
 

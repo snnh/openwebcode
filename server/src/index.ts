@@ -53,6 +53,7 @@ import { CronScheduler } from "./cron-scheduler.js";
 import { EvalEvaluator } from "./eval/evaluator.js";
 import { ChatAssistantStore, ChatConfigService, ChatPythonEnv, ChatRunner, ChatSessionStore } from "./chat/index.js";
 import { DEFAULT_DSH_PORT, DshCompatRuntime } from "./dsh/web-protocol/runtime.js";
+import { createDshModelBridge } from "./dsh/model-bridge.js";
 import { homedir } from "node:os";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -356,6 +357,9 @@ const dshCompat = new DshCompatRuntime({
   agent,
   events,
   home: homedir(),
+  // 模型面：dsh 模型选择器（catalog/selectModel）与新建会话的默认模型，事实来源与 REST 同一套
+  models: createDshModelBridge({ providers, models, settings }),
+  dshPlugins: () => extensions.dshPlugins(),
   version: () => getServerVersion(),
   mainPort: () => settings.effective().port,
   logger: {

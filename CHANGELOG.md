@@ -23,6 +23,7 @@
 
 - **修复 dsh 兼容模式开启时的启动崩溃**：dsh 运行期早于访问令牌解析构造，`const` 的暂时性死区直接让进程以 `ReferenceError` 退出（且即便不崩，端口也会拿到空令牌退化成免鉴权）。现在运行期与首次启停排在令牌解析之后，并加守卫：非回环监听且拿不到令牌时如实拒绝启动该端口，不裸开鉴权。
 - **修复 dsh 插件加载计划从未下发**：此前加载计划只在测试路径触发，真实进程不会加载任何 dsh 插件；现在启动按模式开关下发，开关热切换即时生效，宿主启动期间的并发同步会先等宿主初始化落地（避免加载计划被清空）。
+- **补齐 dsh 模型面与插件清单**：dsh UI 的模型选择器此前报 `gateway/method-unavailable: 未实现端点：session/modelCatalog`、设置页「插件」报「暂时无法读取插件」。现在 `session/modelCatalog`（按服务商分组的模型目录 + 部署默认 + 可路由服务商）与 `session/selectModel`（空闲时切模型，校验口径与主工作台一致）落地，并新增会话 `modelSelection` 投影——它正是 dsh `ModelDirectory` resolve 的前提（缺它时 composer 的模型座位一直为空）；`pluginInventory/list` 只读投影 `<dataDir>/dsh-plugins` 的插件与启停状态（不宣称可管理）。顺带修掉一个主路径缺陷：从 dsh UI 新建的会话此前没写 provider/model（无法运行），现在按主工作台同一套默认（`settings.defaultModel` + 校验过的 `defaultEffort`）补齐。
 - **修复 dsh SPA 因「未挂载插件」整体起不来**：vendor 的插件 roster 此前按依赖闭包全量装载，把只作为依赖存在、官方并未挂载的包（`dsh-client-ui-directory-picker-{browse,native}`）也当插件激活——browse 在启动自检里 `entry did not activate: failed`，dsh UI 直接落到「Failed to load plugins」错误页。现在按官方挂载规则筛选（`cordis.patch.yml` 名单 ∪ 被其它插件 `inject`/`external` 引用的依赖行），插件数 60 → 58，并加回归用例（inject 目标必须在图中或由 shell 静态播种、未挂载包不得进图）。
 - **修复 dsh UI vendor 漏装关键插件**：roster 改按依赖闭包（`dependencies` + `peerDependencies`）推导，修掉提供 WS 连接与 `ctx.remote` 的 `@deepseek-ai/dsh-api-gateway` 等包漏装导致的 SPA 启动阻断（插件 56 → 60）；新增 boot 完整性测试守住启动级不变量（bundle 存在且自注册 id 一致、external 目标在图中、注入行覆盖每条 batch）。
 - 缓存命中率读数统一保留一位小数（会话顶栏、上下文面板、成本面板与悬浮明细口径一致）。

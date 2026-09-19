@@ -44,7 +44,7 @@ const DSH_SUPPORTED_PACKAGES: Readonly<Record<string, string>> = {
 };
 
 /** 插件状态：running 已激活；missing-services 依赖服务缺失（未激活）；incompatible 版本不兼容。 */
-type DshPluginStatus = "running" | "disabled" | "error" | "missing-services" | "incompatible";
+export type DshPluginStatus = "running" | "disabled" | "error" | "missing-services" | "incompatible";
 
 /**
  * `dsh.client` 声明（上游 `packages/client/modules/src/client/manifest.ts` 的 parseDshClient 子集）。
