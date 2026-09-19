@@ -521,12 +521,27 @@ function uniqueDshPluginId(id: string, used: Set<string>): string {
   return candidate;
 }
 
+/**
+ * 插件目录发现：`dsh-plugins/` 下一层目录；`@scope` 目录再下探一层（npm scope 布局
+ * `dsh-plugins/@scope/pkg`）。返回相对 root 的路径（可能含一个 `/`），跳过隐藏目录与 node_modules。
+ */
 async function listPluginDirectories(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
-  return entries
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules")
-    .map((entry) => entry.name)
-    .sort();
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === "node_modules") continue;
+    if (!entry.name.startsWith("@")) {
+      names.push(entry.name);
+      continue;
+    }
+    // scope 目录本身不是插件包：只把它的子目录当插件（再深一层不再下探）
+    const scoped = await readdir(path.join(root, entry.name), { withFileTypes: true }).catch(() => []);
+    for (const child of scoped) {
+      if (!child.isDirectory() || child.name.startsWith(".")) continue;
+      names.push(`${entry.name}/${child.name}`);
+    }
+  }
+  return names.sort();
 }
 
 /**

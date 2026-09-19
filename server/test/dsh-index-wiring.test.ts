@@ -45,4 +45,29 @@ describe("dsh 兼容模式启动接线", () => {
     // 主服务 app.ts 不得感知 dsh 端口内部（避免两套入口）
     expect(other).not.toContain("dsh/web-protocol");
   });
+
+  it("D6：启动期 dshCompat.sync() 包在 try/catch 里（端口占用不阻断主服务启动）", async () => {
+    const source = await readFile(SOURCE, "utf8");
+    const syncIndex = source.indexOf("await dshCompat.sync();");
+    expect(syncIndex).toBeGreaterThan(-1);
+    // 该次 sync 必须在 try 块内（与设置热切换路径的 .catch 同一语义：失败只记原因）
+    const before = source.slice(Math.max(0, syncIndex - 400), syncIndex);
+    const tryIndex = before.lastIndexOf("try {");
+    expect(tryIndex).toBeGreaterThan(-1);
+    const after = source.slice(syncIndex, syncIndex + 400);
+    expect(after).toMatch(/}\s*catch\s*\(/);
+    // 失败信息要写进 stderr（可诊断），并说明主服务继续启动
+    expect(after).toContain("owc 主服务继续启动");
+  });
+
+  it("D10：关闭态语义只声明「独立端口不监听」与关闭窗口内的 503，主服务不挂 dsh 端点", async () => {
+    const source = await readFile(SOURCE, "utf8");
+    const runtimeSource = await readFile(fileURLToPath(new URL("../src/dsh/web-protocol/runtime.ts", import.meta.url)), "utf8");
+    // 关闭态权威表述：独立端口不监听（连接被拒）+ 主服务没有任何 dsh 端点
+    expect(runtimeSource).toContain("独立端口不监听");
+    expect(runtimeSource).toContain("没有任何 dsh 端点");
+    // index 只在启动/热切换处碰 dshCompat，不往主服务 app 注册 dsh 路由
+    expect(source).not.toContain("/api/remote.mux");
+    expect(source).not.toContain("remote.mux");
+  });
 });

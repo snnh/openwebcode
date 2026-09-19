@@ -23,6 +23,7 @@ import {
   type DshProjectionDeps,
 } from "../src/dsh/web-protocol/session-projection.js";
 import type { ChatMessage, SessionDetail, SessionMeta } from "../src/sessions/types.js";
+import { deriveSessionRecords, sessionRecordsCount } from "../src/dsh/web-protocol/session-events.js";
 
 const SERVER_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const VENDOR_PLUGINS = path.join(SERVER_ROOT, "assets", "dsh-web", "plugins");
@@ -150,6 +151,51 @@ describe("dsh 会话投影", () => {
     expect(empty).toMatchObject({ error: { code: "session/arguments-invalid" } });
   });
 
+  it("D7：运行中带图 prompt 明确失败（不静默丢图）；纯文本仍按 mode 入队", async () => {
+    const busy = deps({ running: ["s1"] });
+    const image = { type: "image", mediaType: "image/png", data: "AAAA" };
+    const queued = await projectSessionPrompt(busy.projection, { request: { sessionId: "s1", mode: "queue", content: [{ type: "text", text: "看图" }, image] } });
+    expect(queued).toMatchObject({ error: { code: "session/unsupported" } });
+    expect((queued as { error: { message: string } }).error.message).toContain("运行中消息不支持图片附件");
+    expect(busy.enqueueFollowUp).not.toHaveBeenCalled();
+    const steered = await projectSessionPrompt(busy.projection, { request: { sessionId: "s1", mode: "steer", content: [image] } });
+    expect(steered).toMatchObject({ error: { code: "session/unsupported" } });
+    expect(busy.enqueueSteering).not.toHaveBeenCalled();
+
+    expect(await projectSessionPrompt(busy.projection, { request: { sessionId: "s1", mode: "queue", content: [{ type: "text", text: "纯文本" }] } })).toEqual({ value: { accepted: true } });
+    expect(busy.enqueueFollowUp).toHaveBeenCalledWith("s1", "纯文本");
+    // 空闲态仍支持图片（走 agent.run 的 images 入参）
+    const idle = deps();
+    await projectSessionPrompt(idle.projection, { request: { sessionId: "s1", content: [image] } });
+    expect(idle.run).toHaveBeenCalledWith("s1", "", { images: [{ mediaType: "image/png", data: "AAAA" }] });
+  });
+
+  it("D12：session/create 走 REST 同款可见性链路（补发 session.created，幂等命中不补发）", async () => {
+    const published: Array<{ type: string; sessionId: string }> = [];
+    const fake = deps();
+    const projection: DshProjectionDeps = {
+      ...fake.projection,
+      publishSessionCreated: (session: SessionMeta) => published.push({ type: "session.created", sessionId: session.id }),
+    };
+    expect(await projectSessionCreate(projection, { request: { cwd: "/tmp/x" } })).toEqual({ value: { sessionId: "new-session" } });
+    expect(published).toEqual([{ type: "session.created", sessionId: "new-session" }]);
+    expect(await projectSessionCreate(projection, { request: { sessionId: "s1" } })).toEqual({ value: { sessionId: "s1" } });
+    expect(published).toHaveLength(1);
+  });
+
+  it("D9：列表摘要的 asOfSeq 与记录 seq 同口径（不再是消息条数）", async () => {
+    const messages = [
+      message("m1", "user", [{ type: "text", text: "hi" }]),
+      message("m2", "assistant", [{ type: "tool_call", id: "c1", name: "bash", input: {} }, { type: "text", text: "yo" }]),
+    ];
+    const fake = deps({ metas: [meta("s1")], details: { s1: detail("s1", messages) } });
+    const projected = await projectSessionList(fake.projection);
+    const items = ("value" in projected ? projected.value.items : []) as Array<{ projections: { asOfSeq: number } }>;
+    const expected = deriveSessionRecords(messages).records.length;
+    expect(expected).toBe(sessionRecordsCount(messages));
+    expect(items[0]?.projections.asOfSeq).toBe(expected);
+  });
+
   it("content 映射与 updateQueue（edit/remove/steer）", () => {
     expect(mapPromptContent([{ type: "text", text: "a" }, { type: "text", text: "b" }])).toEqual({ text: "a\n\nb", images: [] });
     expect(mapPromptContent("nope")).toMatchObject({ error: { code: "session/arguments-invalid" } });
@@ -160,6 +206,9 @@ describe("dsh 会话投影", () => {
     const fake = deps();
     expect(await projectSessionUpdateQueue(fake.projection, { request: { sessionId: "s1", itemId: "q1", action: { kind: "edit", content: [{ type: "text", text: "改了" }] } } })).toEqual({ value: { accepted: true } });
     expect(fake.updateQueue).toHaveBeenCalledWith("s1", "q1", { content: "改了" });
+    // 队列项内容只有文本：编辑带图必须明确失败（与运行中发图同一处理，不静默丢）
+    const withImage = await projectSessionUpdateQueue(fake.projection, { request: { sessionId: "s1", itemId: "q1", action: { kind: "edit", content: [{ type: "image", mediaType: "image/png", data: "AAAA" }] } } });
+    expect(withImage).toMatchObject({ error: { code: "session/unsupported" } });
     expect(await projectSessionUpdateQueue(fake.projection, { request: { sessionId: "s1", itemId: "q1", action: { kind: "remove" } } })).toEqual({ value: { accepted: true } });
     expect(fake.removeQueue).toHaveBeenCalledWith("s1", "q1");
     expect(await projectSessionUpdateQueue(fake.projection, { request: { sessionId: "s1", itemId: "q1", action: { kind: "steer" } } })).toEqual({ value: { accepted: true } });
@@ -167,10 +216,16 @@ describe("dsh 会话投影", () => {
     expect(await projectSessionUpdateQueue(fake.projection, { request: { sessionId: "s1", itemId: "nope", action: { kind: "remove" } } })).toMatchObject({ error: { code: "session/queue-item-not-found" } });
   });
 
-  it("control 基线含投影；workspace 基线按 cwd 派生分组且 workspaceId 稳定", async () => {
-    const fake = deps({ metas: [meta("s1", { cwd: "/work/a" }), meta("s2", { cwd: "/work/a" }), meta("s3", { cwd: "/work/b" })] });
-    const control = await projectSessionControlBaseline(fake.projection, "s1");
+  it("control 基线含投影（Host 级：覆盖全部会话）；workspace 基线按 cwd 派生分组且 workspaceId 稳定", async () => {
+    const fake = deps({
+      metas: [meta("s1", { cwd: "/work/a" }), meta("s2", { cwd: "/work/a" }), meta("s3", { cwd: "/work/b" })],
+      details: { s1: detail("s1", []), s2: detail("s2", []), s3: detail("s3", []) },
+    });
+    const control = await projectSessionControlBaseline(fake.projection);
     expect(control).toMatchObject({ value: { type: "baseline", value: { jobs: {} } } });
+    // 该端点无参数（vendor parameters: []）：基线必须是 Host 级的，键覆盖全部会话
+    const controlValue = ("value" in control ? control.value : {}) as { value: { projections: Record<string, { asOfSeq: number }> } };
+    expect(Object.keys(controlValue.value.projections).sort()).toEqual(["s1", "s2", "s3"]);
     const workspace = await projectWorkspaceBaseline(fake.projection) as { type: string; value: { items: Array<{ workspaceId: string; title: string; sessionIds: string[] }>; archivedSessionIds: string[] } };
     expect(workspace.type).toBe("baseline");
     expect(workspace.value.items).toHaveLength(2);
@@ -219,7 +274,7 @@ describe.skipIf(VENDOR_SKIP !== undefined)("dsh wire 契约校验（用客户端
     check("session/prompt", { accepted: true });
     check("session/cancel", { accepted: true });
     check("session/updateQueue", { accepted: true });
-    const control = await projectSessionControlBaseline(fake.projection, "s1");
+    const control = await projectSessionControlBaseline(fake.projection);
     check("session/control", "value" in control ? control.value : undefined);
     check("workspace/follow", await projectWorkspaceBaseline(fake.projection));
   });

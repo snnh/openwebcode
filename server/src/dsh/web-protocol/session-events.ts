@@ -24,8 +24,17 @@ export interface DshWireRecord {
     seq: number;
     time: number;
     data: unknown;
+    /**
+     * surface-eligible 事件（`system/message`、`user/message`、`assistant/message`、`tool/result`）
+     * 必带该标记：vendor 客户端的 `assertSessionWireEvent`/`surfaceOpOf` 对四类事件逐条断言，
+     * 缺标记直接抛错（整个会话渲染不出来）。这里全部投影为「追加」，不做 replace 语义。
+     */
+    surfaceOp?: "append";
   };
 }
+
+/** surface-eligible 事件的标记值（vendor `surface.js` 的 `op === "append"` 分支）。 */
+const SURFACE_APPEND = "append";
 
 /** 一个 turn 的结束原因（v1 只有 completed，如实反映 owc 已落盘的历史）。 */
 const TURN_END_COMPLETED = { kind: "completed" } as const;
@@ -84,8 +93,8 @@ function toDshBlocks(message: ChatMessage, blocks: readonly MessageContent[]): u
   return result;
 }
 
-/** 一条消息产生的 wire 事件（turn/step 由调用方给出）。 */
-function eventsForMessage(message: ChatMessage, turn: number, step: number): Array<{ type: string; time: number; data: unknown }> {
+/** 一条消息产生的 wire 事件（turn/step 由调用方给出）；surface-eligible 的事件带 surfaceOp。 */
+function eventsForMessage(message: ChatMessage, turn: number, step: number): Array<{ type: string; time: number; data: unknown; surfaceOp?: "append" }> {
   const time = Date.parse(message.createdAt) || 0;
   if (message.role === "assistant") {
     // 先补 tool/call（顺序与真实会话一致：调用先于汇总消息），再发汇总消息
@@ -100,6 +109,7 @@ function eventsForMessage(message: ChatMessage, turn: number, step: number): Arr
       ...calls,
       {
         type: "assistant/message",
+        surfaceOp: SURFACE_APPEND,
         time,
         data: {
           turn,
@@ -121,6 +131,7 @@ function eventsForMessage(message: ChatMessage, turn: number, step: number): Arr
   if (message.role === "tool") {
     return [{
       type: "tool/result",
+      surfaceOp: SURFACE_APPEND,
       time,
       data: {
         turn,
@@ -136,6 +147,7 @@ function eventsForMessage(message: ChatMessage, turn: number, step: number): Arr
   }
   return [{
     type: "user/message",
+    surfaceOp: SURFACE_APPEND,
     time,
     data: {
       id: message.id,
@@ -163,8 +175,8 @@ export function deriveSessionRecords(messages: readonly ChatMessage[]): { record
   let turn = 0;
   let step = 0;
   let turnOpen = false;
-  const push = (type: string, time: number, data: unknown): void => {
-    records.push({ type: "event", event: { type, seq: records.length + 1, time, data } });
+  const push = (type: string, time: number, data: unknown, surfaceOp?: "append"): void => {
+    records.push({ type: "event", event: { type, seq: records.length + 1, time, data, ...(surfaceOp === undefined ? {} : { surfaceOp }) } });
   };
   for (const message of messages) {
     const isPrompt = message.role === "user";
@@ -188,7 +200,7 @@ export function deriveSessionRecords(messages: readonly ChatMessage[]): { record
       }
       messageStarts.push(records.length);
     }
-    for (const event of eventsForMessage(message, turn, step)) push(event.type, event.time, event.data);
+    for (const event of eventsForMessage(message, turn, step)) push(event.type, event.time, event.data, event.surfaceOp);
   }
   if (turnOpen) {
     const last = messages[messages.length - 1];
@@ -197,6 +209,35 @@ export function deriveSessionRecords(messages: readonly ChatMessage[]): { record
     push("turn/end", time, { turn, reason: TURN_END_COMPLETED });
   }
   return { records, messageStarts };
+}
+
+/**
+ * 消息列表派生出的记录条数（= 末条记录的 seq），不物化事件。
+ *
+ * 口径与 {@link deriveSessionRecords} 的 seq 编号严格一致（有等价性测试）；会话列表/控制基线
+ * 只读尾部 50 条消息，为了不为此解析图片字节等重活，这里用计数推导而不是重跑一遍事件投影。
+ * `projections.asOfSeq` 与 follow cursor / page cursor 必须同一口径，否则客户端比较投影权威性时误判。
+ */
+export function sessionRecordsCount(messages: readonly ChatMessage[]): number {
+  let records = 0;
+  let turnOpen = false;
+  for (const message of messages) {
+    const own = message.role === "assistant"
+      ? 1 + message.content.filter((block) => block.type === "tool_call").length
+      : 1;
+    if (message.role === "user") {
+      // 上一轮未收尾时先补 step/end + turn/end（与 deriveSessionRecords 一致）
+      if (turnOpen) records += 2;
+      records += 2 + own; // turn/start + step/start + 本条消息的事件
+      turnOpen = true;
+      continue;
+    }
+    // assistant / tool：历史被截断（无前置 user）时补一个空 turn，但不额外发 turn/start、step/start
+    turnOpen = true;
+    records += own;
+  }
+  if (turnOpen) records += 2;
+  return records;
 }
 
 /** 快照：取末尾 `maxMessages` 条消息对应的记录（seq 与全量派生一致，分页 cursor 不会错位）。 */

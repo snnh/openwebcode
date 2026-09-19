@@ -111,8 +111,12 @@ export class DshMuxSession {
 
   private open(streamId: string, endpoint: string, args: Record<string, unknown>): void {
     if (this.active.has(streamId)) {
-      // 上游把重复 streamId 判为协议违规；这里如实回错但不牵连其它流（客户端不会并发同 id）。
+      // 上游把重复 streamId 判为协议违规并**断开物理连接**（同一条 WS 上的流 id 由客户端生成且不重放）。
+      // 这里对齐：先回一条 error 帧（让客户端拿到原因），再按协议违规 close(1008)——
+      // 只回错误帧会让客户端继续在该 id 上等待，掩盖协议错。
       this.channel.send({ type: "error", streamId, error: wireError("gateway/bad-request", `streamId 重复：${streamId}`, { endpoint }) });
+      this.dispose();
+      this.channel.close(DSH_CLOSE_PROTOCOL, `duplicate streamId: ${streamId}`);
       return;
     }
     const handler = this.resolveEndpoint(endpoint);

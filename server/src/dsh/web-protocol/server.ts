@@ -47,7 +47,7 @@ const HEARTBEAT_MISSES = 2;
 export interface DshServerOptions {
   /** vendor 目录（`scripts/fetch-dsh-web.mjs` 产出）。 */
   vendorDirectory: string;
-  /** 运行期开关（`dshCompatEnabled`）：关闭时 API 与 index 一律 503。 */
+  /** 运行期开关（`dshCompatEnabled`）：关闭时该独立端口上的 API 与 index 一律 503。 */
   enabled: () => boolean;
   /** owc 访问令牌（未设置时端口只允许回环访问，与主端口语义一致）。 */
   accessToken: string | undefined;
@@ -90,7 +90,11 @@ export async function buildDshServer(options: DshServerOptions): Promise<DshServ
   const unary = buildUnaryHandlers(options.deps);
   const streams = buildStreamHandlers(options.deps, bridge);
 
-  /** 关闭态统一语义：503 + 明确理由（不假装 404，避免前端误判为版本不匹配）。 */
+  /**
+   * 关闭态统一语义：503 + 明确理由（不假装 404，避免前端误判为版本不匹配）。
+   * 关闭态的正常表现是「端口根本不监听」（连接被拒）；这个分支覆盖的是关闭瞬间的窗口——
+   * 设置已落盘、`sync()` 还没关掉监听，此时端口上的请求必须被明确拒绝而不是照常服务。
+   */
   const disabled = (reply: { code: (status: number) => { send: (body: unknown) => unknown } }): unknown =>
     reply.code(503).send({ error: "dsh 兼容模式未启用（dshCompatEnabled=false）" });
 

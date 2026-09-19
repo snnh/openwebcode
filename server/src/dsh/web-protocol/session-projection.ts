@@ -9,7 +9,7 @@ import type { ChatMessage, SessionMeta } from "../../sessions/types.js";
 import type { SessionStore } from "../../sessions/session-store.js";
 import { wireError, type DshWireError } from "./wire.js";
 import { modelSelectionValue, type DshModelSelection } from "./models.js";
-import { deriveSessionRecords, pageWindow, snapshotWindow } from "./session-events.js";
+import { deriveSessionRecords, pageWindow, sessionRecordsCount, snapshotWindow } from "./session-events.js";
 
 /** 投影所需的最小依赖面（便于单测注入假对象）。 */
 export interface DshProjectionDeps {
@@ -34,6 +34,11 @@ export interface DshProjectionDeps {
     maxImageDimension: number;
     mediaTypes: string[];
   };
+  /**
+   * 新建会话后的可见性补发（与 REST `/api/sessions` 创建路径同一条链路：`session.created`）。
+   * 缺省不发事件（单测注入假依赖时不关心可见性）。
+   */
+  publishSessionCreated?: (session: SessionMeta) => void;
 }
 
 /** 投影结果：合法值或缺省 wire 错误。 */
@@ -87,9 +92,20 @@ function sessionSummary(deps: DshProjectionDeps, meta: SessionMeta, tail: { mess
     running,
     blank: isBlank(tail.messages, tail.truncated),
     ...(meta.cwd === undefined ? {} : { cwd: meta.cwd }),
-    // asOfSeq：投影基线序号（用尾部消息条数近似；仅用于 dsh 侧比对基线新旧）
-    projections: { asOfSeq: tail.messages.length, values: projectionValues(deps, meta, tail) },
+    // asOfSeq：投影基线序号，口径 = 记录 seq（与 follow cursor / page cursor 一致）。
+    // 只读尾部窗口时得到的水位偏小（见 projectionEntry 注释）：偏小只会被判为「较旧」，不会覆盖更新的值。
+    projections: { asOfSeq: sessionRecordsCount(tail.messages), values: projectionValues(deps, meta, tail) },
   };
+}
+
+/**
+ * 单会话投影条目（`session/control` 基线的 projections 值）：与摘要同口径。
+ *
+ * 长会话只读尾部 `maxMessages` 条消息时，派生出的记录 seq 是该窗口内的编号（比全量会话小）；
+ * 客户端按 `asOfSeq` 比较投影新旧（小 = 旧 = 不覆盖已有值），因此偏小的水位只会让这条更「保守」。
+ */
+function projectionEntry(deps: DshProjectionDeps, meta: SessionMeta, tail: { messages: readonly ChatMessage[]; truncated: boolean }): Record<string, unknown> {
+  return { asOfSeq: sessionRecordsCount(tail.messages), values: projectionValues(deps, meta, tail) };
 }
 
 /** 读尾部消息并标注是否被截断（列表页每会话 50 条，附件回读除外）。 */
@@ -134,6 +150,9 @@ export async function projectSessionCreate(deps: DshProjectionDeps, args: Record
       effort: selection.reasoningEffort as NonNullable<SessionMeta["effort"]>,
     });
   }
+  // 绕过 REST 路由直接建会话：补发 REST 路径同款 `session.created`，
+  // 否则 `$events` 的订阅端（dsh 侧边栏 / 主工作台）收不到 api-session/added，会话列表不刷新
+  deps.publishSessionCreated?.(created);
   return { value: { sessionId: created.id } };
 }
 
@@ -179,6 +198,17 @@ export async function projectSessionPrompt(deps: DshProjectionDeps, args: Record
   }
   const mode = request.mode === "steer" ? "steer" : "queue";
   if (deps.agent.isRunning(sessionId)) {
+    // 运行中入队/插话的入参只有文本（agent 侧 enqueue* 只收 string）：图片无法如实送达，
+    // 因此明确失败而不是静默丢图（见 help/dsh-compat.md「已知限制」）
+    if (mapped.images.length > 0) {
+      return {
+        error: wireError(
+          "session/unsupported",
+          `运行中消息不支持图片附件（${mode === "steer" ? "插话" : "排队"}）：请等本轮结束后发送，或改用文本`,
+          { images: mapped.images.length, mode },
+        ),
+      };
+    }
     if (mode === "steer") await deps.agent.enqueueSteering(sessionId, mapped.text);
     else await deps.agent.enqueueFollowUp(sessionId, mapped.text);
   } else {
@@ -212,6 +242,12 @@ export async function projectSessionUpdateQueue(deps: DshProjectionDeps, args: R
   if (action.kind === "edit") {
     const mapped = mapPromptContent(action.content);
     if ("error" in mapped) return { error: mapped.error };
+    // 队列项内容只有文本（updateQueue 入参只有 content: string）：图片无法如实送达，明确失败而不是静默丢图
+    if (mapped.images.length > 0) {
+      return {
+        error: wireError("session/unsupported", `队列项编辑不支持图片附件（${mapped.images.length} 张）：请先移除图片或等本轮结束后重发`, { images: mapped.images.length }),
+      };
+    }
     const updated = await deps.agent.updateQueue(sessionId, itemId, { content: mapped.text });
     return updated === undefined
       ? { error: wireError("session/queue-item-not-found", "队列项不存在", { sessionId, itemId }) }
@@ -228,21 +264,23 @@ export async function projectSessionUpdateQueue(deps: DshProjectionDeps, args: R
   return { error: wireError("session/arguments-invalid", `未知 action：${String(action.kind)}`) };
 }
 
-/** `session/control` 首帧：队列/后台任务/投影基线（v1：jobs 不投影，如实留空，见 docs）。 */
-export async function projectSessionControlBaseline(deps: DshProjectionDeps, sessionId: string): Promise<DshProjected<Record<string, unknown>>> {
-  const tail = await tailOf(deps, sessionId, 50);
-  if (tail === undefined) return { error: wireError("session/not-found", "会话不存在", { sessionId }) };
-  const meta = await deps.sessions.getMeta(sessionId);
-  if (meta === undefined) return { error: wireError("session/not-found", "会话不存在", { sessionId }) };
-  return {
-    value: {
-      type: "baseline",
-      value: {
-        jobs: {},
-        projections: { [sessionId]: { asOfSeq: tail.messages.length, values: projectionValues(deps, meta, tail) } },
-      },
-    },
-  };
+/**
+ * `session/control` 首帧：Host 级基线（jobs + 按会话的投影基线）。
+ *
+ * 该描述符**没有业务参数**（vendor `session/control` 的 `parameters: []`，客户端调用
+ * `remote.session.control(signal)`，open 帧 payload 恒为 `{args:{}}`），因此基线是 Host 级：
+ * `jobs` 按会话建表（v1 不投影后台任务，如实留空），`projections` 覆盖全部会话。
+ * 增量（`jobs` / `projection` 帧）v1 不发：dsh UI 的会话投影以 follow 快照为准，见 docs。
+ */
+export async function projectSessionControlBaseline(deps: DshProjectionDeps): Promise<DshProjected<Record<string, unknown>>> {
+  const metas = await deps.sessions.list();
+  const projections: Record<string, unknown> = {};
+  for (const meta of metas) {
+    const tail = await tailOf(deps, meta.id, 50);
+    if (tail === undefined) continue;
+    projections[meta.id] = projectionEntry(deps, meta, tail);
+  }
+  return { value: { type: "baseline", value: { jobs: {}, projections } } };
 }
 
 /** `workspace/follow` 基线：owc 无 workspace 注册表，按会话 cwd 派生工作区分组。 */
@@ -352,8 +390,11 @@ export async function projectSessionAttachment(deps: DshProjectionDeps, args: Re
 }
 
 /**
- * `session/follow` 快照帧：header + cursor + records(事件序列) + hasMore + projections。
- * `assistantStream` 省略（v1 不做 token 级增量，见 session-events.ts 头部说明）。
+ * `session/follow` 快照帧：header + cursor + records(事件序列) + hasMore + projections + assistantStream。
+ *
+ * `assistantStream` 基线**必须**下发（客户端在首帧缺该字段时直接抛 `gateway/internal`：
+ * 「session assistant stream omitted its opted-in opening baseline」）。v1 不发 token 级增量，
+ * 因此 revision 恒为 0、不带 activeAttempt（不宣称有正在进行的 attempt，避免客户端等永不到来的 chunk）。
  */
 export async function projectSessionFollowSnapshot(deps: DshProjectionDeps, args: Record<string, unknown>): Promise<DshProjected<Record<string, unknown>>> {
   const request = isRecord(args.request) ? args.request : {};
@@ -385,6 +426,7 @@ export async function projectSessionFollowSnapshot(deps: DshProjectionDeps, args
       records: window.records,
       hasMore: window.hasMore,
       projections: { asOfSeq: window.totalRecords, values: projectionValues(deps, meta, tail) },
+      assistantStream: { revision: 0 },
     },
   };
 }

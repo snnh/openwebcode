@@ -1,10 +1,16 @@
 /**
  * dsh 兼容模式的运行期装配（M4 步骤 16）：按设置启停独立端口服务。
  *
- * 开关语义（与计划一致）：
- *   - `dshCompatEnabled=false`（默认）：进程内零常驻——端口不监听、不加载 vendor、不建事件桥；
+ * 开关语义（与计划一致；这是「关闭态」的权威表述）：
+ *   - `dshCompatEnabled=false`（默认）：进程内零常驻——**独立端口不监听**（连接被拒）、不加载
+ *     vendor、不建事件桥；owc 主服务端口上**没有任何 dsh 端点**（翻译层只挂在独立端口，主服务侧
+ *     不感知 dsh，见 `test/dsh-index-wiring.test.ts`），因此不存在「主端口 dsh API 503」这条路；
+ *   - 关闭瞬间仍在监听的一小段窗口（设置已落盘、`sync()` 还没关完端口）里，独立端口上的请求由
+ *     server.ts 的 `enabled()` 判定回 503 + 原因，而不是假装 404；
  *   - 打开时：按 `dshPort`（默认 3211）监听；`dshUiPath` 非空时用自选目录代替内置 vendor；
  *   - vendor 缺失：不监听，如实记一条原因（不半启动），设置页据此提示先跑 fetch 脚本；
+ *   - 端口监听失败（EADDRINUSE 等）：记原因、关掉半建的实例、把错误抛给调用方——启动路径 catch
+ *     后继续起主服务，热切换路径 `.catch` 记日志；
  *   - 热切换：设置更新事件触发 `sync()`，幂等（状态未变不动）。
  */
 import path from "node:path";
@@ -159,6 +165,11 @@ export class DshCompatRuntime {
         defaultCwd: this.options.home,
         ...(models === undefined ? {} : { defaultSelection: () => models.sessionDefault() }),
         ...(this.options.imageLimits === undefined ? {} : { imageLimits: this.options.imageLimits }),
+        // 与 REST 创建路径同一条可见性链路（`routes/sessions-core.ts` 的 session.created）：
+        // 不发该事件时 dsh 侧边栏与主工作台都要等刷新才看到新会话
+        publishSessionCreated: (session) => {
+          this.options.events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
+        },
       },
       events: this.options.events,
       home: this.options.home,
@@ -208,7 +219,14 @@ export class DshCompatRuntime {
       this.applied = this.desiredKey();
       return;
     }
-    const address = await server.listen(this.options.host(), this.options.port());
+    const address = await server.listen(this.options.host(), this.options.port()).catch(async (error: unknown) => {
+      // 监听失败（端口占用等）：关掉已建好的实例避免句柄泄漏，如实记原因后抛给调用方
+      //（启动路径 catch 后继续起主服务；设置热切换路径 .catch 记日志）。
+      // applied 不落：端口腾出后的下一次 sync() 仍会重试。
+      await server.close().catch(() => undefined);
+      this.warn(`[dsh] 独立端口 ${this.options.host()}:${this.options.port()} 监听失败：${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    });
     this.server = server;
     this.currentAddress = address;
     this.applied = this.desiredKey();
