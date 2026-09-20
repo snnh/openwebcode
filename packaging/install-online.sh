@@ -6,13 +6,19 @@
 #   curl -fsSL ... | bash -s -- --version 0.6.0 --prefix /opt/openwebcode --yes
 #
 # 参数:
-#   --version <x.y.z>    目标版本；缺省查询 GitHub Releases latest 的 tag_name
-#                        （用 sed/grep 解析，不依赖 jq）
+#   --version <x.y.z>    指定版本号安装（可带预发布后缀，如 1.12.0-beta2）；
+#                        与 --channel/--latest/--prerelease 互斥
+#   --channel <latest|prerelease>
+#                        版本通道：latest = GitHub Releases 最新正式版（默认）；
+#                        prerelease = 最新预发布版（beta/rc 等）。均通过 GitHub
+#                        API 查询（用 sed/awk 解析，不依赖 jq）
+#   --latest             --channel latest 的快捷方式
+#   --prerelease         --channel prerelease 的快捷方式
 #   --prefix <dir>       安装前缀（绝对路径），默认用户级 ~/.local、root /usr/local；
 #                        用于判定全新安装还是更新，并透传给包内 install.sh
 #   --yes / -y           非交互；透传给 install.sh
 #   --port/--host/--lan/--data-dir/--system/--with-systemd/--enable-service/
-#   --open-firewall/--use-system-node
+#   --open-firewall/--use-system-node/--dsh-compat
 #                        原样透传给包内 install.sh（仅全新安装时生效）
 #   -h, --help           显示本帮助
 #
@@ -61,13 +67,17 @@ validate_version() {
 
 usage() {
     cat >&2 <<'EOF'
-用法: install-online.sh [--version <x.y.z>] [--prefix <dir>] [install.sh 选项...]
+用法: install-online.sh [--version <x.y.z> | --channel <latest|prerelease>] [--prefix <dir>] [install.sh 选项...]
 
-  --version <x.y.z>    目标版本，缺省查询 GitHub Releases latest
+  --version <x.y.z>    指定版本号安装；与 --channel/--latest/--prerelease 互斥
+  --channel <latest|prerelease>
+                       版本通道：latest = 最新正式版（默认）；prerelease = 最新预发布版
+  --latest             --channel latest 的快捷方式
+  --prerelease         --channel prerelease 的快捷方式
   --prefix <dir>       安装前缀（绝对路径），默认用户级 ~/.local、root /usr/local
   --yes, -y            非交互（透传给 install.sh）
   --port/--host/--lan/--data-dir/--system/--with-systemd/--enable-service/
-  --open-firewall/--use-system-node
+  --open-firewall/--use-system-node/--dsh-compat
                        原样透传给包内 install.sh（仅全新安装生效）
   -h, --help           显示本帮助
 
@@ -82,6 +92,8 @@ EOF
 [ -n "${HOME:-}" ] || die "HOME 未设置，无法选择默认安装前缀" 1
 
 VERSION=''
+CHANNEL=''
+CHANNEL_SET=0
 if [ "$(id -u)" -eq 0 ]; then
     # root 默认系统级前缀，与 install.sh 的 default_prefix 一致（更新模式探测依赖它）
     PREFIX=/usr/local
@@ -89,28 +101,34 @@ else
     PREFIX="$HOME/.local"
 fi
 
-# 先完整扫描一遍参数，取出本脚本自己的 --version/--prefix（支持 --opt=value
-# 与 --opt value 两种形式）；其余参数保持原顺序原样透传给 install.sh。
+# 先完整扫描一遍参数，取出本脚本自己的 --version/--channel/--latest/
+# --prerelease/--prefix（支持 --opt=value 与 --opt value 两种形式）；其余参数
+# 保持原顺序原样透传给 install.sh。
 prev=''
 for arg in "$@"; do
     case "$prev" in
         --version) VERSION=$arg ;;
         --prefix) PREFIX=$arg ;;
+        --channel) CHANNEL=$arg; CHANNEL_SET=1 ;;
     esac
     case "$arg" in
         --version=*) VERSION=${arg#--version=} ;;
         --prefix=*) PREFIX=${arg#--prefix=} ;;
+        --channel=*) CHANNEL=${arg#--channel=}; CHANNEL_SET=1 ;;
+        --latest) CHANNEL=latest; CHANNEL_SET=1 ;;
+        --prerelease) CHANNEL=prerelease; CHANNEL_SET=1 ;;
         -h|--help) usage; exit 0 ;;
     esac
     prev=$arg
 done
 
-# 从位置参数中剔除 --version/--prefix（含其值）；全新安装时由本脚本统一
-# 重新传入 --prefix，其余参数保留原顺序与空白字符透传给 install.sh。
+# 从位置参数中剔除 --version/--channel/--latest/--prerelease/--prefix（含其
+# 值）；全新安装时由本脚本统一重新传入 --prefix，其余参数保留原顺序与空白
+# 字符透传给 install.sh。
 count=$#
 while [ "$count" -gt 0 ]; do
     case "$1" in
-        --version|--prefix)
+        --version|--prefix|--channel)
             opt=$1
             shift
             # 连值一起剔除，计数也要多减一轮。
@@ -121,7 +139,7 @@ while [ "$count" -gt 0 ]; do
                 die "$opt 需要一个值"
             fi
             ;;
-        --version=*|--prefix=*)
+        --version=*|--prefix=*|--channel=*|--latest|--prerelease)
             shift
             ;;
         *)
@@ -131,6 +149,15 @@ while [ "$count" -gt 0 ]; do
     esac
     count=$((count - 1))
 done
+
+if [ -n "$VERSION" ] && [ "$CHANNEL_SET" -eq 1 ]; then
+    die "--version 与 --channel/--latest/--prerelease 互斥（指定版本号即精确安装，通道选择无意义）"
+fi
+case "${CHANNEL:-latest}" in
+    latest|prerelease) ;;
+    *) die "非法 channel: $CHANNEL（应为 latest 或 prerelease）" ;;
+esac
+CHANNEL=${CHANNEL:-latest}
 
 case "$PREFIX" in
     /*) ;;
@@ -169,15 +196,37 @@ fetch() {
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/owc-online-install.XXXXXX")
 trap 'rm -rf "$WORK_DIR"' EXIT HUP INT TERM
 
-# 版本缺省时查询 GitHub Releases latest 的 tag_name（不依赖 jq）。
+# 版本缺省时按通道查询 GitHub Releases（不依赖 jq）：
+# latest → /releases/latest 的 tag_name；prerelease → /releases 列表中第一个
+# 预发布条目（API 按创建时间倒序返回，tag_name 字段在 prerelease 字段之前）。
+# 预发布判定双通道：tag 含「-」预发布后缀即命中（兼容发布时未勾 GitHub
+# prerelease 标记的情况，实测 v1.12.0-beta2 即为 false），或 prerelease=true。
 if [ -z "$VERSION" ]; then
-    echo "查询最新版本..."
-    fetch "https://api.github.com/repos/snnh/openwebcode/releases/latest" \
-        "$WORK_DIR/latest.json" || die "无法查询最新版本，请用 --version 显式指定" 1
-    TAG=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-        "$WORK_DIR/latest.json" | head -n 1)
-    [ -n "$TAG" ] || die "无法从 GitHub Releases 响应解析 tag_name" 1
-    VERSION=${TAG#v}
+    if [ "$CHANNEL" = prerelease ]; then
+        echo "查询最新预发布版本..."
+        fetch "https://api.github.com/repos/snnh/openwebcode/releases?per_page=30" \
+            "$WORK_DIR/releases.json" || die "无法查询版本列表，请用 --version 显式指定" 1
+        TAG=$(awk '
+            /"tag_name"[[:space:]]*:/ {
+                line = $0
+                sub(/.*"tag_name"[[:space:]]*:[[:space:]]*"/, "", line)
+                sub(/".*/, "", line)
+                tag = line
+                if (index(tag, "-") > 0) { print tag; exit }
+            }
+            /"prerelease"[[:space:]]*:[[:space:]]*true/ && tag != "" { print tag; exit }
+        ' "$WORK_DIR/releases.json")
+        [ -n "$TAG" ] || die "未找到预发布版本，请用 --version 显式指定" 1
+        VERSION=${TAG#v}
+    else
+        echo "查询最新版本..."
+        fetch "https://api.github.com/repos/snnh/openwebcode/releases/latest" \
+            "$WORK_DIR/latest.json" || die "无法查询最新版本，请用 --version 显式指定" 1
+        TAG=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+            "$WORK_DIR/latest.json" | head -n 1)
+        [ -n "$TAG" ] || die "无法从 GitHub Releases 响应解析 tag_name" 1
+        VERSION=${TAG#v}
+    fi
 fi
 validate_version "$VERSION" || die "非法版本号: $VERSION"
 

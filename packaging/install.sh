@@ -4,7 +4,7 @@
 # 用法（在解压后的包根目录执行）:
 #   ./install.sh [--prefix <dir>] [--port <n>] [--data-dir <dir>] \
 #     [--host <addr> | --lan] [--system] [--use-system-node] \
-#     [--with-systemd] [--enable-service] [--open-firewall] [--yes]
+#     [--with-systemd] [--enable-service] [--open-firewall] [--dsh-compat] [--yes]
 #
 # 未传 --yes 且 stdin/stdout 都是 TTY 时，会仅询问没有由命令行指定的选项。
 # 这让直接运行时可配置，也不会让 CI、重定向或管道安装阻塞。
@@ -22,6 +22,10 @@
 #                        可用 OWC_SYSTEMD_UNIT_DIR 覆盖目标目录；不主动执行 systemctl）
 #   --enable-service     隐含 --with-systemd，并执行 systemctl daemon-reload + enable --now
 #   --open-firewall      非回环监听时放行防火墙端口（firewalld/ufw，仅 root）
+#   --dsh-compat         安装后以 dsh 兼容模式运行：把 dshCompatEnabled=true 写入
+#                        <数据目录>/server-settings.json 用户覆盖（与设置页同一存储，
+#                        之后可在 UI 自由开关；不写启动器环境变量——env 优先级高于
+#                        用户覆盖，会锁住 UI 开关）
 #   --yes                静默安装；即使在 TTY 也不提问
 #
 # --with-desktop-entry 尚未实现；脚本会明确失败，绝不静默伪装为桌面集成。
@@ -39,7 +43,10 @@
 #      ProtectSystem=full + ReadWritePaths=<数据目录>）；--enable-service 时
 #      立即启用并启动；交互模式仅当 systemd 真实可用才询问写服务；
 #   5. 非回环监听且访问令牌已生成（如服务已启动）时，打印一键访问链接；
-#      结尾检测 <prefix>/bin 是否在 PATH，不在则按用户 shell 给出 export 指引。
+#      结尾检测 <prefix>/bin 是否在 PATH，不在则按用户 shell 给出 export 指引；
+#   6. --dsh-compat（或交互选择）时把 dshCompatEnabled=true 写入
+#      <数据目录>/server-settings.json 用户覆盖（文件已存在则用 node 做 JSON
+#      合并，不覆盖既有覆盖项；失败只提示，不影响安装结果）。
 #
 # 卸载：运行 <prefix>/bin/owc-uninstall（安装时由本脚本落盘），或发行包根目录的
 # ./uninstall.sh；可加 --purge-data 一并删除数据目录，--remove-firewall 移除
@@ -72,6 +79,8 @@ usage() {
   --with-systemd       写入 systemd 服务文件（root 写系统级，否则用户级），不自动启用
   --enable-service     写入并立即启用、启动 systemd 服务（systemctl enable --now）
   --open-firewall      非回环监听时放行防火墙端口（firewalld/ufw，仅 root）
+  --dsh-compat         安装后以 dsh 兼容模式运行（写入 server-settings.json 用户
+                       覆盖，之后可在 设置 → 通用设置 中自由开关）
   --yes, -y            不交互；适合 CI、脚本和重定向输入
   -h, --help           显示本帮助
 
@@ -239,6 +248,7 @@ OPEN_FIREWALL=0
 USE_SYSTEM_NODE=0
 ASSUME_YES=0
 SYSTEM_INSTALL=0
+DSH_COMPAT=0
 PREFIX_SET=0
 PORT_SET=0
 DATA_DIR_SET=0
@@ -247,6 +257,7 @@ LAN_SET=0
 WITH_SYSTEMD_SET=0
 USE_SYSTEM_NODE_SET=0
 OPEN_FIREWALL_SET=0
+DSH_COMPAT_SET=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -327,6 +338,11 @@ while [ $# -gt 0 ]; do
         --open-firewall)
             OPEN_FIREWALL=1
             OPEN_FIREWALL_SET=1
+            shift
+            ;;
+        --dsh-compat)
+            DSH_COMPAT=1
+            DSH_COMPAT_SET=1
             shift
             ;;
         --yes|-y)
@@ -575,6 +591,10 @@ if [ "$INTERACTIVE" -eq 1 ] && [ "$UPDATE_MODE" -eq 0 ]; then
             [ "$REPLY" = yes ] && OPEN_FIREWALL=1
         fi
     fi
+    if [ "$DSH_COMPAT_SET" -eq 0 ]; then
+        ask_yes_no "安装后以 dsh 兼容模式运行（独立端口托管 dsh 官方 UI 并加载 dsh 插件，之后可在设置中开关）" no
+        [ "$REPLY" = yes ] && DSH_COMPAT=1 || DSH_COMPAT=0
+    fi
 fi
 
 normalise_port "$PORT" || die "非法 port: $PORT（应为 1-65535 的十进制整数）"
@@ -796,6 +816,47 @@ case "$HOST" in
     *) DISPLAY_HOST=$HOST ;;
 esac
 
+# ---- dsh 兼容模式（--dsh-compat 或交互选择）----
+# 写 <数据目录>/server-settings.json 的用户覆盖，与 Web 设置页同一存储——用户之后
+# 可在 UI 自由开关；不写启动器环境变量（settings-service 的优先级是
+# env > 用户覆盖 > 安装默认，env 会锁住 UI 开关）。失败只提示，不影响安装结果。
+if [ "$DSH_COMPAT" -eq 1 ]; then
+    SETTINGS_FILE="$DATA_DIR/server-settings.json"
+    DSH_HINT="也可手动开启：设置 → 通用设置 → 启用 dsh 兼容模式（dsh UI 端口默认 3211）。"
+    if [ ! -f "$SETTINGS_FILE" ]; then
+        if mkdir -p "$DATA_DIR" 2>/dev/null && \
+           printf '%s\n' '{"overrides":{"dshCompatEnabled":true}}' > "$SETTINGS_FILE" 2>/dev/null; then
+            chmod 700 "$DATA_DIR" 2>/dev/null || true
+            chmod 600 "$SETTINGS_FILE" 2>/dev/null || true
+            echo "已启用 dsh 兼容模式（写入 $SETTINGS_FILE）。"
+        else
+            echo "警告：无法写入 $SETTINGS_FILE。$DSH_HINT" >&2
+        fi
+    else
+        # 已有设置文件（更新/重装场景）：用刚装好的 node 做 JSON 合并，保留既有覆盖项
+        MERGE_NODE=''
+        if [ -x "$LIB_DIR/node/bin/node" ]; then
+            MERGE_NODE="$LIB_DIR/node/bin/node"
+        elif [ -n "$SYSTEM_NODE" ]; then
+            MERGE_NODE=$SYSTEM_NODE
+        fi
+        if [ -n "$MERGE_NODE" ] && "$MERGE_NODE" -e '
+            const fs = require("fs");
+            const p = process.argv[1];
+            let doc = {};
+            try { doc = JSON.parse(fs.readFileSync(p, "utf8")); } catch {}
+            if (typeof doc !== "object" || doc === null || Array.isArray(doc)) doc = {};
+            if (typeof doc.overrides !== "object" || doc.overrides === null || Array.isArray(doc.overrides)) doc.overrides = {};
+            doc.overrides.dshCompatEnabled = true;
+            fs.writeFileSync(p, JSON.stringify(doc, null, 2) + "\n", { mode: 0o600 });
+        ' "$SETTINGS_FILE" 2>/dev/null; then
+            echo "已启用 dsh 兼容模式（更新 $SETTINGS_FILE，其余覆盖项保留）。"
+        else
+            echo "提示：$SETTINGS_FILE 已存在，未自动修改。$DSH_HINT" >&2
+        fi
+    fi
+fi
+
 # 非回环监听：服务端首次启动会生成 <数据目录>/access-token。服务已随
 # --enable-service 启动时稍等其出现；拿到则直接打印一键访问链接。
 ACCESS_TOKEN=''
@@ -821,6 +882,9 @@ fi
 
 echo "安装完成: $LIB_DIR"
 echo "启动:     $PREFIX/bin/owc  （浏览器打开 http://$DISPLAY_HOST:$PORT）"
+if [ "$DSH_COMPAT" -eq 1 ]; then
+    echo "dsh 入口: http://$DISPLAY_HOST:3211  （dsh 兼容模式独立端口，可用 OWC_DSH_PORT 或设置页修改）"
+fi
 if ! is_loopback_host "$HOST"; then
     if [ -n "$ACCESS_TOKEN" ]; then
         case "$HOST" in
