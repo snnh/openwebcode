@@ -103,6 +103,11 @@ export interface ServerDependencies {
   indexManager?: IndexManager;
   /** 诊断服务（0.4.0 Phase 3a）；未注入时 tests/diagnostics 路由 501 */
   diagnostics?: DiagnosticsService;
+  /**
+   * dsh 兼容模式运行态（`GET /api/dsh/status`）：让 Web 入口如实判断「开关已开但端口未就绪」
+   * 并给出可行动提示（缺 vendor / 非回环无令牌 / 端口占用），未注入时该路由回 unknown。
+   */
+  dshStatus?: () => { enabled: boolean; listening: boolean; address?: string; reason?: string };
   /** SCM 服务（0.4.0 Phase 4a）；未注入时 git/* 路由 501 */
   scm?: ScmService;
   /** 评测 harness（0.5.0 Phase 3a）；扩展禁用时 eval/* 路由 503 */
