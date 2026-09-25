@@ -14,14 +14,73 @@ import { ContextManager } from "../context/context-manager.js";
 import { resolveSessionPersona } from "../sessions/extension-state.js";
 import { isSessionUpgrading } from "../extensions/session-format-upgrade.js";
 import { errorMessage } from "../error-utils.js";
-import type { EffortLevel } from "../context/model-profile.js";
+import type { EffortLevel, ModelProfile } from "../context/model-profile.js";
 import type { SnapshotMode, SessionMeta, TextContent } from "../sessions/types.js";
+import type { SessionStore } from "../sessions/session-store.js";
+import type { EventBus } from "../events/event-bus.js";
+import type { CoreClientLike } from "../core-client.js";
+import type { SettingsService } from "../settings-service.js";
 import {
   EFFORT_LEVELS, NO_PROVIDER_MESSAGE,
   resolveDefaultProvider, resolveDefaultModel, resolveDefaultSelection, managedSyncFailure,
   type CreateSessionBody, type ManagedWorkspaceSyncBody,
 } from "./route-context.js";
 import type { RouteContext } from "./route-context.js";
+
+/** {@link applySessionDefaultsFor} 的依赖面（REST 路由与 dsh 翻译层共用同一实现）。 */
+export interface SessionDefaultsDeps {
+  settings: SettingsService | undefined;
+  sessions: SessionStore;
+  profileOf(model: string, provider?: string): ModelProfile;
+  platform: NodeJS.Platform;
+  core: CoreClientLike;
+  events: EventBus;
+}
+
+/**
+ * 新建会话套用全局默认（settings defaultEffort / defaultSnapshotMode / snapshotBackend）。
+ * 力度做能力白名单校验：模型声明不支持的静默跳过（设置是全局偏好，不应阻断创建）；
+ * 非法枚举值（如 env 直写）同样静默跳过。
+ *
+ * REST `/api/sessions` 与 dsh `session/create` 共用本函数，保证两条创建路径语义一致。
+ */
+export async function applySessionDefaultsFor(
+  deps: SessionDefaultsDeps,
+  session: SessionMeta,
+  provider: string,
+  model: string,
+): Promise<SessionMeta> {
+  const { settings, sessions, profileOf, platform, core, events } = deps;
+  const config = settings?.effective();
+  if (!config) return session;
+  const patch: { effort?: EffortLevel; snapshotMode?: SnapshotMode } = {};
+  if (config.defaultEffort && EFFORT_LEVELS.includes(config.defaultEffort)) {
+    const declared = profileOf(model, provider).capabilities.effort;
+    if (declared.length === 0 || declared.includes(config.defaultEffort)) patch.effort = config.defaultEffort;
+  }
+  if (config.defaultSnapshotMode === "manual") patch.snapshotMode = "manual";
+  let updated = patch.effort === undefined && patch.snapshotMode === undefined
+    ? session
+    // updateConfig 的 undefined=清除语义：create 刚落的 toolsAllow/toolsDeny/fallbackModels 需原样透传
+    : await sessions.updateConfig(session.id, { provider, model, ...patch, ...(session.toolsAllow ? { toolsAllow: session.toolsAllow } : {}), ...(session.toolsDeny ? { toolsDeny: session.toolsDeny } : {}), ...(session.fallbackModels ? { fallbackModels: session.fallbackModels } : {}) });
+  // 快照后端偏好：非 auto 且非托管会话（托管后端由建盘流程预设）时单项探测，
+  // 可用则预设跳过探测链；不可用回落自动探测并如实告警，不阻断创建。
+  // 本机会话（kind=local）不做快照，跳过预设。
+  if (config.snapshotBackend && !updated.workspace && session.kind !== "local") {
+    const probed = await probeSnapshotBackendByName(config.snapshotBackend, sessions.contextRoot(session.id), session.cwd, { runner: createExecFileRunner(), platform, core }).catch(() => undefined);
+    if (probed) {
+      updated = await sessions.updateSnapshotBackend(session.id, config.snapshotBackend);
+    } else {
+      events.publish({
+        source: "server",
+        type: "snapshot.backend_fallback",
+        sessionId: session.id,
+        payload: { preferred: config.snapshotBackend, message: `Snapshot backend "${config.snapshotBackend}" is not available for this workspace; falling back to auto probing` },
+      });
+    }
+  }
+  return updated;
+}
 
 export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContext): void {
   const { dependencies } = ctx;
@@ -36,42 +95,9 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
   } = ctx;
 
 
-  /**
-   * 新建会话套用全局默认（settings defaultEffort / defaultSnapshotMode）。
-   * 力度做能力白名单校验：模型声明不支持的静默跳过（设置是全局偏好，不应阻断创建）；
-   * 非法枚举值（如 env 直写）同样静默跳过。
-   */
-  const applySessionDefaults = async (session: SessionMeta, provider: string, model: string): Promise<SessionMeta> => {
-    const config = dependencies.settings?.effective();
-    if (!config) return session;
-    const patch: { effort?: EffortLevel; snapshotMode?: SnapshotMode } = {};
-    if (config.defaultEffort && EFFORT_LEVELS.includes(config.defaultEffort)) {
-      const declared = profileOf(model, provider).capabilities.effort;
-      if (declared.length === 0 || declared.includes(config.defaultEffort)) patch.effort = config.defaultEffort;
-    }
-    if (config.defaultSnapshotMode === "manual") patch.snapshotMode = "manual";
-    let updated = patch.effort === undefined && patch.snapshotMode === undefined
-      ? session
-      // updateConfig 的 undefined=清除语义：create 刚落的 toolsAllow/toolsDeny/fallbackModels 需原样透传
-      : await sessions.updateConfig(session.id, { provider, model, ...patch, ...(session.toolsAllow ? { toolsAllow: session.toolsAllow } : {}), ...(session.toolsDeny ? { toolsDeny: session.toolsDeny } : {}), ...(session.fallbackModels ? { fallbackModels: session.fallbackModels } : {}) });
-    // 快照后端偏好：非 auto 且非托管会话（托管后端由建盘流程预设）时单项探测，
-    // 可用则预设跳过探测链；不可用回落自动探测并如实告警，不阻断创建。
-    // 本机会话（kind=local）不做快照，跳过预设。
-    if (config.snapshotBackend && !updated.workspace && session.kind !== "local") {
-      const probed = await probeSnapshotBackendByName(config.snapshotBackend, sessions.contextRoot(session.id), session.cwd, { runner: createExecFileRunner(), platform, core }).catch(() => undefined);
-      if (probed) {
-        updated = await sessions.updateSnapshotBackend(session.id, config.snapshotBackend);
-      } else {
-        events.publish({
-          source: "server",
-          type: "snapshot.backend_fallback",
-          sessionId: session.id,
-          payload: { preferred: config.snapshotBackend, message: `Snapshot backend "${config.snapshotBackend}" is not available for this workspace; falling back to auto probing` },
-        });
-      }
-    }
-    return updated;
-  };
+  // 新建会话套用全局默认：复用导出的共享实现（dsh `session/create` 同一份，保证两条创建路径语义一致）
+  const applySessionDefaults = (session: SessionMeta, provider: string, model: string): Promise<SessionMeta> =>
+    applySessionDefaultsFor({ settings: dependencies.settings, sessions, profileOf, platform, core, events }, session, provider, model);
 
   /** 托管工作区创建：能力检测 → 预分配 id 建盘挂载复制 → 落 meta（cwd=挂载点、snapshotBackend 预设）；失败清理半成品 */
   const createManagedSession = async (body: CreateSessionBody, provider: string, model: string, reply: FastifyReply) => {
