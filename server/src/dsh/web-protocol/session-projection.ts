@@ -1,12 +1,13 @@
 /**
  * owc 会话/事件 → dsh wire 值投影（M4 步骤 14b）。
  *
- * 形状权威来源：`docs/dsh-wire-contract.md`（从 vendor 的 `typert.remote-client.js` 机械提取）。
+ * 形状权威来源：`docs/dsh-compat.md` 第三部分（wire 契约，从 vendor 的 `typert.remote-client.js` 机械提取）。
  * 原则：只做只读投影，不落盘、不建第二份会话存储；不可如实表达的能力返回 wire 错误而不是编造值。
  */
 import type { AgentRunner } from "../../agent/agent-runner.js";
 import type { ChatMessage, SessionMeta } from "../../sessions/types.js";
 import type { SessionStore } from "../../sessions/session-store.js";
+import { createHash } from "node:crypto";
 import { wireError, type DshWireError } from "./wire.js";
 import { modelSelectionValue, type DshModelSelection } from "./models.js";
 import {
@@ -51,6 +52,13 @@ export interface DshProjectionDeps {
    * 缺省不发事件（单测注入假依赖时不关心可见性）。
    */
   publishSessionCreated?: (session: SessionMeta) => void;
+  /**
+   * REST 创建路径的默认套用（`applySessionDefaults`：defaultSnapshotMode 等），
+   * 由装配层注入 REST 同一份实现；dsh `session/create` 与 REST 同语义。
+   */
+  applySessionDefaults?: (session: SessionMeta, provider: string, model: string) => Promise<SessionMeta>;
+  /** REST 创建路径的 SessionStart 钩子（仅通知不阻断）。 */
+  runSessionStartHook?: (info: { sessionId: string; cwd: string }) => Promise<void>;
 }
 
 /** 投影结果：合法值或缺省 wire 错误。 */
@@ -144,10 +152,24 @@ export async function projectSessionList(deps: DshProjectionDeps): Promise<DshPr
   return { value: { items } };
 }
 
+/** 单条会话摘要（`api-session/added` 载荷）：`session.created/updated` 事件的增量路径用，避免每事件全量重跑 list（O(N²) 读盘）。 */
+export async function projectSessionSummary(deps: DshProjectionDeps, sessionId: string): Promise<Record<string, unknown> | undefined> {
+  const meta = await deps.sessions.getMeta(sessionId);
+  if (meta === undefined) return undefined;
+  const tail = await tailOf(deps, sessionId, 50);
+  if (tail === undefined) return undefined;
+  return sessionSummary(deps, meta, tail, deps.agent.isRunning(sessionId));
+}
+
 /** `session/create`：请求携带 sessionId 且已存在时幂等返回；否则新建。 */
 export async function projectSessionCreate(deps: DshProjectionDeps, args: Record<string, unknown>): Promise<DshProjected<{ sessionId: string }>> {
   const request = isRecord(args.request) ? args.request : {};
   const requested = asString(request.sessionId);
+  if (requested !== undefined && !/^[0-9a-f-]{36}$/.test(requested)) {
+    // owc 会话 id 必须是 UUID 形态（session-store 的目录名白名单）：提前按参数错误回，
+    // 而不是让 session-store 抛内部异常被兜成 gateway/internal
+    return { error: wireError("gateway/bad-request", "request.sessionId 必须是 UUID 形态", { sessionId: requested }) };
+  }
   if (requested !== undefined) {
     const existing = await deps.sessions.getMeta(requested);
     if (existing !== undefined) return { value: { sessionId: existing.id } };
@@ -167,51 +189,85 @@ export async function projectSessionCreate(deps: DshProjectionDeps, args: Record
       effort: selection.reasoningEffort as NonNullable<SessionMeta["effort"]>,
     });
   }
+  let finalized = created;
+  if (selection !== undefined && deps.applySessionDefaults !== undefined) {
+    // 与 REST `/api/sessions` 同一默认套用（defaultSnapshotMode 等）：dsh 建的会话
+    // 此前拿不到全局快照默认，与主工作台两条创建路径语义不一致
+    finalized = await deps.applySessionDefaults(created, selection.provider, selection.model);
+  }
+  // SessionStart 钩子（仅通知不阻断）：与 REST 创建路径同链路触发
+  await deps.runSessionStartHook?.({ sessionId: finalized.id, cwd: finalized.cwd });
   // 绕过 REST 路由直接建会话：补发 REST 路径同款 `session.created`，
   // 否则 `$events` 的订阅端（dsh 侧边栏 / 主工作台）收不到 api-session/added，会话列表不刷新
-  deps.publishSessionCreated?.(created);
-  return { value: { sessionId: created.id } };
+  deps.publishSessionCreated?.(finalized);
+  return { value: { sessionId: finalized.id } };
 }
 
 /** 把 dsh 的 prompt content 块映射成 owc 的文本与图片入参。 */
 export function mapPromptContent(content: unknown): { text: string; images: Array<{ mediaType: string; data: string }> } | { error: DshWireError } {
-  if (!Array.isArray(content)) return { error: wireError("session/arguments-invalid", "request.content 必须是数组") };
+  if (!Array.isArray(content)) return { error: wireError("gateway/bad-request", "request.content 必须是数组") };
   const texts: string[] = [];
   const images: Array<{ mediaType: string; data: string }> = [];
   for (const part of content) {
-    if (!isRecord(part)) return { error: wireError("session/arguments-invalid", "content 块必须是对象") };
+    if (!isRecord(part)) return { error: wireError("gateway/bad-request", "content 块必须是对象") };
     if (part.type === "text") {
-      if (typeof part.text !== "string") return { error: wireError("session/arguments-invalid", "text 块缺少 text") };
+      if (typeof part.text !== "string") return { error: wireError("gateway/bad-request", "text 块缺少 text") };
       texts.push(part.text);
       continue;
     }
     if (part.type === "image") {
       if (typeof part.data !== "string" || typeof part.mediaType !== "string") {
-        return { error: wireError("session/arguments-invalid", "image 块缺少 data/mediaType") };
+        return { error: wireError("gateway/bad-request", "image 块缺少 data/mediaType") };
       }
       images.push({ mediaType: part.mediaType, data: part.data });
       continue;
     }
     if (part.type === "file") {
       // 文件附件走 dsh 自己的 fileUploads 面（owc v1 不实现 receipt 体系）：如实报未实现
-      return { error: wireError("session/unsupported", "v1 不支持 file 附件（请改用图片或把路径写进消息文本）", { part: "file" }) };
+      return { error: wireError("session/attachment-invalid", "v1 不支持 file 附件（请改用图片或把路径写进消息文本）", { reason: "FILE_ATTACHMENTS_UNSUPPORTED" }) };
     }
-    return { error: wireError("session/arguments-invalid", `未知 content 块：${String(part.type)}`) };
+    return { error: wireError("gateway/bad-request", `未知 content 块：${String(part.type)}`) };
   }
   return { text: texts.join("\n\n"), images };
 }
+
+/**
+ * `session/prompt` 的线级幂等表：`(sessionId, requestId)` → true。
+ *
+ * wire 契约里 `requestId` 是必填幂等键（unary 超时/断线重发时上游按已存在的
+ * `source.rpcId === requestId` 用户消息判重并直接回 accepted，见 vendor
+ * `dsh-api-session-controller` 的 hasPromptRequest）。owc 的用户消息不落 rpcId，
+ * 用进程内表守住同一语义（同一进程内的重试/重放不会重复起轮）。表有容量上限，
+ * 满了按插入序淘汰最旧（幂等窗收敛为「最近 N 次提交」）。
+ */
+const PROMPT_IDEMPOTENCY_LIMIT = 1024;
+const acceptedPrompts = new Map<string, true>();
+const acceptedPromptKey = (sessionId: string, requestId: string): string => `${sessionId} ${requestId}`;
+const hasAcceptedPrompt = (sessionId: string, requestId: string): boolean => acceptedPrompts.has(acceptedPromptKey(sessionId, requestId));
+const markAcceptedPrompt = (sessionId: string, requestId: string): void => {
+  if (acceptedPrompts.size >= PROMPT_IDEMPOTENCY_LIMIT) {
+    const oldest = acceptedPrompts.keys().next().value;
+    if (oldest !== undefined) acceptedPrompts.delete(oldest);
+  }
+  acceptedPrompts.set(acceptedPromptKey(sessionId, requestId), true);
+};
 
 /** `session/prompt`：空闲起一轮，运行中按 mode 入队（queue）或插话（steer）。 */
 export async function projectSessionPrompt(deps: DshProjectionDeps, args: Record<string, unknown>): Promise<DshProjected<{ accepted: true }>> {
   const request = isRecord(args.request) ? args.request : {};
   const sessionId = asString(request.sessionId);
-  if (sessionId === undefined) return { error: wireError("session/arguments-invalid", "request.sessionId 缺失") };
+  if (sessionId === undefined) return { error: wireError("gateway/bad-request", "request.sessionId 缺失") };
+  const requestId = asString(request.requestId);
+  // 幂等：同一 requestId 已受理过即直接回 accepted（与上游 hasPromptRequest 同语义）
+  if (requestId !== undefined && hasAcceptedPrompt(sessionId, requestId)) {
+    return { value: { accepted: true } };
+  }
   const meta = await deps.sessions.getMeta(sessionId);
   if (meta === undefined) return { error: wireError("session/not-found", "会话不存在", { sessionId }) };
   const mapped = mapPromptContent(request.content);
   if ("error" in mapped) return { error: mapped.error };
   if (mapped.text.trim() === "" && mapped.images.length === 0) {
-    return { error: wireError("session/arguments-invalid", "消息内容为空") };
+    return { error: wireError("gateway/bad-request", "消息内容为空") };
   }
   const mode = request.mode === "steer" ? "steer" : "queue";
   if (deps.agent.isRunning(sessionId)) {
@@ -220,9 +276,9 @@ export async function projectSessionPrompt(deps: DshProjectionDeps, args: Record
     if (mapped.images.length > 0) {
       return {
         error: wireError(
-          "session/unsupported",
+          "session/attachment-invalid",
           `运行中消息不支持图片附件（${mode === "steer" ? "插话" : "排队"}）：请等本轮结束后发送，或改用文本`,
-          { images: mapped.images.length, mode },
+          { reason: "RUNNING_MESSAGE_IMAGES_UNSUPPORTED", mode },
         ),
       };
     }
@@ -239,6 +295,7 @@ export async function projectSessionPrompt(deps: DshProjectionDeps, args: Record
         deps.logger?.warn(`dsh session/prompt 后台 run 失败：${error instanceof Error ? error.message : String(error)}`);
       });
   }
+  if (requestId !== undefined) markAcceptedPrompt(sessionId, requestId);
   return { value: { accepted: true } };
 }
 
@@ -246,7 +303,7 @@ export async function projectSessionPrompt(deps: DshProjectionDeps, args: Record
 export async function projectSessionCancel(deps: DshProjectionDeps, args: Record<string, unknown>): Promise<DshProjected<{ accepted: true }>> {
   const request = isRecord(args.request) ? args.request : {};
   const sessionId = asString(request.sessionId);
-  if (sessionId === undefined) return { error: wireError("session/arguments-invalid", "request.sessionId 缺失") };
+  if (sessionId === undefined) return { error: wireError("gateway/bad-request", "request.sessionId 缺失") };
   const meta = await deps.sessions.getMeta(sessionId);
   if (meta === undefined) return { error: wireError("session/not-found", "会话不存在", { sessionId }) };
   deps.agent.abort(sessionId);
@@ -258,7 +315,7 @@ export async function projectSessionUpdateQueue(deps: DshProjectionDeps, args: R
   const request = isRecord(args.request) ? args.request : {};
   const sessionId = asString(request.sessionId);
   const itemId = asString(request.itemId);
-  if (sessionId === undefined || itemId === undefined) return { error: wireError("session/arguments-invalid", "request.sessionId/itemId 缺失") };
+  if (sessionId === undefined || itemId === undefined) return { error: wireError("gateway/bad-request", "request.sessionId/itemId 缺失") };
   const action = isRecord(request.action) ? request.action : {};
   if (action.kind === "remove") {
     const removed = await deps.agent.removeQueue(sessionId, itemId);
@@ -270,7 +327,7 @@ export async function projectSessionUpdateQueue(deps: DshProjectionDeps, args: R
     // 队列项内容只有文本（updateQueue 入参只有 content: string）：图片无法如实送达，明确失败而不是静默丢图
     if (mapped.images.length > 0) {
       return {
-        error: wireError("session/unsupported", `队列项编辑不支持图片附件（${mapped.images.length} 张）：请先移除图片或等本轮结束后重发`, { images: mapped.images.length }),
+        error: wireError("session/attachment-invalid", `队列项编辑不支持图片附件（${mapped.images.length} 张）：请先移除图片或等本轮结束后重发`, { reason: "QUEUE_EDIT_NON_TEXT" }),
       };
     }
     const updated = await deps.agent.updateQueue(sessionId, itemId, { content: mapped.text });
@@ -286,7 +343,7 @@ export async function projectSessionUpdateQueue(deps: DshProjectionDeps, args: R
     await deps.agent.enqueueSteering(sessionId, item.content);
     return { value: { accepted: true } };
   }
-  return { error: wireError("session/arguments-invalid", `未知 action：${String(action.kind)}`) };
+  return { error: wireError("gateway/bad-request", `未知 action：${String(action.kind)}`) };
 }
 
 /**
@@ -317,8 +374,9 @@ export async function projectWorkspaceBaseline(deps: DshProjectionDeps): Promise
     const existing = byCwd.get(cwd);
     if (existing === undefined) {
       byCwd.set(cwd, {
-        // workspaceId 必须稳定且可作 Record 键：cwd 的十六进制编码（dsh 侧只做分组展示）
-        workspaceId: Buffer.from(cwd, "utf8").toString("hex").slice(0, 32),
+        // workspaceId 必须稳定且可作 Record 键：cwd 的 sha1 取前 32 位十六进制（dsh 侧只做分组展示）。
+        // 此前取 cwd 前 16 字节的 hex 编码：前 16 字节相同的两个 cwd 会碰撞导致分组串台。
+        workspaceId: createHash("sha1").update(cwd, "utf8").digest("hex").slice(0, 32),
         path: cwd,
         title: cwd.split(/[\\/]/).filter((segment) => segment !== "").pop() ?? cwd,
         sessionIds: [meta.id],
@@ -387,7 +445,7 @@ export async function projectSessionAttachment(deps: DshProjectionDeps, args: Re
   const request = isRecord(args.request) ? args.request : {};
   const sessionId = asString(request.sessionId);
   const attachmentId = asString(request.attachmentId);
-  if (sessionId === undefined || attachmentId === undefined) return { error: wireError("session/arguments-invalid", "request.sessionId/attachmentId 缺失") };
+  if (sessionId === undefined || attachmentId === undefined) return { error: wireError("gateway/bad-request", "request.sessionId/attachmentId 缺失") };
   const detail = await deps.sessions.getTail(sessionId, 200);
   if (detail === undefined) return { error: wireError("session/not-found", "会话不存在", { sessionId }) };
   for (const message of detail.messages) {
@@ -396,12 +454,12 @@ export async function projectSessionAttachment(deps: DshProjectionDeps, args: Re
       if (`${message.id}#${index}` !== attachmentId) continue;
       const data = block.data;
       if (data === undefined) {
-        return { error: wireError("session/attachment-unsupported", "图片仅以落盘引用存在（ref），v1 不回读", { sessionId, attachmentId }) };
+        return { error: wireError("session/attachment-invalid", "图片仅以落盘引用存在（ref），v1 不回读", { reason: "ATTACHMENT_REF_UNSUPPORTED", sessionId, attachmentId }) };
       }
       const bytes = Buffer.from(data, "base64");
       const dimensions = imageDimensions(block.mediaType, bytes);
       if (dimensions === undefined) {
-        return { error: wireError("session/attachment-unsupported", `无法读取图片尺寸（mediaType=${block.mediaType}）`, { sessionId, attachmentId }) };
+        return { error: wireError("session/attachment-invalid", `无法读取图片尺寸（mediaType=${block.mediaType}）`, { reason: "ATTACHMENT_UNREADABLE", sessionId, attachmentId }) };
       }
       return {
         value: {
@@ -411,7 +469,7 @@ export async function projectSessionAttachment(deps: DshProjectionDeps, args: Re
       };
     }
   }
-  return { error: wireError("session/attachment-not-found", "附件不存在", { sessionId, attachmentId }) };
+  return { error: wireError("session/attachment-invalid", "附件不存在", { reason: "ATTACHMENT_NOT_REFERENCED", sessionId, attachmentId }) };
 }
 
 /**
@@ -426,10 +484,10 @@ export async function projectSessionFollowSnapshot(deps: DshProjectionDeps, args
   const address = isRecord(request.address) ? request.address : {};
   if (address.kind !== "session") {
     // 子代理地址（kind=subagent）v1 不支持：dsh 把子代理当独立会话展示，owc 侧需要另行映射
-    return { error: wireError("session/unsupported", "v1 仅支持 kind=session 的 follow 地址", { kind: String(address.kind) }) };
+    return { error: wireError("gateway/bad-request", "v1 仅支持 kind=session 的 follow 地址", { kind: String(address.kind) }) };
   }
   const sessionId = asString(address.sessionId);
-  if (sessionId === undefined) return { error: wireError("session/arguments-invalid", "address.sessionId 缺失") };
+  if (sessionId === undefined) return { error: wireError("gateway/bad-request", "address.sessionId 缺失") };
   const meta = await deps.sessions.getMeta(sessionId);
   if (meta === undefined) return { error: wireError("session/not-found", "会话不存在", { sessionId }) };
   const detail = await deps.sessions.get(sessionId);
@@ -463,11 +521,14 @@ export async function projectSessionPage(deps: DshProjectionDeps, args: Record<s
   const request = isRecord(args.request) ? args.request : {};
   const address = isRecord(request.address) ? request.address : {};
   if (address.kind !== "session") {
-    return { error: wireError("session/unsupported", "v1 仅支持 kind=session 的分页地址", { kind: String(address.kind) }) };
+    return { error: wireError("gateway/bad-request", "v1 仅支持 kind=session 的分页地址", { kind: String(address.kind) }) };
   }
   const sessionId = asString(address.sessionId);
-  if (sessionId === undefined) return { error: wireError("session/arguments-invalid", "address.sessionId 缺失") };
-  const throughSeq = typeof request.throughSeq === "number" ? request.throughSeq : 0;
+  if (sessionId === undefined) return { error: wireError("gateway/bad-request", "address.sessionId 缺失") };
+  if (typeof request.throughSeq !== "number") {
+    return { error: wireError("gateway/bad-request", "request.throughSeq 缺失（必须是 number）") };
+  }
+  const throughSeq: number = request.throughSeq;
   const beforeSeq = typeof request.beforeSeq === "number" ? request.beforeSeq : undefined;
   const maxMessages = typeof request.maxMessages === "number" ? request.maxMessages : undefined;
   const detail = await deps.sessions.get(sessionId);

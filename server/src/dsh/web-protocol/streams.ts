@@ -32,6 +32,7 @@ import {
   projectSessionCreate,
   projectSessionList,
   projectSessionPrompt,
+  projectSessionSummary,
   projectSessionUpdateQueue,
   projectWorkspaceBaseline,
   sessionRecordsSince,
@@ -213,7 +214,7 @@ export class DshEventBridge {
   /** `$events/result`：把客户端应答归位到挂起请求。 */
   async resolveResult(args: Record<string, unknown>): Promise<DshProjected<Record<string, never>>> {
     const parsed = parseEventResult(args);
-    if ("error" in parsed) return { error: wireError("gateway/arguments-invalid", parsed.error) };
+    if ("error" in parsed) return { error: wireError("gateway/bad-request", parsed.error) };
     const result: DshEventResult = parsed.result;
     const stream = this.clients.get(result.clientId);
     if (stream === undefined) return { error: wireError("gateway/context-not-found", "连接代不存在（clientId 未注册）", { clientId: result.clientId }) };
@@ -337,11 +338,9 @@ export class DshEventBridge {
     }
   }
 
-  /** 会话摘要（`api-session/added` 的载荷）：读尾部消息后投影。 */
+  /** 会话摘要（`api-session/added` 的载荷）：只投影该会话（增量路径，避免每事件全量重跑 list）。 */
   private async emitSummary(stream: DshEventStream, sessionId: string): Promise<void> {
-    const projected = await projectSessionList(this.deps.projection);
-    if ("error" in projected) return;
-    const summary = (projected.value.items as Array<Record<string, unknown>>).find((item) => item.sessionId === sessionId);
+    const summary = await projectSessionSummary(this.deps.projection, sessionId);
     if (summary === undefined) return;
     stream.emit("api-session/added", [summary]);
   }
@@ -420,7 +419,7 @@ export function buildStreamHandlers(deps: DshWireDeps, bridge: DshEventBridge): 
     const address = asRecord(asRecord(handle.args.request).address);
     const sessionId = typeof address.sessionId === "string" ? address.sessionId : undefined;
     if (address.kind !== "session" || sessionId === undefined) {
-      handle.fail(wireError("session/unsupported", "v1 仅支持 kind=session 的 follow 地址"));
+      handle.fail(wireError("gateway/bad-request", "v1 仅支持 kind=session 的 follow 地址"));
       return;
     }
     const snapshot = await projectSessionFollowSnapshot(deps.projection, handle.args);
@@ -442,17 +441,34 @@ export function buildStreamHandlers(deps: DshWireDeps, bridge: DshEventBridge): 
     const sendFrames = (frames: readonly DshAssistantStreamFrame[]): void => {
       for (const frame of frames) if (!handle.cancelled) handle.send(frame);
     };
+    /**
+     * turn/step 缓存 + delta 串行链：
+     * - 每 delta 都 `sessions.get` + 全量 `deriveSessionRecords` 是 O(历史)/delta（长会话 CPU 平方增长），
+     *   而回合内 turn/step 只在 durable 记录推进时才变——缓存并在 durable 批处理后失效；
+     * - delta 帧的 revision/index 契约要求严格按到达顺序下发：异步 IIFE 的完成顺序不受控会换序，
+     *   用一条 Promise 链串行化（durable 路径本身已有 sending 互斥，互不干扰）。
+     */
+    let turnStepCache: Promise<{ turn: number; step: number }> | undefined;
+    const invalidateTurnStep = (): void => {
+      turnStepCache = undefined;
+    };
+    let deltaChain: Promise<void> = Promise.resolve();
     // 增量：owc 侧回合结束（agent.state）或会话更新时，重派生事件并只发 seq > cursor 的记录。
+    // 发送循环进行中到达的事件不丢弃：置脏标记，本批结束后尾随再跑一轮（否则期间追加的
+    // durable 记录可能永久漏发，直到客户端重连才恢复）。
     let sending = false;
+    let dirty = false;
+    let lastTrigger: AppEvent | undefined;
     const listener = (event: AppEvent): void => {
       if (event.sessionId !== sessionId) return;
       // 正文/思考 delta：直接投影为瞬态帧（不等落盘，实现回合内逐字渲染）
       if (event.type === "message.delta" || event.type === "message.thinking_delta") {
         const text = asRecord(event.payload).text;
         if (typeof text !== "string" || text === "") return;
-        void (async () => {
+        deltaChain = deltaChain.then(async () => {
           try {
-            const turnStep = await sessionTurnStep(deps.projection, sessionId);
+            turnStepCache ??= sessionTurnStep(deps.projection, sessionId);
+            const turnStep = await turnStepCache;
             sendFrames(stream.onDelta(
               event.type === "message.delta" ? "text" : "reasoning",
               text,
@@ -463,29 +479,39 @@ export function buildStreamHandlers(deps: DshWireDeps, bridge: DshEventBridge): 
           } catch (error) {
             deps.logger.warn(`dsh assistant-stream 增量失败：${error instanceof Error ? error.message : String(error)}`);
           }
-        })();
+        });
         return;
       }
       if (event.type !== "agent.state" && event.type !== "session.updated") return;
-      if (sending) return;
+      if (sending) {
+        dirty = true;
+        lastTrigger = event;
+        return;
+      }
       sending = true;
+      lastTrigger = event;
       void (async () => {
         try {
-          const records = await sessionRecordsSince(deps.projection, sessionId, cursor);
-          for (const record of records) {
-            if (handle.cancelled) return;
-            handle.send(record);
-            const seq = (record.event as { seq?: unknown }).seq;
-            if (typeof seq === "number") {
-              cursor = seq;
-              // 助手消息落盘即结算本次流式 attempt（顺序：durable 记录在前、end 帧在后，
-              // 与 vendor 客户端的 pending→settlement 折叠一致）
-              if ((record.event as { type?: unknown }).type === "assistant/message") sendFrames(stream.onSettled(seq));
+          do {
+            dirty = false;
+            const records = await sessionRecordsSince(deps.projection, sessionId, cursor);
+            for (const record of records) {
+              if (handle.cancelled) return;
+              handle.send(record);
+              const seq = (record.event as { seq?: unknown }).seq;
+              if (typeof seq === "number") {
+                cursor = seq;
+                // 助手消息落盘即结算本次流式 attempt（顺序：durable 记录在前、end 帧在后，
+                // 与 vendor 客户端的 pending→settlement 折叠一致）
+                if ((record.event as { type?: unknown }).type === "assistant/message") sendFrames(stream.onSettled(seq));
+              }
             }
-          }
+            // durable 记录可能推进了 turn/step（新轮次开始）：下一批 delta 重算
+            invalidateTurnStep();
+          } while (dirty && !handle.cancelled);
           // 回合结束仍未结算（被中断 / 无助手消息）：以 abandoned 收尾，客户端丢弃瞬态内容
-          const state = asRecord(event.payload).state;
-          if (event.type === "agent.state" && state === "idle" && stream.active) sendFrames(stream.onAbandoned());
+          const state = asRecord(lastTrigger?.payload).state;
+          if (lastTrigger?.type === "agent.state" && state === "idle" && stream.active) sendFrames(stream.onAbandoned());
         } catch (error) {
           deps.logger.warn(`dsh session/follow 增量失败：${error instanceof Error ? error.message : String(error)}`);
         } finally {

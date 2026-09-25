@@ -147,8 +147,8 @@ describe("session/selectModel", () => {
       { overrides: { isRunning: () => true }, args: { request: { sessionId: "s1", provider: "deepseek", model: "deepseek-reasoner" } }, code: "session/agent-busy" },
       { overrides: {}, args: { request: { sessionId: "s1", provider: "anthropic", model: "claude" } }, code: "session/model-unavailable" },
       { overrides: {}, args: { request: { sessionId: "s1", provider: "deepseek", model: "不存在" } }, code: "session/model-unavailable" },
-      { overrides: {}, args: { request: { sessionId: "s1", provider: "deepseek", model: "deepseek-reasoner", reasoningEffort: "ultra" } }, code: "session/arguments-invalid" },
-      { overrides: {}, args: { request: { provider: "deepseek", model: "deepseek-reasoner" } }, code: "session/arguments-invalid" },
+      { overrides: {}, args: { request: { sessionId: "s1", provider: "deepseek", model: "deepseek-reasoner", reasoningEffort: "ultra" } }, code: "gateway/bad-request" },
+      { overrides: {}, args: { request: { provider: "deepseek", model: "deepseek-reasoner" } }, code: "gateway/bad-request" },
     ];
     for (const item of cases) {
       const { deps: d, apply } = deps(item.overrides);

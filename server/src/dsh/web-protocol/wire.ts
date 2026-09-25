@@ -1,5 +1,5 @@
 /**
- * dsh Typert Remote 的 wire 编解码（M4 翻译层，协议面权威来源见 docs/dsh-wire-contract.md）。
+ * dsh Typert Remote 的 wire 编解码（M4 翻译层，协议面权威来源见 docs/dsh-compat.md 第三部分）。
  *
  * unary：
  *   POST /api/<namespace>/<method>
