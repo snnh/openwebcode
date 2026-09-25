@@ -6,6 +6,7 @@ import {
   type DshMuxChannel,
   type DshMuxOutboundFrame,
   type DshStreamHandle,
+  DSH_MAX_STREAMS_PER_CONNECTION,
 } from "../src/dsh/web-protocol/mux.js";
 import { DshEventStream, parseEventResult } from "../src/dsh/web-protocol/events.js";
 import {
@@ -212,6 +213,23 @@ describe("dsh 逻辑流复用", () => {
     expect(session.streamCount).toBe(0);
   });
 
+  it("单连接逻辑流上限：超限 open 回 bad-request（不断开物理连接）", () => {
+    const { frames, closed, sink } = channel();
+    const session = new DshMuxSession(sink, () => (handle) => { void handle; });
+    for (let index = 0; index < DSH_MAX_STREAMS_PER_CONNECTION; index++) {
+      session.handleText(JSON.stringify({ type: "open", streamId: `s${index}`, endpoint: "session/control", payload: { args: {} } }));
+    }
+    expect(session.streamCount).toBe(DSH_MAX_STREAMS_PER_CONNECTION);
+    session.handleText(JSON.stringify({ type: "open", streamId: "over", endpoint: "session/control", payload: { args: {} } }));
+    expect(frames.filter((frame) => frame.type === "error")).toHaveLength(1);
+    expect(frames.find((frame) => frame.type === "error")).toMatchObject({ streamId: "over", error: { code: "gateway/bad-request" } });
+    expect(closed).toEqual([]);
+    // 释放一条后可再开：配额不是「一次性用完即封」
+    session.cancel("s0");
+    session.handleText(JSON.stringify({ type: "open", streamId: "again", endpoint: "session/control", payload: { args: {} } }));
+    expect(session.streamCount).toBe(DSH_MAX_STREAMS_PER_CONNECTION);
+  });
+
   it("cancel 触发清理回调并停止后续推送；重复 cancel 幂等", () => {
     const { frames, sink } = channel();
     let cleaned = 0;
@@ -320,7 +338,7 @@ describe("dsh 真实逻辑流端点（不经假解析器）", () => {
     const { frames, session } = realStreams();
     session.handleText(JSON.stringify({ type: "open", streamId: "f1", endpoint: "session/follow", payload: { args: { request: { address: { kind: "subagent", parentSessionId: "s1", childSessionId: "s2", mode: "one-shot" } } } } }));
     await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
-    expect(frames[0]).toMatchObject({ type: "error", error: { code: "session/unsupported" } });
+    expect(frames[0]).toMatchObject({ type: "error", error: { code: "gateway/bad-request" } });
   });
 
   it("$events 提问回路：answers 全量映射到 owc 交互契约（多选 + 自定义答案）", async () => {

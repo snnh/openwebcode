@@ -40,3 +40,33 @@ export function dshEntryUrl(mode: DshModeSettings, location: { protocol: string;
   const query = token === null || token === "" ? "" : `?token=${encodeURIComponent(token)}`;
   return `${location.protocol}//${location.hostname}:${mode.port}/${query}`;
 }
+
+/** dsh 运行态（主端口 `GET /api/dsh/status`）。 */
+export interface DshRuntimeStatus {
+  enabled: boolean;
+  listening: boolean;
+  address?: string;
+  reason?: string;
+}
+
+/** 服务端未就绪原因 → 用户可读的双语提示（未知原因原样透出，便于诊断）。 */
+export function dshNotReadyNotice(reason: string | undefined, port: number): { zh: string; en: string } {
+  const suffix = `（端口 ${port}）`;
+  switch (reason) {
+    case "vendor missing":
+      return {
+        zh: `dsh 兼容模式未就绪${suffix}：缺少 dsh UI 产物，请先运行 node scripts/fetch-dsh-web.mjs（或用「dshUiPath」指向自选 UI 目录）`,
+        en: `dsh compatibility mode is not ready (port ${port}): the dsh UI assets are missing. Run node scripts/fetch-dsh-web.mjs first (or point "dshUiPath" at a custom UI directory).`,
+      };
+    case "non-loopback without access token":
+      return {
+        zh: `dsh 兼容模式未就绪${suffix}：非回环监听需要访问令牌（设置 OWC_ACCESS_TOKEN 或使用启动器生成），未取得令牌时不启动该端口`,
+        en: `dsh compatibility mode is not ready (port ${port}): a non-loopback listener requires an access token (set OWC_ACCESS_TOKEN or use the launcher-generated token); the port stays closed without one.`,
+      };
+    default:
+      return {
+        zh: `dsh 兼容模式未就绪${suffix}${reason === undefined ? "" : `：${reason}`}；请检查端口占用与设置后重试`,
+        en: `dsh compatibility mode is not ready (port ${port})${reason === undefined ? "" : `: ${reason}`}; check the port and settings, then retry.`,
+      };
+  }
+}

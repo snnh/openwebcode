@@ -53,6 +53,7 @@ import { CronScheduler } from "./cron-scheduler.js";
 import { EvalEvaluator } from "./eval/evaluator.js";
 import { ChatAssistantStore, ChatConfigService, ChatPythonEnv, ChatRunner, ChatSessionStore } from "./chat/index.js";
 import { DEFAULT_DSH_PORT, DshCompatRuntime } from "./dsh/web-protocol/runtime.js";
+import { applySessionDefaultsFor } from "./routes/sessions-core.js";
 import { createDshModelBridge } from "./dsh/model-bridge.js";
 import { homedir } from "node:os";
 
@@ -353,10 +354,23 @@ const dshCompat = new DshCompatRuntime({
   uiPath: () => settings.effective().dshCompat.uiPath,
   host: () => settings.effective().host,
   accessToken: () => authState?.accessToken,
+  ...(authState === undefined ? {} : { allowedOrigins: authState.allowedOrigins }),
+  totp,
   sessions,
   agent,
   events,
   home: homedir(),
+  // REST `/api/sessions` 的默认套用与 SessionStart 钩子：dsh `session/create` 在同一链路
+  sessionDefaults: (session, provider, model) =>
+    applySessionDefaultsFor(
+      { settings, sessions, profileOf: (modelId, providerId) => models.get(modelId, providerId) ?? getModelProfile(modelId), platform: process.platform, core, events },
+      session,
+      provider,
+      model,
+    ),
+  sessionStartHook: async (info) => {
+    await hooks.run("SessionStart", info);
+  },
   // 模型面：dsh 模型选择器（catalog/selectModel）与新建会话的默认模型，事实来源与 REST 同一套
   models: createDshModelBridge({ providers, models, settings }),
   dshPlugins: () => extensions.dshPlugins(),
@@ -425,6 +439,12 @@ const app = await buildServer({
   providerProfilesRuntime,
   indexManager,
   diagnostics,
+  dshStatus: () => ({
+    enabled: settings.effective().dshCompat.enabled,
+    listening: dshCompat.listening,
+    ...(dshCompat.address === undefined ? {} : { address: dshCompat.address }),
+    ...(dshCompat.reason === undefined ? {} : { reason: dshCompat.reason }),
+  }),
   scm,
   evalEvaluator,
   updateChecker,

@@ -1,6 +1,6 @@
 /** dsh 兼容模式前端同步单测（M4 步骤 17）：设置读取、入口 URL、store 同步。 */
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DSH_PORT, dshEntryUrl, readDshMode } from "../app/dsh-mode-sync";
+import { DEFAULT_DSH_PORT, dshEntryUrl, dshNotReadyNotice, readDshMode } from "../app/dsh-mode-sync";
 import { ui, uiStore } from "../app/ui-store";
 import type { SettingsView } from "../lib/contracts";
 
@@ -15,6 +15,16 @@ function numberField(key: string, value: unknown) {
 function settingsView(fields: unknown[]): SettingsView {
   return { groups: [{ id: "general", label: "通用", fields }] } as unknown as SettingsView;
 }
+
+describe("dsh 未就绪提示（可行动、如实）", () => {
+  it("缺 vendor / 非回环无令牌给出具体处置；未知原因原样透出", () => {
+    expect(dshNotReadyNotice("vendor missing", 3211).zh).toContain("fetch-dsh-web.mjs");
+    expect(dshNotReadyNotice("vendor missing", 3211).en).toContain("fetch-dsh-web.mjs");
+    expect(dshNotReadyNotice("non-loopback without access token", 3211).zh).toContain("OWC_ACCESS_TOKEN");
+    expect(dshNotReadyNotice("listen EADDRINUSE", 4000).zh).toContain("EADDRINUSE");
+    expect(dshNotReadyNotice(undefined, 4000).zh).toContain("4000");
+  });
+});
 
 describe("dsh 兼容模式前端同步", () => {
   it("readDshMode：未加载或缺字段返回 undefined；端口越界回落默认", () => {

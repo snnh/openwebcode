@@ -39,6 +39,15 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: RouteContext): v
 
   app.get("/api/health", async () => ({ status: "ok" }));
 
+  // dsh 兼容模式运行态：Web 侧据此置灰/提示（开关已开但端口未就绪时必须可行动）。
+  // 关闭态如实回 listening=false（不假装未知），原因字符串不含凭据。
+  app.get("/api/dsh/status", async () => {
+    const status = dependencies.dshStatus?.();
+    return status === undefined
+      ? { enabled: false, listening: false, reason: "dsh runtime not wired" }
+      : { ...status };
+  });
+
 
   // ---- 远程访问（局域网/移动端）：令牌状态与一键访问链接 ----
   // 路由挂在 /api/ 下，自动进入既有 token/TOTP 认证链；完整链接只发给已认证请求。

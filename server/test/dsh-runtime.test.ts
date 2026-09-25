@@ -185,6 +185,44 @@ describe("dsh 兼容模式运行期", () => {
     expect(address).toBeDefined();
   });
 
+  it("竞态：apply 进行中关闭开关 → sync 结束后必须不监听（端口不得常驻）", async () => {
+    const vendor = await fakeVendor();
+    let enabled = true;
+    const runtime = makeRuntime({ vendor, enabled: () => enabled, port: () => 0 });
+    const pending = runtime.sync();
+    // apply 已在 await 窗口内（loadBridgePlugin/listen）：此时把开关改掉
+    enabled = false;
+    await pending;
+    // 修复前：apply 末尾用「当时的设置」落 applied，实例却已监听 → 此后所有 sync 早退，端口永久常驻
+    expect(runtime.listening).toBe(false);
+    expect(runtime.reason).toBeUndefined();
+    // 再 sync 一次仍不该把端口起回来（期望态是「关」）
+    await runtime.sync();
+    expect(runtime.listening).toBe(false);
+  });
+
+  it("竞态：apply 进行中「关→开」往返 → sync 结束后收敛到最终期望（监听）", async () => {
+    const vendor = await fakeVendor();
+    let enabled = true;
+    const runtime = makeRuntime({ vendor, enabled: () => enabled, port: () => 0 });
+    const pending = runtime.sync();
+    enabled = false;
+    enabled = true;
+    await pending;
+    expect(runtime.listening).toBe(true);
+  });
+
+  it("未就绪原因如实上报（缺 vendor / 非回环无令牌）", async () => {
+    const empty = await mkdtemp(path.join(tmpdir(), "owc-dsh-reason-"));
+    const missing = makeRuntime({ vendor: empty, enabled: () => true });
+    await missing.sync();
+    expect(missing.reason).toBe("vendor missing");
+    const noToken = makeRuntime({ vendor: await fakeVendor(), enabled: () => true, host: "0.0.0.0" });
+    await noToken.sync();
+    expect(noToken.reason).toBe("non-loopback without access token");
+    expect(noToken.listening).toBe(false);
+  });
+
   it("close 后不再监听且可再次 sync 起回", async () => {
     const vendor = await fakeVendor();
     const runtime = makeRuntime({ vendor, enabled: () => true });
