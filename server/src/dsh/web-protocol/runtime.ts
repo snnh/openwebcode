@@ -34,7 +34,12 @@ export interface DshCompatRuntimeOptions {
   /** 自选 UI 目录（设置 `dshUiPath`）；非空时覆盖内置 vendor。 */
   uiPath: () => string | null;
   host: () => string;
+  /** 访问令牌（请求期取值；轮换后 dsh 端口立即认新拒旧）。 */
   accessToken: () => string | undefined;
+  /** 非回环监听时的浏览器来源白名单（透传主端口 auth.allowedOrigins）。 */
+  allowedOrigins?: readonly string[];
+  /** TOTP 全局登录门禁（与主端口同一服务；启用时 dsh 端口同样要求票据）。 */
+  totp?: { enabled(): boolean; validateTicket(ticket: string | undefined): boolean };
   sessions: SessionStore;
   agent: AgentRunner;
   events: EventBus;
@@ -49,11 +54,17 @@ export interface DshCompatRuntimeOptions {
   version: () => string;
   /** owc 主端口（桥接插件回跳 URL 用）。 */
   mainPort: () => number;
+  /**
+   * REST `/api/sessions` 创建路径的默认套用（defaultSnapshotMode 等），dsh `session/create` 复用同一 helper。
+   */
+  sessionDefaults?: (session: SessionMeta, provider: string, model: string) => Promise<SessionMeta>;
+  /** REST 创建路径的 SessionStart 钩子（仅通知不阻断）；dsh `session/create` 同链路触发。 */
+  sessionStartHook?: (info: { sessionId: string; cwd: string }) => Promise<void>;
   imageLimits?: DshWireDeps["projection"]["imageLimits"];
   logger?: { warn(message: string): void; info(message: string): void };
 }
 
-/** 缺省端口（与 docs/dsh-protocol-map.md §5.2 一致）。 */
+/** 缺省端口（与 docs/dsh-compat.md 第二部分 §5.2 一致）。 */
 export const DEFAULT_DSH_PORT = 3211;
 
 export class DshCompatRuntime {
@@ -61,7 +72,9 @@ export class DshCompatRuntime {
   private starting: Promise<void> | undefined;
   /** 上次成功监听的地址（`<host>:<port>`；未监听为 undefined）。 */
   private currentAddress: string | undefined;
-  /** 上次尝试的 (enabled, vendorDirectory, port) 组合，用于幂等判断。 */
+  /** 最近一次未监听的原因（缺 vendor / 非回环无令牌 / 监听失败；诊断与 Web 入口提示用）。 */
+  private currentReason: string | undefined;
+  /** 上次成功对齐的 (enabled, vendorDirectory, port) 组合，用于幂等判断。 */
   private applied: string | undefined;
 
   constructor(private readonly options: DshCompatRuntimeOptions) {}
@@ -76,19 +89,30 @@ export class DshCompatRuntime {
     return this.currentAddress;
   }
 
-  /** 按当前设置对齐运行状态（幂等；并发调用合并）。 */
+  /** 当前未监听原因（监听中为 undefined；供设置页/Web 入口如实展示）。 */
+  get reason(): string | undefined {
+    return this.currentReason;
+  }
+
+  /**
+   * 按当前设置对齐运行状态。
+   *
+   * 并发/竞态语义（修复「关闭后端口仍常驻监听」一类竞态）：
+   * 期望键在每次循环开头重算——apply 进行中设置又变化时，本轮结束后循环会再跑一轮收敛；
+   * apply 用**进入时捕获的键**落 applied，因此键变化必然触发下一轮重建/关闭。
+   */
   async sync(): Promise<void> {
     if (this.starting !== undefined) {
-      await this.starting;
-      return;
+      await this.starting.catch(() => undefined);
     }
-    const desired = this.desiredKey();
-    if (desired === this.applied) return;
-    this.starting = this.apply();
-    try {
-      await this.starting;
-    } finally {
-      this.starting = undefined;
+    while (this.desiredKey() !== this.applied) {
+      const key = this.desiredKey();
+      this.starting = this.apply(key);
+      try {
+        await this.starting;
+      } finally {
+        this.starting = undefined;
+      }
     }
   }
 
@@ -96,6 +120,7 @@ export class DshCompatRuntime {
     const server = this.server;
     this.server = undefined;
     this.currentAddress = undefined;
+    this.currentReason = undefined;
     this.applied = undefined;
     if (server !== undefined) await server.close();
   }
@@ -139,27 +164,37 @@ export class DshCompatRuntime {
     (this.options.logger?.warn ?? (() => {}))(message);
   }
 
-  private async apply(): Promise<void> {
+  /**
+   * 按捕获的期望键对齐一次。构建/监听**成功**后才替换旧实例并落 applied；
+   * 监听失败保留旧实例继续服务（改 dshPort 填错不会把可用实例先关掉），
+   * applied 不落 → 下一次 sync() 仍会重试。所有配置在函数开头快照，
+   * 中途的设置变更由 sync() 的收敛循环负责再跑一轮。
+   */
+  private async apply(key: string): Promise<void> {
     const wantEnabled = this.options.enabled();
-    // 先停旧实例（端口/目录都可能已变），再按需起新实例
-    if (this.server !== undefined) {
-      await this.server.close();
-      this.server = undefined;
-      this.currentAddress = undefined;
-    }
+    const port = this.options.port();
+    const host = this.options.host();
+    const uiPath = this.options.uiPath();
+    const vendorDirectory = uiPath !== null && uiPath.trim() !== "" ? path.resolve(uiPath) : this.options.vendorDirectory;
     if (!wantEnabled) {
-      this.applied = this.desiredKey();
+      // 停旧实例（端口/目录都可能已变）
+      if (this.server !== undefined) {
+        await this.server.close();
+        this.server = undefined;
+        this.currentAddress = undefined;
+      }
+      this.currentReason = undefined;
+      this.applied = key;
       return;
     }
     // 防御：dsh 端口复用主端口访问令牌，非回环监听且拿不到令牌时绝不裸开该端口
     // （否则 index/API 会退化成免鉴权；此时如实不启动并记原因，与「缺 vendor」同一处理方式）
-    if (this.options.accessToken() === undefined && !isLoopbackHost(this.options.host())) {
-      this.warn(`[dsh] 未取得访问令牌（host=${this.options.host()}，非回环）：为免裸开鉴权，不启动 dsh 兼容模式`);
-      this.applied = this.desiredKey();
+    if (this.options.accessToken() === undefined && !isLoopbackHost(host)) {
+      this.warn(`[dsh] 未取得访问令牌（host=${host}，非回环）：为免裸开鉴权，不启动 dsh 兼容模式`);
+      this.currentReason = "non-loopback without access token";
+      this.applied = key;
       return;
     }
-    const uiPath = this.options.uiPath();
-    const vendorDirectory = uiPath !== null && uiPath.trim() !== "" ? path.resolve(uiPath) : this.options.vendorDirectory;
     const models = this.options.models;
     const deps: DshWireDeps = {
       projection: {
@@ -173,6 +208,12 @@ export class DshCompatRuntime {
         publishSessionCreated: (session) => {
           this.options.events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
         },
+        ...(this.options.sessionDefaults === undefined
+          ? {}
+          : { applySessionDefaults: this.options.sessionDefaults }),
+        ...(this.options.sessionStartHook === undefined
+          ? {}
+          : { runSessionStartHook: this.options.sessionStartHook }),
       },
       events: this.options.events,
       home: this.options.home,
@@ -200,20 +241,24 @@ export class DshCompatRuntime {
       logger: { warn: (message) => this.warn(message) },
     };
     // 桥接插件产物与 vendor 同级（server/assets/dsh-bridge/client.js）；缺失时不阻塞 dsh 模式
-    const bridgeDirectory = path.join(path.dirname(this.options.vendorDirectory), "dsh-bridge");
+    const bridgeDirectory = path.join(path.dirname(vendorDirectory), "dsh-bridge");
     const bridgePlugin = await loadBridgePlugin(bridgeDirectory);
     if (bridgePlugin !== undefined) bridgePlugin.originDirectory = bridgeDirectory;
+    // dshVersion 以 vendor manifest 为唯一事实来源（owcStatus 请求期才取值，故用引用兜住构建期的值）
+    const dshVersionRef: { current: string } = { current: "" };
     const server = await buildDshServer({
       vendorDirectory,
       enabled: () => this.options.enabled(),
-      accessToken: this.options.accessToken(),
+      accessToken: () => this.options.accessToken(),
+      ...(this.options.allowedOrigins === undefined ? {} : { allowedOrigins: this.options.allowedOrigins }),
+      ...(this.options.totp === undefined ? {} : { totp: this.options.totp }),
       deps,
       ...(bridgePlugin === undefined ? {} : { bridgePlugin }),
       owcStatus: (context) => {
         const token = this.options.accessToken();
         return buildOwcStatus({
           version: this.options.version(),
-          dshVersion: "0.1.6-alpha.2",
+          dshVersion: dshVersionRef.current,
           mainPort: this.options.mainPort(),
           protocol: "http:",
           host: this.options.host(),
@@ -225,20 +270,28 @@ export class DshCompatRuntime {
     });
     if (server === undefined) {
       this.warn(`[dsh] 未找到 dsh UI 产物（${vendorDirectory}）：先运行 node scripts/fetch-dsh-web.mjs 再打开该模式`);
-      this.applied = this.desiredKey();
+      this.currentReason = "vendor missing";
+      // 保留旧实例（可能服务旧 vendor）；applied 仍落：vendor 目录没变时不再重复 warn，
+      // 目录变了（key 变）会触发下一轮重试
+      this.applied = key;
       return;
     }
-    const address = await server.listen(this.options.host(), this.options.port()).catch(async (error: unknown) => {
-      // 监听失败（端口占用等）：关掉已建好的实例避免句柄泄漏，如实记原因后抛给调用方
-      //（启动路径 catch 后继续起主服务；设置热切换路径 .catch 记日志）。
+    dshVersionRef.current = server.manifest.dshVersion;
+    const address = await server.listen(host, port).catch(async (error: unknown) => {
+      // 监听失败（端口占用等）：关掉本次半建的新实例（旧实例仍在服务），如实记原因后抛给调用方
+      //（启动路径 catch 后继续起主服务；热切换路径 .catch 记日志）。
       // applied 不落：端口腾出后的下一次 sync() 仍会重试。
       await server.close().catch(() => undefined);
-      this.warn(`[dsh] 独立端口 ${this.options.host()}:${this.options.port()} 监听失败：${error instanceof Error ? error.message : String(error)}`);
+      this.warn(`[dsh] 独立端口 ${host}:${port} 监听失败：${error instanceof Error ? error.message : String(error)}`);
       throw error;
     });
+    // 先听后关：新实例监听成功后才替换旧实例，端口改错不会让 dsh 整体掉线
+    const previous = this.server;
     this.server = server;
     this.currentAddress = address;
-    this.applied = this.desiredKey();
+    this.currentReason = undefined;
+    this.applied = key;
+    if (previous !== undefined) await previous.close().catch(() => undefined);
     this.log(`[dsh] 兼容模式已启动：http://${address}/ （dsh UI ${server.manifest.dshVersion}，${server.manifest.plugins.length} 个插件）`);
   }
 }

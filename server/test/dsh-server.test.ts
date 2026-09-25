@@ -72,7 +72,7 @@ async function startServer(overrides: { enabled?: () => boolean; accessToken?: s
   const server = await buildDshServer({
     vendorDirectory: overrides.vendor ?? VENDOR,
     enabled: overrides.enabled ?? (() => true),
-    accessToken: "accessToken" in overrides ? overrides.accessToken : TOKEN,
+    accessToken: () => ("accessToken" in overrides ? overrides.accessToken : TOKEN),
     deps: fakeDeps(),
     logger: { warn: () => {}, info: () => {} },
   });
@@ -208,7 +208,7 @@ describe.skipIf(!VENDOR_READY)("dsh 端口服务（需 vendor）", () => {
     const server = await buildDshServer({
       vendorDirectory: VENDOR,
       enabled: () => true,
-      accessToken: TOKEN,
+      accessToken: () => TOKEN,
       deps,
       logger: { warn: () => {}, info: () => {} },
     });
@@ -245,7 +245,7 @@ describe.skipIf(!VENDOR_READY)("dsh 端口服务（需 vendor）", () => {
     expect(await buildDshServer({
       vendorDirectory: empty,
       enabled: () => true,
-      accessToken: undefined,
+      accessToken: () => undefined,
       deps: fakeDeps(),
       logger: { warn: () => {}, info: () => {} },
     })).toBeUndefined();
@@ -262,7 +262,7 @@ describe.skipIf(!VENDOR_READY)("dsh 端口服务（需 vendor）", () => {
     const server = await buildDshServer({
       vendorDirectory: VENDOR,
       enabled: () => true,
-      accessToken: TOKEN,
+      accessToken: () => TOKEN,
       deps: fakeDeps(),
       bridgePlugin: bridge,
       owcStatus: (context) => buildOwcStatus({ version: "1.12.0", dshVersion: "0.1.6-alpha.2", mainPort: 3210, protocol: "http:", host: "127.0.0.1", accessToken: TOKEN, cookieAuthenticated: context.cookieAuthenticated }),
@@ -290,7 +290,7 @@ describe.skipIf(!VENDOR_READY)("dsh 端口服务（需 vendor）", () => {
     const server = await buildDshServer({
       vendorDirectory: VENDOR,
       enabled: () => true,
-      accessToken: TOKEN,
+      accessToken: () => TOKEN,
       deps,
       bridgePlugin: { id: "owc-dsh-bridge", version: "1.12.0", rev: "abcdefabcdef", entry: "client.js", files: ["client.js"], inject: [], external: [] },
       logger: { warn: () => {}, info: () => {} },
@@ -303,6 +303,88 @@ describe.skipIf(!VENDOR_READY)("dsh 端口服务（需 vendor）", () => {
     expect(plugin.statusCode).toBe(404);
     // 静态 index 仍能渲染（bridge 产物缺失不影响其它行）
     expect(response.statusCode).toBe(200);
+  });
+
+  it("回环免鉴权部署：非回环 Host 一律 403（挡 DNS rebinding），回环 Host 放行", async () => {
+    const { server } = await startServer({ accessToken: undefined });
+    // 免鉴权模式下 Host 头就是信任边界：evil.com 解析到 127.0.0.1 的页面不得读写 API
+    const rebound = await server.app.inject({ method: "GET", url: "/", headers: { host: "evil.example" } });
+    expect(rebound.statusCode).toBe(403);
+    const reboundApi = await server.app.inject({
+      method: "POST",
+      url: "/api/session/list",
+      headers: { "content-type": "application/json", host: "evil.example" },
+      payload: unaryBody("session/list", { _request: {} }),
+    });
+    expect(reboundApi.statusCode).toBe(403);
+    const loopback = await server.app.inject({ method: "GET", url: "/", headers: { host: "127.0.0.1:3211" } });
+    expect(loopback.statusCode).toBe(200);
+    // Host 门禁是免鉴权模式的信任边界，静态资源同样适用（与主端口 app.ts 的 onRequest 同口径）
+    expect((await server.app.inject({ method: "GET", url: "/assets/", headers: { host: "evil.example" } })).statusCode).toBe(403);
+  });
+
+  it("WS 升级校验 Origin：免鉴权模式拒绝跨站来源，回环来源放行", async () => {
+    const { base } = await startServer({ accessToken: undefined });
+    const statusOfRejected = await new Promise<number>((resolve, reject) => {
+      const socket = new WebSocket(`${base.replace("http:", "ws:")}/api/remote.mux`, { headers: { origin: "https://evil.example" } });
+      socket.on("open", () => { socket.close(); reject(new Error("跨站 Origin 竟然握手成功")); });
+      socket.on("unexpected-response", (_request, response) => resolve(response.statusCode ?? 0));
+      socket.on("error", (error) => reject(error));
+    });
+    expect(statusOfRejected).toBe(403);
+    const opened = await new Promise<boolean>((resolve, reject) => {
+      const socket = new WebSocket(`${base.replace("http:", "ws:")}/api/remote.mux`, { headers: { origin: "http://127.0.0.1:5173" } });
+      socket.on("open", () => { socket.close(); resolve(true); });
+      socket.on("unexpected-response", (_request, response) => reject(new Error(`回环 Origin 被拒：${response.statusCode}`)));
+      socket.on("error", (error) => reject(error));
+    });
+    expect(opened).toBe(true);
+  });
+
+  it("TOTP 门禁覆盖 dsh 端口：启用且无票据一律 401，有效票据放行", async () => {
+    const server = await buildDshServer({
+      vendorDirectory: VENDOR,
+      enabled: () => true,
+      accessToken: () => TOKEN,
+      totp: { enabled: () => true, validateTicket: (ticket) => ticket === "valid-ticket" },
+      deps: fakeDeps(),
+      logger: { warn: () => {}, info: () => {} },
+    });
+    servers.push(server as DshServer);
+    const instance = server as DshServer;
+    const withoutTicket = await instance.app.inject({ method: "GET", url: "/", headers: { cookie: `owc_access_token=${TOKEN}` } });
+    expect(withoutTicket.statusCode).toBe(401);
+    const withTicket = await instance.app.inject({
+      method: "GET",
+      url: "/",
+      headers: { cookie: `owc_access_token=${TOKEN}; owc_totp_session=valid-ticket` },
+    });
+    expect(withTicket.statusCode).toBe(200);
+  });
+
+  it("令牌在请求期读取：轮换后新令牌立即生效、旧令牌同步失效", async () => {
+    let token = "old-token-old-token-old-token-0000";
+    const server = await buildDshServer({
+      vendorDirectory: VENDOR,
+      enabled: () => true,
+      accessToken: () => token,
+      deps: fakeDeps(),
+      logger: { warn: () => {}, info: () => {} },
+    });
+    servers.push(server as DshServer);
+    const instance = server as DshServer;
+    const before = await instance.app.inject({ method: "GET", url: "/", headers: { cookie: "owc_access_token=old-token-old-token-old-token-0000" } });
+    expect(before.statusCode).toBe(200);
+    token = "new-token-new-token-new-token-1111";
+    expect((await instance.app.inject({ method: "GET", url: "/", headers: { cookie: "owc_access_token=old-token-old-token-old-token-0000" } })).statusCode).toBe(401);
+    expect((await instance.app.inject({ method: "GET", url: "/", headers: { cookie: "owc_access_token=new-token-new-token-new-token-1111" } })).statusCode).toBe(200);
+  });
+
+  it("关闭态：/ 与显式 /index.html 都 503（不交出未注入 boot graph 的原始 index）", async () => {
+    const { server } = await startServer({ enabled: () => false });
+    const auth = { cookie: `owc_access_token=${TOKEN}` };
+    expect((await server.app.inject({ method: "GET", url: "/", headers: auth })).statusCode).toBe(503);
+    expect((await server.app.inject({ method: "GET", url: "/index.html", headers: auth })).statusCode).toBe(503);
   });
 
   it("静态资源可读（assets 公开）", async () => {

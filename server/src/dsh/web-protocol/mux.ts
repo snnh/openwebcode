@@ -12,6 +12,9 @@ import { parseMuxFrame, wireError, type DshMuxOutboundFrame, type DshWireError }
 const DSH_CLOSE_BINARY = 1003;
 export const DSH_CLOSE_PROTOCOL = 1008;
 
+/** 单条物理连接允许的逻辑流上限（防单连接开 N 条流放大事件转发与内存）。 */
+export const DSH_MAX_STREAMS_PER_CONNECTION = 32;
+
 /** 逻辑流的 Host 侧句柄（端点实现用它推送帧）。 */
 export interface DshStreamHandle {
   readonly streamId: string;
@@ -117,6 +120,16 @@ export class DshMuxSession {
       this.channel.send({ type: "error", streamId, error: wireError("gateway/bad-request", `streamId 重复：${streamId}`, { endpoint }) });
       this.dispose();
       this.channel.close(DSH_CLOSE_PROTOCOL, `duplicate streamId: ${streamId}`);
+      return;
+    }
+    if (this.active.size >= DSH_MAX_STREAMS_PER_CONNECTION) {
+      // 单连接逻辑流超限：拒绝这条 open（error 帧说明原因），不断开物理连接——
+      // 与重复 streamId 的协议违规不同，这是资源配额问题，客户端释放旧流后可继续。
+      this.channel.send({
+        type: "error",
+        streamId,
+        error: wireError("gateway/bad-request", `单连接逻辑流上限 ${DSH_MAX_STREAMS_PER_CONNECTION} 已达（请先 cancel 不再需要的流）`, { endpoint }),
+      });
       return;
     }
     const handler = this.resolveEndpoint(endpoint);
