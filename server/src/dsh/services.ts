@@ -368,6 +368,17 @@ export function pluginServiceViews(extensionId: string, call: DshHostCall): Reco
   };
 }
 
+/**
+ * 按插件 fiber 绑定的 timer 视图（`bindPluginCtx` 注入）。
+ *
+ * `ctx.timer.*` 的 effect 归属传入的 ctx：root 实例（provideDshServices 里那份）会让
+ * 插件注册的定时器挂在 root fiber 上，插件停用/卸载后仍继续执行——因此插件 ctx 必须拿到
+ * 自己的实例（effect 随插件 fiber 回滚）。
+ */
+export function pluginTimerView(ctx: Context): DshTimerService {
+  return createTimerService(ctx);
+}
+
 /** 在 root context 上 provide M3 服务缝（root fiber；插件卸载不移除，宿主关闭时随 root 回收）。 */
 export function provideDshServices(root: Context, resolveExtensionId: () => string, options: DshServicesOptions): void {
   const { call } = options;
@@ -376,6 +387,8 @@ export function provideDshServices(root: Context, resolveExtensionId: () => stri
   root.provide("llm", createLlmService(resolveExtensionId, call));
   root.provide("sessions", createSessionsService(resolveExtensionId, call));
   root.provide("storage", createStorageService(resolveExtensionId, call));
+  // root 实例只用于「服务存在性」判定（inject 门禁）与激活窗口外兜底解析；
+  // 插件实际使用 bindPluginCtx 注入的按 fiber 实例（见 pluginTimerView）
   root.provide("timer", createTimerService(root));
   // dshEvents 直接对象（root provide）：subscribe 校验后调 subscribeEvents()（首个激活插件触发注册）。
   const subscribeEventsLazy = options.subscribeEvents;

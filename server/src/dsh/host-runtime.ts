@@ -26,7 +26,7 @@ import { Context } from "./cordis-shim.js";
 import type { Fiber, LoggerMessage, LoggerSink, Plugin } from "./cordis-shim.js";
 import type { ToolDefinition, ToolRenderBlock } from "./dsh-tools-shim.js";
 import type { DshHostCall } from "./services.js";
-import { provideDshServices, pluginServiceViews, runDshPostExecute, runDshPreExecute } from "./services.js";
+import { provideDshServices, pluginServiceViews, pluginTimerView, runDshPostExecute, runDshPreExecute } from "./services.js";
 import type { DshPostToolOutcome, DshPreToolOutcome } from "./services.js";
 import { dshToolSourceId, type DshPluginReport, type DshSyncItem } from "./loader.js";
 import type { ExtensionToolResult, ExtensionToolSpec } from "../extensions/types.js";
@@ -391,6 +391,9 @@ class DshRuntime implements DshHostRuntime {
       fiber = this.root.plugin(plugin, item.config, { prepare: (ctx) => this.bindPluginCtx(ctx, sourceId) });
       await fiber.await();
     } catch (error) {
+      // effect 已由垫片回滚，但 fiber 仍登记在 root 的插件表里（依赖变化会自行重试、
+      // 且与 this.loaded 记账不同步）：显式释放，避免反复 resync 时累积 + 依赖后来齐备时重复激活
+      await fiber!.dispose().catch(() => undefined);
       return { id: item.id, status: "error", error: `插件激活失败：${errorMessage(error)}` };
     } finally {
       this.currentActivatingPluginId = "";
@@ -403,6 +406,8 @@ class DshRuntime implements DshHostRuntime {
   private bindPluginCtx(ctx: Context, sourceId: string): Context {
     const views = new Map<string, unknown>();
     views.set("tools", this.createFacade(sourceId, ctx));
+    // timer 必须绑到插件 fiber：root 实例的定时器挂在 root 上，插件卸载后不会停
+    views.set("timer", pluginTimerView(ctx));
     const call = this.bridge.call;
     if (call !== undefined) {
       for (const [name, view] of Object.entries(pluginServiceViews(sourceId, call))) views.set(name, view);

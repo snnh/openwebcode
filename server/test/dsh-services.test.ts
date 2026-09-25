@@ -1,3 +1,21 @@
+import { projectSettingsDescribe } from "../src/dsh/web-protocol/settings-face.js";
+
+describe("dsh 设置面脱敏", () => {
+  it("baseURL 内联凭据被剥除，普通端点原样保留", () => {
+    const value = projectSettingsDescribe({
+      profiles: () => [
+        { id: "a", enabled: true, interfaceType: "openai", baseURL: "https://user:secret@internal.example/v1", hasApiKey: true },
+        { id: "b", enabled: true, interfaceType: "openai", baseURL: "https://api.example/v1", hasApiKey: false },
+      ],
+    });
+    const namespaces = (value as { namespaces: Array<{ value: Record<string, { baseURL?: string }> }> }).namespaces;
+    const projected = namespaces[0]?.value ?? {};
+    expect(projected.a?.baseURL).toBe("https://internal.example/v1");
+    expect(projected.b?.baseURL).toBe("https://api.example/v1");
+    expect(JSON.stringify(projected)).not.toContain("secret");
+  });
+});
+
 /**
  * dsh 兼容层 M3 集成测试：服务缝投影（llm/sessions/storage/dshEvents/timer）+
  * tools/pre-execute、tools/post-execute agent 钩子桥（deny/ask 降级/accept/block）+
