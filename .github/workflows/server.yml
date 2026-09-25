@@ -79,6 +79,12 @@ jobs:
             fi
           done
           echo "All server/assets/*.ps1 files carry a UTF-8 BOM."
+      - name: Fetch dsh UI vendor (optional, non-blocking)
+        # dsh 兼容模式的可选产物：抓到才跑 boot-integrity（启动级不变量）测试；
+        # 网络不可用时不阻塞（该测试自身按缺 vendor 跳过）
+        continue-on-error: true
+        shell: bash
+        run: node scripts/fetch-dsh-web.mjs
       - name: Build
         run: npm run build
         working-directory: server

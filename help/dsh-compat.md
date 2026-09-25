@@ -35,7 +35,11 @@
 
 环境变量同名可覆盖：`OWC_DSH_COMPAT_ENABLED`、`OWC_DSH_PORT`、`OWC_DSH_UI_PATH`。
 
-开启后 dsh 端口只监听主服务**同一个 host**（`host` 设置），鉴权与主端口一致（访问令牌 cookie / `?token=` 换 cookie）。
+开启后 dsh 端口只监听主服务**同一个 host**（`host` 设置），鉴权与主端口**同一套语义**：
+
+- 有访问令牌时：cookie / `Bearer` 令牌二选一；`http://<host>:<dshPort>/?token=…` 换 HttpOnly `SameSite=Strict` cookie（换完 303 回 `/`，令牌不进页面与历史）；令牌在**请求期读取**，主工作台里「重新生成令牌」后 dsh 端口立即认新拒旧。
+- 启用 **TOTP 全局登录**（`auth-totp.ts`）时，dsh 端口同样要求有效票据 cookie：无票据一律 401（与主端口一致，第二因子无处可绕）。
+- 回环监听且未设令牌（默认桌面部署）：**Host 头必须是回环地址**，WS 升级还要求回环 `Origin`——`evil.com` 之类域名解析到 127.0.0.1 也无法经浏览器读写该端口（与主端口同一套 DNS rebinding / 跨站 WS 防护）。
 
 ### 没有 vendor 时
 
@@ -110,7 +114,7 @@ dsh 插件**只在「启用 dsh 兼容模式」打开时加载**（它们是可�
 | 审批与提问 | `$events` 逻辑流 + `POST /api/$events/result` 回路：dsh UI 里点「允许/拒绝」会真正作用于 owc 权限链 |
 | 工作区视图 | `workspace/follow`（按会话 cwd 派生工作区条目） |
 | 逻辑流复用 | 单条 WebSocket `/api/remote.mux`（多路复用 `session/follow`、`session/control`、`$events`、`workspace/follow`） |
-| 插件面 | `/plugins/<id>/client.js` 单文件与 combo 两种形态、`?rev=` 校验、按需分块回源；boot graph 由 vendor 清单生成 |
+| 插件面 | `/plugins/<id>/client.js` 单文件形态（含包内分块回源）、`?rev=` 校验；boot graph 由 vendor 清单生成（每个 entry 一条 URL，不生成 combo 拼接 URL） |
 | 桥接插件 | `owc-dsh-bridge`：`/dsh-owc/status` 提供 owc 版本与 Workbench 回跳入口 |
 
 ---
@@ -132,10 +136,13 @@ dsh 插件**只在「启用 dsh 兼容模式」打开时加载**（它们是可�
 
 | 限制 | 表现 | 原因 |
 |---|---|---|
-| **运行中消息不支持图片** | 会话正在跑时发带图消息会明确报错（`session/unsupported`：「运行中消息不支持图片附件」），不会被静默接受 | owc 的排队/插话入参只有文本；图片要等本轮结束后作为新消息发送 |
+| **运行中消息不支持图片** | 会话正在跑时发带图消息会明确报错（`session/attachment-invalid`：「运行中消息不支持图片附件」），不会被静默接受 | owc 的排队/插话入参只有文本；图片要等本轮结束后作为新消息发送 |
 | **重连不回放流式前缀** | 回合进行中打开/重连会话时，已生成的瞬态增量不回放（随后续增量继续逐字出现，落盘后的完整消息照常显示） | 快照的 `assistantStream.activeAttempt` 前缀压缩 v1 不下发（只给 revision 基线）；不做第二份增量存储 |
+| **单条连接逻辑流上限 32** | 同一 WebSocket 上最多 32 条逻辑流（`$events` / `session/follow` / `session/control` / `workspace/follow` 合计），超限的 `open` 回 `gateway/bad-request`（不断开连接）；cancel 后可再开 | 防单连接放大事件转发与内存；正常 dsh UI 只会开个位数条流 |
+| **慢客户端会被断开** | 待发数据积压超过 4 MiB 或 1000 条时，服务端释放该连接的逻辑流并按 1013 关闭（与主工作台 WS 同阈值） | 单个读得慢的客户端不得把服务端打成无界缓冲 |
 | **提问一次只承载一问** | dsh 侧一次提问请求对应一个 owc 交互（`ask_user` 多题时逐题串行） | owc 的交互应答是一问一答；多出来的答案写日志后丢弃（不会假装已接受） |
-| **答案形状按题目类型收敛** | 选择题：选中的选项 label + 「其他」自定义文本（按上游约定编码为 `other:<文本>`）；是/否题按文本判定肯定/否定（不匹配即否定）；自由文本原样传递 | 两端答案形状不同，翻译层按 owc 交互契约映射，见 `docs/dsh-wire-contract.md` §5.1 |
+| **不实现 combo 拼接** | `/plugins/??a/client.js,b/client.js` 形式的 combo URL 返回 404：翻译层为每个 entry 生成独立 URL，不发 combo 请求（单条 URL 无长度上限问题） | boot graph 由本层自渲染，无需按上游的 URL 长度上限切分；combo 路由留待需要时再补 |
+| **答案形状按题目类型收敛** | 选择题：选中的选项 label + 「其他」自定义文本（按上游约定编码为 `other:<文本>`）；是/否题按文本判定肯定/否定（不匹配即否定）；自由文本原样传递 | 两端答案形状不同，翻译层按 owc 交互契约映射，见 `docs/dsh-compat.md` 第三部分 |
 
 需要凭据配置、权限模式、扩展设置、dsh 插件安装这些操作时，回主工作台做——dsh UI 的设置页不接 owc 的设置面。
 
@@ -200,8 +207,8 @@ dsh tools/pre-execute ask 降级为放行：<reason>（tool=<工具名>, session
 
 - **前端 dist**：npm `@deepseek-ai/dsh-web-frontend@0.1.6-alpha.2`（含 `index.html` + `assets/`）。
 - **插件 bundle**：从 `@deepseek-ai/dsh-web-app@0.1.6-alpha.2` 出发按**依赖闭包**（`dependencies` + `peerDependencies`）取得候选，再按**官方挂载规则**筛选：`cordis.patch.yml` 名单里的插件，加上被其它插件 `inject`/`external` 引用的依赖行（如提供连接服务的 `dsh-api-gateway`）；只作为依赖存在、官方并未挂载的包会被跳过（例如 `dsh-client-ui-directory-picker-{browse,native}`——强行为插件会在 dsh 启动自检里 `failed` 并让整个 SPA 落到错误页）。当前产物 **58 个插件**，外加随 owc 发布的 `owc-dsh-bridge`。
-- **版本钉死**：翻译层按 0.1.6-alpha.2 实现；dsh 升级后需要按 `docs/dsh-protocol-map.md` 的映射表复核（该表在 dsh 升级时先行更新）。
+- **版本钉死**：翻译层按 0.1.6-alpha.2 实现；dsh 升级后需要按 `docs/dsh-compat.md`（第二部分映射表、第三部分 wire 契约）复核，先更映射表再改代码。
 - **许可**：dsh 为 MIT。vendor 产物随发布包带 `server/assets/dsh-web/THIRD_PARTY_NOTICES.md` 与 `licenses/<包名>.txt`（各包原始 LICENSE）。
 - **不进仓库**：`server/assets/dsh-web/` 是抓取产物（gitignored），由发布流程或你本地执行脚本生成。
 
-> 相关内部文档（随版本归档）：`docs/dsh-protocol-map.md`（协议映射表）、`docs/dsh-wire-contract.md`（wire 字段契约）、`docs/dsh-compat-plan.md`（实施计划）。
+> 相关内部文档：`docs/dsh-compat.md`（协议映射表 + wire 字段契约 + 收尾待办，gitignored）；实施计划已随版本归档。

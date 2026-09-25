@@ -23,7 +23,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** 钉版 dsh UI 版本（唯一来源；变更需同步 docs/dsh-protocol-map.md 的协议复核结论）。 */
+/** 钉版 dsh UI 版本（唯一来源；变更需同步 docs/dsh-compat.md 的协议复核结论）。 */
 export const DSH_UI_VERSION = "0.1.6-alpha.2";
 
 /** 默认 vendor 目录（相对仓库根）。 */
@@ -286,9 +286,10 @@ async function main() {
   // directory-picker-{browse,native}）：把它们当插件激活会在 dsh 的启动自检里报
   // `entry did not activate: failed`（browse 的 locale/slot 注册在未挂载前提下抛错），
   // 进而让整个 SPA 落到错误页。挂载规则因此收敛为：
-  //   patch.yml 名单（官方挂载的插件） ∪ 被其它插件 inject/external 引用的依赖行（如 api-gateway）。
+  //   patch.yml 名单（官方挂载的插件） ∪ 被其它**已挂载**插件 inject/external 引用的依赖行（如 api-gateway）。
+  // 引用闭包必须只在已挂载集合上迭代到收敛：若把「未挂载候选」的引用也算进来，一个只被跳过
+  // 插件引用的包会被错误拉进图（正是 directory-picker 类事故的同一风险面）。
   const parsed = new Map();
-  const referenced = new Set();
   for (const name of candidates) {
     const resolvedVersion = closure.versions.get(name);
     const known = resolvedVersion === undefined ? undefined : closure.packuments.get(name)?.versions?.[resolvedVersion];
@@ -298,13 +299,29 @@ async function main() {
     const declaration = pkg.dsh?.client;
     if (declaration?.platform !== "web") continue;
     parsed.set(name, { entries, pkg, declaration });
-    for (const dependency of [...stringList(declaration.inject), ...stringList(declaration.external)]) {
-      referenced.add(packageNameOf(dependency));
-    }
   }
   const patchSet = new Set(patchRoster);
-  const mounted = [...parsed.keys()].filter((name) => patchSet.has(name) || referenced.has(name));
-  const skipped = [...parsed.keys()].filter((name) => !mounted.includes(name));
+  const mountedSet = new Set([...parsed.keys()].filter((name) => patchSet.has(name)));
+  // 定点迭代：只从已挂载集合出发收集 inject/external 引用
+  for (;;) {
+    const referenced = new Set();
+    for (const name of mountedSet) {
+      const declaration = parsed.get(name)?.declaration;
+      if (declaration === undefined) continue;
+      for (const dependency of [...stringList(declaration.inject), ...stringList(declaration.external)]) {
+        referenced.add(packageNameOf(dependency));
+      }
+    }
+    let grew = false;
+    for (const name of referenced) {
+      if (mountedSet.has(name) || !parsed.has(name)) continue;
+      mountedSet.add(name);
+      grew = true;
+    }
+    if (!grew) break;
+  }
+  const mounted = [...parsed.keys()].filter((name) => mountedSet.has(name));
+  const skipped = [...parsed.keys()].filter((name) => !mountedSet.has(name));
   console.log(`挂载规则：patch.yml 名单命中 ${mounted.filter((name) => patchSet.has(name)).length} 个，`
     + `依赖行补入 ${mounted.filter((name) => !patchSet.has(name)).length} 个`
     + `（${mounted.filter((name) => !patchSet.has(name)).join(", ") || "无"}）`);

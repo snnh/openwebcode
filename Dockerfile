@@ -42,8 +42,11 @@ RUN npm run build --prefix web
 
 # dsh UI vendor：抓钉版 dsh 前端与 client 插件 bundle -> server/assets/dsh-web/
 # （dsh 兼容模式的可选产物；仅在 dshCompatEnabled 打开时被 server 读取）
+# 抓取失败不阻塞镜像构建（与 release.yml 的 continue-on-error 同口径：缺 vendor 时
+# 该模式如实不可用——端口不监听，用户文档已说明）
 COPY scripts scripts
-RUN node scripts/fetch-dsh-web.mjs
+RUN node scripts/fetch-dsh-web.mjs \
+ || echo "警告：dsh UI vendor 抓取失败，镜像内不提供 dsh 兼容模式（其余功能不受影响）"
 
 # 裁剪 server 生产依赖（devDependencies 不进镜像）
 RUN npm prune --prefix server --omit=dev
