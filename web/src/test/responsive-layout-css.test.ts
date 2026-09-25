@@ -84,6 +84,16 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(narrowCss).toMatch(/\.budget-bar\s*\{[^}]*width:\s*28px;/s);
   });
 
+  it("顶栏操作行分隔竖线不画进带边框按钮内（中断 / 手动快照）", () => {
+    // 无边框项（下拉组 / 图标链接）沿用行内前置竖线
+    expect(css).toMatch(/\.job-actions > \* \+ \*:not\(button\)::before\s*\{[^}]*content:\s*"\|";/s);
+    // 带边框按钮不吃行内竖线：竖线绝对定位画在按钮框外（right:100%），不占布局宽度
+    expect(css).toMatch(/\.job-actions > button\s*\{\s*position:\s*relative;\s*\}/s);
+    expect(css).toMatch(/\.job-actions > \* \+ button::before\s*\{[^}]*position:\s*absolute;[^}]*right:\s*100%;/s);
+    // 窄屏 column-gap 为 0：由按钮左外边距给框外竖线留位，竖线不压到前一项
+    expect(narrowCss).toMatch(/\.job-actions > button\s*\{\s*margin-left:\s*8px;\s*\}/s);
+  });
+
   it("主区、底部面板和状态栏共享同一纵向视口", () => {
     expect(narrowCss).toMatch(/\.console-shell\.wb-shell\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
     expect(narrowCss).toMatch(/\.wb-main\s*\{[^}]*flex:\s*1 1 0;[^}]*min-height:\s*0;/s);

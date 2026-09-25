@@ -311,7 +311,20 @@
 .unit-narrow { display: none; }
 /* 操作行（沙盒/Shell/Python/快照/导出）与信息行同一纯文本语言：| 分隔，行首横线分两行 */
 .job-actions { border-top: 1px solid var(--border); padding-top: 6px; }
-.job-actions > * + *::before { content: "|"; color: var(--text-3); margin-right: 8px; opacity: 0.6; }
+.job-actions > * + *:not(button)::before { content: "|"; color: var(--text-3); margin-right: 8px; opacity: 0.6; }
+/* 自带边框的按钮（中断 / 手动快照）不能被竖线穿框：按钮不吃行内前置竖线，
+   竖线改在按钮框外绘制（绝对定位，不占布局宽度），间距与其它分隔一致 */
+.job-actions > button { position: relative; }
+.job-actions > * + button::before {
+  content: "|";
+  position: absolute;
+  top: 50%;
+  right: 100%;
+  margin-right: 5px;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  opacity: 0.6;
+}
 /* 顶栏下拉开关：彻底无胶囊——无边框无底色，hover 只换文字色，状态语义（enforced/advisory）由文字色表达 */
 .mode-switch {
   display: inline-flex;
@@ -691,6 +704,8 @@
   .job-actions .fit-select { flex: 1 1 0; min-width: 0; }
   .job-actions .fit-select select { width: 100%; max-width: none; }
   .job-actions .icon-btn { flex: none; }
+  /* 竖线在按钮框外绘制（中断 / 手动快照）：窄屏 column-gap 为 0，给按钮留出竖线间距 */
+  .job-actions > button { margin-left: 8px; }
   .mode-switch { min-height: 24px; padding: 1px 5px 1px 6px; gap: 3px; font-size: 10px; }
   /* 只隐藏文字标签（沙盒/Shell 等），不能误伤 FitSelect 的 span 外壳 */
   .mode-switch > span:not(.fit-select) { display: none; }
