@@ -40,7 +40,9 @@ const MAX_PLUGIN_ID_LENGTH = 60;
 const DSH_SUPPORTED_PACKAGES: Readonly<Record<string, string>> = {
   "@deepseek-ai/cordis": "4.0.2",
   "@deepseek-ai/schemastery": "3.18.2",
-  "@deepseek-ai/dsh-tools": "0.1.6",
+  // 垫片实现对齐整个 0.1.6 线（含 0.1.6-alpha.N）：用**范围**表达，否则精确声明
+  // `0.1.6-alpha.2` 的插件会被单点版本 0.1.6 判成不兼容
+  "@deepseek-ai/dsh-tools": ">=0.1.6-alpha.0 <0.1.7",
 };
 
 /** 插件状态：running 已激活；missing-services 依赖服务缺失（未激活）；incompatible 版本不兼容。 */
@@ -272,7 +274,33 @@ function compareDshVersions(left: DshVersion, right: DshVersion): number {
   if (left.prerelease === right.prerelease) return 0;
   if (left.prerelease === "") return 1;
   if (right.prerelease === "") return -1;
-  return left.prerelease < right.prerelease ? -1 : 1;
+  return compareDshPrerelease(left.prerelease, right.prerelease);
+}
+
+/**
+ * 预发布段比较（semver §11）：按 `.` 分段，纯数字段按数值比，其余按字典序；
+ * 数字段 < 字母段，段数少者小。此前直接字符串比较会把 `alpha.10` 判成小于 `alpha.2`。
+ */
+function compareDshPrerelease(left: string, right: string): number {
+  const leftParts = left.split(".");
+  const rightParts = right.split(".");
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index++) {
+    const leftPart = leftParts[index];
+    const rightPart = rightParts[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    const leftNumeric = /^\d+$/.test(leftPart);
+    const rightNumeric = /^\d+$/.test(rightPart);
+    if (leftNumeric && rightNumeric) {
+      const leftValue = Number(leftPart);
+      const rightValue = Number(rightPart);
+      if (leftValue !== rightValue) return leftValue < rightValue ? -1 : 1;
+      continue;
+    }
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    if (leftPart !== rightPart) return leftPart < rightPart ? -1 : 1;
+  }
+  return 0;
 }
 
 function satisfiesComparator(version: DshVersion, comparator: DshComparator): boolean {
@@ -340,7 +368,10 @@ function parseDshRangeSegment(segment: string): DshComparator[] | undefined {
     const low = parseDshToken(hyphen[1] ?? "");
     const high = parseDshToken(hyphen[2] ?? "");
     if (!low || !high) return undefined;
-    return [...low.map((comparator) => (comparator.op === "<" ? { op: ">=" as const, version: comparator.version } : comparator)), ...high];
+    // 下界只取 >=（`1.2.3` 解析出的是 >=1.2.3 && <=1.2.3，带上下界会恒空集）、上界只取 <=
+    const lower = { op: ">=" as const, version: (low.find((comparator) => comparator.op === ">=") ?? low[0]!).version };
+    const upper = { op: "<=" as const, version: (high.find((comparator) => comparator.op === "<=") ?? high[0]!).version };
+    return [lower, upper];
   }
   const comparators: DshComparator[] = [];
   for (const token of segment.split(/\s+/)) {
@@ -373,6 +404,78 @@ export function matchesDshRange(version: string, range: string): boolean | undef
   return unparsed ? undefined : false;
 }
 
+interface DshBound {
+  version: DshVersion;
+  inclusive: boolean;
+}
+
+/** 合取段 → 下界/上界（`>=`/`>` 取下界，`<=`/`<` 取上界）。 */
+function groupBounds(comparators: readonly DshComparator[]): { lower: DshBound | undefined; upper: DshBound | undefined } {
+  let lower: DshBound | undefined;
+  let upper: DshBound | undefined;
+  for (const comparator of comparators) {
+    if (comparator.op === ">=" || comparator.op === ">") {
+      const candidate: DshBound = { version: comparator.version, inclusive: comparator.op === ">=" };
+      const order = lower === undefined ? 1 : compareDshVersions(candidate.version, lower.version);
+      if (lower === undefined || order > 0 || (order === 0 && !candidate.inclusive)) lower = candidate;
+    } else {
+      const candidate: DshBound = { version: comparator.version, inclusive: comparator.op === "<=" };
+      const order = upper === undefined ? -1 : compareDshVersions(candidate.version, upper.version);
+      if (upper === undefined || order < 0 || (order === 0 && !candidate.inclusive)) upper = candidate;
+    }
+  }
+  return { lower, upper };
+}
+
+/** 两个合取段是否有交集（下界不高于上界；相等时必须两端都含端点）。 */
+function boundsIntersect(
+  left: { lower: DshBound | undefined; upper: DshBound | undefined },
+  right: { lower: DshBound | undefined; upper: DshBound | undefined },
+): boolean {
+  let lower = left.lower;
+  if (right.lower !== undefined && (lower === undefined || compareDshVersions(right.lower.version, lower.version) > 0 || (compareDshVersions(right.lower.version, lower.version) === 0 && !right.lower.inclusive))) {
+    lower = right.lower;
+  }
+  let upper = left.upper;
+  if (right.upper !== undefined && (upper === undefined || compareDshVersions(right.upper.version, upper.version) < 0 || (compareDshVersions(right.upper.version, upper.version) === 0 && !right.upper.inclusive))) {
+    upper = right.upper;
+  }
+  if (lower === undefined || upper === undefined) return true;
+  const order = compareDshVersions(lower.version, upper.version);
+  if (order < 0) return true;
+  if (order > 0) return false;
+  return lower.inclusive && upper.inclusive;
+}
+
+/**
+ * 两个 semver 范围是否可能同时满足（用于「翻译层支持面」与「插件依赖声明」的比较）。
+ *
+ * 与 `matchesDshRange` 的区别：后者问「某个具体版本是否落在范围内」，对单点版本表达的
+ * 支持面会把「精确预发布声明」误判为不兼容。任一侧不可解析时返回 undefined（调用方按不阻塞处理）。
+ */
+function rangesIntersect(left: string, right: string): boolean | undefined {
+  const parseGroups = (range: string): DshComparator[][] | undefined => {
+    const groups = range.split("||").map((group) => group.trim()).filter((group) => group !== "");
+    if (groups.length === 0) return undefined;
+    const parsed: DshComparator[][] = [];
+    for (const group of groups) {
+      const comparators = parseDshRangeSegment(group);
+      if (!comparators) return undefined;
+      parsed.push(comparators);
+    }
+    return parsed;
+  };
+  const leftGroups = parseGroups(left);
+  const rightGroups = parseGroups(right);
+  if (!leftGroups || !rightGroups) return undefined;
+  for (const leftComparators of leftGroups) {
+    for (const rightComparators of rightGroups) {
+      if (boundsIntersect(groupBounds(leftComparators), groupBounds(rightComparators)) === true) return true;
+    }
+  }
+  return false;
+}
+
 /** 依赖声明兼容探测：翻译层未提供的 `@deepseek-ai/*` 包即为不兼容。 */
 export function checkDshCompatibility(dependencies: Record<string, string>): { compatible: boolean; reason?: string } {
   for (const [name, spec] of Object.entries(dependencies)) {
@@ -381,7 +484,7 @@ export function checkDshCompatibility(dependencies: Record<string, string>): { c
     if (supported === undefined) {
       return { compatible: false, reason: `依赖 ${name}（${spec}）：翻译层未提供该 dsh 包/服务缝` };
     }
-    if (matchesDshRange(supported, spec) === false) {
+    if (rangesIntersect(supported, spec) === false) {
       return { compatible: false, reason: `依赖 ${name}@${spec} 与翻译层兼容面 ${supported} 不匹配` };
     }
   }

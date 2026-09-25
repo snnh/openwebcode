@@ -68,6 +68,22 @@ export function projectConfigurableProviders(sources: DshSettingsSources): Array
  * - `secrets` 逐档案列出 apiKey 路径与是否已设置（不泄漏任何密钥值）；
  * - `applies: 'live'`：owc 的服务商档案热生效（保存即重建 provider）。
  */
+/**
+ * 端点 URL 脱敏：去掉 userinfo（`https://user:token@host/...` 这类内联凭据），
+ * 内网地址与路径照实保留（dsh 设置页需要展示端点以辨认服务商）。不可解析时返回原串。
+ */
+function redactBaseUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    if (parsed.username === "" && parsed.password === "") return value;
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return value;
+  }
+}
+
 export function projectSettingsDescribe(sources: DshSettingsSources, revision = 1): Record<string, unknown> {
   const profiles = sources.profiles();
   const value: Record<string, unknown> = {};
@@ -76,7 +92,7 @@ export function projectSettingsDescribe(sources: DshSettingsSources, revision = 
     value[profile.id] = {
       enabled: profile.enabled,
       interfaceType: profile.interfaceType,
-      ...(profile.baseURL === undefined ? {} : { baseURL: profile.baseURL }),
+      ...(profile.baseURL === undefined ? {} : { baseURL: redactBaseUrl(profile.baseURL) }),
     };
     secrets.push({ path: [profile.id, "apiKey"], set: profile.hasApiKey });
   }

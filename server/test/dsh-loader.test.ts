@@ -25,6 +25,21 @@ async function makeDataDir(): Promise<string> {
   return dataDir;
 }
 
+describe("dsh 依赖兼容探测（范围相交口径）", () => {
+  it("精确预发布声明命中 0.1.6 线；越线/未提供的包如实报不兼容", () => {
+    // 上游钉版是 0.1.6-alpha.2：精确声明也必须判兼容（此前按单点版本 0.1.6 比较会误判）
+    expect(checkDshCompatibility({ "@deepseek-ai/dsh-tools": "0.1.6-alpha.2" })).toEqual({ compatible: true });
+    expect(checkDshCompatibility({ "@deepseek-ai/dsh-tools": "0.1.6-alpha.10" })).toEqual({ compatible: true });
+    expect(checkDshCompatibility({ "@deepseek-ai/dsh-tools": "^0.1.6" })).toEqual({ compatible: true });
+    expect(checkDshCompatibility({ "@deepseek-ai/cordis": "4.0.2", "@deepseek-ai/schemastery": "^3.18.0" })).toEqual({ compatible: true });
+    // 连字符区间（上游少见写法）也要能判兼容
+    expect(checkDshCompatibility({ "@deepseek-ai/cordis": "4.0.0 - 5.0.0" })).toEqual({ compatible: true });
+    expect(checkDshCompatibility({ "@deepseek-ai/dsh-tools": "^0.2.0" }).compatible).toBe(false);
+    expect(checkDshCompatibility({ "@deepseek-ai/cordis": "^5.0.0" }).compatible).toBe(false);
+    expect(checkDshCompatibility({ "@deepseek-ai/dsh-unknown-pkg": "1.0.0" }).compatible).toBe(false);
+  });
+});
+
 describe("dsh 最小 semver 范围匹配", () => {
   it("接受与垫片兼容面相交的范围", () => {
     expect(matchesDshRange("4.0.2", "^4.0.2")).toBe(true);
