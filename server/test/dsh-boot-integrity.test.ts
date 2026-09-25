@@ -5,6 +5,7 @@
  * 且以该 entry id 自注册的 bundle；每个插件文件的 rev 必须与清单一致。任何一条不满足，
  * dsh SPA 都会在浏览器里启动失败（而这些错在服务端静默 200 是查不出来的）。
  */
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -24,24 +25,32 @@ const VENDOR = path.join(SERVER_ROOT, "assets", "dsh-web");
 const VENDOR_READY = existsSync(path.join(VENDOR, "manifest.json"));
 
 describe.skipIf(!VENDOR_READY)("dsh boot 完整性（需 vendor）", () => {
-  it("每条 graph entry 的 bundle 存在、自注册 id 与 entry id 一致", async () => {
+  it("每条 graph entry 的 bundle 存在、自注册 id 与 entry id 一致、rev 与文件内容一致", async () => {
     const manifest = await loadVendorManifest(VENDOR);
     expect(manifest).toBeDefined();
     const graph = buildBootGraph(manifest!.plugins);
-    expect(graph.entries.length).toBeGreaterThan(50);
+    // 挂载集合锁定到钉版 roster（58）：插件数漂移（少装/混入未挂载包）必须在这里变红，
+    // 而不是等浏览器落到 dsh 错误页
+    expect(manifest!.plugins.length).toBe(58);
+    expect(graph.entries.length).toBe(manifest!.plugins.length);
     const failures: string[] = [];
     for (const entry of graph.entries) {
       const file = path.join(VENDOR, "plugins", entry.id, "client.js");
-      const source = await readFile(file, "utf8").catch(() => undefined);
-      if (source === undefined) {
+      const body = await readFile(file).catch(() => undefined);
+      if (body === undefined) {
         failures.push(`${entry.id}: bundle 缺失`);
         continue;
       }
+      const source = body.toString("utf8");
       const declared = /__ModuleLoader__\.load\(\{\s*id:\s*"([^"]+)"/.exec(source)?.[1];
       if (declared !== entry.id) failures.push(`${entry.id}: 自注册 id 为 ${declared ?? "(未声明)"}`);
       if (!entry.url.includes(encodeURIComponent(entry.rev)) && !entry.url.includes(entry.rev)) {
         failures.push(`${entry.id}: url 未携带 rev`);
       }
+      // rev 必须与磁盘内容一致：`/plugins` 路由按 manifest.rev 做缓存失效，
+      // 不一致等于客户端会长期拿到旧 bundle（此前只断言 url 带 rev，属假绿）
+      const expected = createHash("sha1").update(body).digest("hex").slice(0, 12);
+      if (expected !== entry.rev) failures.push(`${entry.id}: rev ${entry.rev} ≠ 内容 sha1 ${expected}`);
     }
     expect(failures).toEqual([]);
   });
@@ -102,6 +111,19 @@ describe.skipIf(!VENDOR_READY)("dsh boot 完整性（需 vendor）", () => {
     // 实测踩过：directory-picker-browse 被当作插件激活时在启动自检里 failed（整个 SPA 落到错误页），
     // 它与 native 都只作为依赖存在、不被任何插件 inject/external 引用 → 必须被排除。
     expect(manifest!.plugins.some((plugin) => plugin.id.includes("directory-picker"))).toBe(false);
+    // 规则本身也要成立（不只盯 directory-picker 一个包名）：挂载集合必须是
+    // 「被其它已挂载插件 inject/external 引用的包」的定点闭包——即引用目标的包名要么在图中，
+    // 要么是 shell 静态播种；反过来，图中不得出现既不被引用、也无其它挂载来源的孤立包。
+    // （patch.yml 名单在测试期不可得，故这里闭包方向只做「已挂载 → 引用目标在图中」的断言。）
+    for (const plugin of manifest!.plugins) {
+      for (const dependency of [...plugin.inject, ...plugin.external]) {
+        const name = packageNameOf(dependency);
+        expect(
+          ids.has(name) || seeded.has(name),
+          `${plugin.id} 引用的 ${dependency}（包 ${name}）既不在挂载图中也非 shell 静态播种`,
+        ).toBe(true);
+      }
+    }
   });
 
   it("注入行覆盖每条 batch：application 都有 preload、bootstrap 有阻塞脚本", async () => {

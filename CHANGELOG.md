@@ -9,9 +9,9 @@
 - **dsh 兼容模式（实验，默认关闭）**：在独立端口（默认 3211）托管 dsh（DeepSeek Harness）官方 Web 界面，并把 owc 的会话/事件/审批投影成 dsh 的协议，让 dsh 生态插件直接跑在 owc 上。开启方式：设置 → 通用 → 「启用 dsh 兼容模式」，活动栏底部出现 `layers` 图标，点击在新标签打开。会话、模型配置、权限模式与主工作台共用同一套状态，agent 循环、上下文账本、工具执行、流式、快照与索引仍全部走 owc 自有实现——翻译层只做投影，不引入第二套状态机。
   - **插件面**：把插件包放进 `<数据目录>/dsh-plugins/` 即被识别（启用态与配置在 `<数据目录>/dsh.json`，缺省全部启用）；插件注册的工具以 `ext__dsh-<插件id>__<工具>` 注入 owc 工具表并被 agent 调用，走同一套权限与沙盒门禁；支持 `tools/pre-execute`（放行 / 拒绝 / 取消；`ask` 降级为放行 + 审计日志）与 `tools/post-execute`（改结果 / 否决）钩子；兼容探测只放行 cordis / schemastery / dsh-tools 三个垫片包，插件依赖其它 `@deepseek-ai/*` 运行期包时如实报 `incompatible`；加载计划跟随模式开关（关闭即下发空计划、卸载插件并回滚工具），扩展宿主崩溃重启后自动重放。
   - **协议面**：会话列表 / 新建 / 打开（快照 + 增量 + 助手流式）/ 向前翻页、发消息（`queue` / `steer`）/ 中断 / 队列编辑、审批与提问回路（`$events` 逻辑流 + `$events/result` 应答）、工作区视图、历史图片回读；未实现的端点（设置、凭据、终端、工作区写操作等）返回明确错误而不是假数据。
-  - **托管与桥接**：自渲染 index 并注入 boot graph（按需分块、`rev` 校验）、`/plugins` 支持单文件与 combo 两种形态；随包发布 `owc-dsh-bridge` 插件提供「返回 Workbench」入口与 `/dsh-owc/status` 事实端点；dsh 端口复用主端口访问令牌（同 host cookie，`?token=` 换 HttpOnly cookie）。
+  - **托管与桥接**：自渲染 index 并注入 boot graph（按需分块、`rev` 校验）、`/plugins` 支持单文件与包内分块回源；随包发布 `owc-dsh-bridge` 插件提供「返回 Workbench」入口与 `/dsh-owc/status` 事实端点；dsh 端口复用主端口访问令牌（同 host cookie，`?token=` 换 HttpOnly cookie）。
   - **边界**：dsh 插件（Host 与 Client 入口）与 v1 扩展同档——**可信代码（≈ yolo），不经沙盒与权限确认链**，界面如实展示隔离状态；插件拿不到 core 通道、数据目录与原始 API Key。默认关闭，关闭时进程内零常驻（端口不监听、不加载 vendor、不建事件桥）。
-  - **版本与产物**：协议翻译层钉死 dsh **0.1.6-alpha.2**；vendor（前端 dist + 60 个插件 bundle）由 `scripts/fetch-dsh-web.mjs` 按依赖闭包抓取，发布包与镜像内置、源码构建需自行执行一次；许可随产物携带 `THIRD_PARTY_NOTICES.md` 与各包 LICENSE。设置 `dshUiPath` 指向自选 UI 目录时按「尽力兼容」对待，不提供维护承诺。
+  - **版本与产物**：协议翻译层钉死 dsh **0.1.6-alpha.2**；vendor（前端 dist + 58 个插件 bundle）由 `scripts/fetch-dsh-web.mjs` 按依赖闭包抓取，发布包与镜像内置、源码构建需自行执行一次；许可随产物携带 `THIRD_PARTY_NOTICES.md` 与各包 LICENSE。设置 `dshUiPath` 指向自选 UI 目录时按「尽力兼容」对待，不提供维护承诺。
   - 详见 [help/dsh-compat.md](./help/dsh-compat.md)。
 
 ### 安全
@@ -20,6 +20,16 @@
 - **dsh 回跳 URL 不再携带令牌**：dsh UI 的「返回 Workbench」在已带访问令牌 cookie 时省略 `?token=` 参数（凭据不写进 URL 与浏览器历史），仅无 cookie 的直接探测路径才回带兜底。
 
 ### 修复与优化
+
+- **dsh 兼容模式的安全与稳定性补强**（对照 AGENTS.md 边界逐条复核后修复）：
+  - **独立端口补齐 Host/Origin 校验**：回环免鉴权部署下，非回环 Host 的请求一律 403、WS 升级要求回环 `Origin`（此前新端口没有主端口已有的 DNS rebinding / 跨站 WS 防护，任意网页可借 rebind 读写会话并自行应答审批）；静态资源同口径受 Host 门禁约束。
+  - **TOTP 门禁覆盖 dsh 端口**：启用全局 TOTP 后，无有效票据的请求在 index/API/WS 三处都 401（此前第二因子可经该端口绕过）。
+  - **访问令牌改为请求期读取**：轮换令牌后 dsh 端口立即认新拒旧（此前在构建时快照，轮换后撤销不生效且新令牌被拒）。
+  - **补齐 WS 背压与单连接流上限**：待发超 4 MiB / 1000 条按慢客户端 1013 断开；单连接逻辑流上限 32（超限 `open` 回 `gateway/bad-request`）。
+  - **修「关闭态仍常驻监听」竞态**：`apply` 期间设置变化会让期望态与实际实例错位、此后端口永不关闭；现按进入时捕获的键落账 + 收敛循环重算，并改为「先监听成功再关旧实例」（改端口填错不再让 dsh 整体掉线）。未监听原因（缺 vendor / 非回环无令牌 / 监听失败）如实记录并经 `GET /api/dsh/status` 供 Web 入口提示。
+  - **请求体上限 300 MiB → 32 MiB**（大附件仍走专门通路）；`/index.html` 也走自渲染并在关闭态 503；公开前缀判定先做 URL 规范化；补 `X-Content-Type-Options: nosniff`。
+- **dsh 协议翻译层对齐上游码表与语义**：`session/prompt` 按 `requestId` 幂等（重发不重复起轮，与上游 `hasPromptRequest` 同语义）；参数类错误改用码表内的 `gateway/bad-request`，附件类错误改用 `session/attachment-invalid{reason}`（此前用的码不在 vendor `RemoteErrorDetailsMap` 里，客户端只能走通用展示）；`session/selectModel` 的 `reasoningEffort` 在模型未声明档位时也按全局合法枚举校验（此前可写入任意字符串使会话不可运行）；`session/page` 的 `throughSeq` 缺失如实报参数错误；`session/create` 与 REST 创建路径共用同一份默认套用（`defaultSnapshotMode`/`snapshotBackend`）并触发 `SessionStart` 钩子。
+- **dsh 流式与列表投影的性能/一致性**：`session/follow` 的 delta 改串行链（异步 IIFE 完成顺序不受控会换序），turn/step 按回合缓存（此前每个 delta 全量重派生会话记录，长会话 CPU 随历史增长）；图片尺寸/字节共用一次 base64 解码；`session.created/updated` 的摘要改单会话投影（此前每个会话事件全量重跑列表，近似 O(N²) 读盘）；发送循环期间到达的事件改脏标记尾随重跑（此前直接丢弃，客户端要重连才补齐）。
 
 - **修复 dsh 兼容模式开启时的启动崩溃**：dsh 运行期早于访问令牌解析构造，`const` 的暂时性死区直接让进程以 `ReferenceError` 退出（且即便不崩，端口也会拿到空令牌退化成免鉴权）。现在运行期与首次启停排在令牌解析之后，并加守卫：非回环监听且拿不到令牌时如实拒绝启动该端口，不裸开鉴权。
 - **修复 dsh 插件加载计划从未下发**：此前加载计划只在测试路径触发，真实进程不会加载任何 dsh 插件；现在启动按模式开关下发，开关热切换即时生效，宿主启动期间的并发同步会先等宿主初始化落地（避免加载计划被清空）。
