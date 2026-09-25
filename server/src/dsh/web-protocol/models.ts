@@ -6,6 +6,7 @@
  * 原则与 session-projection 一致：只做只读投影与入参校验，不编造能力、不建第二份模型目录。
  */
 import type { SessionMeta } from "../../sessions/types.js";
+import { EFFORT_LEVELS } from "../../routes/route-context.js";
 import { wireError, type DshWireError } from "./wire.js";
 import type { DshProjected } from "./session-projection.js";
 
@@ -61,10 +62,9 @@ const EFFORT_LABELS: Record<string, string> = {
 
 /**
  * 模型未声明 effort 档位时的兜底（与 REST `/api/sessions/:id/config` 的「未声明 = 全开」一致）：
- * 空数组 = 不限制，UI 给出全部合法档位。
+ * 空数组 = 不限制，UI 给出全部合法档位。取值与 REST 的 EFFORT_LEVELS 同一份（routes/route-context），
+ * 不另立常量防止漂移。
  */
-const ALL_EFFORTS: readonly string[] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
-
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
@@ -79,7 +79,7 @@ function catalogModel(model: DshCatalogModel, defaults: DshModelSelection | unde
     name: model.displayName ?? model.id,
   };
   if (!supportsReasoning) return row;
-  const efforts = declared.length > 0 ? declared : ALL_EFFORTS;
+  const efforts = declared.length > 0 ? declared : EFFORT_LEVELS;
   row.reasoning = {
     efforts: efforts.map((level) => ({ id: level, name: EFFORT_LABELS[level] ?? level })),
     ...(defaults !== undefined && defaults.provider === model.provider && defaults.model === model.id && defaults.reasoningEffort !== undefined
@@ -157,15 +157,15 @@ function parseSelection(args: Record<string, unknown>): { sessionId: string; sel
     ? (args.request as Record<string, unknown>)
     : {};
   const sessionId = asString(request.sessionId);
-  if (sessionId === undefined) return { error: wireError("session/arguments-invalid", "request.sessionId 缺失") };
+  if (sessionId === undefined) return { error: wireError("gateway/bad-request", "request.sessionId 缺失") };
   const provider = asString(request.provider);
   const model = asString(request.model);
   if (provider === undefined || model === undefined) {
-    return { error: wireError("session/arguments-invalid", "request.provider/model 缺失") };
+    return { error: wireError("gateway/bad-request", "request.provider/model 缺失") };
   }
   const effort = request.reasoningEffort;
   if (effort !== undefined && (typeof effort !== "string" || effort === "")) {
-    return { error: wireError("session/arguments-invalid", "reasoningEffort 必须是非空字符串") };
+    return { error: wireError("gateway/bad-request", "reasoningEffort 必须是非空字符串") };
   }
   return { sessionId, selection: { provider, model, ...(typeof effort === "string" ? { reasoningEffort: effort } : {}) } };
 }
@@ -194,9 +194,13 @@ export async function projectSelectModel(deps: DshModelSelectDeps, args: Record<
     return { error: wireError("session/model-unavailable", `模型不在目录中：${selection.model}`, { provider: selection.provider, model: selection.model }) };
   }
   const declared = model.capabilities?.effort ?? [];
-  if (selection.reasoningEffort !== undefined && declared.length > 0 && !declared.includes(selection.reasoningEffort)) {
+  // 模型未声明档位时按「全开」处理，但仍须是合法枚举值——REST 用 EFFORT_LEVELS 白名单校验，
+  // 这里同口径：否则任意字符串（如 "banana"）会落进 meta.json，后续 model-registry 的
+  // strictKnownValues 可能抛错把整个会话变成不可运行
+  const allowedEfforts: readonly string[] = declared.length > 0 ? declared : EFFORT_LEVELS;
+  if (selection.reasoningEffort !== undefined && !allowedEfforts.includes(selection.reasoningEffort)) {
     return {
-      error: wireError("session/arguments-invalid", `模型不支持该思考力度：${selection.reasoningEffort}`, {
+      error: wireError("gateway/bad-request", `模型不支持该思考力度：${selection.reasoningEffort}`, {
         model: selection.model,
         reasoningEffort: selection.reasoningEffort,
       }),

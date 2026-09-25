@@ -63,14 +63,16 @@ function toDshBlocks(message: ChatMessage, blocks: readonly MessageContent[]): u
         return;
       case "image": {
         const data = block.data;
-        const dimensions = data === undefined ? undefined : imageDimensions(block.mediaType, Buffer.from(data, "base64"));
+        // 每个 delta/derive 都可能跑到这里：同一 base64 只解码一次（尺寸与字节数共用）
+        const buffer = data === undefined ? undefined : Buffer.from(data, "base64");
+        const dimensions = buffer === undefined ? undefined : imageDimensions(block.mediaType, buffer);
         result.push({
           type: "image",
           attachment: {
             // 与 session/attachment 同一编号方案（<messageId>#<index>）
             attachmentId: `${message.id}#${index}`,
             mediaType: block.mediaType,
-            bytes: data === undefined ? 0 : Buffer.from(data, "base64").byteLength,
+            bytes: buffer?.byteLength ?? 0,
             width: dimensions?.width ?? 0,
             height: dimensions?.height ?? 0,
           },

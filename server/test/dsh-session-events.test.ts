@@ -173,7 +173,7 @@ describe("dsh follow/page 投影", () => {
     expect(value?.cursor).toBeGreaterThan(0);
     expect(value?.projections.asOfSeq).toBe(value?.cursor);
     expect(await projectSessionFollowSnapshot(fakeDeps(), { request: { address: { kind: "subagent", parentSessionId: "s1", childSessionId: "s2", mode: "one-shot" } } }))
-      .toMatchObject({ error: { code: "session/unsupported" } });
+      .toMatchObject({ error: { code: "gateway/bad-request" } });
     expect(await projectSessionFollowSnapshot(fakeDeps(), { request: { address: { kind: "session", sessionId: "nope" } } }))
       .toMatchObject({ error: { code: "session/not-found" } });
   });
@@ -183,7 +183,7 @@ describe("dsh follow/page 投影", () => {
     const cursor = full.records.at(-1)?.event.seq ?? 0;
     const projected = await projectSessionPage(fakeDeps(), { request: { address: { kind: "session", sessionId: "s1" }, throughSeq: cursor, maxMessages: 2 } });
     expect(projected).toMatchObject({ value: { hasMore: true } });
-    expect(await projectSessionPage(fakeDeps(), { request: {} })).toMatchObject({ error: { code: "session/unsupported" } });
+    expect(await projectSessionPage(fakeDeps(), { request: {} })).toMatchObject({ error: { code: "gateway/bad-request" } });
   });
 });
 

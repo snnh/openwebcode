@@ -119,12 +119,25 @@ describe("dsh 会话投影", () => {
   });
 
   it("session/create：已存在幂等；新建用请求 cwd，缺省回落默认工作目录", async () => {
-    const fake = deps({ metas: [meta("s1")] });
-    expect(await projectSessionCreate(fake.projection, { request: { sessionId: "s1" } })).toEqual({ value: { sessionId: "s1" } });
+    const fake = deps({ metas: [meta("9f8e7d6c-5b4a-4938-8271-0a1b2c3d4e5f")] });
+    expect(await projectSessionCreate(fake.projection, { request: { sessionId: "9f8e7d6c-5b4a-4938-8271-0a1b2c3d4e5f" } })).toEqual({ value: { sessionId: "9f8e7d6c-5b4a-4938-8271-0a1b2c3d4e5f" } });
+    // 非 UUID 的 sessionId 提前按参数错误回（owc 会话目录名是 UUID 白名单，不当内部错误外泄）
+    expect(await projectSessionCreate(fake.projection, { request: { sessionId: "s1" } })).toMatchObject({ error: { code: "gateway/bad-request" } });
     expect(await projectSessionCreate(fake.projection, { request: { cwd: "/tmp/x" } })).toEqual({ value: { sessionId: "new-session" } });
     expect(fake.create).toHaveBeenCalledWith({ cwd: "/tmp/x" });
     await projectSessionCreate(fake.projection, { request: {} });
     expect(fake.create).toHaveBeenLastCalledWith({ cwd: "/work/default" });
+  });
+
+  it("prompt 幂等：同一 requestId 重发不重复起轮（上游 hasPromptRequest 同语义）", async () => {
+    const fake = deps();
+    const request = { requestId: "req-1", sessionId: "s1", mode: "queue", content: [{ type: "text", text: "只发一次" }] };
+    expect(await projectSessionPrompt(fake.projection, { request })).toEqual({ value: { accepted: true } });
+    expect(await projectSessionPrompt(fake.projection, { request })).toEqual({ value: { accepted: true } });
+    expect(fake.run).toHaveBeenCalledTimes(1);
+    // 不同 requestId 是新的提交，照常起轮
+    await projectSessionPrompt(fake.projection, { request: { ...request, requestId: "req-2" } });
+    expect(fake.run).toHaveBeenCalledTimes(2);
   });
 
   it("prompt：空闲起一轮（带图片），运行中按 mode 入队/插话；file 块如实报未实现", async () => {
@@ -144,22 +157,22 @@ describe("dsh 会话投影", () => {
     expect(busy.run).not.toHaveBeenCalled();
 
     const file = await projectSessionPrompt(fake.projection, { request: { sessionId: "s1", mode: "queue", content: [{ type: "file", receiptId: "f1" }] } });
-    expect(file).toMatchObject({ error: { code: "session/unsupported" } });
+    expect(file).toMatchObject({ error: { code: "session/attachment-invalid" } });
     const missing = await projectSessionPrompt(fake.projection, { request: { sessionId: "nope", content: [{ type: "text", text: "x" }] } });
     expect(missing).toMatchObject({ error: { code: "session/not-found" } });
     const empty = await projectSessionPrompt(fake.projection, { request: { sessionId: "s1", content: [{ type: "text", text: "   " }] } });
-    expect(empty).toMatchObject({ error: { code: "session/arguments-invalid" } });
+    expect(empty).toMatchObject({ error: { code: "gateway/bad-request" } });
   });
 
   it("D7：运行中带图 prompt 明确失败（不静默丢图）；纯文本仍按 mode 入队", async () => {
     const busy = deps({ running: ["s1"] });
     const image = { type: "image", mediaType: "image/png", data: "AAAA" };
     const queued = await projectSessionPrompt(busy.projection, { request: { sessionId: "s1", mode: "queue", content: [{ type: "text", text: "看图" }, image] } });
-    expect(queued).toMatchObject({ error: { code: "session/unsupported" } });
+    expect(queued).toMatchObject({ error: { code: "session/attachment-invalid" } });
     expect((queued as { error: { message: string } }).error.message).toContain("运行中消息不支持图片附件");
     expect(busy.enqueueFollowUp).not.toHaveBeenCalled();
     const steered = await projectSessionPrompt(busy.projection, { request: { sessionId: "s1", mode: "steer", content: [image] } });
-    expect(steered).toMatchObject({ error: { code: "session/unsupported" } });
+    expect(steered).toMatchObject({ error: { code: "session/attachment-invalid" } });
     expect(busy.enqueueSteering).not.toHaveBeenCalled();
 
     expect(await projectSessionPrompt(busy.projection, { request: { sessionId: "s1", mode: "queue", content: [{ type: "text", text: "纯文本" }] } })).toEqual({ value: { accepted: true } });
@@ -172,15 +185,33 @@ describe("dsh 会话投影", () => {
 
   it("D12：session/create 走 REST 同款可见性链路（补发 session.created，幂等命中不补发）", async () => {
     const published: Array<{ type: string; sessionId: string }> = [];
-    const fake = deps();
+    const fake = deps({ metas: [meta("9f8e7d6c-5b4a-4938-8271-0a1b2c3d4e5f")] });
     const projection: DshProjectionDeps = {
       ...fake.projection,
       publishSessionCreated: (session: SessionMeta) => published.push({ type: "session.created", sessionId: session.id }),
     };
     expect(await projectSessionCreate(projection, { request: { cwd: "/tmp/x" } })).toEqual({ value: { sessionId: "new-session" } });
     expect(published).toEqual([{ type: "session.created", sessionId: "new-session" }]);
-    expect(await projectSessionCreate(projection, { request: { sessionId: "s1" } })).toEqual({ value: { sessionId: "s1" } });
+    expect(await projectSessionCreate(projection, { request: { sessionId: "9f8e7d6c-5b4a-4938-8271-0a1b2c3d4e5f" } })).toEqual({ value: { sessionId: "9f8e7d6c-5b4a-4938-8271-0a1b2c3d4e5f" } });
     expect(published).toHaveLength(1);
+  });
+
+  it("session/create 与 REST 同链路：共用默认套用（snapshotMode 等）并触发 SessionStart 钩子", async () => {
+    const calls: string[] = [];
+    const fake = deps();
+    const projection: DshProjectionDeps = {
+      ...fake.projection,
+      defaultSelection: () => ({ provider: "deepseek", model: "deepseek-chat" }),
+      applySessionDefaults: async (session, provider, model) => {
+        calls.push(`defaults:${session.id}:${provider}:${model}`);
+        return { ...session, snapshotMode: "manual" };
+      },
+      runSessionStartHook: async (info) => {
+        calls.push(`hook:${info.sessionId}:${info.cwd}`);
+      },
+    };
+    expect(await projectSessionCreate(projection, { request: { cwd: "/tmp/x" } })).toEqual({ value: { sessionId: "new-session" } });
+    expect(calls).toEqual(["defaults:new-session:deepseek:deepseek-chat", "hook:new-session:/tmp/x"]);
   });
 
   it("D9：列表摘要的 asOfSeq 与记录 seq 同口径（水位 = 末条记录 seq，非消息条数）", async () => {
@@ -256,8 +287,8 @@ describe("dsh 会话投影", () => {
 
   it("content 映射与 updateQueue（edit/remove/steer）", () => {
     expect(mapPromptContent([{ type: "text", text: "a" }, { type: "text", text: "b" }])).toEqual({ text: "a\n\nb", images: [] });
-    expect(mapPromptContent("nope")).toMatchObject({ error: { code: "session/arguments-invalid" } });
-    expect(mapPromptContent([{ type: "wat" }])).toMatchObject({ error: { code: "session/arguments-invalid" } });
+    expect(mapPromptContent("nope")).toMatchObject({ error: { code: "gateway/bad-request" } });
+    expect(mapPromptContent([{ type: "wat" }])).toMatchObject({ error: { code: "gateway/bad-request" } });
   });
 
   it("updateQueue：edit 改内容、remove 删除、steer 移出队列并插话", async () => {
@@ -266,7 +297,7 @@ describe("dsh 会话投影", () => {
     expect(fake.updateQueue).toHaveBeenCalledWith("s1", "q1", { content: "改了" });
     // 队列项内容只有文本：编辑带图必须明确失败（与运行中发图同一处理，不静默丢）
     const withImage = await projectSessionUpdateQueue(fake.projection, { request: { sessionId: "s1", itemId: "q1", action: { kind: "edit", content: [{ type: "image", mediaType: "image/png", data: "AAAA" }] } } });
-    expect(withImage).toMatchObject({ error: { code: "session/unsupported" } });
+    expect(withImage).toMatchObject({ error: { code: "session/attachment-invalid" } });
     expect(await projectSessionUpdateQueue(fake.projection, { request: { sessionId: "s1", itemId: "q1", action: { kind: "remove" } } })).toEqual({ value: { accepted: true } });
     expect(fake.removeQueue).toHaveBeenCalledWith("s1", "q1");
     expect(await projectSessionUpdateQueue(fake.projection, { request: { sessionId: "s1", itemId: "q1", action: { kind: "steer" } } })).toEqual({ value: { accepted: true } });
@@ -300,7 +331,7 @@ describe("dsh 会话投影", () => {
     const fake = deps({ details: { s1: detail("s1", [message("m1", "user", [{ type: "image", mediaType: "image/png", data: png.toString("base64") }])]) } });
     const projected = await projectSessionAttachment(fake.projection, { request: { sessionId: "s1", attachmentId: "m1#0" } });
     expect(projected).toMatchObject({ value: { attachment: { attachmentId: "m1#0", mediaType: "image/png", bytes: png.byteLength, width: 1, height: 1 } } });
-    expect(await projectSessionAttachment(fake.projection, { request: { sessionId: "s1", attachmentId: "m1#9" } })).toMatchObject({ error: { code: "session/attachment-not-found" } });
+    expect(await projectSessionAttachment(fake.projection, { request: { sessionId: "s1", attachmentId: "m1#9" } })).toMatchObject({ error: { code: "session/attachment-invalid" } });
   });
 });
 

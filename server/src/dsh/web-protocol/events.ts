@@ -45,7 +45,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 }
 
 /**
- * 解析 `$events/result` 的 args（形状非法返回错误文案，调用方回 `gateway/arguments-invalid`）。
+ * 解析 `$events/result` 的 args（形状非法返回错误文案，调用方回 `gateway/bad-request`）。
  */
 export function parseEventResult(args: Record<string, unknown>): { result: DshEventResult } | { error: string } {
   if (!hasExactKeys(args, ["clientId", "eventId", "outcome"])) return { error: "args 必须恰好含 clientId/eventId/outcome" };

@@ -4,7 +4,7 @@
  * 复刻上游 wire（`packages/client/modules/src/client/manifest.ts` 的 WebBootGraph/WebBootEntry/WebBootBatch）
  * 与注入渲染（`packages/host/webserver/src/injections.ts` 的 IndexInjection + renderIndexInjections）。
  * 差异：v1 每个 entry 单独一个 batch（单条 url），不实现 combo 拼接——协议允许 per-entry url，
- * 少一处拼接逻辑与 URL 长度上限处理（combo 仍可后续加，见 docs/dsh-protocol-map.md §5.4）。
+ * 少一处拼接逻辑与 URL 长度上限处理（combo 仍可后续加，见 docs/dsh-compat.md 第二部分 §5.4）。
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
