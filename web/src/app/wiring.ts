@@ -60,6 +60,7 @@ export function createAppWiring(options: AppWiringOptions): AppWiring {
     applySubagentEvent: (event) => live.applySubagentEvent(event, options.onSubagentStarted),
     applyCompactionEvent: (event) => live.applyCompactionEvent(event),
     clearRunningCompaction: (sessionId) => live.clearRunningCompaction(sessionId),
+    clearSubagentRuns: (sessionId) => live.clearSubagentRuns(sessionId),
     stream,
     // resync 命中当前会话：分页缓存可能已过期，清空重建
     onResyncCurrent: (sessionId) => clearOlderMessages(sessionId),

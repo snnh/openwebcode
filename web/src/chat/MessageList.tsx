@@ -9,7 +9,6 @@ import { shellCommandOf } from "../lib/shell-messages";
 import { ProcessFold } from "./ProcessFold";
 import { LiveStream } from "./LiveStream";
 import { RunErrorCard } from "./cards/RunErrorCard";
-import { PermissionCard } from "./cards/PermissionCard";
 import { LiveActivityBar } from "./cards/LiveActivityBar";
 import { ConversationSearchBar, findMatches, highlightArticle, unwrapSearchMarks } from "./search";
 import { CONVERSATION_SEARCH_EVENT, type MessageListProps } from "./types";
@@ -60,14 +59,13 @@ export function MessageList({
   onLoadMore,
   streamBlocks,
   runError,
-  permissions,
   liveActivity,
   liveSubagents,
   running,
   visible = true,
   onRetryRun,
   retryPending,
-  onPermissionDone,
+  scrollToBottomSignal,
 }: MessageListProps): ReactElement {
   const { t, locale } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
@@ -96,7 +94,14 @@ export function MessageList({
   useEffect(() => {
     if (!visible) return;
     followerRef.current!.notifyContentChanged();
-  }, [visible, messages.length, streamBlocks, permissions.length]);
+  }, [visible, messages.length, streamBlocks]);
+
+  // 待回答区出现新卡：把列表滚到底（问题来自最近的对话，滚到底才能看清上下文）。
+  // 信号由 ChatView 递增下发，0/undefined 表示未请求，避免首帧无谓滚动。
+  useEffect(() => {
+    if (!scrollToBottomSignal) return;
+    followerRef.current!.scrollToBottom();
+  }, [scrollToBottomSignal]);
 
   // ===== 会话切换：restore 滚动位置或贴底；卸载/再切换前 remember =====
   useLayoutEffect(() => {
@@ -334,9 +339,6 @@ export function MessageList({
           />
         )}
         {streamBlocks.length > 0 && <LiveStream blocks={streamBlocks} turn={turns.at(-1) ?? 0} />}
-        {permissions.map((permission) => (
-          <PermissionCard key={permission.requestId} permission={permission} onDone={onPermissionDone} />
-        ))}
         {liveActivity && <LiveActivityBar activity={liveActivity} />}
       </div>
       {searchOpen && (

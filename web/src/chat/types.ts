@@ -80,16 +80,26 @@ export interface PermissionCardProps {
   permission: PendingPermission;
   onDone(requestId: string): void;
   onError?(message: string): void;
+  /** 收起态：只渲染卡头 + 操作按钮（参数预览与拒绝理由输入随正文折叠） */
+  collapsed?: boolean;
+  onToggleCollapse?(): void;
 }
 
 export interface InteractionCardProps {
   item: InteractionRequest;
   onRespond(answer: unknown): void;
+  /** 收起态（待回答区手风琴的非展开项）：只渲染卡头 + 主操作按钮 */
+  collapsed?: boolean;
+  /** 收起/展开切换；缺省时不渲染折叠三角（单卡独立渲染场景） */
+  onToggleCollapse?(): void;
 }
 
 export interface PlanApprovalCardProps {
   item: InteractionRequest;
   onRespond(answer: unknown): void;
+  /** 收起态：只渲染卡头 + 「批准执行」 */
+  collapsed?: boolean;
+  onToggleCollapse?(): void;
 }
 
 /** 本轮执行失败的持久可见错误卡（含分类提示、重试/打开模型设置动作） */
@@ -124,7 +134,9 @@ export interface SearchBarProps {
   focusSignal?: number;
 }
 
-/** 聊天滚动区：消息列表 + 流式区 + 权限卡 + 活动条 + 搜索 + 分页哨兵 + 回到底部 */
+/** 聊天滚动区：消息列表 + 流式区 + 活动条 + 搜索 + 分页哨兵 + 回到底部。
+ *  待回答卡（权限/交互/计划批准）不在此列——它们与运行队列一起渲染在 ChatView 的
+ *  「待回答区」（消息列表之外、输入栏之上，见 chat/cards/pending-accordion.ts）。 */
 export interface MessageListProps {
   /** 显示用会话（已合并分页加载的更早消息） */
   session: SessionDetail;
@@ -137,8 +149,6 @@ export interface MessageListProps {
   onLoadMore(): void;
   streamBlocks: StreamBlock[];
   runError?: AgentErrorPayload;
-  /** 合并后的待决权限（服务端列表 + WS 即时卡） */
-  permissions: PendingPermission[];
   liveActivity?: LiveActivityInfo;
   liveSubagents: Record<string, LiveSubagentRun>;
   running: boolean;
@@ -146,7 +156,8 @@ export interface MessageListProps {
   visible?: boolean;
   onRetryRun?(): void;
   retryPending?: boolean;
-  onPermissionDone(requestId: string): void;
+  /** 递增信号：待回答区出现新卡时把消息列表滚到底，让用户看到「问题从哪来」 */
+  scrollToBottomSignal?: number;
 }
 
 /** 会话头（旧 JobHeader 并入）：标题/模式/模型/成本/上下文水位/操作 */

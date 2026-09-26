@@ -2,14 +2,16 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import { api } from "../../lib/api";
 import { summarizeToolInput } from "../../lib/tool-format";
 import { CodeBlock } from "../../components/Markdown";
+import { Icon } from "../../components/Icon";
 import { useI18n } from "../../i18n";
 import { useChatActions, type PermissionCardProps } from "../types";
 
 /**
  * 待决权限卡：允许一次 / 总是允许（3 秒内二次确认）/ 拒绝（可附理由）。
  * 先完成 HTTP 响应再 onDone 恢复挂起工具；sessionId 经 ChatActions 获取。
+ * 收起态只留卡头 + 操作按钮：参数预览与「总是允许」的二次确认仍在展开态，操作按钮不被挤出可视区。
  */
-export function PermissionCard({ permission, onDone, onError }: PermissionCardProps): ReactElement {
+export function PermissionCard({ permission, onDone, onError, collapsed = false, onToggleCollapse }: PermissionCardProps): ReactElement {
   const { t } = useI18n();
   const { sessionId } = useChatActions();
   const [reason, setReason] = useState("");
@@ -20,13 +22,13 @@ export function PermissionCard({ permission, onDone, onError }: PermissionCardPr
   const allowOnceRef = useRef<HTMLButtonElement>(null);
   const titleId = `permission-title-${permission.requestId}`;
 
-  // 出现时把焦点移到主操作按钮，便于键盘/读屏用户立即响应
+  // 展开时把焦点移到主操作按钮，便于键盘/读屏用户立即响应（收起态不抢焦点）
   useEffect(() => {
-    allowOnceRef.current?.focus();
+    if (!collapsed) allowOnceRef.current?.focus();
     return () => {
       if (confirmTimer.current) window.clearTimeout(confirmTimer.current);
     };
-  }, []);
+  }, [collapsed]);
 
   const cancelConfirm = (): void => {
     if (confirmTimer.current) window.clearTimeout(confirmTimer.current);
@@ -56,7 +58,7 @@ export function PermissionCard({ permission, onDone, onError }: PermissionCardPr
   const summary = summarizeToolInput(permission.input);
   return (
     <article
-      className="permission-card"
+      className={`permission-card pending-block${collapsed ? " collapsed" : ""}`}
       role="alertdialog"
       aria-labelledby={titleId}
       onKeyDown={(event) => {
@@ -64,19 +66,36 @@ export function PermissionCard({ permission, onDone, onError }: PermissionCardPr
         if (event.key === "Escape") cancelConfirm();
       }}
     >
-      <div className="message-meta">{t("需要你的确认", "Your confirmation is required")}</div>
-      <h2 id={titleId}>{t("允许执行", "Allow")} <b className="mono">{permission.tool}</b>{t(" 吗？", "?")}</h2>
-      {summary && <p className="tool-summary mono" title={summary}>{summary}</p>}
-      <details className="tool-detail">
-        <summary>{t("完整参数", "Full parameters")}</summary>
-        <CodeBlock lang="json" code={JSON.stringify(permission.input, null, 2)} />
-      </details>
-      <input
-        value={reason}
-        onChange={(event) => setReason(event.target.value)}
-        placeholder={t("拒绝理由（可选）", "Reason for denial (optional)")}
-        aria-label={t("拒绝理由（可选）", "Reason for denial (optional)")}
-      />
+      <div className="pending-head">
+        {onToggleCollapse && (
+          <button
+            type="button"
+            className="pending-toggle pending-toggle-icon"
+            aria-expanded={!collapsed}
+            aria-label={t("收起/展开权限确认卡", "Collapse or expand the permission card")}
+            onClick={onToggleCollapse}
+          >
+            <Icon name={collapsed ? "chevron-right" : "chevron-down"} size={12} />
+          </button>
+        )}
+        <h2 id={titleId} className="pending-title">{t("允许执行", "Allow")} <b className="mono">{permission.tool}</b>{t(" 吗？", "?")}</h2>
+        <span className="pending-flag">{t("待回答", "Waiting")}</span>
+      </div>
+      {!collapsed && (
+        <div className="pending-body">
+          {summary && <p className="tool-summary mono" title={summary}>{summary}</p>}
+          <details className="tool-detail">
+            <summary>{t("完整参数", "Full parameters")}</summary>
+            <CodeBlock lang="json" code={JSON.stringify(permission.input, null, 2)} />
+          </details>
+          <input
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder={t("拒绝理由（可选）", "Reason for denial (optional)")}
+            aria-label={t("拒绝理由（可选）", "Reason for denial (optional)")}
+          />
+        </div>
+      )}
       <div className="permission-actions">
         <button ref={allowOnceRef} className="btn primary" disabled={pending} onClick={() => { cancelConfirm(); decide("allow"); }}>{t("允许一次", "Allow once")}</button>
         <button className={`btn${confirmAlways ? " danger" : ""}`} disabled={pending} onClick={clickAllowAlways}

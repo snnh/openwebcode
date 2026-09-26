@@ -2,7 +2,7 @@ import type {
   AppEvent, LiveSubagentRun, LiveSubagentSynthesis, SubagentFinishedEvent, SubagentProgressEvent, SubagentStartedEvent, SubagentSynthesisEvent,
 } from "../lib/contracts";
 import type { CompactionMarker, CompactionMode } from "../lib/compaction";
-import { capLiveSubagentRuns, LIVE_SUBAGENT_CAP } from "../lib/subagent-runs";
+import { capLiveSubagentRuns, LIVE_SUBAGENT_CAP, subagentRunIds } from "../lib/subagent-runs";
 import { INACTIVE_STATES } from "../lib/agent-state";
 import { createStore, useStore } from "./store";
 
@@ -33,6 +33,14 @@ export interface LiveActivityInfo {
 
 interface LiveState {
   subagents: Record<string, Record<string, LiveSubagentRun>>;
+  /**
+   * 已被视图移除的子代理标识（sessionId → taskId/toolCallId → true）：
+   * 实时条目的移除靠 subagents 直接筛掉，这里额外挡住「从消息推导的历史条目」
+   * （面板/标签条都要过滤），见「新批次清旧批」与 `/clear` 两条规则。
+   */
+  hiddenSubagents: Record<string, Record<string, true>>;
+  /** 本轮 run 是否已出现首次 spawn：用于判定「模型开始新一批子代理」（agent.state=accepted 时清零） */
+  spawnedThisRun: Record<string, true>;
   /** swarm 合成轮状态（sessionId → toolCallId → 条目；subagent.synthesis 事件驱动） */
   syntheses: Record<string, Record<string, LiveSubagentSynthesis>>;
   activities: Record<string, LiveActivityEntry>;
@@ -40,7 +48,7 @@ interface LiveState {
   compactions: Record<string, CompactionMarker[]>;
 }
 
-const INITIAL_STATE: LiveState = { subagents: {}, syntheses: {}, activities: {}, compactions: {} };
+const INITIAL_STATE: LiveState = { subagents: {}, hiddenSubagents: {}, spawnedThisRun: {}, syntheses: {}, activities: {}, compactions: {} };
 const EMPTY_ACTIVITY: LiveActivityEntry = { outstanding: [] };
 
 /** 每会话已沉降压缩标记上限（运行中占位不计）：超出丢最旧 */
@@ -63,26 +71,50 @@ export const live = {
     if (!sessionId) return;
     if (event.type === "subagent.started") {
       const payload = event.payload as SubagentStartedEvent;
-      liveStore.set((previous) => ({
-        subagents: {
-          ...previous.subagents,
-          [sessionId]: capLiveSubagentRuns({
-            ...previous.subagents[sessionId],
-            [payload.taskId]: {
-              taskId: payload.taskId,
-              toolCallId: payload.toolCallId,
-              prompt: payload.prompt,
-              ...(payload.agent ? { agent: payload.agent } : {}),
-              ...(payload.role ? { role: payload.role } : {}),
-              ...(payload.model ? { model: payload.model } : {}),
-              ...(payload.swarm ? { swarm: payload.swarm } : {}),
-              status: "running",
-              turns: 0,
-              toolsUsed: [],
-            },
-          }, LIVE_SUBAGENT_CAP),
-        },
-      }));
+      liveStore.set((previous) => {
+        const sessionRuns = previous.subagents[sessionId] ?? {};
+        const firstSpawnOfRun = previous.spawnedThisRun[sessionId] !== true;
+        // 新一轮 run 的首次 spawn：清掉上一批的已终态子代理（运行中的保留——否则并行运行会丢掉监控入口）。
+        // 清掉的条目记进 hiddenSubagents，让面板里由消息推导的同批历史条目一起消失。
+        const hidden = { ...previous.hiddenSubagents[sessionId] };
+        let kept: Record<string, LiveSubagentRun> = sessionRuns;
+        if (firstSpawnOfRun) {
+          kept = {};
+          for (const [taskId, run] of Object.entries(sessionRuns)) {
+            if (run.status === "running") kept[taskId] = run;
+          }
+          for (const taskId of Object.keys(sessionRuns)) {
+            if (!(taskId in kept)) hidden[taskId] = true;
+          }
+          // 组内条目全被丢弃才按 toolCallId 隐藏：否则会连带把同组仍在运行的条目
+          // （部分完成的 swarm）一起从标签条/面板过滤掉
+          for (const toolCallId of new Set(Object.values(sessionRuns).map((run) => run.toolCallId))) {
+            if (!Object.values(kept).some((run) => run.toolCallId === toolCallId)) hidden[toolCallId] = true;
+          }
+        }
+        return {
+          spawnedThisRun: { ...previous.spawnedThisRun, [sessionId]: true },
+          hiddenSubagents: { ...previous.hiddenSubagents, [sessionId]: hidden },
+          subagents: {
+            ...previous.subagents,
+            [sessionId]: capLiveSubagentRuns({
+              ...kept,
+              [payload.taskId]: {
+                taskId: payload.taskId,
+                toolCallId: payload.toolCallId,
+                prompt: payload.prompt,
+                ...(payload.agent ? { agent: payload.agent } : {}),
+                ...(payload.role ? { role: payload.role } : {}),
+                ...(payload.model ? { model: payload.model } : {}),
+                ...(payload.swarm ? { swarm: payload.swarm } : {}),
+                status: "running",
+                turns: 0,
+                toolsUsed: [],
+              },
+            }, LIVE_SUBAGENT_CAP),
+          },
+        };
+      });
       onStarted?.(sessionId, payload);
       return;
     }
@@ -154,6 +186,8 @@ export const live = {
         // 新一轮开始或进入终态时清空未结束工具（防御 tool.end 丢失）
         const resetTools = INACTIVE_STATES.has(state) || state === "accepted" || state === "starting";
         return {
+          // 新一轮 run 开始（accepted）：清掉「本轮已有 spawn」标记，首个 spawn 时清理上一批终态条目
+          ...(state === "accepted" ? { spawnedThisRun: removeKey(previous.spawnedThisRun, sessionId) } : {}),
           activities: {
             ...previous.activities,
             [sessionId]: {
@@ -265,10 +299,33 @@ export const live = {
     });
   },
 
+  /**
+   * `/clear`（context.cleared）：把该会话的子代理整体清空——实时条目移除，且把它们的
+   * taskId/toolCallId 记进 hiddenSubagents，使面板中由消息推导的同批历史条目一并消失
+   * （/clear 语义是「上下文已清空」，旧子代理不应继续占据标签条与面板；对话里的工具卡
+   * 仍保留，需要时还能回看结果）。
+   */
+  clearSubagentRuns(sessionId: string): void {
+    liveStore.set((previous) => {
+      const sessionRuns = previous.subagents[sessionId];
+      if (!sessionRuns || Object.keys(sessionRuns).length === 0) return {};
+      const hidden = { ...previous.hiddenSubagents[sessionId] };
+      for (const id of subagentRunIds(sessionRuns)) hidden[id] = true;
+      return {
+        subagents: { ...previous.subagents, [sessionId]: {} },
+        hiddenSubagents: { ...previous.hiddenSubagents, [sessionId]: hidden },
+        // 已清空：下一个 spawn 重新算「本批首次」，无需再清（也不该误清新批次）
+        spawnedThisRun: removeKey(previous.spawnedThisRun, sessionId),
+      };
+    });
+  },
+
   /** 会话删除：清理实时数据 */
   removeSession(sessionId: string): void {
     liveStore.set((previous) => ({
       subagents: removeKey(previous.subagents, sessionId),
+      hiddenSubagents: removeKey(previous.hiddenSubagents, sessionId),
+      spawnedThisRun: removeKey(previous.spawnedThisRun, sessionId),
       activities: removeKey(previous.activities, sessionId),
       compactions: removeKey(previous.compactions, sessionId),
     }));
@@ -292,6 +349,13 @@ const EMPTY_RUNS: Record<string, LiveSubagentRun> = {};
 /** React 绑定：某会话的实时子代理运行（引用稳定，无更新不抖动） */
 export function useLiveSubagentRuns(sessionId: string | undefined): Record<string, LiveSubagentRun> {
   return useStore(liveStore, (state) => (sessionId ? state.subagents[sessionId] : undefined) ?? EMPTY_RUNS);
+}
+
+const EMPTY_HIDDEN: Record<string, true> = {};
+
+/** React 绑定：某会话被移除（清批/清空）的子代理标识，供面板与标签条过滤历史条目 */
+export function useHiddenSubagentTasks(sessionId: string | undefined): Record<string, true> {
+  return useStore(liveStore, (state) => (sessionId ? state.hiddenSubagents[sessionId] : undefined) ?? EMPTY_HIDDEN);
 }
 
 /** React 绑定：某次 spawn_swarm 调用的合成轮状态（无合成轮时 undefined） */
