@@ -1,5 +1,5 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import { highlightLines } from "../../highlight";
+import { memo, startTransition, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { highlightLines, shouldHighlight } from "../../highlight";
 import { useI18n } from "../../i18n";
 
 // 单文件渲染行数上限：诊断跳转只读预览不需要全文，超限截断避免大文件拖慢面板
@@ -29,14 +29,18 @@ export const CodeView = memo(function CodeView({ code, lang, targetLine, targetC
   const visibleCount = truncated ? MAX_LINES : lines.length;
   const target = targetLine && targetLine >= 1 && targetLine <= visibleCount ? targetLine : undefined;
 
+  // 截断后的可见内容仍可能很大：超过阈值跳过高亮（纯文本 + 行号），避免主线程同步高亮卡住面板
+  const visibleCode = useMemo(() => lines.slice(0, MAX_LINES).join("\n"), [lines]);
+  const highlightable = shouldHighlight(visibleCode);
   useEffect(() => {
     let alive = true;
     setHighlighted(undefined);
-    void highlightLines(lines.slice(0, MAX_LINES).join("\n"), lang).then((result) => {
-      if (alive && result) setHighlighted(result);
+    if (!highlightable) return () => { alive = false; };
+    void highlightLines(visibleCode, lang).then((result) => {
+      if (alive && result) startTransition(() => setHighlighted(result));
     });
     return () => { alive = false; };
-  }, [lines, lang]);
+  }, [visibleCode, lang, highlightable]);
 
   // 跳转到目标行；jsdom 等环境没有 scrollIntoView，默认时静默跳过
   useEffect(() => {

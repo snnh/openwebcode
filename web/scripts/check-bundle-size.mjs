@@ -3,7 +3,7 @@
 // ≤ MONACO_BUDGET_KB；Monaco 语言服务 worker chunk（*.worker-*.js，运行时按语言按需加载，
 // 不进首屏）≤ WORKER_BUDGET_KB；其余单个 JS chunk ≤ CHUNK_BUDGET_KB。
 // 阈值集中在顶部常量，后续演进直接改这里。
-import { readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,8 +38,27 @@ for (const name of files) {
   }
 }
 
+// 首屏 modulepreload 守卫：index.html 里 preload 的 JS 会随首屏一起下载，
+// 因此它们同样受入口预算约束（历史上 monaco 4 MB 曾因 __vitePreload helper 被并入
+// monaco chunk 而在这里被 preload，等于打开页面就下全量编辑器）。
+const indexHtml = readFileSync(join(assetsDir, "..", "index.html"), "utf8");
+const preloaded = [...indexHtml.matchAll(/<link[^>]+rel="modulepreload"[^>]+href="([^"]+\.js)"/g)]
+  .map((match) => match[1].split("/").pop())
+  .filter((name) => Boolean(name));
+for (const name of preloaded) {
+  let size;
+  try {
+    size = statSync(join(assetsDir, name)).size / 1024;
+  } catch {
+    continue;
+  }
+  if (size > ENTRY_BUDGET_KB) {
+    failures.push(`首屏 modulepreload 的 ${name}: ${size.toFixed(1)} KB 超过入口上限 ${ENTRY_BUDGET_KB} KB（首屏不应预加载重 chunk）`);
+  }
+}
+
 if (failures.length > 0) {
   console.error(`[check-bundle-size] 体积预算未达标：\n  ${failures.join("\n  ")}`);
   process.exit(1);
 }
-console.log(`[check-bundle-size] ${files.length} 个 JS chunk 均在预算内（入口 ≤ ${ENTRY_BUDGET_KB} KB，编辑器 ≤ ${MONACO_BUDGET_KB} KB，编辑器 worker ≤ ${WORKER_BUDGET_KB} KB，其余 ≤ ${CHUNK_BUDGET_KB} KB）`);
+console.log(`[check-bundle-size] ${files.length} 个 JS chunk 均在预算内（入口 ≤ ${ENTRY_BUDGET_KB} KB，编辑器 ≤ ${MONACO_BUDGET_KB} KB，编辑器 worker ≤ ${WORKER_BUDGET_KB} KB，其余 ≤ ${CHUNK_BUDGET_KB} KB；index.html modulepreload ${preloaded.length} 个文件均 ≤ 入口上限）`);

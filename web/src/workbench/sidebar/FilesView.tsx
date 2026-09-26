@@ -13,6 +13,7 @@ import { useI18n } from "../../i18n";
 import { EXT_LANGS } from "../../lib/file-langs";
 import { formatBytes } from "../../lib/format";
 import { auxViews } from "../aux-views";
+import { prefetchEditor } from "../../components/editor/prefetch";
 
 const joinPath = (base: string, name: string): string => (base === "." ? name : `${base}/${name}`);
 
@@ -155,7 +156,8 @@ export function FilesView({ sessionId }: { sessionId?: string | undefined }): Re
   const isImage = Boolean(selectedFile) && IMAGE_EXTS.has(ext);
   const isMarkdown = ext === "md" || ext === "markdown";
   const preview = useQuery({
-    queryKey: ["file", sessionId, selectedFile],
+    // 与 CodeOverlay / EditorPane / DiffPane 共用 ["file-content", ...]：预览过再打开编辑器不重复取数
+    queryKey: ["file-content", sessionId, selectedFile],
     queryFn: () => api.readFile(sessionId!, selectedFile!),
     enabled: Boolean(sessionId && selectedFile && !isImage),
     staleTime: FILES_STALE_MS,
@@ -211,6 +213,8 @@ export function FilesView({ sessionId }: { sessionId?: string | undefined }): Re
             <button
               className="btn small"
               onClick={() => auxViews.openEditor(selectedFile)}
+              onMouseEnter={prefetchEditor}
+              onFocus={prefetchEditor}
               aria-label={t(`在编辑器中打开 ${selectedFile}`, `Open ${selectedFile} in editor`)}
             >
               <Icon name="edit" size={12} />

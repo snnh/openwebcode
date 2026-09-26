@@ -151,7 +151,7 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
       deps.clearRunningCompaction(event.sessionId);
       // run 期间工作树可能被 bash/命令改动（这类改动不发 scm.updated）：终态补一次标脏，
       // 覆盖 SCM 面板与文件树（未挂载的查询只是标脏，不产生额外请求）。
-      scheduleCoalescedRefetch(queryClient, event.sessionId, ["scm-status", "scm-worktrees", "scm-diff", "files"]);
+      scheduleCoalescedRefetch(queryClient, event.sessionId, ["scm-status", "scm-worktrees", "scm-diff", "files", "file-content"]);
     }
 
     // 桌面通知：页面失焦时，权限待批/交互待答/run 终态弹系统通知（跨会话）
@@ -201,7 +201,7 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
     // SCM 更新：刷新源代码管理面板数据；不弹窗不打断
     if (event.type === "scm.updated" && event.sessionId) {
       // 工具写文件/编辑器保存 → SCM 面板与文件树一起刷新（合并重取，见 scheduleCoalescedRefetch）
-      scheduleCoalescedRefetch(queryClient, event.sessionId, ["scm-status", "scm-worktrees", "scm-diff", "files"]);
+      scheduleCoalescedRefetch(queryClient, event.sessionId, ["scm-status", "scm-worktrees", "scm-diff", "files", "file-content"]);
       deps.pushEventNotification(t("源代码管理状态已更新", "Source control state updated"), "info", { sessionId: event.sessionId, view: "scm" });
     }
     if (event.type === "agent.error" && event.sessionId) {

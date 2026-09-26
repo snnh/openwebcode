@@ -245,7 +245,7 @@ describe("createEventRouter", () => {
     },
   );
 
-  const DIRTY_KEYS = ["scm-status", "scm-worktrees", "scm-diff", "files"];
+  const DIRTY_KEYS = ["scm-status", "scm-worktrees", "scm-diff", "files", "file-content"];
 
   it("写事件：SCM 与文件树一起标脏，静默 400ms 后合并重取一次（不逐条重取）", () => {
     vi.useFakeTimers();

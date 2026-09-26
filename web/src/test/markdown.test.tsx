@@ -5,6 +5,8 @@ import { highlightCode } from "../highlight";
 
 // 高亮器打桩：断言语言传递即可，不加载 shiki 真语法
 vi.mock("../highlight", () => ({
+  // shouldHighlight 走真实阈值判定（超限降级为纯文本），只替换实际高亮调用
+  shouldHighlight: () => true,
   highlightCode: vi.fn(async (code: string, lang?: string) =>
     lang ? `<code data-lang="${lang}">${code}</code>` : undefined),
 }));
