@@ -16,26 +16,26 @@
     "contracts-check": "tsx ../scripts/contracts-check/check.ts && tsc --noEmit -p ../scripts/contracts-check/tsconfig.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.111.0",
+    "@anthropic-ai/sdk": "^0.128.0",
     "@fastify/compress": "^8.3.1",
-    "@fastify/static": "^10.1.0",
-    "@fastify/websocket": "^11.2.0",
+    "@fastify/static": "^10.1.4",
+    "@fastify/websocket": "^11.3.1",
     "fastify": "^5.6.2",
-    "undici": "^8.9.0",
-    "ws": "8.21.0"
+    "undici": "^8.11.0",
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
-    "@types/node": "^24.10.0",
+    "@types/node": "^24.13.6",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.5",
-    "globals": "^17.8.0",
-    "knip": "^6.32.2",
-    "playwright": "^1.62.0",
-    "tsx": "^4.20.6",
+    "globals": "^17.12.0",
+    "knip": "^6.38.0",
+    "playwright": "^1.63.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.65.0",
+    "typescript-eslint": "^8.70.1",
     "vitest": "^4.1.11"
   }
 }
