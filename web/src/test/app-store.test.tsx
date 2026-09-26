@@ -75,7 +75,8 @@ describe("app/wiring", () => {
       socket.serverSend({ type: "message.delta", sessionId: "s1", payload: { text: "你好" } });
       stream.flush(); expect(joined(stream, "s1")).toEqual(["你好"]);
       socket.serverSend({ type: "agent.state", sessionId: "s1", payload: { state: "idle" } });
-      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["session", "s1"] });
+      // idle 详情刷新走合并重取窗口：先标脏（不立即取数），400ms 后统一重取
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["session", "s1"], refetchType: "none" });
       socket.serverSend({ type: "message.delta", sessionId: "s1", payload: { text: "尾部token" } });
       expect(joined(stream, "s1")).toEqual(["你好"]);
       socket.serverClose(); vi.advanceTimersByTime(1); expect(states).toEqual([true]);

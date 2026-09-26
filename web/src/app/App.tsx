@@ -63,7 +63,11 @@ export function App(): ReactElement {
   const notice = useStore(uiStore, (state) => state.notice);
   const newSessionOpen = useStore(uiStore, (state) => state.newSessionOpen);
   const deleteTarget = useStore(uiStore, (state) => state.deleteTarget);
-  const agentStates = useStore(sessionStore, (state) => state.agentStates);
+  // 收窄订阅：整份 agentStates 任一会话的状态事件（每 turn 多次）都会让 App 整树重渲；
+  // App 实际只消费「当前会话状态」与「待删除会话是否在忙」两个原始值切片。
+  const currentAgentState = useStore(sessionStore, (state) => sessionId ? state.agentStates[sessionId] : undefined);
+  const deleteTargetRunning = useStore(sessionStore, (state) => deleteTarget !== undefined && isBusyState(state.agentStates[deleteTarget]));
+  const settingsOpen = useStore(uiStore, (state) => state.settingsOpen);
   const paletteOpen = useStore(uiStore, (state) => state.paletteOpen);
   const quickOpenOpen = useStore(uiStore, (state) => state.quickOpen);
   const mode = useStore(uiStore, (state) => state.mode);
@@ -366,8 +370,7 @@ export function App(): ReactElement {
       .catch(fail("删除会话失败", "Could not delete session"));
   };
 
-  const currentState = agentRun.data?.state ?? (sessionId ? agentStates[sessionId] : undefined);
-  const runningIds = useMemo(() => new Set(Object.entries(agentStates).filter(([, state]) => isBusyState(state)).map(([id]) => id)), [agentStates]);
+  const currentState = agentRun.data?.state ?? currentAgentState;
   const openNavMenu = (): void => layout.setMobileNavOpen(true);
   const onExample = (text: string): void => {
     const copied = t("已复制到剪贴板，粘贴进会话输入框发送", "Copied to clipboard — paste into the composer to send");
@@ -489,9 +492,12 @@ export function App(): ReactElement {
           />
         </Suspense>
       )}
-      <Suspense fallback={null}>
-        <SettingsDialog />
-      </Suspense>
+      {settingsOpen && (
+        <Suspense fallback={null}>
+          {/* 门控渲染：设置弹窗 chunk 含 17 个分区，App 挂载即无条件渲染会让首屏白下整包 */}
+          <SettingsDialog />
+        </Suspense>
+      )}
       <input
         ref={importInput}
         type="file"
@@ -508,7 +514,7 @@ export function App(): ReactElement {
       <ConfirmDeleteDialog
         open={deleteTarget !== undefined}
         title={sessions.data?.find((session) => session.id === deleteTarget)?.title ?? deleteTarget ?? ""}
-        running={deleteTarget !== undefined && runningIds.has(deleteTarget)}
+        running={deleteTargetRunning}
         onCancel={() => ui.setDeleteTarget(undefined)}
         onConfirm={confirmDelete}
       />
