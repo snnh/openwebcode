@@ -91,7 +91,9 @@ async function measureSettledHeap() {
 // 避免 404/空白页被误测成高帧率。
 const response = await page.goto(`${serverBase}/`, { waitUntil: "networkidle" });
 if (!response?.ok()) throw new Error(`Web 页面加载失败：HTTP ${response?.status() ?? "unknown"}`);
-await page.locator(".session-link").first().click();
+// 点链接的标题区（左上角空白处）：会话行右侧悬浮操作钮会覆盖链接中心，
+// 直接 click() 会被按钮图标 intercept（真实用户也只会点标题文字区域）。
+await page.locator(".session-link").first().click({ position: { x: 20, y: 12 } });
 await page.locator("#composer-input").waitFor({ state: "visible" });
 await page.locator(".chat-track").waitFor({ state: "visible" });
 

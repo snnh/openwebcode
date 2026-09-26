@@ -8,6 +8,7 @@
  * - 归档会话单独进「已归档」区，不参与分组；未归档会话里也不会出现它们。
  */
 import type { Session } from "../lib/contracts";
+import { compareText } from "../lib/collator.js";
 
 /** 组内排序：置顶优先，其余保持服务端顺序（稳定） */
 export function orderWithinGroup(sessions: Session[]): Session[] {
@@ -48,7 +49,7 @@ export function groupSessions(sessions: Session[]): { groups: Array<{ name: stri
   }
   const groups = [...buckets.entries()]
     .map(([name, list]) => ({ name, sessions: orderWithinGroup(list), activity: lastActivity(list) }))
-    .sort((a, b) => (a.activity === b.activity ? a.name.localeCompare(b.name) : b.activity.localeCompare(a.activity)))
+    .sort((a, b) => (a.activity === b.activity ? compareText(a.name, b.name) : b.activity.localeCompare(a.activity)))
     .map(({ name, sessions: list }) => ({ name, sessions: list }));
   return { groups, ungrouped: orderWithinGroup(ungrouped) };
 }

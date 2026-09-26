@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { compareText } from "../../lib/collator.js";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { ExtensionInfo } from "../../lib/contracts";
@@ -180,7 +181,7 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
       .filter((model) => enabled.has(model.provider))
       .filter((model) => model.capabilities.modalities.includes("image"))
       .map((model) => ({ value: `${model.provider}/${model.id}`, label: `${model.id}【${model.provider}】` }))
-      .sort((left, right) => left.label.localeCompare(right.label));
+      .sort((left, right) => compareText(left.label, right.label));
   }, [hasModelPicker, modelCatalog.data, modelProviders.data]);
 
   useEffect(() => setValues(initialValues(fields, extension.config)), [extension.config, extension.configSchema]); // eslint-disable-line react-hooks/exhaustive-deps

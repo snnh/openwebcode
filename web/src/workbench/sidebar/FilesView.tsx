@@ -4,6 +4,7 @@
  * 数据经 api.listFiles/readFile（react-query）；无会话时按空态提示。
  */
 import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { compareText } from "../../lib/collator.js";
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError } from "../../lib/api";
 import type { FileEntry } from "../../lib/contracts";
@@ -33,7 +34,7 @@ const countLines = (text: string): number => (text.length === 0 ? 0 : text.split
 function sortEntries(entries: FileEntry[]): FileEntry[] {
   return [...entries].sort((a, b) => {
     if ((a.type === "directory") !== (b.type === "directory")) return a.type === "directory" ? -1 : 1;
-    return a.name.localeCompare(b.name);
+    return compareText(a.name, b.name);
   });
 }
 

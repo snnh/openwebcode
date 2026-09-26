@@ -9,12 +9,16 @@ import type { ChatMessage } from "../lib/contracts";
  *
  * 资源占用收敛：向上翻页加载的是「已经不在详情尾部窗口里的历史」，此前按会话永久保留
  * （只在 resync / 删除会话时清），会话开得多 + 各自翻过历史后会持续吃内存。现在两条上限：
- * - 单会话条数上限（保留最近加载的部分，超出丢最旧页，并把 hasMore 复位为 true 以便再翻）；
+ * - 单会话条数上限（保留最近加载的部分，超出的最旧部分从视图释放）；
  * - 全局会话数上限（按最近使用 LRU，超出整体释放最久未用的会话分页缓存）。
+ *
+ * 翻页游标（cursor）与消息数组解耦：截断丢弃了最旧消息后，游标仍是「已加载的最早一条」，
+ * 于是继续向前翻页不会回退重复请求、也不会因截断把 hasMore 反复置真——曾经那样做会让
+ * 「一直点加载更早」变成翻不到头的死循环（browser 渲染基准的翻页收敛检查抓到）。
  */
 
-/** 单会话保留的已加载更早消息条数上限（约 3 页） */
-export const PAGINATION_MAX_MESSAGES = 300;
+/** 单会话保留的已加载更早消息条数上限（约 20 页；超出部分从视图释放，仍可继续向前翻） */
+export const PAGINATION_MAX_MESSAGES = 2000;
 /** 同时保留分页缓存的会话数上限（LRU） */
 export const PAGINATION_MAX_SESSIONS = 10;
 
@@ -22,6 +26,8 @@ interface OlderMessagesState {
   older: ChatMessage[];
   hasMore: boolean;
   loading: boolean;
+  /** 下次翻页的 before 游标（已加载的最早消息 id）；截断消息不改变它 */
+  cursor?: string;
 }
 
 const EMPTY: OlderMessagesState = { older: [], hasMore: false, loading: false };
@@ -32,10 +38,13 @@ interface PaginationState {
 
 const store = createStore<PaginationState>({ bySession: {} });
 
-/** 截断某会话的已加载历史：保留最近 limit 条，并让 hasMore 复位为真（更早的仍可从服务端翻） */
+/**
+ * 截断某会话的已加载历史：保留最近 limit 条（游标与 hasMore 原样保留——
+ * 前者保证还能继续向前翻，后者只由服务端响应决定，避免翻页不收敛）。
+ */
 export function trimOlderMessages(state: OlderMessagesState, limit: number = PAGINATION_MAX_MESSAGES): OlderMessagesState {
   if (state.older.length <= limit) return state;
-  return { ...state, older: state.older.slice(state.older.length - limit), hasMore: true };
+  return { ...state, older: state.older.slice(state.older.length - limit) };
 }
 
 /** 全局 LRU：只保留最近使用的 limit 个会话的分页缓存（recency 顺序为最旧→最新） */
@@ -85,11 +94,18 @@ export function useOlderMessages(sessionId: string | undefined): OlderMessagesSt
 export async function loadOlderMessages(sessionId: string, oldestId: string): Promise<void> {
   const current = store.get().bySession[sessionId] ?? EMPTY;
   if (current.loading) return;
+  // 优先用保留游标：截断后列表里的「最旧一条」会变新，用它会让翻页回退重复请求
+  const before = current.cursor ?? oldestId;
   patch(sessionId, { loading: true });
   try {
-    const page = await api.messagesPage(sessionId, oldestId, 100);
+    const page = await api.messagesPage(sessionId, before, 100);
     const latest = store.get().bySession[sessionId] ?? EMPTY;
-    patch(sessionId, { older: [...page.messages, ...latest.older], hasMore: page.hasMore, loading: false });
+    patch(sessionId, {
+      older: [...page.messages, ...latest.older],
+      hasMore: page.hasMore,
+      cursor: page.messages[0]?.id ?? before,
+      loading: false,
+    });
   } catch {
     // 网络错误静默处理——loading 复位后用户可重试
     patch(sessionId, { loading: false });
