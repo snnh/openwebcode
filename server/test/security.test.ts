@@ -1,5 +1,6 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { brotliCompressSync, brotliDecompressSync } from "node:zlib";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
@@ -413,6 +414,29 @@ describe("WebUI 静态响应头", () => {
       expect(asset.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
       // inject 不做内容协商解压：确认发出去的确实是原文件的 br 同伴
       expect(brotliDecompressSync(asset.rawPayload).toString("utf8")).toBe(js);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("API 响应压缩", () => {
+  it("大 JSON 响应按 br 压缩，小响应与静态资源不重复压", async () => {
+    const { app, sessions } = await makeTestApp();
+    try {
+      const session = await sessions.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
+      await sessions.appendMessage(session.id, { role: "assistant", content: "x".repeat(8 * 1024) });
+      const big = await app.inject({
+        method: "GET",
+        url: `/api/sessions/${session.id}`,
+        headers: { "accept-encoding": "br" },
+      });
+      expect(big.headers["content-encoding"]).toBe("br");
+      expect(big.headers["vary"]).toBe("accept-encoding");
+      expect(JSON.parse(brotliDecompressSync(big.rawPayload).toString("utf8")).messages.length).toBe(1);
+
+      const small = await app.inject({ method: "GET", url: "/api/sessions", headers: { "accept-encoding": "br" } });
+      expect(small.headers["content-encoding"]).toBeUndefined(); // 低于阈值不压
     } finally {
       await app.close();
     }
