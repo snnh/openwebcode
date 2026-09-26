@@ -312,3 +312,80 @@ describe("readMessages 整表缓存的等价性", () => {
     const second = await store.get(a); expect(second!.messages).toHaveLength(6); expect(second).toEqual(await freshRead(root, a));
   });
 });
+
+describe("活跃 run 的消息缓存钉住（pinMessages/unpinMessages）", () => {
+  it("超限大会话未钉住时不驻留；钉住后常驻、跳过空闲清扫，解除后立即逐出", async () => {
+    const root = await tempRoot("owc-msgpin-");
+    const store = await storeAt(root);
+    const session = await newSession(store, root);
+    // 超过单会话缓存上限（48MB 堆 ≈ 16MB 文件）的大会话：5 × 4MB 文本
+    const big = "x".repeat(4 * 1024 * 1024);
+    for (let i = 0; i < 5; i += 1) await store.appendMessage(session, "user", [{ type: "text", text: big }]);
+
+    // 普通纪律：超限会话读取后不驻留（60MB 会话每轮整表重解析的旧行为）
+    await store.get(session);
+    expect(store.messagesCacheStats().entries).toBe(0);
+
+    // 钉住后：绕过单会话上限建立常驻缓存
+    store.pinMessages(session);
+    await store.get(session);
+    expect(store.messagesCacheStats()).toMatchObject({ entries: 1, pinned: 1 });
+    // 空闲清扫跳过钉住条目（lastAccess 远超阈值也不逐出）
+    expect(store.sweepIdleCaches(Date.now() + 24 * 3600 * 1000)).toBe(0);
+    expect(store.messagesCacheStats().entries).toBe(1);
+    // 钉住期间 append 穿透保持缓存与磁盘一致（大会话也走增量，不失效重读）
+    await store.appendMessage(session, "assistant", [{ type: "text", text: "tail" }]);
+    expect(await store.get(session)).toEqual(await freshRead(root, session));
+
+    // 解除钉住：超限条目立即按普通纪律逐出
+    store.unpinMessages(session);
+    expect(store.messagesCacheStats()).toMatchObject({ entries: 0, pinned: 0 });
+  });
+
+  it("普通大小会话钉住/解除不改变常规缓存行为；解除后仍驻留", async () => {
+    const root = await tempRoot("owc-msgpin-small-");
+    const store = await storeAt(root);
+    const session = await newSession(store, root);
+    await seedMessages(store, session, 3);
+    store.pinMessages(session);
+    await store.get(session);
+    expect(store.messagesCacheStats()).toMatchObject({ entries: 1, pinned: 1 });
+    store.unpinMessages(session);
+    // 未超限：解除后仍按普通 LRU 驻留
+    expect(store.messagesCacheStats()).toMatchObject({ entries: 1, pinned: 0 });
+    // 幂等：重复解除无害
+    store.unpinMessages(session);
+    expect(store.messagesCacheStats().entries).toBe(1);
+  });
+
+  it("钉住条目参与总量记账但不成为逐出受害者：超限时挤掉其他未钉住条目", async () => {
+    const root = await tempRoot("owc-msgpin-evict-");
+    const store = await storeAt(root);
+    const pinned = await newSession(store, root);
+    const big = "x".repeat(4 * 1024 * 1024);
+    for (let i = 0; i < 5; i += 1) await store.appendMessage(pinned, "user", [{ type: "text", text: big }]);
+    store.pinMessages(pinned);
+    await store.get(pinned); // ~60MB 堆 pinned 常驻
+
+    // 再建 4 个同样超限级的大会话（未钉住）：总量远超 192MB 上限
+    const others: string[] = [];
+    for (let s = 0; s < 4; s += 1) {
+      const other = await newSession(store, root);
+      for (let i = 0; i < 5; i += 1) await store.appendMessage(other, "user", [{ type: "text", text: big }]);
+      await store.get(other);
+      others.push(other);
+    }
+    // 未钉住的超限会话本就不入缓存；pinned 的必须始终在
+    const stats = store.messagesCacheStats();
+    expect(stats.pinned).toBe(1);
+    expect(stats.bytes).toBeGreaterThan(48 * 1024 * 1024);
+    // 小会话补进来后总量进一步上升，逐出也不碰 pinned
+    const small = await newSession(store, root);
+    await seedMessages(store, small, 3);
+    await store.get(small);
+    const after = store.messagesCacheStats();
+    expect(after.pinned).toBe(1);
+    // pinned 内容仍是正确的（没有被挤掉后重读盘的迹象：数据与全新实例一致）
+    expect(await store.get(pinned)).toEqual(await freshRead(root, pinned));
+  });
+});

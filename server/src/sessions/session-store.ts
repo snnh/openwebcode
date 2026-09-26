@@ -93,6 +93,14 @@ export class SessionStore {
   /** messagesCache 的累计权重（与逐出纪律同步维护）。 */
   private messagesCacheBytes = 0;
 
+  /**
+   * 活跃 run 钉住的会话集：run 期间其整表缓存绕过单会话上限、不参与空闲清扫与 LRU 逐出。
+   * 大会话（超过 48MB 堆上限）本来永不入缓存，agent 每个 turn 都要把整份 messages.jsonl
+   * 重新 read+JSON.parse（60MB 文件 ≈ 180MB 堆瞬时分配 × 每 turn 2 次），是 RSS 持续增长
+   * 的主因；钉住后整 run 只解析一次，appendMessage 走增量穿透。run 结束由 unpinMessages 回落。
+   */
+  private readonly pinnedMessages = new Set<string>();
+
   /** 按会话 id 的 LRU meta 缓存；指纹失效纪律同 messagesCache。 */
   private readonly metaCache = new Map<string, MetaCacheEntry>();
 
@@ -204,6 +212,36 @@ export class SessionStore {
       if (isMissing(error)) return undefined;
       throw error;
     }
+  }
+
+  /**
+   * 活跃 run 钉住该会话的消息整表缓存（agent-runner run() 入口调用，finally 里 unpinMessages）。
+   * 幂等；仅影响缓存纪律，不做预读——run 启动后的第一次 get() 自然建立缓存。
+   */
+  pinMessages(id: string): void {
+    this.pinnedMessages.add(id);
+  }
+
+  /**
+   * 解除钉住：回落普通缓存纪律——超单会话上限的条目立即逐出，其余按 LRU/总量裁决。
+   * 幂等；会话删除/未钉住时调用无害。
+   */
+  unpinMessages(id: string): void {
+    if (!this.pinnedMessages.delete(id)) return;
+    const entry = this.messagesCache.get(id);
+    if (!entry) return;
+    if (entry.weight > MAX_CACHED_MESSAGES_PER_SESSION_BYTES) {
+      this.dropMessagesCache(id);
+      return;
+    }
+    this.evictOverflow();
+  }
+
+  /** 消息整表缓存的只读统计（性能面板/诊断/测试用）；pinned 为活跃 run 钉住的条数。 */
+  messagesCacheStats(): { entries: number; bytes: number; pinned: number } {
+    let pinned = 0;
+    for (const id of this.messagesCache.keys()) if (this.pinnedMessages.has(id)) pinned += 1;
+    return { entries: this.messagesCache.size, bytes: this.messagesCacheBytes, pinned };
   }
 
   /** cwd 是否为某个现存会话的工作目录（内存引用计数集，避免每次校验全量 list()）。 */
@@ -615,6 +653,7 @@ export class SessionStore {
   }
 
   async delete(id: string): Promise<boolean> {
+    this.pinnedMessages.delete(id);
     this.dropMessagesCache(id);
     invalidateMessageIndex(this.messagesPath(id));
     await this.forgetSessionCwd(id);
@@ -850,18 +889,29 @@ export class SessionStore {
   private touchMessagesCache(id: string, entry: MessagesCacheEntry): void {
     entry.lastAccess = Date.now();
     this.sweepIdleCaches(entry.lastAccess);
-    const previous = this.messagesCache.get(id);
-    if (previous) this.messagesCacheBytes -= previous.weight;
+    // dropMessagesCache 内部同步扣 weight 记账（此前此处先手动减一次再 drop，总账越记越负）
     this.dropMessagesCache(id);
-    if (entry.weight > MAX_CACHED_MESSAGES_PER_SESSION_BYTES) return;
+    if (!this.pinnedMessages.has(id) && entry.weight > MAX_CACHED_MESSAGES_PER_SESSION_BYTES) return;
     this.messagesCache.set(id, entry);
     this.messagesCacheBytes += entry.weight;
+    this.evictOverflow();
+  }
+
+  /** 条数/总量超限逐出：pinned（活跃 run）条目跳过——它们正被每 turn 复用，逐出只会让下轮重新整表解析。 */
+  private evictOverflow(): void {
     while (
       this.messagesCache.size > MAX_CACHED_MESSAGE_LISTS
       || (this.messagesCacheBytes > MAX_CACHED_MESSAGES_TOTAL_BYTES && this.messagesCache.size > 1)
     ) {
-      const oldestKey = this.messagesCache.keys().next().value!;
-      this.dropMessagesCache(oldestKey);
+      let evictable: string | undefined;
+      for (const key of this.messagesCache.keys()) {
+        if (!this.pinnedMessages.has(key)) {
+          evictable = key;
+          break;
+        }
+      }
+      if (!evictable) break; // 剩下的全是 pinned：活跃 run 优先，放弃逐出
+      this.dropMessagesCache(evictable);
     }
   }
 
@@ -873,6 +923,7 @@ export class SessionStore {
   sweepIdleCaches(now: number = Date.now()): number {
     let evicted = 0;
     for (const [id, entry] of this.messagesCache) {
+      if (this.pinnedMessages.has(id)) continue; // 活跃 run 的会话不参与空闲逐出
       if (!isCacheEntryIdle(entry.lastAccess, now)) continue;
       this.dropMessagesCache(id);
       evicted += 1;
@@ -912,12 +963,16 @@ export class SessionStore {
         return;
       }
       cached.messages.push(message);
-      cached.size = info.size;
-      // 权重按堆字节口径整份重算（追加穿透同样受单会话/累计上限裁决，超额即逐出）
-      cached.weight = info.size * HEAP_BYTES_PER_FILE_BYTE;
-      cached.mtimeMs = info.mtimeMs;
-      cached.ctimeMs = info.ctimeMs;
-      this.touchMessagesCache(id, cached);
+      // 不原地改写 cached 的 size/weight/指纹：touchMessagesCache 先按旧 weight 冲账，
+      // 原地改写会让 drop 扣掉新值（入账的是旧值），总账越记越负。改为传入更新后的新条目。
+      this.touchMessagesCache(id, {
+        ...cached,
+        size: info.size,
+        // 权重按堆字节口径整份重算（追加穿透同样受单会话/累计上限裁决，超额即逐出）
+        weight: info.size * HEAP_BYTES_PER_FILE_BYTE,
+        mtimeMs: info.mtimeMs,
+        ctimeMs: info.ctimeMs,
+      });
     } catch {
       this.dropMessagesCache(id);
     }
