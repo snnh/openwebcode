@@ -27,6 +27,7 @@ import { WsbManager } from "./sandbox/wsb.js";
 import { SessionStore } from "./sessions/session-store.js";
 import { defaultSandboxPolicy } from "./sessions/default-sandbox.js";
 import { SettingsService } from "./settings-service.js";
+import { setSessionCacheIdleMinutes } from "./cache-policy.js";
 import { SkillRegistry } from "./skills.js";
 import { AgentRegistry } from "./agents.js";
 import { CommandRegistry } from "./commands.js";
@@ -80,6 +81,9 @@ const settings = await SettingsService.load({
 });
 
 const config = settings.effective();
+// 常驻缓存的空闲释放阈值（会话整表缓存 / 消息文件字节索引）：设置项 sessionCacheIdleMinutes
+// 热生效；0 = 不逐出（长跑常驻换更少的重读）
+setSessionCacheIdleMinutes(config.sessionCacheIdleMinutes);
 const dataDir = resolveFromServer(config.dataDir);
 // 出站代理：按当前设置安装全局 dispatcher（off/env/custom），先于一切出站请求；
 // 设置保存后由 SettingsService.hotApply 热重应用
@@ -225,7 +229,7 @@ const updateApplier = new UpdateApplier({
   getReleaseUrl: () => settings.effective().updateCheck.url ?? GITHUB_RELEASES_URL,
   getCurrentVersion: getServerVersion,
 });
-settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker, sandboxProxy: filteredProxy, usageLog });
+settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker, sandboxProxy: filteredProxy, usageLog, sweepCaches: () => { sessions.sweepIdleCachesAndIndexes(); chatSessions.sweepIdleCachesAndIndexes(); } });
 providerProfilesRuntime.start();
 
 // core stderr/diagnostic 双写：终端 + <dataDir>/logs/core.log（超 5MB 启动时轮转为 core.log.1，仅一代）
@@ -320,6 +324,13 @@ const chatPythonEnv = ChatPythonEnv.forDataDir(
   () => chatConfigService.get().then((c) => c.pythonLibraries ?? DEFAULT_CHAT_PYTHON_LIBRARIES),
 );
 const chatSessions = new ChatSessionStore(dataDir);
+// 常驻缓存的空闲清扫：60s 一次、unref（进程空转时内存也能回落）。惰性清扫在读写路径上兜底，
+// 这里保证「没有任何缓存操作」时同样会被释放。
+setInterval(() => {
+  const now = Date.now();
+  sessions.sweepIdleCachesAndIndexes(now);
+  chatSessions.sweepIdleCachesAndIndexes(now);
+}, 60_000).unref();
 const chatAssistantStore = new ChatAssistantStore(path.join(dataDir, "chat-assistants.json"));
 await chatAssistantStore.init();
 const chatRunner = new ChatRunner(

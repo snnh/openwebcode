@@ -8,20 +8,30 @@ import { monotonicTimestamp } from "../monotonic-clock.js";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import { activePathMessages } from "./session-tree.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
-import { readMessagesTail, readMessagesBefore, checkRecoveryTail, invalidateMessageIndex, readLastRecordRange, DEFAULT_PAGE_SIZE } from "./message-reader.js";
+import { readMessagesTail, readMessagesBefore, readAllMessages, readMessagesHead, checkRecoveryTail, invalidateMessageIndex, readLastRecordRange, sweepIdleMessageIndexes, DEFAULT_PAGE_SIZE } from "./message-reader.js";
+import { isCacheEntryIdle } from "../cache-policy.js";
 import { deriveTitleFromMessages, serializeByKey, titleFromContent } from "./store-utils.js";
 import type { BindLinkSpec, ChatMessage, FallbackModelEntry, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SandboxNetwork, SessionDetail, SessionMeta } from "./types.js";
 
-/** 单个会话整表缓存的驻留上限：超过就不缓存（宁可下次重读，也不让一个大会话独占进程内存）。 */
-const MAX_CACHED_MESSAGES_PER_SESSION_BYTES = 32 * 1024 * 1024;
-/** 所有会话整表缓存的累计上限：多会话长跑下防「打开过的会话」把内存堆满。 */
-const MAX_CACHED_MESSAGES_TOTAL_BYTES = 256 * 1024 * 1024;
+/**
+ * 单会话整表缓存的驻留上限（**堆字节**，不是文件字节）：实测 JSON 解析后常驻 ≈ 文件 3.11×
+ *（37.9MB 文件 → 117.9MB 堆），旧口径按文件字节记账等于把上限放大三倍（"每会话 32MB / 总计
+ * 256MB" 实际是 ~100MB / ~800MB 堆，正是长期驻留 679MB 的来源）。48MB ≈ 16MB 文件。
+ */
+const MAX_CACHED_MESSAGES_PER_SESSION_BYTES = 48 * 1024 * 1024;
+/** 文件字节 → 堆字节的换算系数（实测 3.11×，向下取整到 3）。 */
+const HEAP_BYTES_PER_FILE_BYTE = 3;
+/** 所有会话整表缓存的累计上限（堆字节，≈64MB 文件）：多会话长跑下防「打开过的会话」把内存堆满。 */
+const MAX_CACHED_MESSAGES_TOTAL_BYTES = 192 * 1024 * 1024;
 /** readMessages 整表缓存条数上限（与 message-reader 的索引缓存同一 LRU 纪律）。 */
 const MAX_CACHED_MESSAGE_LISTS = 32;
 
 /** readMeta 缓存条数上限。agent loop 每轮多次 readMeta（get/appendMessage 等），
  * meta.json 小而稳定；写入侧不主动失效——指纹（size+mtime+ctime）自动失配。 */
 const MAX_CACHED_METAS = 64;
+
+/** 派生标题时的头部有界读取条数：首条用户文本消息几乎总在头几条里。 */
+const DERIVED_TITLE_HEAD_LIMIT = 50;
 
 /**
  * 单会话消息整表缓存：size+mtime+ctime 指纹校验（同 message-reader），
@@ -30,9 +40,11 @@ const MAX_CACHED_METAS = 64;
  */
 interface MessagesCacheEntry {
   size: number;
+  /** 最近一次写入/命中时间：空闲逐出用（cache-policy.ts 的 sessionCacheIdleMinutes） */
+  lastAccess: number;
   mtimeMs: number;
   ctimeMs: number;
-  /** 驻留权重：按 messages.jsonl 字节估算（内存对象通常为文件的 2-3 倍），零额外 CPU。 */
+  /** 驻留权重：堆字节估算 = messages.jsonl 字节 × HEAP_BYTES_PER_FILE_BYTE（实测 3.11×） */
   weight: number;
   messages: ChatMessage[];
   recovery?: NonNullable<SessionMeta["recovery"]>;
@@ -431,6 +443,11 @@ export class SessionStore {
 
   /** 派生标题：首条非空用户文本消息的前 80 字符；无消息时回退 "New session"（与 appendMessage 的自动命名一致）。 */
   private async deriveTitle(id: string): Promise<string> {
+    // 标题只取决于首条用户文本消息：先有界读头部（大历史不整表解析、不建索引），
+    // 头部没有可用文本时（极少：前若干条都是非用户消息/附件）才退回整表读。
+    const head = await readMessagesHead<ChatMessage>(this.messagesPath(id), DERIVED_TITLE_HEAD_LIMIT);
+    const derived = deriveTitleFromMessages(head, "");
+    if (derived) return derived;
     const { messages } = await this.readMessages(id);
     return deriveTitleFromMessages(messages, "New session");
   }
@@ -783,43 +800,29 @@ export class SessionStore {
       // 浅拷贝返回：调用方不得改动缓存数组本身（消息对象语义上只读）。
       return { messages: cached.messages.slice(), ...(cached.recovery ? { recovery: cached.recovery } : {}) };
     }
-    let raw: string;
-    try {
-      raw = await readFile(filePath, "utf8");
-    } catch (error) {
-      if (!isMissing(error)) throw error;
-      this.dropMessagesCache(id);
-      return { messages: [], recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
+    // 分块扫描 + 逐行解析（不驻留行数组/偏移表）：峰值 = 块缓冲 + 消息对象，取代整份 readFile + split
+    const { messages, recovery } = await readAllMessages<ChatMessage>(filePath);
+    // 旧线性日志不落盘迁移：读取时补齐父链（与逐行解析等价）
+    for (let index = 1; index < messages.length; index += 1) {
+      const message = messages[index]!;
+      if (!message.parentId) message.parentId = messages[index - 1]!.id;
     }
-    const lines = raw.split("\n");
-    const nonEmpty = lines.reduce<number[]>((indexes, line, index) => {
-      if (line.trim()) indexes.push(index);
-      return indexes;
-    }, []);
-    const last = nonEmpty.at(-1);
-    const messages: ChatMessage[] = [];
-    let corruptMiddle = false;
-    let corruptTail = false;
-    for (const index of nonEmpty) {
-      try {
-        const parsed = JSON.parse(lines[index]!) as ChatMessage;
-        // Old linear logs stay untouched on disk; derive their parent links while reading.
-        if (!parsed.parentId && messages.length > 0) parsed.parentId = messages.at(-1)!.id;
-        messages.push(parsed);
-      } catch {
-        if (index === last) corruptTail = true;
-        else corruptMiddle = true;
-      }
-    }
-    let recovery: MessagesCacheEntry["recovery"];
-    if (corruptMiddle) recovery = { state: "needs_repair", message: "messages.jsonl contains corrupt non-tail records" };
-    else if (corruptTail) recovery = { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" };
-    this.touchMessagesCache(id, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, weight: info.size, messages, ...(recovery ? { recovery } : {}) });
+    this.touchMessagesCache(id, {
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+      ctimeMs: info.ctimeMs,
+      lastAccess: Date.now(),
+      weight: info.size * HEAP_BYTES_PER_FILE_BYTE,
+      messages,
+      ...(recovery ? { recovery } : {}),
+    });
     return { messages: messages.slice(), ...(recovery ? { recovery } : {}) };
   }
 
-  /** LRU 接触：移到最新位并按条数与累计字节双重上限逐出旧条目。 */
+  /** LRU 接触：移到最新位，先按空闲阈值清扫，再按条数与累计堆字节双重上限逐出旧条目。 */
   private touchMessagesCache(id: string, entry: MessagesCacheEntry): void {
+    entry.lastAccess = Date.now();
+    this.sweepIdleCaches(entry.lastAccess);
     const previous = this.messagesCache.get(id);
     if (previous) this.messagesCacheBytes -= previous.weight;
     this.dropMessagesCache(id);
@@ -833,6 +836,26 @@ export class SessionStore {
       const oldestKey = this.messagesCache.keys().next().value!;
       this.dropMessagesCache(oldestKey);
     }
+  }
+
+  /**
+   * 空闲逐出（设置项 sessionCacheIdleMinutes；0 = 不逐出）：释放长时间没被访问的整表缓存，
+   * 让「打开过但不再用」的会话不再常驻。索引缓存同一口径（sweepIdleMessageIndexes）。
+   * 由惰性清扫（touch 时）与 index.ts 的 60s 定时清扫共同调用。
+   */
+  sweepIdleCaches(now: number = Date.now()): number {
+    let evicted = 0;
+    for (const [id, entry] of this.messagesCache) {
+      if (!isCacheEntryIdle(entry.lastAccess, now)) continue;
+      this.dropMessagesCache(id);
+      evicted += 1;
+    }
+    return evicted;
+  }
+
+  /** 会话内所有常驻缓存的空闲清扫（会话整表 + 消息文件字节索引）。 */
+  sweepIdleCachesAndIndexes(now: number = Date.now()): number {
+    return this.sweepIdleCaches(now) + sweepIdleMessageIndexes(now);
   }
 
   /** 失效该会话的整表缓存；权重记账必须与 Map 同步，故统一走这里。 */
@@ -863,7 +886,8 @@ export class SessionStore {
       }
       cached.messages.push(message);
       cached.size = info.size;
-      cached.weight += appendedBytes;
+      // 权重按堆字节口径整份重算（追加穿透同样受单会话/累计上限裁决，超额即逐出）
+      cached.weight = info.size * HEAP_BYTES_PER_FILE_BYTE;
       cached.mtimeMs = info.mtimeMs;
       cached.ctimeMs = info.ctimeMs;
       this.touchMessagesCache(id, cached);

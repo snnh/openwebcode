@@ -1,3 +1,4 @@
+import { DEFAULT_SESSION_CACHE_IDLE_MINUTES, MAX_SESSION_CACHE_IDLE_MINUTES, setSessionCacheIdleMinutes } from "./cache-policy.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
@@ -100,6 +101,8 @@ interface RuntimeDependencies {
   sandboxProxy?: { refreshDenyFiles(): Promise<void> };
   /** usage-events 清理；usageLogCleanupMode/usageLogRetentionDays 变更时热触发一次 */
   usageLog?: { prune(options: { mode: UsageLogCleanupMode; retentionDays: number }): Promise<number> };
+  /** 常驻缓存空闲清扫；sessionCacheIdleMinutes 变更时热触发一次 */
+  sweepCaches?: () => void;
   /** 出站 User-Agent 热应用；缺省 user-agent.ts 的模块级 setter，测试注入 fake 避免串模块状态 */
   userAgentApplier?: (ua: string | null) => void;
 }
@@ -199,6 +202,12 @@ function requireUsageLogCleanupMode(value: SettingValue): void {
 function requireUsageLogRetentionDays(value: SettingValue): void {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 3650) {
     throw new SettingsValidationError("保留天数必须是 1–3650 的整数");
+  }
+}
+
+function requireSessionCacheIdleMinutes(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > MAX_SESSION_CACHE_IDLE_MINUTES) {
+    throw new SettingsValidationError(`缓存空闲释放必须是 0–${MAX_SESSION_CACHE_IDLE_MINUTES} 的整数（0 = 不释放）`);
   }
 }
 
@@ -433,6 +442,8 @@ const FIELDS: FieldSpec[] = [
   // usage-events 清理（热生效）：模式 + 保留天数；off = 不清理（默认，保持历史行为）
   { key: "usageLogCleanupMode", group: "service", label: "用量日志清理模式", type: "select", env: "OWC_USAGE_LOG_CLEANUP_MODE", defaultValue: "off", restartRequired: false, options: USAGE_LOG_CLEANUP_MODES, fromEnv: envUsageLogCleanupMode, validate: requireUsageLogCleanupMode, description: "off = 不清理；deleted-after-days = 仅已删除会话的事件保留超过指定天数后清理（未删除保留）；all-after-days = 所有事件超过指定天数后清理，不分会话；deleted-immediate-live-timeout = 已删除会话的事件立即清理，未删除超过指定天数后清理；deleted-immediate-only = 已删除会话的事件立即清理，未删除不清理" },
   { key: "usageLogRetentionDays", group: "service", label: "用量日志保留天数", type: "number", env: "OWC_USAGE_LOG_RETENTION_DAYS", defaultValue: 365, restartRequired: false, fromEnv: envNumber, validate: requireUsageLogRetentionDays, description: "配合清理模式使用的保留天数（1–3650）；仅 after-days / live-timeout 分支生效" },
+  // 常驻缓存的空闲释放（热生效）：0 = 不逐出（长跑常驻换更少的重读）
+  { key: "sessionCacheIdleMinutes", group: "service", label: "缓存空闲释放（分钟）", type: "number", env: "OWC_SESSION_CACHE_IDLE_MINUTES", defaultValue: DEFAULT_SESSION_CACHE_IDLE_MINUTES, restartRequired: false, fromEnv: envNumber, validate: requireSessionCacheIdleMinutes, description: "打开过的会话/索引在多久没有访问后释放内存（0–1440 分钟；0 = 不释放，常驻更快但占用更高）" },
   // 监听（重启生效）；Web 端归入"远程访问"页签
   { key: "host", group: "network", label: "监听地址", type: "text", env: "OWC_HOST", defaultValue: "127.0.0.1", restartRequired: true, validate: requireNonEmpty },
   { key: "port", group: "network", label: "监听端口", type: "number", env: "OWC_PORT", defaultValue: 3210, restartRequired: true, fromEnv: envNumber, validate: requirePort },
@@ -641,6 +652,7 @@ export class SettingsService {
       gcMaxBytes: value("gcMaxBytes") as number,
       usageLogCleanupMode: value("usageLogCleanupMode") as UsageLogCleanupMode,
       usageLogRetentionDays: value("usageLogRetentionDays") as number,
+      sessionCacheIdleMinutes: value("sessionCacheIdleMinutes") as number,
       agentMaxTurns: value("agentMaxTurns") as number,
       subAgentMaxTurns: value("subAgentMaxTurns") as number,
       subAgentConcurrency: value("subAgentConcurrency") as number,
@@ -839,6 +851,11 @@ export class SettingsService {
         mode: effective.usageLogCleanupMode,
         retentionDays: effective.usageLogRetentionDays,
       }).catch((error: unknown) => process.stderr.write(`[settings] 用量日志清理失败：${error instanceof Error ? error.message : String(error)}\n`));
+    }
+    // 常驻缓存空闲释放热生效：立即改阈值并清一次过期条目（下次读取自动重建，不打断在跑的 run）
+    if (changed.includes("sessionCacheIdleMinutes")) {
+      setSessionCacheIdleMinutes(this.effective().sessionCacheIdleMinutes);
+      this.deps.sweepCaches?.();
     }
     // 更新检查热应用；离线模式下整体关闭（含手动 refresh——更新检查属纯遥测，无用户刚需入口）
     if ((changed.some((key) => key.startsWith("updateCheck")) || changed.includes("offlineMode")) && this.deps.updateChecker) {

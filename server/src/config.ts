@@ -1,3 +1,4 @@
+import { DEFAULT_SESSION_CACHE_IDLE_MINUTES, MAX_SESSION_CACHE_IDLE_MINUTES } from "./cache-policy.js";
 import path from "node:path";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 import type { FastModelConfig } from "./fast-model.js";
@@ -28,6 +29,8 @@ export interface ServerConfig {
   usageLogCleanupMode: UsageLogCleanupMode;
   /** usage-events 保留天数（配合清理模式；immediate 分支忽略）。 */
   usageLogRetentionDays: number;
+  /** 非活跃多久后释放常驻缓存（分钟；0 = 不逐出）。设置项 sessionCacheIdleMinutes 热生效。 */
+  sessionCacheIdleMinutes: number;
   defaultLanguage: string;
   /** dsh 兼容模式：独立端口托管 dsh SPA 与插件（默认关闭；关闭时零常驻）。 */
   dshCompat: { enabled: boolean; port: number; uiPath: string | null };
@@ -282,6 +285,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     gcMaxBytes: positiveInteger(env.OWC_GC_MAX_BYTES, 2_147_483_648),
     usageLogCleanupMode: usageLogCleanupMode(env.OWC_USAGE_LOG_CLEANUP_MODE),
     usageLogRetentionDays: positiveInteger(env.OWC_USAGE_LOG_RETENTION_DAYS, 365),
+    // 0 = 不逐出：允许显式关掉空闲释放（长跑常驻换更少的重读）
+    sessionCacheIdleMinutes: nonNegativeInteger(env.OWC_SESSION_CACHE_IDLE_MINUTES, MAX_SESSION_CACHE_IDLE_MINUTES) ?? DEFAULT_SESSION_CACHE_IDLE_MINUTES,
     agentMaxTurns: boundedInteger(env.OWC_AGENT_MAX_TURNS, 1000) ?? 50,
     subAgentMaxTurns: boundedInteger(env.OWC_SUB_AGENT_MAX_TURNS, 1000) ?? 100,
     subAgentConcurrency: boundedInteger(env.OWC_SUB_AGENT_CONCURRENCY, 16) ?? 2,
