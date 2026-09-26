@@ -51,6 +51,20 @@ export function stripVersionPrefix(tag: string): string {
   return tag.startsWith("v") ? tag.slice(1) : tag;
 }
 
+/** semver 形状白名单（含预发布/构建元数据）。 */
+const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+/**
+ * release tag → 版本号，并要求 semver 形状：该值会拼进更新包文件名、下载目录与 Windows
+ * 安装命令行，未净化时被污染的 release 元数据可用 `../` 越出 updater 目录或用引号在
+ * `cmd.exe` 串里注入命令（SHA256SUMS 与资产同源，只能证明一致性）。
+ */
+export function requireReleaseVersion(tag: string): string {
+  const version = stripVersionPrefix(tag);
+  if (!RELEASE_VERSION_PATTERN.test(version)) throw new Error(`发布 tag 版本号不合法：${tag}`);
+  return version;
+}
+
 /** GitHub releases/latest 响应很小，但 URL 可配置——兜底 1 MiB 字节预算，防恶意/异常端点打爆内存。 */
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 

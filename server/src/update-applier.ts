@@ -9,7 +9,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { getOfficialUserAgent } from "./user-agent.js";
 import { withTimeout } from "./http-utils.js";
-import { compareSemver, stripVersionPrefix } from "./update-checker.js";
+import { compareSemver, requireReleaseVersion } from "./update-checker.js";
 
 /** 在线更新的状态机状态。restarting 表示服务即将退出（由安装程序或 systemd 接管）。 */
 export interface UpdateApplyState {
@@ -140,7 +140,7 @@ export class UpdateApplier {
 
   private async runInner(): Promise<UpdateApplyState> {
     const release = await this.fetchRelease();
-    const version = stripVersionPrefix(release.tag);
+    const version = requireReleaseVersion(release.tag);
     if (!version) throw new Error("GitHub 响应缺少 tag_name");
     if (compareSemver(version, this.options.getCurrentVersion()) <= 0) {
       throw new UpdateApplyError(400, "已是最新版本");

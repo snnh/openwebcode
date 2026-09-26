@@ -130,6 +130,10 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
     if (!session) return reply.code(404).send({ error: "Session not found" });
     const q = (request.query.q ?? "").trim();
     if (!q) return { matches: [] };
+    // 补全输入按字面处理：core 的 glob 只认 `*`（任意串）与 `?`（单字节），不认反斜杠转义。
+    // 剥掉元字符后仍是「路径包含 q」的匹配，但 q="*" 不会退化成把整个工作区列一遍。
+    const literal = q.replace(/[*?]/g, "");
+    if (!literal) return { matches: [] };
     const releaseWorkspace = acquireManagedWorkspaceUse(session);
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
@@ -137,7 +141,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
         await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd) });
         configuredSessions.add(session.id);
       }
-      const result = await core.globFiles({ sessionId: request.params.id, path: session.cwd, pattern: `*${q}*` });
+      const result = await core.globFiles({ sessionId: request.params.id, path: session.cwd, pattern: `*${literal}*` });
       const matches = (result.paths ?? []).slice(0, 20).map((matchPath) => ({ path: matchPath }));
       return { matches };
     } finally {

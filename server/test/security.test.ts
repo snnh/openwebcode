@@ -1,4 +1,4 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
@@ -13,6 +13,7 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { defaultSandboxPolicy } from "../src/sessions/default-sandbox.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeTestApp } from "./helpers/test-app.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
 function connectWebSocket(url: string, headers: Record<string, string>): Promise<{ socket: WebSocket; connected?: unknown; closeCode?: number }> {
@@ -371,5 +372,25 @@ describe("buildAccessUrls", () => {
     const addresses = listLanAddresses();
     expect(Array.isArray(addresses)).toBe(true);
     for (const address of addresses) expect(address).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+  });
+});
+
+describe("WebUI 静态响应头", () => {
+  it("index 带上 frame-ancestors/X-Frame-Options/Referrer-Policy/nosniff 与同源 CSP", async () => {
+    const root = await tempRoot("owc-static-headers-");
+    const webDist = path.join(root, "dist");
+    await mkdir(webDist, { recursive: true });
+    await writeFile(path.join(webDist, "index.html"), "<!doctype html><title>owc</title>", "utf8");
+    const { app } = await makeTestApp({ webDist });
+    try {
+      const response = await app.inject({ method: "GET", url: "/" });
+      expect(response.headers["x-frame-options"]).toBe("DENY");
+      expect(response.headers["referrer-policy"]).toBe("no-referrer");
+      expect(response.headers["x-content-type-options"]).toBe("nosniff");
+      expect(String(response.headers["content-security-policy"])).toContain("frame-ancestors 'none'");
+      expect(String(response.headers["content-security-policy"])).toContain("default-src 'self'");
+    } finally {
+      await app.close();
+    }
   });
 });

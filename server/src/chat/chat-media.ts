@@ -6,7 +6,7 @@ import { getUserAgent } from "../user-agent.js";
 import type { Provider, ProviderRegistry } from "../providers/provider.js";
 import type { ProviderProfilesService } from "../provider-profiles.js";
 import type { ChatMessage } from "../sessions/types.js";
-import { assertSafeWebUrl } from "../web-tools.js";
+import { assertPublicHostname, assertSafeWebUrl, type LookupAll } from "../web-tools.js";
 import type { ChatConfigService } from "./chat-config.js";
 import type { ImageGenProvider, VisionProvider } from "./chat-tools.js";
 
@@ -56,9 +56,10 @@ const IMAGE_FETCH_MAX_REDIRECTS = 5;
  */
 export async function fetchChatImage(
   value: string,
-  options: { signal?: AbortSignal; fetchImpl?: typeof fetch; maxBytes?: number } = {},
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch; maxBytes?: number; lookupImpl?: LookupAll } = {},
 ): Promise<{ data: string; mediaType: string }> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const lookup = options.lookupImpl;
   const maxBytes = options.maxBytes ?? CHAT_IMAGE_MAX_BYTES;
   const signal = withTimeout(options.signal, IMAGE_FETCH_TIMEOUT_MS);
   const { response } = await fetchFollowingRedirects({
@@ -67,9 +68,11 @@ export async function fetchChatImage(
     signal,
     headers: { "User-Agent": getUserAgent(), Accept: "image/*" },
     maxRedirects: IMAGE_FETCH_MAX_REDIRECTS,
-    // 与 webFetch 同一 SSRF 网关：重定向目标逐跳复验块表
-    validate: (url) => {
+    // 与 media-fetch/webFetch 同一 SSRF 网关：每跳（含起始）既查字面量块表，
+    // 也做 DNS 复查——否则「域名解析到 127.0.0.1/内网」的图源可绕过 IP 字面量判定。
+    validate: async (url) => {
       assertSafeWebUrl(url.href);
+      await assertPublicHostname(url, lookup);
     },
   });
   if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());

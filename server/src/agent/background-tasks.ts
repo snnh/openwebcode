@@ -38,6 +38,9 @@ interface TaskEntry {
  * task_stop 即 kill 该任务专属 CoreClient 进程（Windows Job Object KILL_ON_JOB_CLOSE 保证
  *  kill core 进程即杀尽孙进程树）。posix 平台 kill 后孙进程可能孤儿化。
  */
+/** 每会话未读提示上限（未 drain 时的驻留保护）。 */
+const MAX_NOTICES_PER_SESSION = 20;
+
 export class BackgroundTaskRegistry {
   private readonly tasks = new Map<string, TaskEntry>();
   private readonly notices = new Map<string, string[]>();
@@ -244,6 +247,9 @@ export class BackgroundTaskRegistry {
   private pushNotice(sessionId: string, notice: string): void {
     const list = this.notices.get(sessionId) ?? [];
     list.push(notice);
+    // 未 drain 的提示按会话设上限：会话长期保留（不删）时也不会无限攒字符串；
+    // 前端只消费最近几条，丢弃最早的与既有语义一致。
+    if (list.length > MAX_NOTICES_PER_SESSION) list.splice(0, list.length - MAX_NOTICES_PER_SESSION);
     this.notices.set(sessionId, list);
   }
 

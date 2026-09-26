@@ -27,6 +27,8 @@ interface TestAppOptions<TPricing extends PricingCatalog = PricingCatalog> {
   settingsEnv?: NodeJS.ProcessEnv;
   /** 提供则加载 ModelRegistry 并传给 buildServer；工厂接收 root 与 events（供 onUpdated 发布事件）。 */
   models?: (root: string, events: EventBus) => Promise<ModelRegistry>;
+  /** 静态托管目录（默认不托管；给出后 buildServer 注册 / 的静态路由与安全响应头 hook）。 */
+  webDist?: string;
   /** true 时加载 ProviderProfilesService 并传给 buildServer。 */
   providerProfiles?: boolean;
   /** 工厂接收 models（未配置 models 时为 undefined）。 */
@@ -72,6 +74,7 @@ export async function makeTestApp<TPricing extends PricingCatalog = PricingCatal
     events,
     providers,
     pricing,
+    ...(options.webDist ? { webDist: options.webDist } : {}),
     ...(settings ? { settings } : {}),
     ...(models ? { models } : {}),
     ...(providerProfiles ? { providerProfiles } : {}),
