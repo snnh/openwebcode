@@ -17,7 +17,7 @@ import { useAppWiring } from "./wiring";
 import { isBusyState } from "../lib/agent-state";
 import { pruneDrafts } from "../lib/drafts";
 import { writeClipboard } from "../lib/clipboard";
-import { deriveSubagentRunsFromMessages, mergeSubagentRuns } from "../lib/subagent-runs";
+import { deriveSubagentRunsFromMessages, filterHiddenSubagentRuns, mergeSubagentRuns } from "../lib/subagent-runs";
 import { useSessionDefaults, useKeybindingOverrides } from "./prefs-store";
 import { useTheme } from "../theme";
 import { useI18n } from "../i18n";
@@ -191,7 +191,11 @@ export function App(): ReactElement {
       if (!id) return;
       // 从合并运行记录取标签字段（实时优先 + 消息推导补齐历史），创建并聚焦；关闭标记由 openTab 清除
       const detail = queryClient.getQueryData<SessionDetail>(qk.session(id));
-      const runs = mergeSubagentRuns(liveStore.get().subagents[id] ?? {}, deriveSubagentRunsFromMessages(detail?.messages ?? []));
+      const live = liveStore.get();
+      const runs = filterHiddenSubagentRuns(
+        mergeSubagentRuns(live.subagents[id] ?? {}, deriveSubagentRunsFromMessages(detail?.messages ?? [])),
+        live.hiddenSubagents[id],
+      );
       const run = Object.values(runs).find((entry) => entry.toolCallId === toolCallId);
       if (!run) return;
       subagentTabs.openTab(id, {

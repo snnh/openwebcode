@@ -355,8 +355,78 @@
 .subagent-transcript-result { margin-top: 4px; }
 .subagent-transcript-result summary { font-size: 11px; color: var(--text-3); }
 .subagent-transcript-result pre { margin: 4px 0 0; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow-y: auto; }
+/* 终态结论摘要（子代理标签页）：不展开转录也能看到产出，并可一键复制 */
+.subagent-transcript-summary { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 0; }
+.subagent-transcript-summary-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.subagent-transcript-copy { flex: none; font-size: 11px; color: var(--accent); padding: 0 4px; }
+.subagent-transcript-copy:hover { text-decoration: underline; }
 .subagent-transcript-fold-toggle { margin-left: 6px; font-size: 11px; color: var(--accent); padding: 0; }
 .subagent-transcript-fold-toggle:hover { text-decoration: underline; }
+
+/* ================= 待回答区（权限卡 / 交互卡 / 计划批准 / 运行队列的统一容器） ================= */
+/* 这四类卡是消息列表之外的兄弟节点，而主列 .wb-main 是 overflow: hidden 且自身不滚动：
+   高度无上限时卡片底部（选项/提交按钮）与 Composer 会被直接裁掉，且没有任何方式滚到它。
+   护栏 = 容器可收缩 + 内容区限高内滚（上限由 ChatView 按可用高度写入 --pending-body-max，
+   见 chat/cards/pending-accordion.ts）+ 消息列表保底 120px；收起态则由手风琴逻辑负责。 */
+.pending-zone {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.pending-zone > * { flex: 0 0 auto; }
+.pending-zone .permission-card { margin: 8px 22px; }
+/* 消息列表保底高度：卡片再高也留住约 3 行上下文（与 PENDING_LIST_FLOOR 一致） */
+.main-tab-panel.chat-panel { min-height: 120px; }
+/* 卡片内容区：超过上限卡内滚动，选项与提交按钮始终可达 */
+.pending-body { max-height: var(--pending-body-max, 60vh); overflow-y: auto; }
+/* 卡头：折叠三角 + 标题 + 「待回答」标记（收起态只剩这一行 + 主操作按钮） */
+.pending-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.pending-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pending-toggle:hover { color: var(--accent); }
+/* 权限卡：标题是 aria-labelledby 的 h2，折叠钮退化为纯图标钮（位于标题左侧） */
+.pending-toggle-icon { flex: none; color: var(--text-2); }
+.pending-head h2 { margin: 0; }
+.pending-toggle .pending-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-flag {
+  flex: none;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+  color: var(--amber);
+}
+/* 收起态：卡收成一行摘要 + 主操作（对应手风琴「只展开一张」） */
+.pending-block.collapsed { padding-top: 9px; padding-bottom: 9px; }
+.pending-block.collapsed .pending-head { margin-bottom: 0; }
+.pending-block.collapsed .interaction-actions,
+.pending-block.collapsed .permission-actions { margin-top: 6px; }
+/* 运行队列（无回答语义，不参与手风琴，但同样限高内滚） */
+.steering-queue { max-height: var(--pending-body-max, 60vh); overflow-y: auto; }
 
 /* ================= 权限卡 / 交互卡 / 计划批准 ================= */
 .permission-card {

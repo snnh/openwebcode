@@ -1,16 +1,18 @@
 import { useState, type ReactElement, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { writeClipboard } from "../lib/clipboard";
 import type { LiveSubagentRun, MessageContent } from "../lib/contracts";
 import { snippet, swarmItems } from "../lib/subagent-runs";
 import { summarizeToolInput } from "../lib/tool-format";
 import { useLiveSubagentSynthesis } from "../app/live-store";
+import { tabActions } from "../workbench/tab-actions";
 import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { useI18n } from "../i18n";
 
 /** 四档角色徽标：data-role 着色（premium/balanced/fast/cheap），未识别档位按 balanced 样式。 */
-function SubagentRoleBadge({ role }: { role: string }): ReactElement {
+export function SubagentRoleBadge({ role }: { role: string }): ReactElement {
   const { t } = useI18n();
   const labels: Record<string, string> = {
     premium: t("极致", "premium"),
@@ -76,6 +78,12 @@ export function SubagentRunStats({ run }: { run: LiveSubagentRun }): ReactElemen
   );
 }
 
+/** 结论摘录：压平空白后取首 1–2 行（约 limit 字），供终态行默认展示与复制 */
+export function conclusionExcerpt(conclusion: string, limit = 160): string {
+  const flat = conclusion.replace(/\s+/g, " ").trim();
+  return flat.length <= limit ? flat : `${flat.slice(0, limit)}…`;
+}
+
 /** 转录消息折叠阈值：超过后默认只展示最近 N 条（转录可能很长，不做虚拟化） */
 const TRANSCRIPT_MESSAGE_FOLD = 20;
 
@@ -110,16 +118,24 @@ function TranscriptBlock({ block }: { block: MessageContent }): ReactElement | n
 
 const TRANSCRIPT_ROLE_LABELS: Record<string, [string, string]> = { user: ["任务", "Task"], assistant: ["子代理", "Subagent"], tool: ["工具", "Tool"] };
 
-/** subagent/spawn_swarm 工具结果携带的子代理转录：展开时按 taskId 拉取，只读展示 */
-export function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessionId: string; taskId: string; index?: number | undefined }): ReactElement {
+/** subagent/spawn_swarm 工具结果携带的子代理转录：展开时按 taskId 拉取，只读展示。
+ *  summarize=true（子代理标签页）时进入即可拉取结论摘要并显示「复制结论」——回顾子代理
+ *  产出不必逐项展开转录；面板/对话卡片保持按需拉取，避免一次打开就发很多大请求。 */
+export function SubagentTranscriptDetails({ sessionId, taskId, index, summarize = false }: {
+  sessionId: string;
+  taskId: string;
+  index?: number | undefined;
+  summarize?: boolean | undefined;
+}): ReactElement {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   // 折叠超过 TRANSCRIPT_MESSAGE_FOLD 的历史消息；用户可手动展开全部
   const [showAll, setShowAll] = useState(false);
+  const [copied, setCopied] = useState(false);
   const transcript = useQuery({
     queryKey: ["subagent-transcript", sessionId, taskId],
     queryFn: () => api.subagentTranscript(sessionId, taskId),
-    enabled: open,
+    enabled: open || summarize,
     staleTime: Number.POSITIVE_INFINITY,
   });
   const label = index !== undefined
@@ -128,8 +144,24 @@ export function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessio
   const messages = transcript.data?.messages ?? [];
   const hiddenCount = Math.max(0, messages.length - TRANSCRIPT_MESSAGE_FOLD);
   const shownMessages = hiddenCount > 0 && !showAll ? messages.slice(hiddenCount) : messages;
+  const copyConclusion = (): void => {
+    void writeClipboard(transcript.data?.conclusion ?? "").then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    });
+  };
   return (
-    <details className="subagent-transcript" onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <>
+      {summarize && transcript.data && (
+        <div className="subagent-transcript-summary">
+          <p className="subagent-transcript-summary-text" title={transcript.data.conclusion}>{conclusionExcerpt(transcript.data.conclusion)}</p>
+          <button type="button" className="subagent-transcript-copy" onClick={copyConclusion}>
+            {copied ? t("已复制", "Copied") : t("复制结论", "Copy conclusion")}
+          </button>
+        </div>
+      )}
+      <details className="subagent-transcript" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>{label}</summary>
       {open && transcript.isPending && <p className="subagent-transcript-status">{t("加载中…", "Loading…")}</p>}
       {open && transcript.isError && <p className="panel-error" role="alert">{t("转录加载失败", "Failed to load transcript")}</p>}
@@ -165,7 +197,21 @@ export function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessio
           )}
         </div>
       )}
-    </details>
+      </details>
+    </>
+  );
+}
+
+/** 「在标签中打开」：把这次 spawn 调用对应的运行放到主区标签页（深入监控与回顾）。
+ *  标签能力未注册（未装配层）或无 toolCallId 时不渲染。 */
+function OpenInTabButton({ toolCallId }: { toolCallId: string }): ReactElement | null {
+  const { t } = useI18n();
+  const open = tabActions.openSubagentTab;
+  if (!open) return null;
+  return (
+    <button type="button" className="subagents-open-tab" onClick={() => open(toolCallId)}>
+      {t("在标签中打开", "Open in tab")}
+    </button>
   );
 }
 
@@ -245,6 +291,7 @@ export function SubagentRunCard({ name, input, sessionId, toolCallId, live }: {
               })}
               <SwarmSynthesisRow sessionId={sessionId} toolCallId={toolCallId} />
             </ul>
+            {toolCallId && <OpenInTabButton toolCallId={toolCallId} />}
           </div>
         )}
       </section>
@@ -268,9 +315,10 @@ export function SubagentRunCard({ name, input, sessionId, toolCallId, live }: {
       {open && (run || prompt) && (
         <div className="subagent-run-body">
           <p className="subagent-run-fullprompt">{prompt}</p>
-          {run?.model && <p className="subagent-run-model mono">{run.model}</p>}
+          {run?.model && <p className="subagent-run-model mono" title={run.model}>{run.model}</p>}
           {run && <SubagentRunStats run={run} />}
           {run && (run.status === "done" || run.status === "failed") && sessionId && <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} />}
+          {toolCallId && <OpenInTabButton toolCallId={toolCallId} />}
         </div>
       )}
     </section>

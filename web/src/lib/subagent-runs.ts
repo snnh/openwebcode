@@ -160,6 +160,47 @@ function applyLegacyTaskIds(
   });
 }
 
+/**
+ * 过滤掉已被视图移除的子代理运行（新批次清旧批 / `/clear` 清空）：
+ * hidden 的键同时接受 taskId 与 toolCallId——实时条目按 taskId 移除，消息推导的历史条目
+ * 只能按 spawn 调用（toolCallId）识别，两种键都查才不会漏掉面板里的旧条目。
+ */
+export function filterHiddenSubagentRuns(
+  runs: Record<string, LiveSubagentRun>,
+  hidden: Record<string, true> | undefined,
+): Record<string, LiveSubagentRun> {
+  if (!hidden) return runs;
+  const visible: Record<string, LiveSubagentRun> = {};
+  let dropped = false;
+  for (const [taskId, run] of Object.entries(runs)) {
+    if (hidden[taskId] || hidden[run.toolCallId]) {
+      dropped = true;
+      continue;
+    }
+    visible[taskId] = run;
+  }
+  return dropped ? visible : runs;
+}
+
+/** 按状态过滤运行（子代理面板的状态筛选；"all" 原样返回） */
+export function filterSubagentRunsByStatus(
+  runs: Record<string, LiveSubagentRun>,
+  status: LiveSubagentRun["status"] | "all",
+): Record<string, LiveSubagentRun> {
+  if (status === "all") return runs;
+  return Object.fromEntries(Object.entries(runs).filter(([, run]) => run.status === status));
+}
+
+/** 从运行集合收集隐藏键（taskId + toolCallId），供清批/清空使用 */
+export function subagentRunIds(runs: Record<string, LiveSubagentRun>): string[] {
+  const ids = new Set<string>();
+  for (const [taskId, run] of Object.entries(runs)) {
+    ids.add(taskId);
+    ids.add(run.toolCallId);
+  }
+  return [...ids];
+}
+
 /** 合并实时与消息推导的子代理运行：实时条目优先（含轮次/工具明细），推导条目补齐历史 */
 export function mergeSubagentRuns(
   live: Record<string, LiveSubagentRun>,

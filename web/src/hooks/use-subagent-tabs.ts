@@ -7,6 +7,8 @@ import type { SubagentStartedEvent } from "../lib/contracts";
  */
 export interface SubagentTab {
   toolCallId: string;
+  /** 本会话内该次 spawn 调用的发生序号（标签名 `#n`；关闭后重新打开沿用原序号） */
+  seq: number;
   /** subagent 的代理名（标签名优先取它） */
   agent?: string;
   /** subagent 的 prompt（无 agent 时取摘要）；swarm 为首个子任务 */
@@ -21,8 +23,9 @@ export interface UseSubagentTabsResult {
   selectedBySession: Record<string, string>;
   /** subagent.started 自动开标签：同 toolCallId 已存在或已被用户关闭（dismissed）则跳过；不抢焦点（停留在对话） */
   openFromStarted(sessionId: string, payload: SubagentStartedEvent): void;
-  /** 手动打开（子代理面板「在标签中打开」）：不存在则创建并聚焦该标签，同时清除关闭标记 */
-  openTab(sessionId: string, tab: SubagentTab): void;
+  /** 手动打开（子代理面板「在标签中打开」）：不存在则创建并聚焦该标签，同时清除关闭标记。
+   *  seq 缺省时按发生顺序自动分配（复用同 toolCallId 的历史序号） */
+  openTab(sessionId: string, tab: Omit<SubagentTab, "seq"> & { seq?: number }): void;
   /** 选中标签；默认（undefined）回到「对话」 */
   selectTab(sessionId: string, toolCallId?: string): void;
   /** 关闭标签（只影响视图，不影响运行）；关闭当前选中标签时回退「对话」 */
@@ -30,9 +33,10 @@ export interface UseSubagentTabsResult {
   removeSession(sessionId: string): void;
 }
 
-function fromStartedPayload(payload: SubagentStartedEvent): SubagentTab {
+function fromStartedPayload(payload: SubagentStartedEvent, seq: number): SubagentTab {
   return {
     toolCallId: payload.toolCallId,
+    seq,
     prompt: payload.prompt,
     ...(payload.agent ? { agent: payload.agent } : {}),
     ...(payload.swarm ? { swarmTotal: payload.swarm.total } : {}),
@@ -45,26 +49,39 @@ export function useSubagentTabs(): UseSubagentTabsResult {
   const [selectedBySession, setSelectedBySession] = useState<Record<string, string>>({});
   // 用户主动关闭过的 toolCallId（按会话）：swarm 后续 started 事件不得重开已关标签；不参与渲染，用 ref 即可
   const dismissedRef = useRef<Record<string, Set<string>>>({});
+  // 每个会话的序号分配（toolCallId → seq）：关闭后重新打开沿用原序号，序号不回退不重复
+  const seqRef = useRef<Record<string, { next: number; byToolCall: Record<string, number> }>>({});
+
+  const ensureSeq = useCallback((sessionId: string, toolCallId: string): number => {
+    const entry = (seqRef.current[sessionId] ??= { next: 1, byToolCall: {} });
+    const existing = entry.byToolCall[toolCallId];
+    if (existing !== undefined) return existing;
+    const seq = entry.next;
+    entry.next += 1;
+    entry.byToolCall[toolCallId] = seq;
+    return seq;
+  }, []);
 
   const openFromStarted = useCallback((sessionId: string, payload: SubagentStartedEvent): void => {
     if (dismissedRef.current[sessionId]?.has(payload.toolCallId)) return;
     setTabsBySession((previous) => {
       const tabs = previous[sessionId] ?? [];
       if (tabs.some((tab) => tab.toolCallId === payload.toolCallId)) return previous;
-      return { ...previous, [sessionId]: [...tabs, fromStartedPayload(payload)] };
+      return { ...previous, [sessionId]: [...tabs, fromStartedPayload(payload, ensureSeq(sessionId, payload.toolCallId))] };
     });
-  }, []);
+  }, [ensureSeq]);
 
-  const openTab = useCallback((sessionId: string, tab: SubagentTab): void => {
+  const openTab = useCallback((sessionId: string, tab: Omit<SubagentTab, "seq"> & { seq?: number }): void => {
     // 手动打开（子代理面板）视为撤销关闭标记，允许后续 started 再次自动开标签
     dismissedRef.current[sessionId]?.delete(tab.toolCallId);
+    const seq = tab.seq ?? ensureSeq(sessionId, tab.toolCallId);
     setTabsBySession((previous) => {
       const tabs = previous[sessionId] ?? [];
       if (tabs.some((entry) => entry.toolCallId === tab.toolCallId)) return previous;
-      return { ...previous, [sessionId]: [...tabs, tab] };
+      return { ...previous, [sessionId]: [...tabs, { ...tab, seq }] };
     });
     setSelectedBySession((previous) => ({ ...previous, [sessionId]: tab.toolCallId }));
-  }, []);
+  }, [ensureSeq]);
 
   const selectTab = useCallback((sessionId: string, toolCallId?: string): void => {
     setSelectedBySession((previous) => {
@@ -94,6 +111,7 @@ export function useSubagentTabs(): UseSubagentTabsResult {
 
   const removeSession = useCallback((sessionId: string): void => {
     delete dismissedRef.current[sessionId];
+    delete seqRef.current[sessionId];
     setTabsBySession((previous) => {
       if (!(sessionId in previous)) return previous;
       const { [sessionId]: _removed, ...remaining } = previous;

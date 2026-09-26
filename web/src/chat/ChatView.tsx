@@ -14,12 +14,12 @@ import { INACTIVE_STATES, isBusyState } from "../lib/agent-state";
 import { useStore } from "../app/store";
 import { qk, useContextViewQuery, useInteractionsQuery, useModelsQuery, usePendingPermissionsQuery, useQueueQuery, useSessionQuery, useTodosQuery, useExtensionsQuery } from "../app/queries";
 import { sessionMeta, sessionStore } from "../app/session-store";
-import { deriveActivityInfo, live, useLiveActivityEntry, useLiveCompactions, useLiveSubagentRuns, type LiveActivityInfo } from "../app/live-store";
+import { deriveActivityInfo, live, useHiddenSubagentTasks, useLiveActivityEntry, useLiveCompactions, useLiveSubagentRuns, type LiveActivityInfo } from "../app/live-store";
 import { deriveRestoredCompactions, mergeCompactionMarkers } from "../lib/compaction";
 import { auxViews } from "../workbench/aux-views";
 import { ui } from "../app/ui-store";
 import { chatBridge } from "../app/chat-bridge";
-import { deriveSubagentRunsFromMessages, mergeSubagentRuns } from "../lib/subagent-runs";
+import { deriveSubagentRunsFromMessages, filterHiddenSubagentRuns, mergeSubagentRuns } from "../lib/subagent-runs";
 import type { UseSubagentTabsResult } from "../hooks/use-subagent-tabs";
 import type { UseTerminalTabsResult } from "../hooks/use-terminal-tabs";
 import { useStreamActive, useStreamBlocks } from "./stream-buffer";
@@ -30,8 +30,10 @@ import { MessageList } from "./MessageList";
 import { SubagentTabStrip, SubagentTabView } from "./SubagentTabs";
 import { TerminalView } from "../terminal/TerminalView";
 import { InteractionCard } from "./cards/InteractionCard";
+import { PermissionCard } from "./cards/PermissionCard";
 import { PlanApprovalCard } from "./cards/PlanApprovalCard";
 import { SteeringQueue } from "./cards/SteeringQueue";
+import { pendingBodyMaxHeight, usePendingAccordion } from "./cards/pending-accordion";
 import { Composer } from "../composer/Composer";
 import { SessionHeader } from "../workbench/SessionHeader";
 import { SessionSkeleton } from "../components/SessionSkeleton";
@@ -105,12 +107,23 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
     void loadOlderMessages(sessionId, oldestId);
   }, [current, older, sessionId]);
 
-  // 子代理标签数据源：实时运行优先，消息推导的历史运行补齐（刷新后无实时事件时标签状态仍可用）
+  // 子代理标签数据源：实时运行优先，消息推导的历史运行补齐（刷新后无实时事件时标签状态仍可用）；
+  // 再过滤掉被清批（新一批子代理）或 /clear 清空掉的条目
   const derivedSubagentRuns = useMemo(() => deriveSubagentRunsFromMessages(displaySession?.messages ?? []), [displaySession]);
-  const subagentRuns = useMemo(() => mergeSubagentRuns(liveSubagents, derivedSubagentRuns), [liveSubagents, derivedSubagentRuns]);
+  const hiddenSubagentRuns = useHiddenSubagentTasks(sessionId);
+  const subagentRuns = useMemo(
+    () => filterHiddenSubagentRuns(mergeSubagentRuns(liveSubagents, derivedSubagentRuns), hiddenSubagentRuns),
+    [liveSubagents, derivedSubagentRuns, hiddenSubagentRuns],
+  );
   // 主区标签（按会话隔离）：selectedSubagentTab 默认表示「主对话」（或终端选中时的终端）
-  const currentSubagentTabs = subagentTabs.tabsBySession[sessionId] ?? [];
-  const selectedSubagentTab = subagentTabs.selectedBySession[sessionId];
+  // 标签只对「仍有运行记录」的组可见——新一批子代理清掉上一批、/clear 清空后标签随之消失
+  const currentSubagentTabs = (subagentTabs.tabsBySession[sessionId] ?? []).filter((tab) => (
+    Object.values(subagentRuns).some((run) => run.toolCallId === tab.toolCallId)
+  ));
+  const selectedTabState = subagentTabs.selectedBySession[sessionId];
+  const selectedSubagentTab = selectedTabState !== undefined && currentSubagentTabs.some((tab) => tab.toolCallId === selectedTabState)
+    ? selectedTabState
+    : undefined;
   const terminalOpen = terminalTabs.openBySession[sessionId] === true;
   const terminalSelected = terminalOpen && terminalTabs.selectedBySession[sessionId] === true;
   // 选中互斥：选主对话/子代理标签时取消终端选中，反之亦然
@@ -130,6 +143,44 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
     const local = localPermissions.filter((item) => !server.some((entry) => entry.requestId === item.requestId));
     return [...server, ...local];
   }, [serverPermissions.data, localPermissions]);
+
+  // ===== 待回答区（权限/交互/计划批准/运行队列）：手风琴展开 + 高度护栏 + 新卡滚到底 =====
+  // 顺序即「队列最早在前」：权限确认（服务端待决列表，run 被它卡住）→ 交互/计划批准（按创建时间）
+  const pendingInteractions = useMemo(
+    () => (interactions.data ?? []).filter((item) => item.status === "pending").sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    [interactions.data],
+  );
+  const pendingIds = useMemo(
+    () => [...mergedPermissions.map((item) => item.requestId), ...pendingInteractions.map((item) => item.id)],
+    [mergedPermissions, pendingInteractions],
+  );
+  const accordion = usePendingAccordion(sessionId, pendingIds);
+  const workbenchRef = useRef<HTMLElement>(null);
+  // 卡片内容区上限：可用高度的一半 / 60vh / 扣掉列表保底与顶栏输入栏，三者取小（主列不滚动，超出即裁切）
+  useEffect(() => {
+    const el = workbenchRef.current;
+    if (!el) return undefined;
+    const apply = (): void => {
+      el.style.setProperty("--pending-body-max", `${Math.round(pendingBodyMaxHeight(el.clientHeight, window.innerHeight))}px`);
+    };
+    apply();
+    window.addEventListener("resize", apply);
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(apply) : undefined;
+    observer?.observe(el);
+    return () => {
+      window.removeEventListener("resize", apply);
+      observer?.disconnect();
+    };
+  }, []);
+  // 新卡出现（id 集合变化）→ 递增信号让消息列表滚到底，看清问题来自哪段对话
+  const [scrollToBottomSignal, setScrollToBottomSignal] = useState(0);
+  const pendingKeyRef = useRef("");
+  useEffect(() => {
+    const key = pendingIds.join("|");
+    if (key === pendingKeyRef.current) return;
+    pendingKeyRef.current = key;
+    if (pendingIds.length > 0) setScrollToBottomSignal((value) => value + 1);
+  }, [pendingIds]);
 
   // 对话区底部实时活动条：WS 工具事件优先，状态/起始时间回退到 run 快照（刷新页面后首个事件前可用）
   const liveActivity = useMemo<LiveActivityInfo | undefined>(() => {
@@ -217,6 +268,8 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
       // WS context.cleared 事件延迟/丢失时分隔线也可靠出现（不依赖事件时序）
       if (/^\/clear\s*$/i.test(input.text.trim())) {
         void queryClient.invalidateQueries({ queryKey: ["context", input.sessionId] });
+        // WS context.cleared 延迟/丢失时也清掉子代理运行与标签（与事件路径同一实现）
+        live.clearSubagentRuns(input.sessionId);
       }
       // /compact 沉降兜底：changed 时运行中占位已由 context.compacted 事件原位沉降；
       // 空跑（compacted:false）或无声失败时清掉占位，消息流不留残痕
@@ -390,7 +443,7 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
     : undefined;
 
   return (
-    <section className="workbench">
+    <section className="workbench" ref={workbenchRef}>
       <SessionHeader
         session={current}
         {...(currentState ? { agentState: currentState } : {})}
@@ -404,6 +457,7 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
         onCreateCheckpoint={() => manualSnapshot.mutate(current.id)}
         {...(onOpenNavMenu ? { onOpenNavMenu } : {})}
       />
+      {(currentSubagentTabs.length > 0 || terminalOpen || (todos.data?.length ?? 0) > 0) && (
       <SubagentTabStrip
         tabs={currentSubagentTabs}
         runs={subagentRuns}
@@ -415,9 +469,10 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
         onSelectTerminal={onSelectTerminal}
         onCloseTerminal={() => terminalTabs.closeTerminal(sessionId)}
       />
+      )}
       <ChatActionsContext.Provider value={chatActions}>
         {/* 主对话/终端/子代理标签内容互换：MessageList 与终端保持挂载（hidden 隐藏），滚动与 PTY 状态不丢 */}
-        <div className="main-tab-panel" role="tabpanel" aria-label={t("主对话", "Main")} hidden={!chatVisible}>
+        <div className="main-tab-panel chat-panel" role="tabpanel" aria-label={t("主对话", "Main")} hidden={!chatVisible}>
           <StreamingMessageList
             sessionId={current.id}
             session={displaySession ?? current}
@@ -427,17 +482,13 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
             loadingMore={older.loading}
             onLoadMore={onLoadMore}
             {...(runError ? { runError } : {})}
-            permissions={mergedPermissions}
             {...(liveActivity ? { liveActivity } : {})}
             liveSubagents={liveSubagents}
             running={running}
             visible={chatVisible}
             {...(lastUserMessageText && !running ? { onRetryRun: retryRun } : {})}
             retryPending={send.isPending}
-            onPermissionDone={(requestId) => {
-              sessionMeta.removePermission(requestId);
-              void queryClient.invalidateQueries({ queryKey: qk.permissions(current.id) });
-            }}
+            scrollToBottomSignal={scrollToBottomSignal}
           />
         </div>
       </ChatActionsContext.Provider>
@@ -451,24 +502,46 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
           <SubagentTabView sessionId={current.id} toolCallId={selectedSubagentTab} runs={subagentRuns} />
         </div>
       )}
-      {queue.data?.some((item) => item.status === "queued") && (
-        <SteeringQueue
-          items={queue.data}
-          onRemove={(itemId) => api.removeQueue(current.id, itemId)
-            .then(() => queue.refetch())
-            .catch((error: unknown) => notify(error instanceof Error ? error.message : t("撤销 Steering 失败", "Could not remove Steering item"), "error"))}
-        />
-      )}
-      {interactions.data?.filter((item) => item.status === "pending").map((item) => (
-        item.kind === "plan_approval"
-          ? <PlanApprovalCard key={item.id} item={item} onRespond={(answer) => api.respondInteraction(current.id, item.id, answer)
-            // 批准后 server 侧已切 build：除事件驱动的 detail 刷新外，本地立即失效会话配置查询
-            .then(() => { void interactions.refetch(); void queryClient.invalidateQueries({ queryKey: qk.session(current.id) }); })
-            .catch((error: unknown) => notify(error instanceof Error ? error.message : t("提交回答失败", "Could not submit answer"), "error"))} />
-          : <InteractionCard key={item.id} item={item} onRespond={(answer) => api.respondInteraction(current.id, item.id, answer)
-            .then(() => interactions.refetch())
-            .catch((error: unknown) => notify(error instanceof Error ? error.message : t("提交回答失败", "Could not submit answer"), "error"))} />
-      ))}
+      {/* 待回答区：四类待回答块共用同一容器与护栏（限高内滚 + 手风琴 + 收起记忆），
+          Composer 与消息列表保底高度在此之下恒定保留，不会再被卡片挤出可视区 */}
+      <div className="pending-zone">
+        {mergedPermissions.map((permission) => (
+          <PermissionCard
+            key={permission.requestId}
+            permission={permission}
+            collapsed={!accordion.isExpanded(permission.requestId)}
+            onToggleCollapse={() => accordion.toggle(permission.requestId)}
+            onDone={(requestId) => {
+              sessionMeta.removePermission(requestId);
+              void queryClient.invalidateQueries({ queryKey: qk.permissions(current.id) });
+            }}
+          />
+        ))}
+        {pendingInteractions.map((item) => (
+          item.kind === "plan_approval"
+            ? <PlanApprovalCard key={item.id} item={item}
+              collapsed={!accordion.isExpanded(item.id)}
+              onToggleCollapse={() => accordion.toggle(item.id)}
+              onRespond={(answer) => api.respondInteraction(current.id, item.id, answer)
+                // 批准后 server 侧已切 build：除事件驱动的 detail 刷新外，本地立即失效会话配置查询
+                .then(() => { void interactions.refetch(); void queryClient.invalidateQueries({ queryKey: qk.session(current.id) }); })
+                .catch((error: unknown) => notify(error instanceof Error ? error.message : t("提交回答失败", "Could not submit answer"), "error"))} />
+            : <InteractionCard key={item.id} item={item}
+              collapsed={!accordion.isExpanded(item.id)}
+              onToggleCollapse={() => accordion.toggle(item.id)}
+              onRespond={(answer) => api.respondInteraction(current.id, item.id, answer)
+                .then(() => interactions.refetch())
+                .catch((error: unknown) => notify(error instanceof Error ? error.message : t("提交回答失败", "Could not submit answer"), "error"))} />
+        ))}
+        {queue.data?.some((item) => item.status === "queued") && (
+          <SteeringQueue
+            items={queue.data}
+            onRemove={(itemId) => api.removeQueue(current.id, itemId)
+              .then(() => queue.refetch())
+              .catch((error: unknown) => notify(error instanceof Error ? error.message : t("撤销 Steering 失败", "Could not remove Steering item"), "error"))}
+          />
+        )}
+      </div>
       <Composer
         session={current}
         running={running}

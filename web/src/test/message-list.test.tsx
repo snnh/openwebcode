@@ -25,11 +25,6 @@ vi.mock("../chat/LiveStream", () => ({
     <article className="message assistant live" data-testid="live-stream">{blocks.length} blocks</article>
   ),
 }));
-vi.mock("../chat/cards/PermissionCard", () => ({
-  PermissionCard: ({ permission }: { permission: { requestId: string } }): ReactElement => (
-    <div data-testid={`permission-${permission.requestId}`} />
-  ),
-}));
 vi.mock("../chat/cards/RunErrorCard", () => ({
   RunErrorCard: ({ error }: { error: { message: string } }): ReactElement => (
     <section role="alert">{error.message}</section>
@@ -99,10 +94,8 @@ function makeProps(overrides: Partial<MessageListProps> = {}): MessageListProps 
     loadingMore: false,
     onLoadMore: () => undefined,
     streamBlocks: [],
-    permissions: [],
     liveSubagents: {},
     running: false,
-    onPermissionDone: () => undefined,
     ...overrides,
   };
 }
@@ -128,17 +121,25 @@ function stubMetrics(track: Element, metrics: { scrollHeight: number; clientHeig
 }
 
 describe("MessageList", () => {
-  it("渲染消息卡、流式区与权限卡", () => {
+  it("渲染消息卡与流式区（待回答卡已迁出到 ChatView 的待回答区）", () => {
     const props = makeProps({
       streamBlocks: [{ id: "text:0", kind: "text", parts: ["正在输出"] }],
-      permissions: [{ requestId: "req-1", tool: "bash", input: {} }],
     });
     const { container } = render(<MessageList {...props} />);
 
     const articles = container.querySelectorAll("article[data-message-id]");
     expect(Array.from(articles).map((el) => el.getAttribute("data-message-id"))).toEqual(["u1", "a1"]);
     expect(screen.getByTestId("live-stream")).toHaveTextContent("1 blocks");
-    expect(screen.getByTestId("permission-req-1")).toBeInTheDocument();
+  });
+
+  it("scrollToBottomSignal 递增时把列表滚到底（待回答区新卡出现）", () => {
+    const { container, rerender } = render(<MessageList {...makeProps()} />);
+    const track = container.querySelector(".chat-track")!;
+    stubMetrics(track, { scrollHeight: 900, clientHeight: 300 });
+    track.scrollTop = 120;
+
+    rerender(<MessageList {...makeProps({ scrollToBottomSignal: 1 })} />);
+    expect(track.scrollTop).toBe(900);
   });
 
   it("runError 渲染错误卡；liveActivity 渲染活动条（文档流内末尾）", () => {

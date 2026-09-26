@@ -51,6 +51,8 @@ export interface EventRouterDeps {
   applyCompactionEvent(event: AppEvent): void;
   /** 清除某会话「运行中」压缩占位（live-store.clearRunningCompaction 的装配注入；终态/自愈路径用） */
   clearRunningCompaction(sessionId: string): void;
+  /** `/clear` 上下文清空：清掉该会话的子代理运行与标签条（live-store.clearSubagentRuns 的装配注入） */
+  clearSubagentRuns(sessionId: string): void;
   stream: StreamBuffer;
   /** resync 命中当前会话时的附加清理（分页缓存等，由聊天视图装配注入） */
   onResyncCurrent?(sessionId: string): void;
@@ -233,9 +235,13 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
     if (event.type === "mcp.degraded" && event.sessionId === currentId) {
       deps.notify((event.payload as { message?: string }).message ?? t("MCP server 降级", "MCP server degraded"), "error");
     }
-    // 上下文清空（/clear 命令）：刷新会话详情与上下文面板并提示
-    if (event.type === "context.cleared" && event.sessionId && event.sessionId === currentId) {
-      deps.notify(t("上下文已清空（历史保留）", "Context cleared (history retained)"));
+    // 上下文清空（/clear 命令）：刷新会话详情与上下文面板并提示；同时清空该会话的子代理
+    // 运行与标签条（跨会话生效——清空语义与「当前会话」无关），对话里的工具卡仍可回看
+    if (event.type === "context.cleared" && event.sessionId) {
+      deps.clearSubagentRuns(event.sessionId);
+      if (event.sessionId === currentId) {
+        deps.notify(t("上下文已清空（历史保留，子代理列表已清空）", "Context cleared (history retained, subagents cleared)"));
+      }
     }
     // 上下文压缩开始（手动/85% 强制）：压缩可能耗时（vault 多次快速模型调用），先给即时反馈；
     // 同时写入 live-store：消息流尾部出现运行中检查点行

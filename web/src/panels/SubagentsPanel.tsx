@@ -2,9 +2,9 @@ import { useMemo, useState, type ReactElement } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { AgentInfo, LiveSubagentRun } from "../lib/contracts";
-import { deriveSubagentRunsFromMessages, mergeSubagentRuns, snippet } from "../lib/subagent-runs";
-import { SubagentRunStats, SubagentStatusChip, SubagentTranscriptDetails } from "../chat/SubagentRunCard";
-import { useLiveSubagentRuns } from "../app/live-store";
+import { deriveSubagentRunsFromMessages, filterHiddenSubagentRuns, filterSubagentRunsByStatus, mergeSubagentRuns, snippet } from "../lib/subagent-runs";
+import { SubagentRoleBadge, SubagentRunStats, SubagentStatusChip, SubagentTranscriptDetails } from "../chat/SubagentRunCard";
+import { useHiddenSubagentTasks, useLiveSubagentRuns } from "../app/live-store";
 import { useSessionQuery } from "../app/queries";
 import { tabActions } from "../workbench/tab-actions";
 import { useI18n } from "../i18n";
@@ -38,18 +38,23 @@ export function groupSubagentRuns(runs: Record<string, LiveSubagentRun>): Subage
 }
 
 /** 单个子代理运行行（状态徽标 + 实时轮次/工具 + 终态（完成/失败）后的转录折叠）；子代理面板与主区标签视图共用 */
-export function SubagentRunRow({ run, sessionId, onOpenInTab }: {
+export function SubagentRunRow({ run, sessionId, onOpenInTab, summarize }: {
   run: LiveSubagentRun;
   sessionId: string;
   /** 桌面端「在标签中打开」（按所在组的 toolCallId 开主区标签）；默认不渲染按钮 */
   onOpenInTab?: ((toolCallId: string) => void) | undefined;
+  /** 终态行默认展示结论摘要 + 复制（子代理标签页；面板与对话卡片保持按需拉取） */
+  summarize?: boolean | undefined;
 }): ReactElement {
   const { t } = useI18n();
   return (
     <li className="subagent-run-item" data-status={run.status}>
       {run.swarm && <span className="subagent-run-index mono">{run.swarm.index}/{run.swarm.total}</span>}
       {run.agent && <span className="subagent-run-agent mono">{run.agent}</span>}
+      {run.role && <SubagentRoleBadge role={run.role} />}
       {run.prompt && <span className="subagent-run-task" title={run.prompt}>{snippet(run.prompt, 80)}</span>}
+      {/* 实际生效模型（角色档/自定义 frontmatter 解析后）：hover 给完整 id */}
+      {run.model && <span className="subagent-run-model mono" title={run.model}>{run.model}</span>}
       <SubagentStatusChip status={run.status} />
       <SubagentRunStats run={run} />
       {onOpenInTab && (
@@ -58,7 +63,9 @@ export function SubagentRunRow({ run, sessionId, onOpenInTab }: {
         </button>
       )}
       {(run.status === "done" || run.status === "failed") && (
-        <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} {...(run.swarm ? { index: run.swarm.index } : {})} />
+        <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId}
+          {...(run.swarm ? { index: run.swarm.index } : {})}
+          {...(summarize ? { summarize } : {})} />
       )}
     </li>
   );
@@ -139,10 +146,16 @@ const EMPTY_MESSAGE = (
 export function SubagentsPanel({ sessionId }: { sessionId?: string | undefined }): ReactElement {
   const { t } = useI18n();
   const liveRuns = useLiveSubagentRuns(sessionId);
+  const hiddenRuns = useHiddenSubagentTasks(sessionId);
   const session = useSessionQuery(sessionId);
+  // 状态筛选（全部/运行中/完成/失败）：历史多时一眼筛出在跑或失败的那批
+  const [status, setStatus] = useState<"all" | LiveSubagentRun["status"]>("all");
   const derivedRuns = useMemo(() => deriveSubagentRunsFromMessages(session.data?.messages ?? []), [session.data]);
-  const runs = useMemo(() => mergeSubagentRuns(liveRuns, derivedRuns), [liveRuns, derivedRuns]);
-  const groups = useMemo(() => groupSubagentRuns(runs), [runs]);
+  const runs = useMemo(
+    () => filterHiddenSubagentRuns(mergeSubagentRuns(liveRuns, derivedRuns), hiddenRuns),
+    [liveRuns, derivedRuns, hiddenRuns],
+  );
+  const groups = useMemo(() => groupSubagentRuns(filterSubagentRunsByStatus(runs, status)), [runs, status]);
   const onOpenInTab = tabActions.openSubagentTab;
 
   if (!sessionId) {
@@ -154,9 +167,25 @@ export function SubagentsPanel({ sessionId }: { sessionId?: string | undefined }
   }
 
   let swarmSeq = 0;
+  const total = Object.keys(runs).length;
   return (
     <div className="subagents-panel">
       <SubagentLauncher sessionId={sessionId} />
+      {total > 0 && (
+        <div className="subagents-filter">
+          <label htmlFor="subagents-status-filter">{t("状态", "Status")}</label>
+          <select
+            id="subagents-status-filter"
+            value={status}
+            onChange={(event) => setStatus(event.target.value as "all" | LiveSubagentRun["status"])}
+          >
+            <option value="all">{t(`全部 ${total}`, `All ${total}`)}</option>
+            <option value="running">{t("运行中", "Running")}</option>
+            <option value="done">{t("完成", "Done")}</option>
+            <option value="failed">{t("失败", "Failed")}</option>
+          </select>
+        </div>
+      )}
       {groups.length === 0 && (
         <p className="muted-empty panel-empty subagents-panel-empty">
           {t(EMPTY_MESSAGE, "No subagent runs yet — the agent can spawn subagents via subagent / spawn_swarm while running.")}

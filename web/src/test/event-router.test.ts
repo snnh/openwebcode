@@ -70,6 +70,7 @@ function setup(currentSessionId = "s1") {
     applySubagentEvent: vi.fn(),
     applyCompactionEvent: vi.fn(),
     clearRunningCompaction: vi.fn(),
+    clearSubagentRuns: vi.fn(),
     stream,
     onResyncCurrent: vi.fn(),
   };
@@ -104,6 +105,17 @@ describe("createEventRouter", () => {
     sessionMeta.setAgentState("s1", "thinking");
     router.route(makeEvent({ type: "resync.required", sessionId: "s1" }));
     await vi.waitFor(() => expect(sessionStore.get().agentStates.s1).toBeUndefined());
+  });
+
+  it("/clear（context.cleared）：清空该会话子代理运行与标签条（跨会话生效）", () => {
+    const { deps, router } = setup("s1");
+    router.route(makeEvent({ type: "context.cleared", sessionId: "s2", payload: { uptoIndex: 3 } }));
+    expect(deps.clearSubagentRuns).toHaveBeenCalledWith("s2");
+    expect(deps.notify).not.toHaveBeenCalled();
+    router.route(makeEvent({ type: "context.cleared", sessionId: "s1", payload: { uptoIndex: 4 } }));
+    expect(deps.clearSubagentRuns).toHaveBeenLastCalledWith("s1");
+    // 当前会话才提示（文案说明子代理列表一并清空）
+    expect(deps.notify).toHaveBeenCalledWith(expect.stringContaining("子代理列表已清空"));
   });
 
   it("agent.state：跨会话跟踪 + busy→idle 完成通知；thinking 清运行失败", () => {
