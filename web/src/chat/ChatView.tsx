@@ -34,7 +34,7 @@ import { InteractionCard } from "./cards/InteractionCard";
 import { PermissionCard } from "./cards/PermissionCard";
 import { PlanApprovalCard } from "./cards/PlanApprovalCard";
 import { SteeringQueue } from "./cards/SteeringQueue";
-import { pendingBodyMaxHeight, usePendingAccordion } from "./cards/pending-accordion";
+import { pendingZoneMaxHeight, usePendingAccordion } from "./cards/pending-accordion";
 import { Composer } from "../composer/Composer";
 import { SessionHeader } from "../workbench/SessionHeader";
 import { SessionSkeleton } from "../components/SessionSkeleton";
@@ -157,16 +157,23 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
   );
   const accordion = usePendingAccordion(sessionId, pendingIds);
   const workbenchRef = useRef<HTMLElement>(null);
-  // 移动端（≤768px）单独放宽：见 pendingBodyMaxHeight 注释
+  // 移动端（≤768px）兜底下限更小：见 pendingZoneMaxHeight 注释
   const pendingMobile = useMediaQuery(MOBILE_BREAKPOINT);
-  // 卡片内容区上限：可用高度的一半 / 60vh / 扣掉列表保底与顶栏输入栏，三者取小（主列不滚动，超出即裁切）
+  // 待回答区上限：未折叠时铺满整个信息流区域 = 会话区高度扣掉实测 chrome（顶栏/标签条/
+  // Composer）。上限加在容器上，卡内容完整渲染、由容器整体滚动，不截断选项。
   useEffect(() => {
     const el = workbenchRef.current;
     if (!el) return undefined;
     const apply = (): void => {
       // 软键盘弹出时 window.innerHeight 不随之缩小（移动端），visualViewport 才是真实可视高度
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-      el.style.setProperty("--pending-body-max", `${Math.round(pendingBodyMaxHeight(el.clientHeight, viewportHeight, pendingMobile))}px`);
+      let chromeHeight = 0;
+      for (const child of Array.from(el.children)) {
+        const node = child as HTMLElement;
+        if (node.classList.contains("pending-zone") || node.classList.contains("main-tab-panel")) continue;
+        chromeHeight += node.offsetHeight;
+      }
+      el.style.setProperty("--pending-zone-max", `${Math.round(pendingZoneMaxHeight({ workbenchHeight: el.clientHeight, viewportHeight, chromeHeight, mobile: pendingMobile }))}px`);
     };
     apply();
     window.addEventListener("resize", apply);

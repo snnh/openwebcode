@@ -376,23 +376,29 @@
 /* ================= 待回答区（权限卡 / 交互卡 / 计划批准 / 运行队列的统一容器） ================= */
 /* 这四类卡是消息列表之外的兄弟节点，而主列 .wb-main 是 overflow: hidden 且自身不滚动：
    高度无上限时卡片底部（选项/提交按钮）与 Composer 会被直接裁掉，且没有任何方式滚到它。
-   护栏 = 容器可收缩 + 内容区限高内滚（上限由 ChatView 按可用高度写入 --pending-body-max，
-   见 chat/cards/pending-accordion.ts）+ 消息列表保底 120px；收起态则由手风琴逻辑负责。 */
+   护栏 = 容器可收缩 + 容器限高内滚（上限由 ChatView 写入 --pending-zone-max = 会话区高度
+   扣掉实测 chrome，即未折叠时铺满整个信息流区域，见 chat/cards/pending-accordion.ts）；
+   收起态则由手风琴逻辑负责。
+   注意上限只加在容器上：卡内容（选项列表）永远完整渲染，截断交由容器整体滚动完成——
+   卡能折叠成一行，所以不需要靠截断卡内容来给消息列表腾地方（截在选项中间很难看）。 */
 .pending-zone {
   flex: 0 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  max-height: var(--pending-zone-max, 60vh);
   /* 兜底滚动：极端矮屏（移动端软键盘弹出）下卡头/操作行仍可滚到，不会被主列裁掉 */
   overflow-y: auto;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .pending-zone > * { flex: 0 0 auto; }
 .pending-zone .permission-card { margin: 8px 22px; }
-/* 消息列表保底高度：卡片再高也留住约 3 行上下文（与 PENDING_LIST_FLOOR 一致） */
-.main-tab-panel.chat-panel { min-height: 120px; }
-/* 卡片内容区：超过上限卡内滚动，选项与提交按钮始终可达 */
-.pending-body { max-height: var(--pending-body-max, 60vh); overflow-y: auto; }
+/* 消息列表不再留保底：待回答卡未折叠时铺满整个信息流区域（列表收缩为 0），
+   折叠或答完后列表自然复原。容器自身限高内滚，Composer 不会被挤出去。 */
+.main-tab-panel.chat-panel { min-height: 0; }
+/* 卡内容区不限高、不内滚：高度全交给容器（避免嵌套滚动与「选项被截在中间」） */
+.pending-body { overflow: visible; }
 /* 卡头：折叠三角 + 标题 + 「待回答」标记（收起态只剩这一行 + 主操作按钮） */
 .pending-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .pending-toggle {
@@ -428,8 +434,8 @@
 .pending-block.collapsed .pending-head { margin-bottom: 0; }
 .pending-block.collapsed .interaction-actions,
 .pending-block.collapsed .permission-actions { margin-top: 6px; }
-/* 运行队列（无回答语义，不参与手风琴，但同样限高内滚） */
-.steering-queue { max-height: var(--pending-body-max, 60vh); overflow-y: auto; }
+/* 运行队列（无回答语义，不参与手风琴）：高度同样交给容器，不自限高 */
+.steering-queue { overflow: visible; }
 
 /* ================= 权限卡 / 交互卡 / 计划批准 ================= */
 .permission-card {
@@ -462,28 +468,37 @@
    div.markdown 也是直接子元素，误中会把每个 Markdown 块挤成竖排窄列 */
 .interaction-card > .interaction-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .plan-approval-card .markdown { max-height: 320px; overflow-y: auto; margin: 6px 0; }
+/* 操作行（提交回答 / 允许一次 / 批准计划）吸附在容器底部：内容再长也常驻可见，不必滚到底 */
+.pending-zone .interaction-actions,
+.pending-zone .permission-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin-top: 6px;
+  padding: 6px 0;
+  background: inherit;
+}
+/* 卡头吸附容器顶部：卡铺满整个信息流区域后内容可以很长（长选项/长列表），折叠入口
+   （卡头三角）必须常驻可见——否则滚下去 / 点选后自动滚动就再也找不到收起按钮。 */
+.pending-zone .pending-block:not(.collapsed) > .pending-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: inherit;
+  padding-bottom: 6px;
+}
 /* 窄屏：交互卡收边；触屏：卡内按钮保证 36px 触控高度 */
 @media (max-width: 480px) {
   .interaction-card { margin: 8px 12px; }
 }
-/* 移动端（≤768px）：待回答区改为单一滚动容器——卡内容不再各自限高内滚（避免嵌套滚动
-   让 ask_user 选项「滚不动/显示不全」），整体高度仍由 --pending-body-max 与 flex 约束；
-   操作行（提交回答 / 允许一次）吸附在容器底部常驻可见，选项再多也能直接作答。 */
+/* 移动端（≤768px）：待回答区已是单一滚动容器（桌面同规则），这里只补触屏细节。 */
 @media (max-width: 768px) {
-  .pending-zone .pending-body { max-height: none; overflow: visible; }
-  .pending-zone .interaction-actions,
-  .pending-zone .permission-actions {
-    position: sticky;
-    bottom: 0;
-    z-index: 1;
-    margin-top: 6px;
-    padding: 6px 0;
-    background: inherit;
-  }
-  .pending-zone { padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+  .pending-zone { padding-bottom: 2px; }
 }
 @media (hover: none) {
   .permission-actions .btn, .interaction-actions .btn { min-height: 36px; }
+  /* 折叠钮（卡头三角）同样给足触控高度：手机点不准会让人以为「收不起来」 */
+  .pending-toggle { min-height: 36px; }
 }
 
 /* ================= 实时活动条（文档流内占位，不覆盖消息） ================= */

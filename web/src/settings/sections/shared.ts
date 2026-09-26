@@ -101,6 +101,7 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   gcMaxBytes: { label: "Storage limit (bytes)", description: "Global LRU limit for session artifacts; oldest data is removed first" },
   usageLogCleanupMode: { label: "Usage log cleanup mode", description: "off = disabled; deleted-after-days = remove events of deleted sessions older than the retention days (live sessions kept); all-after-days = remove all events older than the retention days; deleted-immediate-live-timeout = remove deleted-session events immediately and live-session events after the retention days; deleted-immediate-only = remove deleted-session events immediately, keep live sessions" },
   usageLogRetentionDays: { label: "Usage log retention (days)", description: "Retention days used by the cleanup modes (1-3650); applies to the after-days / live-timeout branches" },
+  sessionCacheIdleMinutes: { label: "Cache idle release (minutes)", description: "Release opened sessions and message indexes after this many idle minutes (0-1440; 0 = keep resident; resident is faster but uses more memory)" },
   host: { label: "Listen address" },
   port: { label: "Listen port" },
   allowedOrigins: { label: "Allowed origins", description: "Comma-separated browser origin whitelist (e.g. https://a.example.com,https://b.example.com; up to 16; plain http(s) origins without a path). Blank = same-origin browsers are auto-allowed and the access token stays the only credential" },
