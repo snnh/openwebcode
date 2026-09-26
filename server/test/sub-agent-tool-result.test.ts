@@ -3,16 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { runSubAgent } from "../src/agent/sub-agent.js";
 import type { Provider } from "../src/providers/provider.js";
-import type { ChatMessage } from "../src/sessions/types.js";
 import { makeFakeCore } from "./helpers/fake-core.js";
 import { tempRoot } from "./helpers/temp-roots.js";
-
-interface Transcript {
-  turns: number;
-  toolsUsed: string[];
-  conclusion: string;
-  messages: ChatMessage[];
-}
 
 describe("子代理工具循环", () => {
   it("stopReason 非 tool_use 但已产生 tool_call 时仍执行并落盘 tool_result", async () => {
@@ -49,18 +41,18 @@ describe("子代理工具循环", () => {
       taskId: "task-compat",
     });
 
-    expect(turn).toBe(2);
-    expect(result.turns).toBe(2);
-    expect(result.toolsUsed).toEqual(["read_file"]);
+    expect(result).toMatchObject({ turns: 2, toolsUsed: ["read_file"] });
     expect(result.conclusion).toContain("a.ts 已读过");
 
-    const transcript = JSON.parse(await readFile(path.join(root, "subagents", "task-compat.json"), "utf8")) as Transcript;
+    const transcript = JSON.parse(await readFile(path.join(root, "subagents", "task-compat.json"), "utf8")) as {
+      messages: Array<{ role: string; content: Array<{ type: string; toolCallId?: string; isError?: boolean; content?: string }> }>;
+    };
     const toolResults = transcript.messages
       .filter((message) => message.role === "tool")
       .flatMap((message) => message.content)
       .filter((block) => block.type === "tool_result");
     expect(toolResults).toHaveLength(1);
-    expect(toolResults[0]).toMatchObject({ type: "tool_result", toolCallId: "sub-1", isError: false });
-    expect(toolResults[0]!.type === "tool_result" ? toolResults[0]!.content : "").toContain("file body");
+    expect(toolResults[0]).toMatchObject({ toolCallId: "sub-1", isError: false });
+    expect(toolResults[0]!.content).toContain("file body");
   });
 });

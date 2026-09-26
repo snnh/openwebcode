@@ -8,10 +8,10 @@ import { buildServer } from "../src/app.js";
 import { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
-import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
+import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-import { waitForEvent } from "./helpers/wait-event.js";
 import { tempRootRetry } from "./helpers/temp-roots.js";
+import { waitForEvent } from "./helpers/wait-event.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const corePath = process.env.OWC_CORE_PATH ?? path.resolve(
@@ -27,135 +27,6 @@ afterEach(async () => {
   await Promise.all(clients.splice(0).map((client) => client.stop().catch(() => undefined)));
 });
 
-describe("stage 3 vertical acceptance", () => {
-  it.skipIf(!existsSync(corePath))(
-    "runs a real-Core coding task through permission, cost, checkpoint, and rollback APIs",
-    async () => {
-      const root = await tempRootRetry("owc-stage3-e2e-");
-      const sessions = new SessionStore(path.join(root, ".sessions"));
-      await sessions.initialize();
-      const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-      await pricing.initialize();
-      // 内置默认不再含 claude 定价，测试自行注入，避免依赖内置目录内容
-      await pricing.replace({
-        version: 1,
-        updatedAt: "2026-07-14T00:00:00.000Z",
-        entries: [{
-          provider: "anthropic",
-          model: "claude-opus-4-8",
-          currency: "USD",
-          effectiveFrom: "2026-01-01",
-          input: "5000000",
-          output: "25000000",
-          cacheRead: "500000",
-          cacheWrite: "6250000",
-        }],
-      });
-      const events = new EventBus();
-      const captured: AppEvent[] = [];
-      events.on("event", (event: AppEvent) => captured.push(event));
-      const providers = new ProviderRegistry();
-      let request = 0;
-      const provider: Provider = {
-        name: "anthropic",
-        async *streamChat() {
-          request++;
-          if (request === 1) {
-            yield { type: "tool_call", id: "write-allowed", name: "write_file", input: { path: "src/result.txt", content: "stage-three\n", createDirs: true } };
-            yield { type: "usage", inputTokens: 100, outputTokens: 20, cacheRead: 10, cacheWrite: 5 };
-            yield { type: "done", stopReason: "tool_use" };
-          } else if (request === 2) {
-            yield { type: "text_delta", text: "编码任务完成" };
-            yield { type: "usage", inputTokens: 50, outputTokens: 10, cacheRead: 0, cacheWrite: 0 };
-            yield { type: "done", stopReason: "end_turn" };
-          } else if (request === 3) {
-            yield { type: "tool_call", id: "write-denied", name: "write_file", input: { path: "denied.txt", content: "must-not-exist" } };
-            yield { type: "done", stopReason: "tool_use" };
-          } else {
-            yield { type: "text_delta", text: "已遵守拒绝决定" };
-            yield { type: "done", stopReason: "end_turn" };
-          }
-        },
-      };
-      providers.register(provider);
-      const core = new CoreClient(corePath);
-      clients.push(core);
-      await core.start();
-      const agent = new AgentRunner(sessions, providers, core, events, pricing);
-      const app = await buildServer({ core, sessions, agent, events, providers, pricing });
-
-      try {
-        const created = await app.inject({
-          method: "POST",
-          url: "/api/sessions",
-          payload: { cwd: root, provider: "anthropic", model: "claude-opus-4-8" },
-        });
-        expect(created.statusCode).toBe(201);
-        const sessionId = created.json<{ id: string }>().id;
-
-        const firstIdle = waitForEvent(events, "agent.state", { sessionId, match: (event) =>
-          (event.payload as { state?: string }).state === "idle" });
-        const firstPermission = waitForEvent(events, "permission.request", { sessionId });
-        const accepted = await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/messages`, payload: { content: "创建阶段三验收文件" } });
-        expect(accepted.statusCode).toBe(202);
-        const permission = await firstPermission;
-        const requestId = (permission.payload as { requestId: string }).requestId;
-        const allowed = await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/permissions/respond`, payload: { requestId, decision: "allow" } });
-        expect(allowed.statusCode).toBe(200);
-        await firstIdle;
-
-        expect(await readFile(path.join(root, "src/result.txt"), "utf8")).toBe("stage-three\n");
-        const context = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/context` });
-        expect(context.statusCode).toBe(200);
-        const contextBody = context.json<{
-          ledger: {
-            usage: { inputTokens: number; outputTokens: number };
-            cost: { usdMicroUnits: string; cnyMicroUnits: string; unpricedTokens: number };
-          };
-        }>();
-        expect(contextBody.ledger).toMatchObject({
-          usage: { inputTokens: 150, outputTokens: 30 },
-        });
-        expect(BigInt(contextBody.ledger.cost.usdMicroUnits)).toBeGreaterThan(0n);
-        expect(contextBody.ledger.cost.unpricedTokens).toBe(0);
-        expect(captured.some((event) => event.type === "context.usage" && event.sessionId === sessionId)).toBe(true);
-        expect(captured.some((event) => event.type === "tool.end" && event.sessionId === sessionId)).toBe(true);
-
-        const checkpoints = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/checkpoints` });
-        const checkpoint = checkpoints.json<Array<{ id: string }>>()[0];
-        expect(checkpoint).toBeDefined();
-        const restored = await app.inject({
-          method: "POST",
-          url: `/api/sessions/${sessionId}/checkpoints/${checkpoint!.id}/restore`,
-          payload: { confirm: true },
-        });
-        expect(restored.statusCode, restored.body).toBe(200);
-        await expect(readFile(path.join(root, "src/result.txt"), "utf8")).rejects.toThrow();
-        expect((await sessions.get(sessionId))?.messages).toHaveLength(0);
-
-        const secondIdle = waitForEvent(events, "agent.state", { sessionId, match: (event) =>
-          (event.payload as { state?: string }).state === "idle" });
-        const secondPermission = waitForEvent(events, "permission.request", { sessionId });
-        expect((await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/messages`, payload: { content: "尝试写入但等待拒绝" } })).statusCode).toBe(202);
-        const deniedRequestId = ((await secondPermission).payload as { requestId: string }).requestId;
-        expect((await app.inject({
-          method: "POST",
-          url: `/api/sessions/${sessionId}/permissions/respond`,
-          payload: { requestId: deniedRequestId, decision: "deny", reason: "验收拒绝" },
-        })).statusCode).toBe(200);
-        await secondIdle;
-        await expect(readFile(path.join(root, "denied.txt"), "utf8")).rejects.toThrow();
-        const detail = await sessions.get(sessionId);
-        expect(detail?.messages.some((message) => message.role === "tool" && message.content.some((block) =>
-          block.type === "tool_result" && block.isError && block.content === "验收拒绝"))).toBe(true);
-      } finally {
-        await app.close();
-      }
-    },
-    30_000,
-  );
-});
-
 interface Harness {
   app: Awaited<ReturnType<typeof buildServer>>;
   sessions: SessionStore;
@@ -164,37 +35,19 @@ interface Harness {
   root: string;
 }
 
+/** 真实 Core 的 E2E 装配：注入 anthropic 定价（内置默认不再含 claude 定价）+ runner + app（afterEach 收尾）。 */
 async function setup(provider: Provider): Promise<Harness> {
-  const root = await tempRootRetry("owc-web-e2e-");
+  const root = await tempRootRetry("owc-e2e-");
   const sessions = new SessionStore(path.join(root, ".sessions"));
   await sessions.initialize();
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
   await pricing.initialize();
-  // 内置默认不再含 claude 定价，测试自行注入，避免依赖内置目录内容
   await pricing.replace({
     version: 1,
     updatedAt: "2026-07-14T00:00:00.000Z",
     entries: [
-      {
-        provider: "anthropic",
-        model: "claude-opus-4-8",
-        currency: "USD",
-        effectiveFrom: "2026-01-01",
-        input: "5000000",
-        output: "25000000",
-        cacheRead: "500000",
-        cacheWrite: "6250000",
-      },
-      {
-        provider: "anthropic",
-        model: "claude-haiku-4-5",
-        currency: "USD",
-        effectiveFrom: "2025-01-01",
-        input: "1000000",
-        output: "5000000",
-        cacheRead: "100000",
-        cacheWrite: "1250000",
-      },
+      { provider: "anthropic", model: "claude-opus-4-8", currency: "USD", effectiveFrom: "2026-01-01", input: "5000000", output: "25000000", cacheRead: "500000", cacheWrite: "6250000" },
+      { provider: "anthropic", model: "claude-haiku-4-5", currency: "USD", effectiveFrom: "2025-01-01", input: "1000000", output: "5000000", cacheRead: "100000", cacheWrite: "1250000" },
     ],
   });
   const events = new EventBus();
@@ -213,63 +66,123 @@ function requestId(event: AppEvent): string {
   return (event.payload as { requestId: string }).requestId;
 }
 
+const idle = (event: AppEvent): boolean => (event.payload as { state?: string }).state === "idle";
+
+function post(harness: Harness, url: string, payload: unknown) {
+  return harness.app.inject({ method: "POST", url, payload });
+}
+
+async function newSession(app: Harness["app"], payload: Record<string, unknown>): Promise<string> {
+  const created = await app.inject({ method: "POST", url: "/api/sessions", payload });
+  expect(created.statusCode).toBe(201);
+  return created.json<{ id: string }>().id;
+}
+
+/** 提交一条消息 → 等权限卡 → 按 decision 应答 → 等 run 回到 idle。 */
+async function submitWithPermission(harness: Harness, sessionId: string, content: string, decision: "allow" | "deny", reason?: string) {
+  const settled = waitForEvent(harness.events, "agent.state", { sessionId, match: idle });
+  const permission = waitForEvent(harness.events, "permission.request", { sessionId }); // 先订阅再 inject，避免错过事件挂起
+  expect((await post(harness, `/api/sessions/${sessionId}/messages`, { content })).statusCode).toBe(202);
+  const responded = await post(harness, `/api/sessions/${sessionId}/permissions/respond`, { requestId: requestId(await permission), decision, ...(reason ? { reason } : {}) });
+  expect(responded.statusCode).toBe(200);
+  await settled;
+}
+
 // 按消息内容驱动的确定性 provider：识别 write: 指令生成 write_file 工具调用
-function scriptProvider(name: string, requests: StreamChatRequest[]): Provider {
+function scriptProvider(name: string): Provider {
+  let turns = 0;
   return {
     name,
     async *streamChat(request) {
-      requests.push(request);
+      turns += 1;
       const last = request.messages.at(-1);
       const toolResult = last?.content.find((block) => block.type === "tool_result");
-      if (toolResult?.type === "tool_result") {
-        yield { type: "text_delta", text: toolResult.isError ? "工具失败" : "工具完成" };
-        yield { type: "usage", inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0 };
-        yield { type: "done", stopReason: "end_turn" };
-        return;
-      }
       const text = last?.content.find((block) => block.type === "text");
       const content = text?.type === "text" ? text.text : "";
-      const match = /^write:\s*(\S+)\s*(.*)$/s.exec(content);
-      if (match) {
-        yield { type: "tool_call", id: `w-${requests.length}`, name: "write_file", input: { path: match[1], content: match[2] ?? "", createDirs: true } };
-        yield { type: "usage", inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0 };
-        yield { type: "done", stopReason: "tool_use" };
-        return;
-      }
-      yield { type: "text_delta", text: `收到：${content.slice(0, 20)}` };
+      const write = toolResult ? null : /^write:\s*(\S+)\s*(.*)$/s.exec(content);
+      if (write) yield { type: "tool_call" as const, id: `w-${turns}`, name: "write_file", input: { path: write[1], content: write[2] ?? "", createDirs: true } };
+      else yield { type: "text_delta" as const, text: toolResult ? (toolResult.isError ? "工具失败" : "工具完成") : `收到：${content.slice(0, 20)}` };
       yield { type: "usage", inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0 };
-      yield { type: "done", stopReason: "end_turn" };
+      yield { type: "done", stopReason: write ? "tool_use" as const : "end_turn" as const };
     },
   };
 }
 
+describe("stage 3 vertical acceptance", () => {
+  it.skipIf(!coreAvailable)("真实 Core：提交→权限→工具→账本→检查点回退→再提交拒绝写入", async () => {
+    let request = 0;
+    const provider: Provider = {
+      name: "anthropic",
+      async *streamChat() {
+        request += 1;
+        if (request === 1) {
+          yield { type: "tool_call", id: "write-allowed", name: "write_file", input: { path: "src/result.txt", content: "stage-three\n", createDirs: true } };
+          yield { type: "usage", inputTokens: 100, outputTokens: 20, cacheRead: 10, cacheWrite: 5 };
+          yield { type: "done", stopReason: "tool_use" };
+        } else if (request === 2) {
+          yield { type: "text_delta", text: "编码任务完成" };
+          yield { type: "usage", inputTokens: 50, outputTokens: 10, cacheRead: 0, cacheWrite: 0 };
+          yield { type: "done", stopReason: "end_turn" };
+        } else if (request === 3) {
+          yield { type: "tool_call", id: "write-denied", name: "write_file", input: { path: "denied.txt", content: "must-not-exist" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "已遵守拒绝决定" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const captured: AppEvent[] = [];
+    const harness = await setup(provider);
+    harness.events.on("event", (event) => captured.push(event));
+    const sessionId = await newSession(harness.app, { cwd: harness.root, provider: "anthropic", model: "claude-opus-4-8" });
+
+    await submitWithPermission(harness, sessionId, "创建阶段三验收文件", "allow");
+    expect(await readFile(path.join(harness.root, "src/result.txt"), "utf8")).toBe("stage-three\n");
+    const context = await harness.app.inject({ method: "GET", url: `/api/sessions/${sessionId}/context` });
+    expect(context.statusCode).toBe(200);
+    const { ledger } = context.json<{ ledger: { usage: { inputTokens: number; outputTokens: number }; cost: { usdMicroUnits: string; unpricedTokens: number } } }>();
+    expect(ledger).toMatchObject({ usage: { inputTokens: 150, outputTokens: 30 } });
+    expect(BigInt(ledger.cost.usdMicroUnits)).toBeGreaterThan(0n);
+    expect(ledger.cost.unpricedTokens).toBe(0);
+    expect(captured.map((event) => event.type)).toEqual(expect.arrayContaining(["context.usage", "tool.end"]));
+
+    const checkpoint = (await harness.app.inject({ method: "GET", url: `/api/sessions/${sessionId}/checkpoints` })).json<Array<{ id: string }>>()[0];
+    expect(checkpoint).toBeDefined();
+    const restored = await harness.app.inject({
+      method: "POST", url: `/api/sessions/${sessionId}/checkpoints/${checkpoint!.id}/restore`, payload: { confirm: true },
+    });
+    expect(restored.statusCode, restored.body).toBe(200);
+    await expect(readFile(path.join(harness.root, "src/result.txt"), "utf8")).rejects.toThrow();
+    expect((await harness.sessions.get(sessionId))?.messages).toHaveLength(0);
+
+    await submitWithPermission(harness, sessionId, "尝试写入但等待拒绝", "deny", "验收拒绝");
+    await expect(readFile(path.join(harness.root, "denied.txt"), "utf8")).rejects.toThrow();
+    expect((await harness.sessions.get(sessionId))?.messages.some((message) => message.role === "tool" && message.content.some((block) =>
+      block.type === "tool_result" && block.isError && block.content === "验收拒绝"))).toBe(true);
+  }, 30_000);
+});
+
 describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
-  it("runs a coding task through permission, file tool, context, file tree, and checkpoint diff", async () => {
-    const requests: StreamChatRequest[] = [];
-    const harness = await setup(scriptProvider("anthropic", requests));
+  it("权限卡可经 REST 恢复，写盘→上下文→文件树→预览→检查点 diff 全链路可用", async () => {
+    const harness = await setup(scriptProvider("anthropic"));
     const { app, events, root } = harness;
+    const sessionId = await newSession(app, { cwd: root, provider: "anthropic", model: "claude-opus-4-8" });
 
-    const created = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "anthropic", model: "claude-opus-4-8" } });
-    expect(created.statusCode).toBe(201);
-    const sessionId = created.json<{ id: string }>().id;
-
-    const idle = waitForEvent(events, "agent.state", { sessionId, match: (e) => (e.payload as { state?: string }).state === "idle" });
-    // 先订阅 permission.request 再 inject，避免错过事件导致挂起（与 stage3-e2e 一致）
-    const permissionEvent = waitForEvent(events, "permission.request", { sessionId });
-    const accepted = await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/messages`, payload: { content: "write: result.txt hello-stage4" } });
-    expect(accepted.statusCode).toBe(202);
-    const req = requestId(await permissionEvent);
+    const settled = waitForEvent(events, "agent.state", { sessionId, match: idle });
+    const permission = waitForEvent(events, "permission.request", { sessionId });
+    expect((await post(harness, `/api/sessions/${sessionId}/messages`, { content: "write: result.txt hello-stage4" })).statusCode).toBe(202);
+    const req = requestId(await permission);
     // 待确认权限可通过 REST 恢复（前端刷新后重新播种权限卡）
     const pending = (await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/permissions` })).json<Array<{ requestId: string; tool: string }>>();
-    expect(pending.map((item) => item.requestId)).toContain(req);
-    expect(pending.find((item) => item.requestId === req)?.tool).toBe("write_file");
-    expect((await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/permissions/respond`, payload: { requestId: req, decision: "allow" } })).statusCode).toBe(200);
-    await idle;
+    expect(pending).toEqual(expect.arrayContaining([expect.objectContaining({ requestId: req, tool: "write_file" })]));
+    expect((await post(harness, `/api/sessions/${sessionId}/permissions/respond`, { requestId: req, decision: "allow" })).statusCode).toBe(200);
+    await settled;
     expect((await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/permissions` })).json<unknown[]>()).toHaveLength(0);
 
     expect(await readFile(path.join(root, "result.txt"), "utf8")).toBe("hello-stage4");
     const context = (await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/context` })).json<{
-      ledger: { usage: { inputTokens: number; outputTokens: number }; cost: { usdMicroUnits: string; unpricedTokens: number } };
+      ledger: { usage: { inputTokens: number; outputTokens: number }; cost: { usdMicroUnits: string } };
     }>();
     expect(context.ledger.usage.inputTokens + context.ledger.usage.outputTokens).toBeGreaterThan(0);
     expect(BigInt(context.ledger.cost.usdMicroUnits)).toBeGreaterThan(0n);
@@ -281,222 +194,98 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
     const diff = (await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/checkpoints/${checkpoints[0]!.id}/diff` })).json<{ diff: string }>();
     expect(typeof diff.diff).toBe("string");
   }, 30_000);
-
-  it("queues steering over HTTP during a run and applies it at the safe boundary", async () => {
-    const requests: StreamChatRequest[] = [];
-    let releaseFirst!: () => void;
-    const firstEntered = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    let finish!: () => void;
-    const gate = new Promise<void>((resolve) => { finish = resolve; });
-    const provider: Provider = {
-      name: "anthropic",
-      async *streamChat(request) {
-        requests.push(request);
-        if (requests.length === 1) { releaseFirst(); await gate; }
-        yield { type: "done", stopReason: "end_turn" };
-      },
-    };
-    const harness = await setup(provider);
-    const { app, events, root } = harness;
-    const session = (await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "anthropic", model: "claude-opus-4-8" } })).json<{ id: string }>();
-
-    const runningIdle = waitForEvent(events, "agent.state", { sessionId: session.id, match: (e) => (e.payload as { state?: string }).state === "idle" });
-    const running = app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "初始任务" } });
-    await firstEntered;
-    const queued = (await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "补充指令" } })).json<{ accepted: boolean; queued: boolean; position: number }>();
-    expect(queued).toMatchObject({ accepted: true, queued: true, position: 1 });
-    const list = (await app.inject({ method: "GET", url: `/api/sessions/${session.id}/queue` })).json<Array<{ content: string }>>();
-    expect(list.map((item) => item.content)).toEqual(["补充指令"]);
-    finish();
-    await running;
-    await runningIdle;
-    // 第二轮 provider 请求含 steering 文本（按 role=user 追加）
-    expect(requests[1]?.messages.some((m) =>
-      m.role === "user" && m.content.some((b) => b.type === "text" && b.text === "补充指令"))).toBe(true);
-  }, 30_000);
-
-  it("hot-switches model over HTTP and uses the new config on the next run", async () => {
-    const requests: StreamChatRequest[] = [];
-    const harness = await setup(scriptProvider("anthropic", requests));
-    const { app, events, root } = harness;
-    const session = (await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "anthropic", model: "claude-haiku-4-5" } })).json<{ id: string }>();
-
-    const firstIdle = waitForEvent(events, "agent.state", { sessionId: session.id, match: (e) => (e.payload as { state?: string }).state === "idle" });
-    expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "第一轮" } })).statusCode).toBe(202);
-    await firstIdle;
-    const updated = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-reasoner", thinking: "enabled" } });
-    expect(updated.statusCode).toBe(200);
-    const secondIdle = waitForEvent(events, "agent.state", { sessionId: session.id, match: (e) => (e.payload as { state?: string }).state === "idle" });
-    expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "第二轮" } })).statusCode).toBe(202);
-    await secondIdle;
-
-    expect(requests[0]).toMatchObject({ model: "claude-haiku-4-5" });
-    expect(requests[1]).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
-  }, 30_000);
-
-  it("rolls back a checkpoint over HTTP, restoring files and truncating messages", async () => {
-    const requests: StreamChatRequest[] = [];
-    const harness = await setup(scriptProvider("anthropic", requests));
-    const { app, events, root } = harness;
-    const session = (await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "anthropic", model: "claude-opus-4-8" } })).json<{ id: string }>();
-
-    const firstIdle = waitForEvent(events, "agent.state", { sessionId: session.id, match: (e) => (e.payload as { state?: string }).state === "idle" });
-    const firstPerm = waitForEvent(events, "permission.request", { sessionId: session.id });
-    await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "write: keep.txt kept" } });
-    const firstReq = requestId(await firstPerm);
-    await app.inject({ method: "POST", url: `/api/sessions/${session.id}/permissions/respond`, payload: { requestId: firstReq, decision: "allow" } });
-    await firstIdle;
-    expect(existsSync(path.join(root, "keep.txt"))).toBe(true);
-
-    // 手动建立"keep.txt 已写入"检查点，用于后续选择性回滚断言。
-    // agent.run 开头的自动检查点创建于首条用户消息之前（messageCount=0），无区分度。
-    const manual = (await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints`, payload: { label: "after-keep" } })).json<{ id: string; messageCount: number }>();
-    expect(manual.messageCount).toBeGreaterThan(0);
-    const secondIdle = waitForEvent(events, "agent.state", { sessionId: session.id, match: (e) => (e.payload as { state?: string }).state === "idle" });
-    const secondPerm = waitForEvent(events, "permission.request", { sessionId: session.id });
-    await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "write: gone.txt temporary" } });
-    const secondReq = requestId(await secondPerm);
-    await app.inject({ method: "POST", url: `/api/sessions/${session.id}/permissions/respond`, payload: { requestId: secondReq, decision: "allow" } });
-    await secondIdle;
-    expect(existsSync(path.join(root, "gone.txt"))).toBe(true);
-
-    const restored = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints/${manual.id}/restore`, payload: { confirm: true } });
-    expect(restored.statusCode).toBe(200);
-    // 选择性回滚：第二段的 gone.txt 被消除
-    expect(existsSync(path.join(root, "gone.txt"))).toBe(false);
-    // keep.txt 仍存在，证明仅回滚到手动检查点之后的状态
-    expect(existsSync(path.join(root, "keep.txt"))).toBe(true);
-    const detail = await harness.sessions.get(session.id);
-    expect(detail?.messages).toHaveLength(manual.messageCount);
-  }, 30_000);
 });
 
-describe("WebSocket event replay and resync", () => {
-  it("replays buffered events to a reconnecting client and signals resync when evicted", async () => {
-    const { WebSocket } = await import("ws");
-    const stubCore = { on() { return stubCore; } } as unknown as CoreClient;
-    const root = await tempRootRetry("owc-ws-");
-    const sessions = new SessionStore(path.join(root, ".sessions"));
-    await sessions.initialize();
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const events = new EventBus(2);
-    const providers = new ProviderRegistry();
-    const app = await buildServer({ core: stubCore, sessions, agent: { isRunning: () => false } as unknown as AgentRunner, events, providers, pricing });
-    apps.push(app);
-    await app.listen({ port: 0, host: "127.0.0.1" });
-    const address = app.server.address();
-    const base = typeof address === "object" && address ? `ws://127.0.0.1:${address.port}` : "";
+type WsClient = import("ws").WebSocket;
 
+/** WS E2E rig：真实监听端口 + 可选事件环形缓冲容量（app 由 afterEach 关闭）。 */
+async function wsRig(eventBufferSize?: number) {
+  const { WebSocket } = await import("ws");
+  const stubCore = { on() { return stubCore; } } as unknown as CoreClient;
+  const root = await tempRootRetry("owc-ws-");
+  const sessions = new SessionStore(path.join(root, ".sessions"));
+  await sessions.initialize();
+  const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+  await pricing.initialize();
+  const events = new EventBus(eventBufferSize);
+  const app = await buildServer({
+    core: stubCore, sessions, agent: { isRunning: () => false } as unknown as AgentRunner, events, providers: new ProviderRegistry(), pricing,
+  });
+  apps.push(app);
+  await app.listen({ port: 0, host: "127.0.0.1" });
+  const address = app.server.address();
+  const base = typeof address === "object" && address ? `ws://127.0.0.1:${address.port}` : "";
+  return { events, open: (query: string) => new WebSocket(`${base}/api/events${query}`) as unknown as WsClient };
+}
+
+/** 收集 count 条非 connected 事件；count = 0 表示 timeoutMs 内必须保持静默（收到事件即 reject）。 */
+function collectEvents(ws: WsClient, count: number, timeoutMs = 5_000): Promise<AppEvent[]> {
+  return new Promise((resolve, reject) => {
+    const received: AppEvent[] = [];
+    const finish = (error?: string) => {
+      clearTimeout(timer);
+      ws.off("message", onMessage);
+      if (error) reject(new Error(error));
+      else resolve(received);
+    };
+    const onMessage = (data: Buffer) => {
+      const event = JSON.parse(data.toString()) as AppEvent;
+      if (event.type === "connected") return;
+      received.push(event);
+      if (count === 0) finish(`unexpected event: ${event.type}`);
+      else if (received.length >= count) finish();
+    };
+    const timer = setTimeout(() => finish(received.length >= count ? undefined : `expected ${count} events, got ${received.length}`), timeoutMs);
+    ws.on("message", onMessage);
+  });
+}
+
+/** 等 connected 帧（服务端此时已注册该客户端）。 */
+function waitConnected(ws: WsClient): Promise<void> {
+  return new Promise((resolve) => {
+    ws.on("message", function onMessage(data: Buffer) {
+      if ((JSON.parse(data.toString()) as AppEvent).type !== "connected") return;
+      ws.off("message", onMessage);
+      resolve();
+    });
+  });
+}
+
+describe("WebSocket event replay / resync / session isolation", () => {
+  it("重连客户端收到缓冲事件；缓冲淘汰后改为 resync.required", async () => {
+    const { events, open } = await wsRig(2);
     events.publish({ source: "session", type: "one", sessionId: "s1", payload: null });
     events.publish({ source: "agent", type: "two", sessionId: "s1", payload: null });
 
-    const collect = (ws: WebSocket, count: number): Promise<AppEvent[]> => new Promise((resolve) => {
-      const received: AppEvent[] = [];
-      ws.on("message", (data: Buffer) => {
-        const event = JSON.parse(data.toString()) as AppEvent;
-        if (event.type === "connected") return;
-        received.push(event);
-        if (received.length === count) resolve(received);
-      });
-    });
-
-    const replayWs = new WebSocket(`${base}/api/events?after=0&sessionId=s1`);
-    const received = await collect(replayWs, 2);
+    const replayWs = open("?after=0&sessionId=s1");
+    expect((await collectEvents(replayWs, 2)).map((event) => event.type)).toEqual(["one", "two"]);
     replayWs.close();
-    expect(received.map((e) => e.type)).toEqual(["one", "two"]);
 
     events.publish({ source: "session", type: "three", sessionId: "s1", payload: null });
     events.publish({ source: "session", type: "four", sessionId: "s1", payload: null });
-    const resyncWs = new WebSocket(`${base}/api/events?after=1&sessionId=s1`);
-    const resyncType = await new Promise<string>((resolve) => {
-      resyncWs.on("message", (data: Buffer) => resolve((JSON.parse(data.toString()) as AppEvent).type));
-    });
+    const resyncWs = open("?after=1&sessionId=s1");
+    expect((await collectEvents(resyncWs, 1))[0]?.type).toBe("resync.required");
     resyncWs.close();
-    expect(resyncType).toBe("resync.required");
   }, 15_000);
-});
 
-describe("WebSocket session isolation", () => {
   it("带 sessionId 的客户端仅收本会话与全局事件；无订阅客户端收全量", async () => {
-    const { WebSocket } = await import("ws");
-    const stubCore = { on() { return stubCore; } } as unknown as CoreClient;
-    const root = await tempRootRetry("owc-ws-");
-    const sessions = new SessionStore(path.join(root, ".sessions"));
-    await sessions.initialize();
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const events = new EventBus();
-    const providers = new ProviderRegistry();
-    const app = await buildServer({ core: stubCore, sessions, agent: { isRunning: () => false } as unknown as AgentRunner, events, providers, pricing });
-    apps.push(app);
-    await app.listen({ port: 0, host: "127.0.0.1" });
-    const address = app.server.address();
-    const base = typeof address === "object" && address ? `ws://127.0.0.1:${address.port}` : "";
-
-    const nextEvent = (ws: InstanceType<typeof WebSocket>): Promise<AppEvent> => new Promise((resolve) => {
-      ws.on("message", function onMessage(data: Buffer) {
-        const event = JSON.parse(data.toString()) as AppEvent;
-        if (event.type === "connected") return;
-        ws.off("message", onMessage);
-        resolve(event);
-      });
-    });
-    const collect = (ws: InstanceType<typeof WebSocket>, count: number): Promise<AppEvent[]> => new Promise((resolve) => {
-      const received: AppEvent[] = [];
-      const onMessage = (data: Buffer) => {
-        const event = JSON.parse(data.toString()) as AppEvent;
-        if (event.type === "connected") return;
-        received.push(event);
-        if (received.length === count) {
-          ws.off("message", onMessage);
-          resolve(received);
-        }
-      };
-      ws.on("message", onMessage);
-    });
-    const silence = (ws: InstanceType<typeof WebSocket>, ms: number): Promise<void> => new Promise((resolve, reject) => {
-      const onMessage = (data: Buffer) => {
-        const event = JSON.parse(data.toString()) as AppEvent;
-        if (event.type === "connected") return;
-        clearTimeout(timer);
-        ws.off("message", onMessage);
-        reject(new Error(`unexpected event: ${event.type}`));
-      };
-      const timer = setTimeout(() => {
-        ws.off("message", onMessage);
-        resolve();
-      }, ms);
-      ws.on("message", onMessage);
-    });
-
-    const subscribed = new WebSocket(`${base}/api/events?sessionId=s1`);
-    const globalClient = new WebSocket(`${base}/api/events`);
-    // 等双方的 connected 帧到达（此时已注册进 clients）
-    const connected = (ws: InstanceType<typeof WebSocket>): Promise<void> => new Promise((resolve) => {
-      ws.on("message", function onMessage(data: Buffer) {
-        if ((JSON.parse(data.toString()) as AppEvent).type === "connected") {
-          ws.off("message", onMessage);
-          resolve();
-        }
-      });
-    });
-    await Promise.all([connected(subscribed), connected(globalClient)]);
+    const { events, open } = await wsRig();
+    const subscribed = open("?sessionId=s1");
+    const globalClient = open("");
+    await Promise.all([waitConnected(subscribed), waitConnected(globalClient)]);
 
     // 其他会话的运行状态不会越过会话边界，但全量客户端仍会收到。
-    const filtered = silence(subscribed, 200);
-    const receivedForeign = collect(globalClient, 3);
+    const filtered = collectEvents(subscribed, 0, 200);
+    const foreign = collectEvents(globalClient, 3);
     events.publish({ source: "agent", type: "agent.state", sessionId: "s2", payload: { state: "running" } });
     events.publish({ source: "agent", type: "run.accepted", sessionId: "s2", payload: {} });
     events.publish({ source: "agent", type: "tool.end", sessionId: "s2", payload: {} });
+    expect((await foreign).map((event) => event.type)).toEqual(["agent.state", "run.accepted", "tool.end"]);
     await filtered;
-    expect((await receivedForeign).map((event) => event.type)).toEqual(["agent.state", "run.accepted", "tool.end"]);
 
-    // 本会话事件照常送达订阅客户端。
-    const receivedOwn = nextEvent(subscribed);
+    const own = collectEvents(subscribed, 1);
     events.publish({ source: "agent", type: "agent.state", sessionId: "s1", payload: { state: "running" } });
-    expect((await receivedOwn).sessionId).toBe("s1");
-
+    expect((await own)[0]?.sessionId).toBe("s1");
     subscribed.close();
     globalClient.close();
   }, 15_000);

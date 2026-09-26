@@ -3,83 +3,51 @@ import { ContextManager } from "../src/context/context-manager.js";
 import type { ChatMessage } from "../src/sessions/types.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
-function userMessage(id: string, text: string): ChatMessage {
-  return { id, role: "user", content: [{ type: "text", text }], createdAt: "2026-01-01T00:00:00.000Z" };
-}
+const userMessage = (id: string, text: string): ChatMessage => ({ id, role: "user", content: [{ type: "text", text }], createdAt: "2026-01-01T00:00:00.000Z" });
+const toolMessage = (id: string, text: string): ChatMessage => ({ id, role: "tool", content: [{ type: "tool_result", toolCallId: `call-${id}`, content: text, isError: false }], createdAt: "2026-01-01T00:00:01.000Z" });
+const ARTIFACT = "artifact-00000000-0000-0000-0000-000000000001";
 
-function toolMessage(id: string, text: string): ChatMessage {
-  return { id, role: "tool", content: [{ type: "tool_result", toolCallId: `call-${id}`, content: text }], createdAt: "2026-01-01T00:00:01.000Z" };
-}
+/** 追加一条驱逐条目（模拟 context-saver 每轮新增）。 */
+const evict = (context: ContextManager, messageId: string, artifactId = ARTIFACT): Promise<unknown> =>
+  context.updateLedger((ledger) => {
+    ledger.entries.push({ messageId, kind: "tool_result", artifactId, state: "evicted", createdRound: 1, pinnedUntilRound: 0, toolName: "bash", sizeBytes: 2000 });
+  });
+
+const json = (value: unknown): string => JSON.stringify(value);
+const fragmentOf = (view: { messages: ChatMessage[] }, id: string): string => json(view.messages.find((message) => message.id === id));
 
 describe("buildView 片段级失效（驱逐条目变化不触发全量重建）", () => {
-  it("新增驱逐条目后增量命中，且产出与全量重建逐字节一致", async () => {
-    const root = await tempRoot("owc-partial-refresh-");
-    const context = new ContextManager(root);
+  it("新增驱逐条目后走增量路径，且产出与全量重建一致", async () => {
+    const context = new ContextManager(await tempRoot("owc-partial-refresh-"));
     const messages: ChatMessage[] = [
       userMessage("u1", "问题一"),
       toolMessage("t1", "x".repeat(2000)),
       userMessage("u2", "问题二"),
       toolMessage("t2", "y".repeat(2000)),
     ];
+    expect((await context.buildView(messages)).stats.incremental).toBe(false); // 首次全量
+    expect((await context.buildView(messages)).stats.incremental).toBe(true); // 纯缓存命中
 
-    const first = await context.buildView(messages);
-    expect(first.stats.incremental).toBe(false);
-
-    // 纯缓存命中
-    const pureHit = await context.buildView(messages);
-    expect(pureHit.stats.incremental).toBe(true);
-
-    // 滚动驱逐：t1 的结果被逐出为 artifact（模拟 context-saver 每轮新增条目）
-    await context.updateLedger((ledger) => {
-      ledger.entries.push({
-        messageId: "t1",
-        kind: "tool_result",
-        artifactId: "artifact-00000000-0000-0000-0000-000000000001",
-        state: "evicted",
-        createdRound: 1,
-        pinnedUntilRound: 0,
-        toolName: "bash",
-        sizeBytes: 2000,
-      });
-    });
-
+    await evict(context, "t1");
     const appended = [...messages, userMessage("u3", "问题三")];
     const partial = await context.buildView(appended);
-    // 关键断言：条目变化不再令整表全量重建
+    // 关键断言：条目变化不再令整表全量重建；驱逐占位已生效、追加消息在位
     expect(partial.stats.incremental).toBe(true);
-    // 驱逐占位已生效
-    const evicted = partial.messages.find((message) => message.id === "t1")!;
-    const block = evicted.content[0]!;
-    expect(block.type).toBe("tool_result");
-    expect(JSON.stringify(block)).toContain("artifact-00000000-0000-0000-0000-000000000001");
-    // 追加消息在位
+    expect(fragmentOf(partial, "t1")).toContain(ARTIFACT);
     expect(partial.messages.some((message) => message.id === "u3")).toBe(true);
 
     // 与全量重建逐字节一致（视图 + token 统计）
     const full = await context.buildView(appended, { forceFullRebuild: true });
     expect(full.stats.incremental).toBe(false);
-    expect(JSON.stringify(partial.messages)).toBe(JSON.stringify(full.messages));
-    expect(partial.stats.totalTokens).toBe(full.stats.totalTokens);
-    expect(partial.stats.segments).toEqual(full.stats.segments);
-    expect(partial.stats.pinnedTokens).toBe(full.stats.pinnedTokens);
+    expect(json(partial.messages)).toBe(json(full.messages));
+    expect(partial.stats).toMatchObject({ totalTokens: full.stats.totalTokens, pinnedTokens: full.stats.pinnedTokens, segments: full.stats.segments });
   });
 
   it("驱逐条目恢复（restored）后片段还原，仍走增量路径", async () => {
-    const root = await tempRoot("owc-partial-restore-");
-    const context = new ContextManager(root);
-    const messages: ChatMessage[] = [userMessage("u1", "q"), toolMessage("t1", "z".repeat(500))];
-    await context.updateLedger((ledger) => {
-      ledger.entries.push({
-        messageId: "t1",
-        kind: "tool_result",
-        artifactId: "artifact-00000000-0000-0000-0000-000000000002",
-        state: "evicted",
-        createdRound: 1,
-        pinnedUntilRound: 0,
-      });
-    });
-    const evicted = await context.buildView(messages);
-    expect(JSON.stringify(evicted.messages[1])).toContain("artifact-");
+    const context = new ContextManager(await tempRoot("owc-partial-restore-"));
+    const messages = [userMessage("u1", "q"), toolMessage("t1", "z".repeat(500))];
+    await evict(context, "t1", "artifact-00000000-0000-0000-0000-000000000002");
+    expect(json((await context.buildView(messages)).messages[1])).toContain("artifact-");
 
     await context.updateLedger((ledger) => {
       ledger.entries[0]!.state = "restored";
@@ -87,8 +55,7 @@ describe("buildView 片段级失效（驱逐条目变化不触发全量重建）
     });
     const restored = await context.buildView(messages);
     expect(restored.stats.incremental).toBe(true);
-    expect(JSON.stringify(restored.messages[1])).toContain("z".repeat(500));
-    const full = await context.buildView(messages, { forceFullRebuild: true });
-    expect(JSON.stringify(restored.messages)).toBe(JSON.stringify(full.messages));
+    expect(json(restored.messages[1])).toContain("z".repeat(500));
+    expect(json(restored.messages)).toBe(json((await context.buildView(messages, { forceFullRebuild: true })).messages));
   });
 });
