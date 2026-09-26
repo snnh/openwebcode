@@ -29,6 +29,7 @@ openwebcode/
 │   │   ├── sandbox/         # core-router 策略映射、WSB、filtered 代理
 │   │   ├── mcp/             # MCP 客户端（stdio + Streamable HTTP）
 │   │   ├── extensions/      # Extension Host 子进程、扩展 API、官方扩展
+│   │   ├── dsh/             # dsh 兼容层：插件 loader/垫片宿主、Typert Remote 翻译、独立端口 SPA 托管
 │   │   ├── rpc/             # frame-codec 分帧（与 core 的 LSP 风格头部对接）
 │   │   └── index/ scm/ diagnostics/ cost/ events/ eval/
 │   └── test/                # vitest：单元、HTTP 注入、真实 core 端到端
@@ -43,7 +44,7 @@ openwebcode/
 │   │   └── styles/          # 十二份样式表（tokens/base/layout/chat-list/chat-cards/chat-mode/composer/sidebar/panels/editor/dialogs/settings）
 │   └── src/test/            # vitest + jsdom + Testing Library + axe
 ├── packaging/         # 分发布局、安装脚本、WiX 打包
-├── scripts/bench/     # Node + Playwright 性能基准，回归 >15% 标红
+├── scripts/           # bench/（Node + Playwright 性能基准，回归 >15% 标红）、fetch-dsh-web.mjs（抓取 dsh UI vendor）
 ├── examples/          # 示例资产（examples/extensions/demo/ 是完整第三方扩展示例）
 └── .github/workflows/ # CI 与发布
 ```
@@ -128,6 +129,8 @@ server（vitest，`testTimeout`/`hookTimeout` 均为 30s，Windows CI 资源紧�
 - 依赖真实 owc-exec 的测试用 `OWC_CORE_PATH` 注入路径，或 `skipIf(!existsSync)` 兜底——缺二进制时跳过，不要挂起。
 - cron 测试给 `CronScheduler` 注入 `now()` 时钟 + `autoSchedule: false`，用 `check()` 手动 tick，不起真实 timer。
 - 外部命令编排用 `recordingRunner` / `tableRunner`（参考 `server/test/snapshot-backends.test.ts`）。
+- **非极度必要不写新测试文件**：新测试追加到既有按域就近的文件；同主题断言合并进一个 `it`，只测新增行为与受影响路径，集成级验证一次即可。
+- **pty 用例哨兵**：`waitFor` 轮询驱动的 pty 用例里，陈旧 sentinel rand 可能先于新 init rand 出现——需在用例内标记陈旧 rand 作废，否则确定性挂起。
 
 web（vitest + jsdom）：`@testing-library/react` + `axe-core` 做 a11y，`asyncUtilTimeout` 放宽到 3s。没有真实 WebSocket，测事件处理走 mock event dispatch。
 
@@ -185,6 +188,10 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 v1 扩展跑在独立的 Extension Host 子进程，经 IPC 拿到注入的 `ctx`，manifest 声明权限、能力调用逐项校验。能注册 agent 工具、读会话和上下文（含只读会话 `compact/` 归档的 `context.readVaultFile`）、订阅事件、私有存储、私有 HTTP 路由、快速模型通道、提示词钩子、工具塑形等。权限与能力的完整对照表看 `server/src/extensions/types.ts`，可运行的完整示例在 `examples/extensions/demo/`。扩展是可信代码（安全级别 ≈ yolo），只装自己信得过的。
 
 manifest 可选声明 `configSchema`（JSON Schema 子集）：设置页据此把扩展配置渲染成类型化表单而不是原始 JSON 编辑，保存时 server 做松散校验（类型/枚举/未知键，只查顶层一层，`server/src/extensions/config-schema.ts`）。表单支持的属性形态（`web/src/settings/sections/ExtensionConfigForm.tsx` 的 `parseConfigSchema`）：`string`（可带 `enum` 渲染下拉）、`number`/`integer`（可带 `minimum`/`maximum`）、`boolean`、一层 `object` 嵌套组（带 `properties`）、字符串字典（`additionalProperties: { "type": "string" }`，按「键=值」行编辑）。每个属性应给 `title` 和 `description`，表单会展示为字段名与说明文字；未覆盖的既有配置键在保存时原样保留。官方扩展的英文字段文案映射在 `ExtensionsSection.tsx` 的 `OFFICIAL_FIELD_EN`。
+
+### 改 dsh 兼容模式
+
+dsh（DeepSeek Harness）兼容层在 `server/src/dsh/`：`loader.ts`（插件发现与兼容探测）、`host-runtime.ts`（cordis / schemastery / dsh-tools 三个垫片 + 服务缝，运行在 Extension Host 子进程里）、`web-protocol/`（独立端口托管 dsh SPA、Typert Remote unary/WS 翻译）、`services.ts`（服务缝桥接）。dsh 前端与插件 vendor 产物由 `scripts/fetch-dsh-web.mjs` 抓取到 `server/assets/dsh-web/`（gitignored；**对 vendor 的一切改写只经该脚本按精确锚点施加，不手改产物**）。协议映射表与 wire 字段契约在 `docs/dsh-compat.md`（本地维护，gitignored）——dsh 升级时先更映射表、再改实现。面向用户的说明见 [`dsh-compat.md`](./dsh-compat.md)。
 
 ## 架构边界（改动前必读）
 
