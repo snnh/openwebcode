@@ -142,6 +142,43 @@ describe("app/wiring", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["session", "s1"] });
   });
 
+  it("跨会话待办角标：permission/interaction 事件增量维护，run 终态清空该会话", () => {
+    const { queryClient } = makeWiring();
+    const socket = FakeSocket.instances[0]!;
+    sessionStore.set({ attention: {} });
+
+    // 另一个会话（s2）在等我回答：与当前会话无关，照样计数
+    socket.serverSend({ type: "permission.request", sessionId: "s2", payload: { requestId: "r1", tool: "bash", input: {} } });
+    socket.serverSend({ type: "interaction.requested", sessionId: "s2", payload: { id: "q1", title: "选一个" } });
+    socket.serverSend({ type: "permission.request", sessionId: "s2", payload: { requestId: "r2", tool: "bash", input: {} } });
+    expect(sessionStore.get().attention.s2).toEqual({ permissions: 2, interactions: 1 });
+
+    socket.serverSend({ type: "permission.resolved", sessionId: "s2", payload: { requestId: "r1" } });
+    socket.serverSend({ type: "interaction.answered", sessionId: "s2", payload: { id: "q1" } });
+    expect(sessionStore.get().attention.s2).toEqual({ permissions: 1, interactions: 0 });
+
+    // 多余的解除事件不会把计数压到负数；清零后条目整体移除
+    socket.serverSend({ type: "permission.resolved", sessionId: "s2", payload: { requestId: "r1" } });
+    socket.serverSend({ type: "permission.resolved", sessionId: "s2", payload: { requestId: "r2" } });
+    expect(sessionStore.get().attention.s2).toBeUndefined();
+
+    // run 终态：该会话不可能还挂着待答（未答交互随 run 中止作废）
+    socket.serverSend({ type: "permission.request", sessionId: "s2", payload: { requestId: "r3", tool: "bash", input: {} } });
+    expect(sessionStore.get().attention.s2).toBeDefined();
+    socket.serverSend({ type: "run.completed", sessionId: "s2", payload: {} });
+    expect(sessionStore.get().attention.s2).toBeUndefined();
+    // 失效查询仍然照旧（角标不改变刷新语义）
+    expect(queryClient.getQueryCache()).toBeDefined();
+  });
+
+  it("agent.state 进入终态同样清掉待办角标", () => {
+    makeWiring();
+    const socket = FakeSocket.instances[0]!;
+    sessionStore.set({ attention: { s2: { permissions: 1, interactions: 1 } } });
+    socket.serverSend({ type: "agent.state", sessionId: "s2", payload: { state: "idle" } });
+    expect(sessionStore.get().attention.s2).toBeUndefined();
+  });
+
   it("notify 通路：当前会话 agent.error 写入 toast 与通知中心", () => {
     makeWiring();
     const socket = FakeSocket.instances[0]!;

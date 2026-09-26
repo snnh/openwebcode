@@ -32,19 +32,35 @@ function pruneResolved(items: InteractionRequest[]): void {
 /** Durable, small interaction state. It is deliberately separate from chat history. */
 export class InteractionCoordinator {
   private readonly writes = new Map<string, Promise<void>>();
+  /**
+   * 内存待答计数（sessionId → pending 条数）：会话列表的 attention 标记要跨会话统计，
+   * 逐个读盘太贵；写入只有 mutate 一条路径，在这里顺带维护即可（进程重启后清零——
+   * 重启后没有正在等待的 run，等待中的卡片会在进入会话时由 REST 重新读出）。
+   */
+  private readonly pendingCounts = new Map<string, number>();
   constructor(private readonly contextRoot: (sessionId: string) => string) {}
   async list(sessionId: string): Promise<InteractionRequest[]> { await this.writes.get(sessionId)?.catch(() => undefined); return (await this.read(sessionId)).map((item) => ({ ...item })); }
+  /** 会话删除：清掉该会话的内存待答计数（避免角标残留） */
+  forgetSession(sessionId: string): void { this.pendingCounts.delete(sessionId); }
   async create(sessionId: string, input: Omit<InteractionRequest, "id" | "sessionId" | "status" | "createdAt">): Promise<InteractionRequest> {
     return this.mutate(sessionId, (items) => { const item: InteractionRequest = { ...input, id: randomUUID(), sessionId, status: "pending", createdAt: new Date().toISOString() }; items.push(item); return { ...item }; });
   }
   async answer(sessionId: string, id: string, answer: unknown): Promise<InteractionRequest | undefined> {
     return this.mutate(sessionId, (items) => { const item = items.find((entry) => entry.id === id && entry.status === "pending"); if (!item) return undefined; item.status = "answered"; item.answer = answer; item.answeredAt = new Date().toISOString(); return { ...item }; });
   }
+  /** 跨会话待答计数（会话列表 attention 标记源；O(会话数)） */
+  pendingCountsBySession(): Map<string, number> {
+    return new Map(this.pendingCounts);
+  }
+
   private mutate<T>(sessionId: string, change: (items: InteractionRequest[]) => T): Promise<T> {
     return serializeByKey(this.writes, sessionId, async () => {
       const items = await this.read(sessionId);
       const result = change(items);
       pruneResolved(items);
+      const pending = items.filter((item) => item.status === "pending").length;
+      if (pending > 0) this.pendingCounts.set(sessionId, pending);
+      else this.pendingCounts.delete(sessionId);
       await writeUtf8Atomically(this.file(sessionId), `${JSON.stringify({ version: 1, items } satisfies Document, null, 2)}\n`);
       return result;
     });

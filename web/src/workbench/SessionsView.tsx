@@ -1,5 +1,5 @@
 /**
- * 完整会话轨（侧栏 sessions 视图）：搜索过滤、置顶排序、运行点、选中态、
+ * 完整会话轨（侧栏 sessions 视图）：搜索过滤、置顶排序、运行点、待回答角标、选中态、
  * 内联重命名、置顶/删除/导出/导入、主题切换、设置入口、新建会话。
  * 动作直连 ui store 与 api（删除走 ui.setDeleteTarget 确认框，新建走 ui.setNewSessionOpen）。
  */
@@ -10,6 +10,7 @@ import { api } from "../lib/api";
 import { isBusyState } from "../lib/agent-state";
 import { qk } from "../app/queries";
 import { ui } from "../app/ui-store";
+import { sessionMeta, type AttentionCounts } from "../app/session-store";
 import { useSessionDefaults } from "../app/prefs-store";
 import { useTheme } from "../theme";
 import { Icon } from "../components/Icon";
@@ -21,10 +22,20 @@ interface SessionsViewProps {
   currentId?: string | undefined;
   /** 按会话键控的 agent 运行态（session-store.agentStates） */
   agentStates: Record<string, string>;
+  /** 按会话键控的待回答计数（session-store.attention）：别的会话在等你回答时也给提示 */
+  attention: Record<string, AttentionCounts>;
   onSelect(id: string): void;
 }
 
-export function SessionsView({ sessions, currentId, agentStates, onSelect }: SessionsViewProps): ReactElement {
+/** 待回答角标文案：权限与提问分别计数（如「等你回答 2」「待批准 1」），hover 给完整说明 */
+function attentionLabel(counts: AttentionCounts, t: (chinese: string, english: string) => string): string {
+  const parts: string[] = [];
+  if (counts.permissions > 0) parts.push(t(`待批准 ${counts.permissions}`, `${counts.permissions} to approve`));
+  if (counts.interactions > 0) parts.push(t(`待回答 ${counts.interactions}`, `${counts.interactions} to answer`));
+  return parts.join(" · ");
+}
+
+export function SessionsView({ sessions, currentId, agentStates, attention, onSelect }: SessionsViewProps): ReactElement {
   const { language, t } = useI18n();
   const { theme, toggleTheme } = useTheme();
   const queryClient = useQueryClient();
@@ -163,7 +174,25 @@ export function SessionsView({ sessions, currentId, agentStates, onSelect }: Ses
                   <span className="session-meta">{session.provider} · {session.model}</span>
                 </button>
                 <div className="session-actions">
-                  {isBusyState(agentStates[session.id]) && <span className="running-dot" role="status" aria-label={t("运行中", "Running")} title={t("运行中", "Running")} />}
+                  {/* 待回答角标优先于「运行中」圆点：等你操作比「它在忙」更需要被看见 */}
+                  {(() => {
+                    const counts = attention[session.id];
+                    if (!counts) {
+                      return isBusyState(agentStates[session.id])
+                        ? <span className="running-dot" role="status" aria-label={t("运行中", "Running")} title={t("运行中", "Running")} />
+                        : null;
+                    }
+                    const label = attentionLabel(counts, t);
+                    return (
+                      <span className="attention-badge" role="status" title={t(`等待你操作：${label}`, `Waiting for you: ${label}`)}>
+                        <Icon name="circle-filled" size={9} />
+                        {counts.permissions + counts.interactions}
+                      </span>
+                    );
+                  })()}
+                  {attention[session.id] && isBusyState(agentStates[session.id]) && (
+                    <span className="running-dot" role="status" aria-label={t("运行中", "Running")} title={t("运行中", "Running")} />
+                  )}
                   <button
                     className={`session-pin${session.pinned ? " active" : ""}`}
                     aria-label={session.pinned ? t(`取消置顶 ${session.title}`, `Unpin ${session.title}`) : t(`置顶 ${session.title}`, `Pin ${session.title}`)}

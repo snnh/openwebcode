@@ -4,6 +4,7 @@ import { useStore } from "../app/store";
 import { useI18n } from "../i18n";
 import { layout, layoutStore, type SidebarView } from "./layout";
 import { SessionsView } from "./SessionsView";
+import type { AttentionCounts } from "../app/session-store";
 import { FilesView } from "./sidebar/FilesView";
 import { ScmView } from "./sidebar/ScmView";
 import { ProblemsView } from "./sidebar/ProblemsView";
@@ -14,6 +15,8 @@ interface SidebarViewsProps {
   sessions?: Session[] | undefined;
   currentId?: string | undefined;
   agentStates: Record<string, string>;
+  /** 按会话键控的待回答计数（session-store.attention） */
+  attention: Record<string, AttentionCounts>;
   onSelectSession(id: string): void;
 }
 
@@ -23,7 +26,7 @@ const VIEW_TITLES: Record<Exclude<SidebarView, "sessions">, [string, string]> = 
   problems: ["问题", "Problems"],
 };
 
-export function SidebarViews({ sessions, currentId, agentStates, onSelectSession }: SidebarViewsProps): ReactElement {
+export function SidebarViews({ sessions, currentId, agentStates, attention, onSelectSession }: SidebarViewsProps): ReactElement {
   const { t } = useI18n();
   const view = useStore(layoutStore, (state) => state.sidebarView);
   const width = useStore(layoutStore, (state) => state.sidebarWidth);
@@ -55,7 +58,7 @@ export function SidebarViews({ sessions, currentId, agentStates, onSelectSession
         }}
       />
       {view === "sessions" ? (
-        <SessionsView sessions={sessions} currentId={currentId} agentStates={agentStates} onSelect={onSelectSession} />
+        <SessionsView sessions={sessions} currentId={currentId} agentStates={agentStates} attention={attention} onSelect={onSelectSession} />
       ) : (
         <>
           <header className="sidebar-views-header"><h2>{t(title?.[0] ?? "", title?.[1] ?? "")}</h2></header>

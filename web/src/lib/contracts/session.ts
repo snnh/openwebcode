@@ -55,6 +55,15 @@ export interface Session {
   title: string;
   /** 会话列表置顶（PATCH /api/sessions/:id）。 */
   pinned?: boolean;
+  /** 手工标签组名（PATCH /api/sessions/:id 的 group；undefined = 未分组）。 */
+  group?: string;
+  /** 已归档：不在默认列表显示（详见 help/usage.md「会话组织」）。 */
+  archived?: boolean;
+  /**
+   * 待办标记（GET /api/sessions 服务端聚合，仅在有值时出现）：该会话正等着你回答。
+   * permissions = 待审批权限数，interactions = 待答交互（ask_user/计划批准）数。
+   */
+  attention?: { permissions: number; interactions: number };
   createdAt: string;
   updatedAt: string;
 }
