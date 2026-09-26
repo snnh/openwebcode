@@ -32,11 +32,14 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
   app.put<{ Params: { id: string }; Body: SessionConfigBody }>("/api/sessions/:id/config", async (request, reply) => {
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
-    // 运行中只允许热切权限类字段（permissionMode/reviewMode 均由 authorizeTool 每次
-    // 工具调用实时读取，无快照）；其余配置（模型/agentMode/沙盒/环境等）仍须空闲时改。
+    // 运行中允许热切「每轮实时读取」的字段：权限类（permissionMode/reviewModel，由
+    // authorizeTool 每次工具调用实时读取）+ 模型类（provider/model/thinking/effort，主循环
+    // 每个 turn 重新 sessions.get 后现读，故下一次 provider 请求即生效，见 agent-runner 的
+    // effectiveProvider/effectiveModel）。其余配置（agentMode/沙盒/环境/工具白名单等）会改变
+    // 本轮的工具面或执行策略，仍须空闲时改。
     const running = agent.isRunning(request.params.id);
     if (running) {
-      const RUNTIME_CONFIG_KEYS = new Set(["permissionMode", "reviewModel"]);
+      const RUNTIME_CONFIG_KEYS = new Set(["permissionMode", "reviewModel", "provider", "model", "thinking", "effort"]);
       const keys = Object.keys(request.body ?? {});
       if (keys.some((key) => !RUNTIME_CONFIG_KEYS.has(key))) {
         return reply.code(409).send({ error: "Session is running; update its config when it is idle" });
@@ -190,6 +193,12 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
       await core.release?.(session.id);
     }
     await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(nodeEnv ? { nodeEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(sshCredentials === true ? { sshCredentials: true } : {}), ...(reviewModel ? { reviewModel } : {}), ...(toolsAllow?.length ? { toolsAllow } : {}), ...(toolsDeny?.length ? { toolsDeny } : {}), ...(fallbackModels?.length ? { fallbackModels } : {}) });
+    // 运行中热切主模型：主循环每 turn 现读会话配置，但 fallback 覆盖会遮蔽新主模型，
+    // 这里打标让下一轮先丢弃覆盖（见 AgentRunner.resetModelFallbackOverride）。
+    // 仅模型/provider 变化触发；只改 thinking/effort 时保留在途的 fallback 覆盖。
+    if (running && (provider !== session.provider || model !== session.model)) {
+      agent.resetModelFallbackOverride?.(request.params.id);
+    }
     let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
     // 运行中热切权限档：按新档结算挂起的权限请求（新档下无需审批的自动放行）
     if (running) await agent.reconcilePermissions?.(request.params.id);

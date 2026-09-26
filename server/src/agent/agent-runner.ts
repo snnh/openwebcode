@@ -846,6 +846,11 @@ export class AgentRunner {
   /** 工具形态别名与参数归一（实现见 tool-alias.ts）：每轮随工具表重建，run 结束清理。 */
   private readonly toolAliases: ToolAliasResolver;
   private readonly todos = new Map<string, TodoItem[]>();
+  /**
+   * 运行中切换了模型/思考档（PUT /api/sessions/:id/config 热切）的会话：下一 turn 开头丢弃
+   * fallback 覆盖并清空已试候选，使用户新选的模型立即成为主模型（见 run() 轮首消费）。
+   */
+  private readonly modelOverrideResets = new Set<string>();
   private readonly permissions: PermissionCoordinator;
   /** 手动启动（REST）子代理：sessionId → 在途 taskId 集（并发上限见 MAX_MANUAL_SUBAGENTS）。 */
   private readonly manualSubagents = new Map<string, Set<string>>();
@@ -1219,6 +1224,8 @@ export class AgentRunner {
     if (this.workspaceWrites.has(sessionId)) throw new Error("A file save is pending; respond to its permission request first");
     const controller = new AbortController();
     this.running.set(sessionId, controller);
+    // 上一 run 结束时未被消费的切换标记不得泄漏到本次 run（否则会误清本次的 fallback 覆盖）
+    this.modelOverrideResets.delete(sessionId);
     let followUpQueueItemId = options?.queueItemId;
     let scheduleFollowUp = false;
     // 0.5.0 Phase 2d：性能采样累加器（声明在 try 外层，finally 可访问）
@@ -1353,6 +1360,12 @@ export class AgentRunner {
         this.setTurnIndex(sessionId, turnIndex);
         const session = await this.sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
+        // 运行中用户改了模型/思考档（config 路由热切并打标）：本轮丢弃 fallback 覆盖，
+        // 用新的会话模型作为主模型；已试候选一并清空，使新主模型的备选链可完整重走。
+        if (this.modelOverrideResets.delete(sessionId)) {
+          modelOverride = undefined;
+          fallbackTried.clear();
+        }
         // fallback 切换后的生效模型（未切换 = 会话主模型）；上下文窗口/能力按此重新解析
         const effectiveProvider = modelOverride?.provider ?? session.provider;
         const effectiveModel = modelOverride?.model ?? session.model;
@@ -4229,6 +4242,15 @@ export class AgentRunner {
   }
 
   /**
+   * 运行中热切模型/思考档后的通知：为该会话打标，主循环下一 turn 开头丢弃 fallback 覆盖，
+   * 让新配置的会话模型立即生效（config 路由在 running 且模型类字段变化时调用）。
+   * 空闲时调用无副作用：标记会在下一 run 开始时被清掉。
+   */
+  resetModelFallbackOverride(sessionId: string): void {
+    this.modelOverrideResets.add(sessionId);
+  }
+
+  /**
    * 会话删除时清理按会话/cwd 键控的无界小 Map（perf 环形缓冲、MCP 告警签名、任务清单、提示词覆盖缓存）。
    * cwd 级缓存误清只导致下次 run 重建一次，不影响正确性。
    */
@@ -4238,6 +4260,7 @@ export class AgentRunner {
     this.artifactToolSticky.delete(sessionId);
     this.usageCostSnapshots.delete(sessionId);
     this.todos.delete(sessionId);
+    this.modelOverrideResets.delete(sessionId);
     if (cwd) this.promptOverrideCache.delete(cwd);
     // 记忆文件指纹缓存按路径共享（不按会话）：cwd 级条目随会话回收，cwd 未知时全清（纯缓存，代价仅一次重读）
     this.memorySections.discard(cwd);

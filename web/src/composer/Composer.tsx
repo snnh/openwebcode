@@ -653,6 +653,16 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
       : THINKING_LABEL.enabled!;
   const selectionUnavailable = session.provider !== "" && !selectableModels.some((item) => item.provider === session.provider && item.id === session.model);
 
+  /**
+   * 模型/思考档切换的瞬时提示（复用循环切换的提示条）。运行中热切不会打断在途的 provider
+   * 请求，主循环下一 turn 才现读新配置，因此提示里点明「下一轮生效」。
+   */
+  const flashModelHint = (text: string): void => {
+    clearTimeout(modelCycleTimerRef.current);
+    setModelCycleHint(running ? t(`${text}（下一轮生效）`, `${text} — applies from the next turn`) : text);
+    modelCycleTimerRef.current = setTimeout(() => setModelCycleHint(null), running ? 3000 : 2000);
+  };
+
   /** 模型弹层选择：目标模型不支持当前 thinking/effort 时在同一请求中清除。 */
   const selectModel = (next: ModelProfile): void => {
     recordRecentModel(next.provider, next.id);
@@ -660,10 +670,11 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
     if (session.thinking && next.capabilities.thinking.length > 0 && !next.capabilities.thinking.includes(session.thinking)) config.thinking = null;
     if (session.effort && next.capabilities.effort.length > 0 && !next.capabilities.effort.includes(session.effort)) config.effort = null;
     onConfig(config);
+    flashModelHint(t(`已切换模型：${next.id}【${next.provider}】`, `Switched model: ${next.id} (${next.provider})`));
   };
 
   /** 思考弹层选择：value 形态 mode:<adaptive|enabled|disabled> / effort:<tier> / default。 */
-  const selectThinking = (choice: string): void => {
+  const applyThinkingChoice = (choice: string): void => {
     if (choice === "default" || choice === "mode:disabled") {
       onConfig({ thinking: null, effort: null });
       return;
@@ -691,6 +702,15 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
     onConfig({ thinking: activeThinking, effort });
   };
 
+  /**
+   * 思考档入口：空闲时静默（避免滑块拖动刷提示），运行中给出「下一轮生效」提示
+   * （热切不打断在途请求，主循环下一 turn 现读会话 thinking/effort）。
+   */
+  const selectThinking = (choice: string): void => {
+    applyThinkingChoice(choice);
+    if (running) flashModelHint(t("已更新思考档", "Thinking updated"));
+  };
+
   // 会话模型实际变化（下拉选择/会话切换/配置生效）时，循环基准回到会话值；
   // 配置生效前的重渲染（如提示文本更新）不清空基准，保证连续 Ctrl+P 按列表顺序前进
   const propsModelRef = useRef({ provider: session.provider, model: session.model });
@@ -713,9 +733,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
       if (session.effort && profile.capabilities.effort.length > 0 && !profile.capabilities.effort.includes(session.effort)) config.effort = null;
     }
     onConfig(config);
-    clearTimeout(modelCycleTimerRef.current);
-    setModelCycleHint(t(`已切换模型：${next.model}【${next.provider}】`, `Switched model: ${next.model} (${next.provider})`));
-    modelCycleTimerRef.current = setTimeout(() => setModelCycleHint(null), 2000);
+    flashModelHint(t(`已切换模型：${next.model}【${next.provider}】`, `Switched model: ${next.model} (${next.provider})`));
     return true;
   };
 
@@ -1076,7 +1094,6 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
             defaultOnValue={defaultOnValue}
             thinkingBadge={thinkingBadge}
             thinkingControlSupported={selectedModel === undefined || thinkingControlSupported}
-            disabled={running}
             onSelectModel={selectModel}
             onSelectThinking={selectThinking}
             capabilities={selectedModel?.capabilities}
