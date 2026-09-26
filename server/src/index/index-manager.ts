@@ -165,6 +165,16 @@ interface IndexManagerOptions {
   now?: () => number;
 }
 
+/**
+ * 索引工作区常驻内存的空闲与容量上限（多会话/多项目使用下的资源占用收敛）：
+ * - 空闲 IDLE：超过该时间没有被任何请求访问的工作区整体释放（内存索引 + 文件监听），
+ *   磁盘索引保留、下次访问按磁盘重建；
+ * - 容量 MAX：同时常驻的工作区数量上限，超出按最近访问时间释放最旧的。
+ * 这两个值都只影响「内存里缓存了什么」，不影响索引内容与语义。
+ */
+export const INDEX_WORKSPACE_IDLE_MS = 30 * 60_000;
+export const INDEX_WORKSPACE_MAX = 8;
+
 export class IndexManager {
   private readonly workspaces = new Map<string, WorkspaceState>();
   private readonly budget: IndexScanBudget;
@@ -230,6 +240,16 @@ export class IndexManager {
       released += 1;
     }
     return released;
+  }
+
+  /**
+   * 按默认策略做一次清扫：先释放空闲超时的工作区，再按容量上限淘汰最旧的。
+   * 由宿主周期性调用（见 index.ts 的定时器）；释放失败的单个工作区不影响其余。
+   */
+  async sweep(idleMs: number = INDEX_WORKSPACE_IDLE_MS, max: number = INDEX_WORKSPACE_MAX): Promise<number> {
+    const idle = await this.releaseIdle(idleMs);
+    const over = await this.enforceLimit(max);
+    return idle + over;
   }
 
   /** 释放一个工作区的定时器、监听与进行中的构建（纯内存操作，不动磁盘） */

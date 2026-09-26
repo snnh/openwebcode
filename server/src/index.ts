@@ -180,6 +180,10 @@ agent.setModelRoleResolver(modelRoles);
 // 符号索引（0.4.0 Phase 2）：数据目录 index/ 下，按 workspace-hash 分桶；不进会话历史、不导出
 const indexManager = new IndexManager(core, path.join(dataDir, "index"), events);
 agent.setIndexManager(indexManager);
+// 索引常驻内存的空闲/容量清扫：多项目使用下不让「打开过的每个项目」都把索引与文件监听留在内存里
+// （磁盘索引保留，下次访问按磁盘重建）；unref 的定时器不影响进程退出。
+const indexSweepTimer = setInterval(() => { void indexManager.sweep().catch(() => undefined); }, 5 * 60_000);
+indexSweepTimer.unref();
 // 诊断闭环（0.4.0 Phase 3a）：test_runner 工具、REST tests/diagnostics、diagnostics.updated 事件共用
 const diagnostics = new DiagnosticsService(core, sessions, events);
 agent.setDiagnostics(diagnostics);
