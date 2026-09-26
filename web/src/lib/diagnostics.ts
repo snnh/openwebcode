@@ -1,4 +1,5 @@
 import type { DiagnosticFailure, DiagnosticSet } from "./contracts";
+import { compareText } from "../lib/collator.js";
 
 type DiagnosticSeverity = "error" | "warning";
 export type SeverityFilter = "all" | DiagnosticSeverity;
@@ -30,7 +31,7 @@ export function groupFailuresByFile(failures: DiagnosticFailure[]): DiagnosticFi
     .sort((a, b) => {
       if (a.file === "") return b.file === "" ? 0 : 1;
       if (b.file === "") return -1;
-      return a.file.localeCompare(b.file);
+      return compareText(a.file, b.file);
     });
 }
 

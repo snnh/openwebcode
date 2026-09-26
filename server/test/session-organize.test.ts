@@ -68,11 +68,13 @@ describe("PATCH /api/sessions/:id：标签组与归档", () => {
   it("归档释放空闲常驻资源且幂等；有活动（运行中/后台任务/终端）时 409 且不释放", async () => {
     await withRig(async ({ discarded, released, flags, sessions, create, patch }) => {
       const session = await create();
+      // cwd 用会话实际值：Windows 上 "/tmp" 会被规范化为盘符路径（跨平台断言不能写字面量）
+      const cwd = session.cwd;
       expect((await patch(session.id, { archived: true })).statusCode).toBe(200);
-      expect(discarded).toEqual([{ id: session.id, cwd: "/tmp" }]);
-      expect(released).toEqual(["/tmp"]);
+      expect(discarded).toEqual([{ id: session.id, cwd }]);
+      expect(released).toEqual([cwd]);
       await patch(session.id, { archived: true }); // 已归档再归档不再重复释放
-      expect(released).toEqual(["/tmp"]);
+      expect(released).toEqual([cwd]);
       for (const kind of ["running", "background", "pty"] as const) {
         flags.running = false; flags.backgroundRunning = false; flags.pty.clear();
         const busy = await create();
@@ -82,7 +84,7 @@ describe("PATCH /api/sessions/:id：标签组与归档", () => {
         const response = await patch(busy.id, { archived: true });
         expect(response.statusCode, kind).toBe(409);
         expect((response.json() as { error: string }).error, kind).toMatch(/stop|close/i);
-        expect(released, kind).toEqual(["/tmp"]);
+        expect(released, kind).toEqual([cwd]);
         expect(await sessions.getMeta(busy.id), kind).not.toMatchObject({ archived: true });
       }
     });

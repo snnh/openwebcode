@@ -77,7 +77,11 @@
   display: flex;
   align-items: center;
   gap: 2px;
+  /* 容器不拦截点击：它压在 .session-link 让出的右侧空白上，若吞掉事件，
+     点在标题右侧就会落空（E2E 点击链接中心时被按钮图标 intercept）。按钮自身恢复可点。 */
+  pointer-events: none;
 }
+.session-actions > * { pointer-events: auto; }
 /* 运行点收进操作钮容器内随排（覆盖 layout.css 的绝对定位极简版） */
 .session-actions .running-dot { position: static; flex: none; }
 /* 待回答角标：别的会话在等你操作时比「运行中」更需要被看见（琥珀底 + 数字） */
