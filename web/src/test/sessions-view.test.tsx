@@ -335,6 +335,41 @@ describe("SessionsView 分组 / 归档 / 多选批量", () => {
     expect(remove).toHaveBeenCalledWith("b");
   });
 
+  it("批量移动到组与批量取消归档：一次提交多个会话", async () => {
+    const patch = vi.spyOn(api, "patchSession").mockResolvedValue(makeSession("a"));
+    renderView([
+      makeSession("a", { title: "甲", group: "前端" }),
+      makeSession("b", { title: "乙", group: "前端" }),
+      makeSession("c", { title: "丙", archived: true }),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "多选会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    // 批量移到「前端」组（已有组）+ 移出分组两条路径
+    fireEvent.click(screen.getByRole("button", { name: "批量移动到分组" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "前端" }));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("a", { group: "前端" }));
+    expect(patch).toHaveBeenCalledWith("b", { group: "前端" });
+
+    cleanup();
+    const patch2 = vi.spyOn(api, "patchSession").mockResolvedValue(makeSession("a"));
+    renderView([makeSession("a", { title: "甲", group: "前端" }), makeSession("c", { title: "丙", archived: true })]);
+    fireEvent.click(screen.getByRole("button", { name: "多选会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    fireEvent.click(screen.getByRole("button", { name: "批量移动到分组" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "移出分组（未分组）" }));
+    await waitFor(() => expect(patch2).toHaveBeenCalledWith("a", { group: "" }));
+
+    // 已归档项：展开已归档区后勾选，批量「取消归档」
+    cleanup();
+    const patch3 = vi.spyOn(api, "patchSession").mockResolvedValue(makeSession("c"));
+    renderView([makeSession("c", { title: "丙", archived: true })]);
+    fireEvent.click(screen.getByRole("button", { name: "多选会话" }));
+    fireEvent.click(screen.getByRole("button", { name: /已归档/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择会话 丙" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消归档" }));
+    await waitFor(() => expect(patch3).toHaveBeenCalledWith("c", { archived: false }));
+  });
+
   it("分组重命名与删除分组：删除分组把组内会话移回未分组（不删会话）", async () => {
     const patch = vi.spyOn(api, "patchSession").mockResolvedValue(makeSession("a"));
     renderView([makeSession("a", { title: "甲", group: "前端" }), makeSession("b", { title: "乙", group: "前端" })]);

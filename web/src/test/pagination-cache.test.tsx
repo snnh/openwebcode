@@ -66,11 +66,11 @@ describe("loadOlderMessages 与应用上限", () => {
     await act(async () => {
       await loadOlderMessages("s1", "m");
     });
-    expect(useOlderMessagesAfter("s1")).toBe(200);
+    expect(olderCount("s1")).toBe(200);
     await act(async () => {
       await loadOlderMessages("s1", "m");
     });
-    expect(useOlderMessagesAfter("s1")).toBe(PAGINATION_MAX_MESSAGES);
+    expect(olderCount("s1")).toBe(PAGINATION_MAX_MESSAGES);
 
     // 触碰超过会话数上限的其他会话：s1（最久未用）被整体释放
     vi.spyOn(api, "messagesPage").mockResolvedValue(page(1, "x"));
@@ -79,13 +79,13 @@ describe("loadOlderMessages 与应用上限", () => {
         await loadOlderMessages(`session-${index}`, "m");
       });
     }
-    expect(useOlderMessagesAfter("s1")).toBe(0);
+    expect(olderCount("s1")).toBe(0);
     for (let index = 0; index <= PAGINATION_MAX_SESSIONS; index += 1) clearOlderMessages(`session-${index}`);
   });
 });
 
-/** 读取某会话当前缓存条数（用 hook 之外的方式：挂一个临时订阅组件） */
-function useOlderMessagesAfter(sessionId: string): number {
+/** 读取某会话当前缓存条数（经 store 直接读，不引入 Hook 规则问题） */
+function olderCount(sessionId: string): number {
   const { result } = renderHook(() => useOlderMessages(sessionId));
   return result.current.older.length;
 }

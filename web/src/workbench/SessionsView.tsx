@@ -69,6 +69,7 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
   const [newGroupDraft, setNewGroupDraft] = useState("");
   const [newGroupFor, setNewGroupFor] = useState<string | undefined>();
   const [bulkConfirm, setBulkConfirm] = useState<{ action: BulkAction; ids: string[] } | undefined>();
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
   const [groupConfirm, setGroupConfirm] = useState<string | undefined>();
 
   useEffect(() => {
@@ -449,7 +450,7 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
         />
         <button
           className="icon-btn"
-          onClick={() => { setMultiSelect(false); setSelection(new Set()); setMoveMenuId(undefined); }}
+          onClick={() => { setMultiSelect(false); setSelection(new Set()); setMoveMenuId(undefined); setBulkMoveOpen(false); }}
           aria-label={t("退出多选", "Exit multi-select")}
           title={t("退出多选", "Exit multi-select")}
           hidden={!multiSelect}
@@ -458,7 +459,7 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
         </button>
         <button
           className="icon-btn"
-          onClick={() => { setMultiSelect(true); setSelection(new Set()); setMoveMenuId(undefined); }}
+          onClick={() => { setMultiSelect(true); setSelection(new Set()); setMoveMenuId(undefined); setBulkMoveOpen(false); }}
           aria-label={t("多选会话", "Select sessions")}
           title={t("多选（批量删除/归档/置顶；分组用会话项上的文件夹按钮）", "Multi-select (bulk delete/archive/pin; use the folder button on a session to group)")}
           hidden={multiSelect}
@@ -489,12 +490,40 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
             {selection.size === allVisibleIds.length && allVisibleIds.length > 0 ? t("取消全选", "Clear all") : t("全选", "Select all")}
           </button>
           <button type="button" className="btn small danger" onClick={() => runBulk("delete", [...selection])}>{t("删除", "Delete")}</button>
+          <span className="session-bulk-move">
+            <button
+              type="button"
+              className="btn small"
+              aria-expanded={bulkMoveOpen}
+              aria-label={t("批量移动到分组", "Move selected to group")}
+              onClick={() => setBulkMoveOpen((open) => !open)}
+            >{t("移动到组", "Move to group")}</button>
+            {bulkMoveOpen && (
+              <ul className="session-move-menu" role="menu">
+                {knownGroups.map((name) => (
+                  <li key={name}>
+                    <button type="button" role="menuitem" onClick={() => {
+                      setBulkMoveOpen(false);
+                      bulkPatch([...selection], { group: name });
+                    }}>{name}</button>
+                  </li>
+                ))}
+                <li>
+                  <button type="button" role="menuitem" onClick={() => {
+                    setBulkMoveOpen(false);
+                    bulkPatch([...selection], { group: "" });
+                  }}>{t("移出分组（未分组）", "Remove from group (Ungrouped)")}</button>
+                </li>
+              </ul>
+            )}
+          </span>
           <button
             type="button"
             className="btn small"
             title={t("归档选中的已停下会话（运行中的会跳过）", "Archive the selected idle sessions (running ones are skipped)")}
             onClick={() => runBulk("archive", [...selection])}
           >{t("归档", "Archive")}</button>
+          <button type="button" className="btn small" onClick={() => runBulk("unarchive", [...selection])}>{t("取消归档", "Unarchive")}</button>
           <button type="button" className="btn small" onClick={() => runBulk("pin", [...selection])}>{t("置顶", "Pin")}</button>
           <button type="button" className="btn small" onClick={() => runBulk("unpin", [...selection])}>{t("取消置顶", "Unpin")}</button>
         </div>
