@@ -136,6 +136,8 @@ interface WorkspaceState {
   building?: { jobId: string; abort: AbortController } | undefined;
   watchMode: "active" | "fallback" | "none";
   watchId?: number | undefined;
+  /** 开出该监听的会话 id（core 的 fs.watch.cancel 要求归属会话一致） */
+  watchSessionId?: string | undefined;
   watchTimer?: NodeJS.Timeout | undefined;
   refreshTimer?: NodeJS.Timeout | undefined;
   /** watch 事件累积的脏相对路径（undefined = 未累积）；超限/溢出时转 watchOverflow 走全量重建。 */
@@ -143,6 +145,8 @@ interface WorkspaceState {
   /** watch 事件溢出或脏集超限：下次刷新必须全量扫描（定向刷新不再可信）。 */
   watchOverflow?: boolean;
   batch: number;
+  /** 最近一次被访问的时间（epoch ms）：空闲淘汰依据 */
+  lastUsed: number;
 }
 
 interface IndexManagerOptions {
@@ -187,6 +191,68 @@ export class IndexManager {
     this.now = options.now ?? Date.now;
   }
 
+  /**
+   * 释放某个工作区的常驻内存（索引表 + 文件监听）：
+   * 索引文件留在磁盘（IndexStore），下次访问按磁盘重建，不丢索引内容。
+   * 用于归档/删除会话，以及空闲与容量淘汰。
+   */
+  async release(cwd: string): Promise<boolean> {
+    const key = workspaceHash(cwd);
+    const ws = this.workspaces.get(key);
+    if (!ws) return false;
+    this.dropWorkspace(ws);
+    this.workspaces.delete(key);
+    return true;
+  }
+
+  /** 空闲淘汰：超过 idleMs 未被访问的工作区整体释放；返回释放数量。 */
+  async releaseIdle(idleMs: number): Promise<number> {
+    const cutoff = this.now() - idleMs;
+    let released = 0;
+    for (const [key, ws] of [...this.workspaces]) {
+      if (ws.lastUsed > cutoff) continue;
+      this.dropWorkspace(ws);
+      this.workspaces.delete(key);
+      released += 1;
+    }
+    return released;
+  }
+
+  /** 容量淘汰：最多保留 max 个工作区，超出按最近访问时间释放最旧的；返回释放数量。 */
+  async enforceLimit(max: number): Promise<number> {
+    if (this.workspaces.size <= max) return 0;
+    const victims = [...this.workspaces.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+    let released = 0;
+    for (const [key, ws] of victims) {
+      if (this.workspaces.size <= max) break;
+      this.dropWorkspace(ws);
+      this.workspaces.delete(key);
+      released += 1;
+    }
+    return released;
+  }
+
+  /** 释放一个工作区的定时器、监听与进行中的构建（纯内存操作，不动磁盘） */
+  private dropWorkspace(ws: WorkspaceState): void {
+    if (ws.watchTimer) clearInterval(ws.watchTimer);
+    if (ws.refreshTimer) clearTimeout(ws.refreshTimer);
+    ws.watchTimer = undefined;
+    ws.refreshTimer = undefined;
+    ws.building?.abort.abort();
+    ws.building = undefined;
+    if (ws.watchId !== undefined && ws.watchSessionId !== undefined) {
+      const watchId = ws.watchId;
+      const sessionId = ws.watchSessionId;
+      ws.watchId = undefined;
+      ws.watchSessionId = undefined;
+      // core 侧监听随释放取消；会话已删除时 core 已在会话清理里移除监听，失败不影响释放
+      void this.core.cancelWatch({ sessionId, watchId }).catch(() => undefined);
+    }
+    ws.watchId = undefined;
+    ws.watchSessionId = undefined;
+    ws.watchMode = "none";
+  }
+
   /** 测试与优雅停机用：清掉全部定时器。 */
   stop(): void {
     for (const ws of this.workspaces.values()) {
@@ -208,9 +274,11 @@ export class IndexManager {
         stale: false,
         watchMode: "none",
         batch: 0,
+        lastUsed: this.now(),
       };
       this.workspaces.set(key, state);
     }
+    state.lastUsed = this.now();
     return state;
   }
 
@@ -489,6 +557,7 @@ export class IndexManager {
     try {
       const { watchId } = await this.core.watchFiles({ sessionId, path: ws.cwd, recursive: true });
       ws.watchId = watchId;
+      ws.watchSessionId = sessionId;
       ws.watchMode = "active";
       ws.watchTimer = setInterval(() => void this.pollWatch(ws, sessionId), this.watchPollMs);
       ws.watchTimer.unref();

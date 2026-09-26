@@ -10,7 +10,7 @@ import type { Session } from "../lib/contracts";
 import { unreadCount } from "../lib/notifications";
 import { useStore } from "../app/store";
 import { ui, uiStore } from "../app/ui-store";
-import { sessionMeta, sessionStore, type AttentionCounts } from "../app/session-store";
+import { sessionMeta, sessionStore } from "../app/session-store";
 import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { useI18n } from "../i18n";
 import { layout, layoutStore, type SidebarView } from "./layout";

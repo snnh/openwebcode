@@ -98,7 +98,9 @@
 .session-pin,
 .session-rename-btn,
 .session-delete,
-.session-export {
+.session-export,
+.session-archive,
+.session-unarchive {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -108,21 +110,110 @@
   color: var(--text-3);
   font-size: 14px;
   opacity: 0;
+  cursor: pointer;
 }
 .session-item:hover .session-pin, .session-pin:focus-visible, .session-pin.active,
 .session-item:hover .session-rename-btn, .session-rename-btn:focus-visible,
 .session-item:hover .session-delete, .session-delete:focus-visible,
-.session-item:hover .session-export, .session-export:focus-visible { opacity: 1; }
+.session-item:hover .session-export, .session-export:focus-visible,
+.session-item:hover .session-archive, .session-archive:focus-visible,
+.session-item:hover .session-unarchive, .session-unarchive:focus-visible,
+.session-item:hover .session-move-trigger, .session-move-trigger:focus-visible,
+.session-move-trigger[aria-expanded="true"] { opacity: 1; }
 .session-pin.active { color: var(--accent); }
-.session-pin:hover, .session-rename-btn:hover, .session-export:hover { color: var(--accent); background: var(--accent-soft); }
+.session-pin:hover, .session-rename-btn:hover, .session-export:hover, .session-archive:hover,
+.session-unarchive:hover, .session-move-trigger:hover { color: var(--accent); background: var(--accent-soft); }
 .session-delete:hover { color: var(--danger); background: var(--danger-bg); }
 /* 触屏设备无悬停：会话项操作按钮常显 */
 @media (hover: none) {
   .session-item .session-pin,
   .session-item .session-rename-btn,
   .session-item .session-delete,
-  .session-item .session-export { opacity: 1; }
+  .session-item .session-export,
+  .session-item .session-archive,
+  .session-item .session-unarchive,
+  .session-item .session-move-trigger { opacity: 1; }
 }
+
+/* ================= 分组 / 归档 / 多选批量 ================= */
+.session-group { display: flex; flex-direction: column; }
+.session-group + .session-group { margin-top: 4px; }
+.session-group-header { display: flex; align-items: center; gap: 2px; padding: 0 6px 0 4px; }
+.session-group-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 4px;
+  font-size: 11px;
+  color: var(--text-3);
+  border-radius: var(--radius-s);
+  text-align: left;
+  cursor: pointer;
+}
+.session-group-toggle:hover { color: var(--text); background: var(--panel-2); }
+.session-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; letter-spacing: 0.02em; }
+.session-group-count { flex: none; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.session-group-actions { display: inline-flex; align-items: center; gap: 2px; flex: none; opacity: 0; }
+.session-group:hover .session-group-actions, .session-group-actions:focus-within { opacity: 1; }
+.session-group-actions button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: var(--radius-s); color: var(--text-3);
+}
+.session-group-actions button:hover { color: var(--accent); background: var(--accent-soft); }
+.session-group-rename { flex: 1 1 auto; min-width: 0; padding: 2px 6px; font-size: 11px; }
+.session-group[data-collapsed="true"] .session-group-header { margin-bottom: 2px; }
+.session-group-items { display: flex; flex-direction: column; gap: 2px; }
+/* 多选：勾选框占位 + 点击整行切换选择 */
+.session-select { flex: none; margin: 0 2px 0 6px; }
+.session-item.selecting .session-link { padding-right: 12px; }
+/* 「移动到分组」下拉（放在会话项操作行内，绝对定位浮层） */
+.session-move { position: relative; display: inline-flex; }
+.session-move-trigger { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-s); color: var(--text-3); font-size: 14px; opacity: 0; cursor: pointer; }
+.session-move-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: var(--z-panel);
+  min-width: 180px;
+  max-width: min(280px, 80vw);
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.session-move-menu li { display: flex; }
+.session-move-menu button {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-s);
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: left;
+}
+.session-move-menu button:hover { background: var(--panel-2); color: var(--text); }
+.session-move-new { padding: 4px 4px 2px; }
+.session-move-new .input { width: 100%; padding: 4px 6px; font-size: 12px; }
+/* 批量操作条：多选模式下固定在搜索框之下 */
+.session-bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--amber-border);
+  border-radius: var(--radius);
+  background: var(--amber-bg);
+}
+.session-bulk-count { font-size: 12px; color: var(--amber); font-variant-numeric: tabular-nums; margin-right: auto; }
 .rail-search-wrap { position: relative; display: block; margin: 0 12px 8px; color: var(--text-3); }
 .rail-search-wrap svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; }
 .rail-search {
