@@ -1241,6 +1241,9 @@ export class AgentRunner {
     if (this.workspaceWrites.has(sessionId)) throw new Error("A file save is pending; respond to its permission request first");
     const controller = new AbortController();
     this.running.set(sessionId, controller);
+    // 钉住本会话的消息整表缓存：大会话（超单会话缓存上限）在 run 期间不再每个 turn
+    // 整表 read+JSON.parse 两次，整 run 只解析一次 + append 增量穿透；finally 里解除。
+    this.sessions.pinMessages(sessionId);
     // 上一 run 结束时未被消费的切换标记不得泄漏到本次 run（否则会误清本次的 fallback 覆盖）
     this.modelOverrideResets.delete(sessionId);
     let followUpQueueItemId = options?.queueItemId;
@@ -2164,6 +2167,7 @@ export class AgentRunner {
       }
       this.settling.delete(sessionId);
       this.running.delete(sessionId);
+      this.sessions.unpinMessages(sessionId);
       this.repeatedCalls.delete(sessionId);
       this.toolAliases.discard(sessionId);
       // abort 与正常结束都保留未消费队列；queue.json 是用户可恢复状态。
