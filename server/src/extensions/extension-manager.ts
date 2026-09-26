@@ -135,6 +135,28 @@ export class ExtensionManager {
     this.manifests = [...OFFICIAL_EXTENSIONS, ...(await this.discoverThirdParty())];
     this.states = await this.loadStates();
     await this.applyUserAgentSimulation();
+    // 延迟启动：没有任何启用扩展时不 fork 宿主进程（实测常驻 100MB+，且扩展宿主是独立 Node）。
+    // 首次真正需要宿主的操作（启用扩展 / 打开 dsh 兼容模式）会按需拉起，见 ensureHost()。
+    if (this.hasEnabledExtensions()) await this.startHost();
+    else process.stderr.write("[extensions] 无启用扩展：扩展宿主延迟启动（启用扩展或打开 dsh 兼容模式时自动拉起）\n");
+  }
+
+  /** 是否有任一启用扩展（延迟启动宿主判据）。 */
+  private hasEnabledExtensions(): boolean {
+    return this.manifests.some((manifest) => this.stateFor(manifest).enabled);
+  }
+
+  /**
+   * 按需拉起扩展宿主：宿主未连接时启动（启动中的并发调用等同一份启动）。
+   * 注意启动流程内部（startHostProcess / runDshSync 的 fromHostStart 分支）不得调用本方法，
+   * 否则会自等死锁。
+   */
+  private async ensureHost(): Promise<void> {
+    if (this.child?.connected) return;
+    if (this.hostStarting) {
+      await this.hostStarting.catch(() => undefined);
+      return;
+    }
     await this.startHost();
   }
 
@@ -197,6 +219,7 @@ export class ExtensionManager {
     };
     await this.saveStates();
     await this.applyUserAgentSimulation();
+    await this.ensureHost();
     const reloaded = await this.request("reload", { states: this.states }) as { tools?: Record<string, ExtensionToolSpec[]> };
     this.replaceTools(reloaded.tools);
     // reload 会清空宿主侧扩展状态：dsh 伪扩展的启用态与工具随加载计划重放。
@@ -415,6 +438,8 @@ export class ExtensionManager {
   async syncDsh(enabled = true): Promise<DshPluginInfo[]> {
     this.dshSyncEnabled = enabled;
     this.dshSyncRequested = true;
+    // 打开兼容模式 = 有活要给宿主干：延迟启动的宿主在这里按需拉起（关闭态无需唤醒）
+    if (enabled) await this.ensureHost();
     const previous = this.dshSyncInFlight;
     const next = (previous ? previous.catch(() => undefined) : Promise.resolve([])).then(() => this.runDshSync());
     this.dshSyncInFlight = next;

@@ -5,9 +5,11 @@
  * JSON object. Later pages stat the file and read only their byte range. The
  * append-only growth extends the cached index from the previous EOF after a
  * bounded tail-integrity check. Rewrites fall back to a full rebuild. The
- * cache is LRU-bounded across sessions.
+ * cache is LRU-bounded across sessions and additionally released when idle
+ * (see cache-policy.ts / sessionCacheIdleMinutes).
  */
 import { open, stat } from "node:fs/promises";
+import { isCacheEntryIdle } from "../cache-policy.js";
 
 interface MessagePage<T> {
   messages: T[];
@@ -26,6 +28,8 @@ const ID_PREFIX_BYTES = 1024;
 interface LineRef { start: number; length: number }
 interface MessageFileIndex {
   size: number;
+  /** 最近一次命中/重建时间：空闲逐出用（见 cache-policy.ts） */
+  lastAccess: number;
   modifiedMs: number;
   changedMs: number;
   device: number;
@@ -63,6 +67,141 @@ export async function readMessagesBefore<T>(filePath: string, beforeId: string, 
   } catch (error) {
     if (!isEnoent(error)) throw error;
     return { messages: [], hasMore: false, totalLines: 0, recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
+  }
+}
+
+/**
+ * 头部有界读取：只解析文件前 limit 条非空记录后立刻停止（不做整表解析）。
+ * 用于「只取决于首条用户消息」的派生标题等场景：大历史不必整表解析，也不建索引。
+ */
+export async function readMessagesHead<T>(filePath: string, limit: number): Promise<T[]> {
+  const messages: T[] = [];
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(filePath, "r");
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+    return messages;
+  }
+  try {
+    const info = await handle.stat();
+    const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+    let pending: Buffer[] = [];
+    let pendingLength = 0;
+    let fileOffset = 0;
+    let stop = false;
+    const consume = (bytes: Buffer): boolean => {
+      if (isBlankLine(bytes)) return false;
+      try {
+        messages.push(JSON.parse(bytes.toString("utf8")) as T);
+      } catch {
+        // 头部读取不判定恢复状态：损坏记录跳过（调用方只会拿它派生标题）
+      }
+      return messages.length >= limit;
+    };
+    while (!stop && fileOffset < info.size) {
+      const requested = Math.min(buffer.length, info.size - fileOffset);
+      const { bytesRead } = await handle.read(buffer, 0, requested, fileOffset);
+      if (bytesRead === 0) break;
+      fileOffset += bytesRead;
+      let lineStart = 0;
+      for (let index = 0; index < bytesRead; index += 1) {
+        if (buffer[index] !== 0x0a) continue;
+        const tail = buffer.subarray(lineStart, index);
+        if (pendingLength === 0) stop = consume(tail);
+        else {
+          pending.push(Buffer.from(tail));
+          pendingLength += tail.length;
+          stop = consume(Buffer.concat(pending, pendingLength));
+          pending = [];
+          pendingLength = 0;
+        }
+        lineStart = index + 1;
+        if (stop) break;
+      }
+      if (!stop && lineStart < bytesRead) {
+        pending.push(Buffer.from(buffer.subarray(lineStart, bytesRead)));
+        pendingLength += bytesRead - lineStart;
+      }
+    }
+    if (!stop && pendingLength) consume(Buffer.concat(pending, pendingLength));
+    return messages;
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * 整表读取（**不驻留**）：分块扫描 + 逐行 JSON.parse，返回解析后的消息数组。
+ *
+ * 与 readMessagesTail/Before 的区别：那两个走字节索引只读一部分；这里要全部消息，
+ * 所以不建索引也不保留行数组/偏移表——峰值内存 = 64KB 块缓冲 + 解析后的消息对象本身，
+ * 取代原先把整份文件读成字符串再 split 的做法（后者在 56MB 会话上要多复制 ~112MB
+ * UTF-16 字符串并同时驻留全部行）。
+ *
+ * 恢复语义与 parsePage 一致：仅末条非空记录可损坏（recovered），更早的损坏行升格 needs_repair。
+ * 调用方拿到数组后自行决定是否驻留（会话 store 按堆字节预算 + 空闲阈值决定缓存）。
+ */
+export async function readAllMessages<T>(filePath: string): Promise<{ messages: T[]; recovery?: MessagePage<T>["recovery"] }> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(filePath, "r");
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+    return { messages: [], recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
+  }
+  try {
+    const info = await handle.stat();
+    const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+    const messages: T[] = [];
+    // 跨块未完结的行分段（超长单行：内嵌 base64 截图）
+    let pending: Buffer[] = [];
+    let pendingLength = 0;
+    let fileOffset = 0;
+    // 非空行序号与「第几条非空行解析失败」：只保留计数，不驻留行文本
+    let nonBlank = 0;
+    let lastCorrupt = -1;
+    const consume = (bytes: Buffer): void => {
+      if (isBlankLine(bytes)) return;
+      nonBlank += 1;
+      try {
+        messages.push(JSON.parse(bytes.toString("utf8")) as T);
+      } catch {
+        lastCorrupt = nonBlank;
+      }
+    };
+    while (fileOffset < info.size) {
+      const requested = Math.min(buffer.length, info.size - fileOffset);
+      const { bytesRead } = await handle.read(buffer, 0, requested, fileOffset);
+      if (bytesRead === 0) throw new Error("messages.jsonl changed while reading");
+      fileOffset += bytesRead;
+      let lineStart = 0;
+      for (let index = 0; index < bytesRead; index += 1) {
+        if (buffer[index] !== 0x0a) continue;
+        const tail = buffer.subarray(lineStart, index);
+        if (pendingLength === 0) consume(tail);
+        else {
+          pending.push(Buffer.from(tail));
+          pendingLength += tail.length;
+          consume(Buffer.concat(pending, pendingLength));
+          pending = [];
+          pendingLength = 0;
+        }
+        lineStart = index + 1;
+      }
+      if (lineStart < bytesRead) {
+        pending.push(Buffer.from(buffer.subarray(lineStart, bytesRead)));
+        pendingLength += bytesRead - lineStart;
+      }
+    }
+    if (pendingLength) consume(Buffer.concat(pending, pendingLength));
+    if (lastCorrupt < 0) return { messages };
+    if (lastCorrupt === nonBlank) {
+      return { messages, recovery: { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" } };
+    }
+    return { messages, recovery: { state: "needs_repair", message: "messages.jsonl contains corrupt non-tail records" } };
+  } finally {
+    await handle.close();
   }
 }
 
@@ -172,10 +311,30 @@ export function invalidateMessageIndex(filePath: string): void {
   indexes.delete(filePath);
 }
 
+/**
+ * 空闲逐出（设置项 sessionCacheIdleMinutes）：释放长时间没被访问的字节索引。
+ * 索引本身也占内存（每会话 = 行偏移表 + 全量消息 id 表，15k 条消息约 1.5MB），
+ * 过去只有 32 条的 LRU、空转时不释放。下次分页读取自动重建。
+ */
+export function sweepIdleMessageIndexes(now: number = Date.now()): number {
+  let evicted = 0;
+  for (const [filePath, index] of indexes) {
+    if (isCacheEntryIdle(index.lastAccess, now)) {
+      indexes.delete(filePath);
+      evicted += 1;
+    }
+  }
+  return evicted;
+}
+
 async function getIndex(filePath: string): Promise<MessageFileIndex> {
+  const now = Date.now();
+  // 惰性清扫：任意一次索引访问顺带释放空闲条目（不依赖定时器）
+  sweepIdleMessageIndexes(now);
   const info = await stat(filePath);
   const cached = indexes.get(filePath);
   if (cached && cached.size === info.size && cached.modifiedMs === info.mtimeMs && cached.changedMs === info.ctimeMs) {
+    cached.lastAccess = now;
     indexes.delete(filePath);
     indexes.set(filePath, cached);
     return cached;
@@ -192,6 +351,7 @@ async function getIndex(filePath: string): Promise<MessageFileIndex> {
         cached.changedMs = info.ctimeMs;
         cached.endsWithNewline = scan.endsWithNewline;
         cached.prefixTail = await readTail(handle, info.size);
+        cached.lastAccess = now;
         touchIndex(filePath, cached);
         return cached;
       }
@@ -216,8 +376,9 @@ async function getIndex(filePath: string): Promise<MessageFileIndex> {
     await handle.close();
   }
 
-  const built = {
+  const built: MessageFileIndex = {
     size: info.size,
+    lastAccess: now,
     modifiedMs: info.mtimeMs,
     changedMs: info.ctimeMs,
     device: info.dev,
