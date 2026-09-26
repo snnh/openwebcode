@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && node scripts/check-bundle-size.mjs",
+    "build": "tsc -b && vite build && node scripts/precompress.mjs && node scripts/check-bundle-size.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",

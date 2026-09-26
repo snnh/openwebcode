@@ -1,4 +1,5 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { brotliCompressSync, brotliDecompressSync } from "node:zlib";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
@@ -389,6 +390,29 @@ describe("WebUI 静态响应头", () => {
       expect(response.headers["x-content-type-options"]).toBe("nosniff");
       expect(String(response.headers["content-security-policy"])).toContain("frame-ancestors 'none'");
       expect(String(response.headers["content-security-policy"])).toContain("default-src 'self'");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("散列资产走 .br 同伴 + immutable 强缓存，入口保持重验", async () => {
+    const root = await tempRoot("owc-static-cache-");
+    const webDist = path.join(root, "dist");
+    await mkdir(path.join(webDist, "assets"), { recursive: true });
+    const html = "<!doctype html><title>owc</title>";
+    const js = `console.log(${JSON.stringify("x".repeat(2048))});`;
+    await writeFile(path.join(webDist, "index.html"), html, "utf8");
+    await writeFile(path.join(webDist, "assets", "app-A1B2C3.js"), js, "utf8");
+    await writeFile(path.join(webDist, "assets", "app-A1B2C3.js.br"), brotliCompressSync(js), undefined as never);
+    const { app } = await makeTestApp({ webDist });
+    try {
+      const page = await app.inject({ method: "GET", url: "/" });
+      expect(page.headers["cache-control"]).toBe("no-cache");
+      const asset = await app.inject({ method: "GET", url: "/assets/app-A1B2C3.js", headers: { "accept-encoding": "br" } });
+      expect(asset.headers["content-encoding"]).toBe("br");
+      expect(asset.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+      // inject 不做内容协商解压：确认发出去的确实是原文件的 br 同伴
+      expect(brotliDecompressSync(asset.rawPayload).toString("utf8")).toBe(js);
     } finally {
       await app.close();
     }
