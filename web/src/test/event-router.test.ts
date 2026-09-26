@@ -245,12 +245,42 @@ describe("createEventRouter", () => {
     },
   );
 
-  it("run 终态补失效 SCM 读查询（bash 等命令改动工作树不发 scm.updated）", () => {
-    const { queryClient, router } = setup("s1");
-    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
-    router.route(makeEvent({ type: "run.completed", sessionId: "s1", payload: {} }));
-    for (const key of ["scm-status", "scm-worktrees", "scm-diff"]) {
-      expect(invalidate).toHaveBeenCalledWith({ queryKey: [key, "s1"] });
+  const DIRTY_KEYS = ["scm-status", "scm-worktrees", "scm-diff", "files"];
+
+  it("写事件：SCM 与文件树一起标脏，静默 400ms 后合并重取一次（不逐条重取）", () => {
+    vi.useFakeTimers();
+    try {
+      const { queryClient, router } = setup("s1");
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      const refetch = vi.spyOn(queryClient, "refetchQueries");
+      router.route(makeEvent({ type: "scm.updated", sessionId: "s1", payload: { reason: "file.write" } }));
+      router.route(makeEvent({ type: "scm.updated", sessionId: "s1", payload: { reason: "file.write" } }));
+      // 标脏但不立即取数：连续写文件不会让 git status / 目录请求成倍放大
+      expect(refetch).not.toHaveBeenCalled();
+      for (const key of DIRTY_KEYS) {
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: [key, "s1"], refetchType: "none" });
+      }
+      vi.advanceTimersByTime(400);
+      expect(refetch).toHaveBeenCalledTimes(DIRTY_KEYS.length);
+      for (const key of DIRTY_KEYS) {
+        expect(refetch).toHaveBeenCalledWith({ queryKey: [key, "s1"], type: "active" });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("run 终态补标脏 SCM 与文件树（bash 等命令改动工作树不发 scm.updated）", () => {
+    vi.useFakeTimers();
+    try {
+      const { queryClient, router } = setup("s1");
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      router.route(makeEvent({ type: "run.completed", sessionId: "s1", payload: {} }));
+      for (const key of DIRTY_KEYS) {
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: [key, "s1"], refetchType: "none" });
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 
