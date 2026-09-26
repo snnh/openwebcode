@@ -12,6 +12,10 @@ import { readMessagesTail, readMessagesBefore, checkRecoveryTail, invalidateMess
 import { deriveTitleFromMessages, serializeByKey, titleFromContent } from "./store-utils.js";
 import type { BindLinkSpec, ChatMessage, FallbackModelEntry, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SandboxNetwork, SessionDetail, SessionMeta } from "./types.js";
 
+/** 单个会话整表缓存的驻留上限：超过就不缓存（宁可下次重读，也不让一个大会话独占进程内存）。 */
+const MAX_CACHED_MESSAGES_PER_SESSION_BYTES = 32 * 1024 * 1024;
+/** 所有会话整表缓存的累计上限：多会话长跑下防「打开过的会话」把内存堆满。 */
+const MAX_CACHED_MESSAGES_TOTAL_BYTES = 256 * 1024 * 1024;
 /** readMessages 整表缓存条数上限（与 message-reader 的索引缓存同一 LRU 纪律）。 */
 const MAX_CACHED_MESSAGE_LISTS = 32;
 
@@ -28,6 +32,8 @@ interface MessagesCacheEntry {
   size: number;
   mtimeMs: number;
   ctimeMs: number;
+  /** 驻留权重：按 messages.jsonl 字节估算（内存对象通常为文件的 2-3 倍），零额外 CPU。 */
+  weight: number;
   messages: ChatMessage[];
   recovery?: NonNullable<SessionMeta["recovery"]>;
 }
@@ -72,6 +78,8 @@ export class SessionStore {
 
   /** 按会话 id 的 LRU 消息整表缓存；agent loop 每轮 get() 不再整份重解析。 */
   private readonly messagesCache = new Map<string, MessagesCacheEntry>();
+  /** messagesCache 的累计权重（与逐出纪律同步维护）。 */
+  private messagesCacheBytes = 0;
 
   /** 按会话 id 的 LRU meta 缓存；指纹失效纪律同 messagesCache。 */
   private readonly metaCache = new Map<string, MetaCacheEntry>();
@@ -138,7 +146,7 @@ export class SessionStore {
     await this.writeMeta(meta);
     await writeFile(this.messagesPath(meta.id), "", { encoding: "utf8", flag: "wx", mode: 0o600 });
     await chmodPrivate(this.messagesPath(meta.id), 0o600);
-    this.messagesCache.delete(meta.id);
+    this.dropMessagesCache(meta.id);
     this.noteSessionCwd(resolvedCwd);
     return meta;
   }
@@ -445,7 +453,7 @@ export class SessionStore {
       if (!detail) throw new Error("Session not found");
       const messages = detail.messages.slice(0, count);
       await writeUtf8Atomically(this.messagesPath(id), serializeMessagesJsonl(messages), { mode: 0o600 });
-      this.messagesCache.delete(id);
+      this.dropMessagesCache(id);
       invalidateMessageIndex(this.messagesPath(id));
       const meta = await this.readMeta(id);
       const leafId = messages.at(-1)?.id;
@@ -481,7 +489,7 @@ export class SessionStore {
         serializeMessagesJsonl(result.messages),
         { mode: 0o600 },
       );
-      this.messagesCache.delete(id);
+      this.dropMessagesCache(id);
       // 格式升级改写字节偏移：message-reader 的分页索引必须主动失效（同尺寸改写时指纹可能不变）
       invalidateMessageIndex(this.messagesPath(id));
       const meta = await this.readMeta(id);
@@ -590,7 +598,7 @@ export class SessionStore {
   }
 
   async delete(id: string): Promise<boolean> {
-    this.messagesCache.delete(id);
+    this.dropMessagesCache(id);
     invalidateMessageIndex(this.messagesPath(id));
     await this.forgetSessionCwd(id);
     try {
@@ -655,7 +663,7 @@ export class SessionStore {
       { encoding: "utf8", mode: 0o600 },
     );
     await chmodPrivate(this.messagesPath(id), 0o600);
-    this.messagesCache.delete(id);
+    this.dropMessagesCache(id);
     invalidateMessageIndex(this.messagesPath(id));
     this.noteSessionCwd(meta.cwd);
     return meta;
@@ -766,7 +774,7 @@ export class SessionStore {
       info = await stat(filePath);
     } catch (error) {
       if (!isMissing(error)) throw error;
-      this.messagesCache.delete(id);
+      this.dropMessagesCache(id);
       return { messages: [], recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
     }
     const cached = this.messagesCache.get(id);
@@ -780,7 +788,7 @@ export class SessionStore {
       raw = await readFile(filePath, "utf8");
     } catch (error) {
       if (!isMissing(error)) throw error;
-      this.messagesCache.delete(id);
+      this.dropMessagesCache(id);
       return { messages: [], recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
     }
     const lines = raw.split("\n");
@@ -806,15 +814,33 @@ export class SessionStore {
     let recovery: MessagesCacheEntry["recovery"];
     if (corruptMiddle) recovery = { state: "needs_repair", message: "messages.jsonl contains corrupt non-tail records" };
     else if (corruptTail) recovery = { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" };
-    this.touchMessagesCache(id, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, messages, ...(recovery ? { recovery } : {}) });
+    this.touchMessagesCache(id, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, weight: info.size, messages, ...(recovery ? { recovery } : {}) });
     return { messages: messages.slice(), ...(recovery ? { recovery } : {}) };
   }
 
-  /** LRU 接触：移到最新位并逐出超限旧条目。 */
+  /** LRU 接触：移到最新位并按条数与累计字节双重上限逐出旧条目。 */
   private touchMessagesCache(id: string, entry: MessagesCacheEntry): void {
-    this.messagesCache.delete(id);
+    const previous = this.messagesCache.get(id);
+    if (previous) this.messagesCacheBytes -= previous.weight;
+    this.dropMessagesCache(id);
+    if (entry.weight > MAX_CACHED_MESSAGES_PER_SESSION_BYTES) return;
     this.messagesCache.set(id, entry);
-    while (this.messagesCache.size > MAX_CACHED_MESSAGE_LISTS) this.messagesCache.delete(this.messagesCache.keys().next().value!);
+    this.messagesCacheBytes += entry.weight;
+    while (
+      this.messagesCache.size > MAX_CACHED_MESSAGE_LISTS
+      || (this.messagesCacheBytes > MAX_CACHED_MESSAGES_TOTAL_BYTES && this.messagesCache.size > 1)
+    ) {
+      const oldestKey = this.messagesCache.keys().next().value!;
+      this.dropMessagesCache(oldestKey);
+    }
+  }
+
+  /** 失效该会话的整表缓存；权重记账必须与 Map 同步，故统一走这里。 */
+  private dropMessagesCache(id: string): void {
+    const entry = this.messagesCache.get(id);
+    if (!entry) return;
+    this.messagesCacheBytes -= entry.weight;
+    this.messagesCache.delete(id);
   }
 
   /**
@@ -826,22 +852,23 @@ export class SessionStore {
     const cached = this.messagesCache.get(id);
     if (!cached) return;
     if (cached.recovery) {
-      this.messagesCache.delete(id);
+      this.dropMessagesCache(id);
       return;
     }
     try {
       const info = await stat(this.messagesPath(id));
       if (info.size !== cached.size + appendedBytes) {
-        this.messagesCache.delete(id);
+        this.dropMessagesCache(id);
         return;
       }
       cached.messages.push(message);
       cached.size = info.size;
+      cached.weight += appendedBytes;
       cached.mtimeMs = info.mtimeMs;
       cached.ctimeMs = info.ctimeMs;
       this.touchMessagesCache(id, cached);
     } catch {
-      this.messagesCache.delete(id);
+      this.dropMessagesCache(id);
     }
   }
 
@@ -891,7 +918,7 @@ export class SessionStore {
     // 损坏尾记录：截到该记录起始偏移（字节 shrink，单次 truncate 系统调用；
     // 不重写整表，避免大历史全量搬运）
     await truncate(filePath, last.start);
-    this.messagesCache.delete(id);
+    this.dropMessagesCache(id);
     invalidateMessageIndex(filePath);
   }
 

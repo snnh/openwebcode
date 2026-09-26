@@ -14,6 +14,10 @@ const DEFAULT_TITLE = "New chat";
 
 /** readMessages 整表缓存条数上限（与 SessionStore/message-reader 同一 LRU 纪律）。 */
 const MAX_CACHED_MESSAGE_LISTS = 32;
+/** 单个会话整表缓存的驻留上限：超过就不缓存。 */
+const MAX_CACHED_MESSAGES_PER_SESSION_BYTES = 32 * 1024 * 1024;
+/** 所有会话整表缓存的累计上限。 */
+const MAX_CACHED_MESSAGES_TOTAL_BYTES = 256 * 1024 * 1024;
 
 /**
  * 单会话消息整表缓存：size+mtime+ctime 指纹校验（同 SessionStore.messagesCache），
@@ -24,6 +28,8 @@ interface MessagesCacheEntry {
   size: number;
   mtimeMs: number;
   ctimeMs: number;
+  /** 驻留权重：按 messages.jsonl 字节估算（chat 消息常内嵌大 base64 图）。 */
+  weight: number;
   messages: ChatMessage[];
 }
 
@@ -36,6 +42,9 @@ interface MessagesCacheEntry {
 export class ChatSessionStore {
   /** 按会话 id 的 LRU 消息整表缓存；chat-runner 每条用户消息不再整份重解析。 */
   private readonly messagesCache = new Map<string, MessagesCacheEntry>();
+
+  /** messagesCache 的累计权重（与逐出纪律同步维护）。 */
+  private messagesCacheBytes = 0;
 
   /** appendMessage 的每会话串行化链：并发追加大消息时底层多次 write 可能交织坏行。 */
   private readonly appendChains = new Map<string, Promise<void>>();
@@ -119,7 +128,7 @@ export class ChatSessionStore {
   }
 
   async delete(id: string): Promise<void> {
-    this.messagesCache.delete(id);
+    this.dropMessagesCache(id);
     await rm(this.sessionPath(id), { recursive: true, force: true });
   }
 
@@ -265,7 +274,7 @@ export class ChatSessionStore {
       info = await stat(filePath);
     } catch (error) {
       if (!isMissing(error)) throw error;
-      this.messagesCache.delete(id);
+      this.dropMessagesCache(id);
       return [];
     }
     const cached = this.messagesCache.get(id);
@@ -279,7 +288,7 @@ export class ChatSessionStore {
       raw = await readFile(filePath, "utf8");
     } catch (error) {
       if (!isMissing(error)) throw error;
-      this.messagesCache.delete(id);
+      this.dropMessagesCache(id);
       return [];
     }
     const messages: ChatMessage[] = [];
@@ -294,15 +303,32 @@ export class ChatSessionStore {
         // 损坏行跳过（append-only 下正常只可能损坏尾行）
       }
     }
-    this.touchMessagesCache(id, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, messages });
+    this.touchMessagesCache(id, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, weight: info.size, messages });
     return messages.slice();
   }
 
-  /** LRU 接触：移到最新位并逐出超限旧条目（与 SessionStore 同一纪律）。 */
+  /** LRU 接触：移到最新位并按条数与累计字节双重上限逐出旧条目（与 SessionStore 同一纪律）。 */
   private touchMessagesCache(id: string, entry: MessagesCacheEntry): void {
-    this.messagesCache.delete(id);
+    const previous = this.messagesCache.get(id);
+    if (previous) this.messagesCacheBytes -= previous.weight;
+    this.dropMessagesCache(id);
+    if (entry.weight > MAX_CACHED_MESSAGES_PER_SESSION_BYTES) return;
     this.messagesCache.set(id, entry);
-    while (this.messagesCache.size > MAX_CACHED_MESSAGE_LISTS) this.messagesCache.delete(this.messagesCache.keys().next().value!);
+    this.messagesCacheBytes += entry.weight;
+    while (
+      this.messagesCache.size > MAX_CACHED_MESSAGE_LISTS
+      || (this.messagesCacheBytes > MAX_CACHED_MESSAGES_TOTAL_BYTES && this.messagesCache.size > 1)
+    ) {
+      this.dropMessagesCache(this.messagesCache.keys().next().value!);
+    }
+  }
+
+  /** 失效该会话的整表缓存；权重记账必须与 Map 同步，故统一走这里。 */
+  private dropMessagesCache(id: string): void {
+    const entry = this.messagesCache.get(id);
+    if (!entry) return;
+    this.messagesCacheBytes -= entry.weight;
+    this.messagesCache.delete(id);
   }
 
   /**
@@ -315,16 +341,17 @@ export class ChatSessionStore {
     try {
       const info = await stat(this.messagesPath(id));
       if (info.size !== cached.size + appendedBytes) {
-        this.messagesCache.delete(id);
+        this.dropMessagesCache(id);
         return;
       }
       cached.messages.push(message);
       cached.size = info.size;
+      cached.weight += appendedBytes;
       cached.mtimeMs = info.mtimeMs;
       cached.ctimeMs = info.ctimeMs;
       this.touchMessagesCache(id, cached);
     } catch {
-      this.messagesCache.delete(id);
+      this.dropMessagesCache(id);
     }
   }
 
