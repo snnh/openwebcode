@@ -9,6 +9,7 @@ import { useI18n } from "../i18n";
 import { CodeView } from "./editor/CodeView";
 import { Icon } from "./Icon";
 import { Overlay } from "./Overlay";
+import { prefetchEditor } from "./editor/prefetch";
 import { langFromPath } from "../lib/file-langs";
 
 export { langFromPath };
@@ -32,7 +33,7 @@ export function CodeOverlay({ sessionId, path, onEdit, onClose }: {
       <header className="wb-overlay-header">
         <span className="code-overlay-path"><Icon name="file" size={13} /> {path}</span>
         {onEdit && (
-          <button className="btn small" onClick={() => onEdit(path)} aria-label={t("在编辑器中打开", "Open in editor")}>
+          <button className="btn small" onClick={() => onEdit(path)} onMouseEnter={prefetchEditor} onFocus={prefetchEditor} aria-label={t("在编辑器中打开", "Open in editor")}>
             {t("编辑", "Edit")}
           </button>
         )}

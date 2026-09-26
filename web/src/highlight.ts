@@ -27,6 +27,17 @@ const LANG_LOADERS: Record<string, () => Promise<{ default: unknown }>> = {
   yaml: () => import("shiki/dist/langs/yaml.mjs"),
 };
 
+/**
+ * 单次高亮的字符上限：shiki 在主线程同步执行，实测约 5ms/KB（55KB ≈ 265ms），
+ * 超过该阈值只渲染纯文本（内容仍可复制、可在编辑器中打开），避免打开预览/大工具卡时卡住界面。
+ */
+export const HIGHLIGHT_MAX_CHARS = 60_000;
+
+/** 内容是否值得高亮（超阈值返回 false，由调用方降级为纯文本并提示）。 */
+export function shouldHighlight(code: string): boolean {
+  return code.length <= HIGHLIGHT_MAX_CHARS;
+}
+
 type Highlighter = Awaited<ReturnType<typeof createHighlighter>>;
 
 let highlighterPromise: Promise<Highlighter> | undefined;
