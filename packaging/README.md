@@ -32,7 +32,7 @@ bin/owc-launch.cmd      Windows 安装结束页 Launch 复选框用的启动器�
 server/dist/            服务端编译产物，入口 dist/index.js
 server/package.json     "type": "module" 声明（dist 为 ESM，必需）
 server/node_modules/    生产依赖（npm prune --omit=dev 之后）
-server/assets/          运行时资产
+server/assets/          运行时资产（含 dsh 兼容模式 vendor：dsh-web/ = dsh SPA + 58 个 client 插件 bundle、dsh-bridge/ = 桥接插件）
 web/dist/               前端静态资源（server 按 server/dist/../../web/dist 解析托管）
 node/                   固定版本 Node 运行时（Windows 只有 node.exe；Linux 是完整发行目录）
 install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
@@ -390,6 +390,7 @@ server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 - **测试门禁**：Windows 和 Linux x64/arm64 各自跑 core ctest、以真实 `owc-exec` 跑 server 测试、web 构建和测试。发布 job 要求 Windows、Linux 和 benchmark 全绿。
 - **Windows job**：测试 → `npm prune --omit=dev` → Release core → 组装 `build/stage/`（Node win-x64 zip 对照官方 `SHASUMS256.txt` 校验后取 `node.exe`，`owc.cmd`/`owc-launch.cmd` 转 CRLF）→ `cpack -G WIX` → `verify-wix-options.ps1` → `msiexec` 静默安装 + `/api/health` 冒烟 + 卸载 → 上传 MSI。
 - **Linux job**：按 `arch: [x64, arm64, loongarch64]` 矩阵出包。x64/arm64 原生构建（arm64 用 `ubuntu-24.04-arm` runner），测试后组装 staging（Node linux-<arch> tar.gz 同样校验后整树解入 `node/`），`tar -C stage . -C packaging install.sh uninstall.sh` 打包，临时前缀 `./install.sh --yes` 安装 + `/api/health` 冒烟。loongarch64 在 x64 runner 上用 `gcc-14-loongarch64-linux-gnu` 交叉编译（`core/toolchains/loongarch64-linux-gnu.cmake`），跳过 ctest/server 测试和冒烟，用 `file` 确认产物是 loongarch64 ELF，不内置 `node/`。
+- **dsh UI vendor（可选产物）**：Windows 与 Linux job 都在组装 staging 前执行 `node scripts/fetch-dsh-web.mjs` 抓取钉版 dsh 前端与 client 插件到 `server/assets/dsh-web/`（`continue-on-error: true`——失败不阻塞发布，发布包缺少 vendor 时 dsh 兼容模式如实不可用：端口不监听）；Docker 构建同口径（`RUN` 失败打印警告继续）。源码构建需要自行执行一次该脚本。
 - **benchmark job**：默认是发布的硬依赖，含两层判定——相对回归对比是警告级（`compare.mjs` 回归超 15% 只告警不阻断）；各 bench 脚本内置的绝对验收门禁未通过则 job 失败并阻断发布，属预期行为。当前构建缺任何一个基准场景结果也判失败。没有上一 release 基线或基线下载失败时告警并跳过对比（不阻断），除非显式开了 `bootstrap_benchmark_baseline`。结果以 `bench-results-*.json` 随发布资产上传，供下一版下载做基线。手动发布显式开 `skip_performance_tests` 时整个 job 跳过，该次 release 不含基准 JSON。
 - **release job**：下载全部产物并核对齐全 → 生成 `SHA256SUMS.txt` 并自检 → 从 `CHANGELOG.md` 提取 `## [<version>]` 段落做发布说明（缺失或为空直接失败，先补 CHANGELOG 再发版）→ `softprops/action-gh-release@v2` 创建 Release（非草稿；版本号带 `-` 时标 Pre-release；`target_commitish` 固定为触发本次运行的提交）。上传的文件：MSI、三个 tar.gz、`SHA256SUMS.txt`、`packaging/install-online.sh`、基准 JSON（如有）。
 
