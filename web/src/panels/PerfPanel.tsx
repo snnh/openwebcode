@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import type { RunPerfRecord } from "../lib/contracts";
 import { getFpsStats, startFrameSampler, stopFrameSampler, type FpsStats } from "../lib/perf-sampler";
 import { formatBytes, formatDuration } from "../lib/format";
+import { memoryBreakdown } from "./perf-memory";
 import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
 
@@ -180,22 +181,34 @@ export function PerfPanel({ sessionId }: { sessionId?: string | undefined }): Re
         )}
       </section>
 
-      {/* 内存占用（node / core / 扩展宿主；null 表示不可用） */}
-      {metrics.data && (
-        <section className="perf-section">
-          <h3>{t("内存占用", "Memory Usage")}</h3>
-          <div className="perf-grid">
-            <span className="perf-label">Node {t("RSS", "RSS")}</span>
-            <span className="perf-value">{metrics.data.memory.node ? formatBytes(metrics.data.memory.node.rss) : "—"}</span>
-            <span className="perf-label">Node {t("堆", "Heap")}</span>
-            <span className="perf-value">{metrics.data.memory.node ? formatBytes(metrics.data.memory.node.heapUsed) : "—"}</span>
-            <span className="perf-label">Core</span>
-            <span className="perf-value">{metrics.data.memory.core ? formatBytes(metrics.data.memory.core.rssBytes) : "—"}</span>
-            <span className="perf-label">{t("扩展宿主", "Extension Host")}</span>
-            <span className="perf-value">{metrics.data.memory.extensionHost ? formatBytes(metrics.data.memory.extensionHost.rss) : "—"}</span>
-          </div>
-        </section>
-      )}
+      {/* 内存占用：总占用（= server 主线程 + C core + 扩展宿主）+ 三项明细；
+          core/扩展宿主为 null 时显示「—」（未握手/超时，不伪装成 0） */}
+      {metrics.data && (() => {
+        const memory = memoryBreakdown(metrics.data.memory);
+        return (
+          <section className="perf-section">
+            <h3>{t("内存占用", "Memory Usage")}</h3>
+            <div className="perf-total">
+              <span className="perf-label">{t("总占用", "Total")}</span>
+              <span className="perf-value">{formatBytes(memory.total)}</span>
+            </div>
+            <div className="perf-grid">
+              <span className="perf-label">{t("server 主线程", "Server main")}</span>
+              <span className="perf-value">{formatBytes(memory.serverRss)}</span>
+              <span className="perf-label">C core</span>
+              <span className="perf-value">{memory.coreRss === null ? "—" : formatBytes(memory.coreRss)}</span>
+              <span className="perf-label">{t("扩展宿主", "Extension host")}</span>
+              <span className="perf-value">{memory.extensionRss === null ? "—" : formatBytes(memory.extensionRss)}</span>
+            </div>
+            <span className="perf-record-meta">
+              {t(
+                `主线程堆 ${formatBytes(memory.heapUsed)} / ${formatBytes(memory.heapTotal)} · external ${formatBytes(memory.external)} · 总占用 = 三者之和`,
+                `Main heap ${formatBytes(memory.heapUsed)} / ${formatBytes(memory.heapTotal)} · external ${formatBytes(memory.external)} · total = sum of the three`,
+              )}
+            </span>
+          </section>
+        );
+      })()}
 
       {/* Provider 并发诊断 */}
       {concurrency.data && Object.keys(concurrency.data).length > 0 && (

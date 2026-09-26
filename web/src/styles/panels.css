@@ -249,6 +249,8 @@
 .perf-section { display: flex; flex-direction: column; gap: 6px; }
 .perf-section h3 { margin: 0; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.03em; }
 .perf-grid { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px 10px; align-items: baseline; font-size: 13px; }
+.perf-total { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.perf-total .perf-value { font-size: 16px; font-weight: 600; }
 .perf-label { color: var(--text-3); font-size: 12px; white-space: nowrap; }
 .perf-value { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
 .perf-value.warn { color: var(--amber); font-weight: 600; }

@@ -96,23 +96,40 @@ export const pendingCards = {
 };
 
 /**
- * 待回答卡内容区的高度上限（px）：可用高度的一半、视口 60vh、以及「扣掉消息列表保底
- * （120px）与顶栏/输入栏（约 180px）后剩下的高度」三者取小，再兜底 120px。
- * 三者取小保证即使视口很矮也不会把列表或 Composer 挤出可视区（主列不滚动，超出即裁切）。
+ * 待回答区（.pending-zone）的高度上限（px）：**未折叠时铺满整个信息流区域**——
+ * 即「会话区可用高度（移动端再与真实可视高度取小）扣掉实测 chrome 高度（顶栏 / 标签条 /
+ * Composer，按真实 DOM 量，不拍常数）」后的全部空间，不再给消息列表留保底：
+ * 卡展开时消息列表收缩为 0，卡拿到整块区域；折叠后消息列表自然复原。
  *
- * 移动端（mobile=true）单独放宽：窄屏本来就没有「上下文并排看」的空间，软键盘弹出后可用
- * 高度还要再小一截，若仍按桌面比例算，ask_user 选项会被裁到只剩一两行（回答框显示不全）。
- * 这里把列表保底降到约 2 行、顶栏预留收紧，并把占比提到 0.68 / 0.7 —— 内容区更高仍由
- * .pending-zone 自身滚动兜底（见 chat-cards.css 的移动端规则）。
+ * 上限加在**容器**上而不是卡内容上：卡片能折叠成一行，所以不必把卡内容强行截断
+ * （截断处正好落在选项中间，观感很差）。卡内容因此永远完整渲染，超出的部分由容器整体
+ * 滚动，操作行（提交回答 / 允许一次）吸附容器底部常驻可见。
+ *
+ * 移动端（mobile=true）：窄屏没有「上下文并排看」的空间，兜底下限更小。
  */
-export function pendingBodyMaxHeight(workbenchHeight: number, viewportHeight: number, mobile = false): number {
-  const floor = mobile ? PENDING_LIST_FLOOR_MOBILE : PENDING_LIST_FLOOR;
-  const reserve = mobile ? PENDING_CHROME_RESERVE_MOBILE : PENDING_CHROME_RESERVE;
-  const spare = workbenchHeight - floor - reserve;
-  const share = mobile ? 0.68 : 0.5;
-  const viewportShare = mobile ? 0.7 : 0.6;
-  return Math.max(mobile ? 168 : 120, Math.min(workbenchHeight * share, viewportHeight * viewportShare, spare));
+export function pendingZoneMaxHeight(options: PendingZoneMaxHeightInput): number {
+  const { workbenchHeight, viewportHeight, chromeHeight = 0, mobile = false } = options;
+  // chrome 未能量到（首帧/异常布局）时用保守预留，避免把 Composer 挤出可视区
+  const chrome = chromeHeight > 0 ? chromeHeight : (mobile ? PENDING_CHROME_FALLBACK_MOBILE : PENDING_CHROME_FALLBACK);
+  // 软键盘弹出时 window.innerHeight 不缩小，会话区高度可能大于真实可视高度：取小兜底
+  const usable = Math.min(workbenchHeight, viewportHeight) - chrome;
+  return Math.max(mobile ? 168 : 120, usable);
 }
+
+export interface PendingZoneMaxHeightInput {
+  /** 会话区（.workbench）可用高度 */
+  workbenchHeight: number;
+  /** 真实可视高度（移动端取 visualViewport.height） */
+  viewportHeight: number;
+  /** 实测 chrome 高度：会话区内除待回答区与标签面板外的所有兄弟节点（顶栏/标签条/Composer） */
+  chromeHeight?: number;
+  mobile?: boolean;
+}
+
+/** chrome 高度未量到时的保守预留（桌面：顶栏 + 标签条 + Composer） */
+export const PENDING_CHROME_FALLBACK = 180;
+/** chrome 高度未量到时的保守预留（移动端） */
+export const PENDING_CHROME_FALLBACK_MOBILE = 150;
 
 /** 消息列表保底高度（px）：卡片再高也保留约 3 行上下文 */
 export const PENDING_LIST_FLOOR = 120;

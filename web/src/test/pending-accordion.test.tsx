@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import {
-  nextPendingSession, parsePendingCards, pendingBodyMaxHeight, pendingCards, pendingCardsStore,
-  PENDING_CHROME_RESERVE, PENDING_LIST_FLOOR, resolveExpandedId, usePendingAccordion,
+  nextPendingSession, parsePendingCards, PENDING_CHROME_FALLBACK, pendingZoneMaxHeight, pendingCards, pendingCardsStore,
+  resolveExpandedId, usePendingAccordion,
 } from "../chat/cards/pending-accordion";
 beforeEach(() => { window.sessionStorage.clear(); pendingCardsStore.set({ cards: {} }); });
 const ids = ["p1", "p2", "p3"];
@@ -32,17 +32,24 @@ describe("usePendingAccordion", () => {
     pendingCards.forgetSession("s1"); expect(pendingCardsStore.get().cards).toEqual({});
   });
 });
-describe("pendingBodyMaxHeight 与 sessionStorage 反序列化", () => {
-  it("取「可用高度一半 / 60vh / 扣掉列表保底与顶栏输入栏」三者最小值，兜底 120px", () => {
-    expect(pendingBodyMaxHeight(1000, 1200)).toBe(500); expect(pendingBodyMaxHeight(1000, 600)).toBe(360);
-    expect(pendingBodyMaxHeight(560, 2000)).toBe(560 - PENDING_LIST_FLOOR - PENDING_CHROME_RESERVE);
-    for (const [available, vh] of [[0, 0], [200, 800], [400, 900]]) expect(pendingBodyMaxHeight(available!, vh!)).toBe(120);
-    // 移动端放宽：同一可用高度下内容区更高（ask_user 选项不再被裁到一两行）
-    expect(pendingBodyMaxHeight(600, 700, true)).toBe(600 - 72 - 150);
-    expect(pendingBodyMaxHeight(1200, 1400, true)).toBe(1200 * 0.68);
-    expect(pendingBodyMaxHeight(600, 700, true)).toBeGreaterThan(pendingBodyMaxHeight(600, 700));
-    expect(pendingBodyMaxHeight(420, 500, true)).toBe(420 - 72 - 150);
-    expect(pendingBodyMaxHeight(0, 0, true)).toBe(168);
+describe("pendingZoneMaxHeight 与 sessionStorage 反序列化", () => {
+  it("未折叠时铺满整个信息流区域：会话区高度扣掉实测 chrome，兜底 120px", () => {
+    const zone = (workbenchHeight: number, viewportHeight: number, chromeHeight = 0, mobile = false): number =>
+      pendingZoneMaxHeight({ workbenchHeight, viewportHeight, chromeHeight, mobile });
+    // chrome 实测：铺满扣掉 chrome 之后的全部空间，不再给消息列表留保底
+    expect(zone(1000, 1200, 200)).toBe(800);
+    // 明显高于旧的「一半高度 / 留 120px 列表保底 + 180px 预留」口径（旧值 500）
+    expect(zone(1000, 1200, 200)).toBeGreaterThan(500 + 180);
+    // 视口比会话区矮（移动端软键盘弹出）时按视口算
+    expect(zone(1000, 640, 140)).toBe(500);
+    // chrome 未量到：用保守预留兜底，避免把 Composer 挤出可视区
+    expect(zone(1000, 1200)).toBe(1000 - PENDING_CHROME_FALLBACK);
+    // 兜底下限
+    for (const [available, vh] of [[0, 0], [200, 800], [400, 900]]) expect(zone(available!, vh!, 300)).toBe(120);
+    // 移动端下限更小、chrome 预留更紧
+    expect(zone(600, 700, 0, true)).toBe(600 - 150);
+    expect(zone(600, 700, 120, true)).toBe(480);
+    expect(zone(0, 0, 0, true)).toBe(168);
   });
   it("正常数据按会话读回；坏数据/旧格式按「无记忆」处理（不抛错）", () => {
     expect(parsePendingCards('{"cards":{"s1":{"open":"p2","closed":{"p1":true}}}}')).toEqual({ cards: { s1: { open: "p2", closed: { p1: true } } } });
