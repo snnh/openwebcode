@@ -113,9 +113,10 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
         if (id === currentId) void queryClient.invalidateQueries({ queryKey: qk.session(id) });
       })
       .catch((error: unknown) => {
-        // 归档遇到「有活动」等服务端拒绝：提示原文（如「请先停止运行再归档」）
+        // 归档遇到「有活动」等服务端拒绝：提示原文（如「请先停止运行再归档」）。
+        // 不再向上抛：调用点多为 fire-and-forget（onClick 里的 void），重抛只会变成
+        // 浏览器 unhandledrejection，而用户侧提示已经给出。
         ui.notify(error instanceof Error ? error.message : t("更新会话失败", "Could not update session"), "error");
-        throw error;
       });
   };
 

@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
+import path from "node:path";
 import type { AgentRunner, ManagedWorkspaceRunLease } from "./agent/agent-runner.js";
 import type { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import type { HookRunner } from "./hooks.js";
@@ -289,7 +290,20 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   app.addContentTypeParser(["application/x-ndjson", "text/plain"], { parseAs: "string" }, (_request, body, done) => done(null, body));
   await app.register(websocket);
   if (dependencies.webDist && existsSync(dependencies.webDist)) {
-    await app.register(fastifyStatic, { root: dependencies.webDist, prefix: "/" });
+    await app.register(fastifyStatic, {
+      root: dependencies.webDist,
+      prefix: "/",
+      // dist 内的 .br 同伴文件（web 构建产出）优先发送：运行期零压缩开销；
+      // 客户端不支持 br 或同伴缺失时自动回落原文件。
+      preCompressed: true,
+      setHeaders: (response, filePath) => {
+        // /assets/* 是带内容哈希的构建产物：内容不可变，可长期强缓存；入口与其它文件
+        // 每次重验，否则部署后浏览器会拿着旧 index.html 去请求已删除的 chunk。
+        const immutable = filePath.includes(`${path.sep}assets${path.sep}`);
+        response.header("Cache-Control", immutable ? "public, max-age=31536000, immutable" : "no-cache");
+        response.header("Vary", "Accept-Encoding");
+      },
+    });
     // WebUI 静态资源安全响应头。CSP 限同源；index.html 含内联主题引导脚本，
     // 故 script-src 需 'unsafe-inline'（Monaco/KaTeX/shiki 均为打包本地资源，不需要 eval）。
     // style-src 'unsafe-inline'：React 组件/Monaco 会写内联 style。WS 走同源 connect-src。
