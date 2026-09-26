@@ -296,8 +296,12 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     // 仅作用于非 /api 响应（JSON API 无渲染面，叠加 CSP 无意义）。
     app.addHook("onSend", async (request, reply) => {
       if (request.url.startsWith("/api/")) return;
-      reply.header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; script-src 'self' 'unsafe-inline'");
+      reply.header("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; script-src 'self' 'unsafe-inline'");
       reply.header("X-Content-Type-Options", "nosniff");
+      // 点击劫持防线（frame-ancestors 的老浏览器副本）；页面不做嵌入，dsh 兼容模式走独立端口的新窗口。
+      reply.header("X-Frame-Options", "DENY");
+      // `?token=` 引导链接会把访问令牌放进 URL：一旦页面跳外站，Referer 不得携带它。
+      reply.header("Referrer-Policy", "no-referrer");
     });
   }
   const clients = new Set<{ send(data: string): void; close(code?: number, reason?: string): void; readonly readyState: number; readonly bufferedAmount: number; pendingSends: number; sessionId?: string }>();

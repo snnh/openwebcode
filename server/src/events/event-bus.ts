@@ -140,6 +140,10 @@ export class EventBus extends EventEmitter {
       ? (this.sessionSequences.get(input.sessionId) ?? 0) + 1
       : undefined;
     if (input.sessionId) this.sessionSequences.set(input.sessionId, sessionSeq!);
+    // 会话生命周期的终点：删掉该会话的 seq 记账。会话 id 不再复用，删除后不会再发布
+    // 同 id 事件；放在 publishNow 里让所有删除路径（REST 路由、级联清理）都生效，
+    // 避免按 sessionId 的 Map 随「历史上创建过的会话数」常驻增长。
+    if (input.sessionId && input.type === "session.deleted") this.sessionSequences.delete(input.sessionId);
     const event: AppEvent = {
       ...input,
       eventId: randomUUID(),
