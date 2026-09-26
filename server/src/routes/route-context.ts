@@ -44,6 +44,7 @@ export interface CreateSessionBody {
 }
 
 export interface MessageBody {
+  /** 正文；可以为空串，但此时必须带 images 或 attachments（纯附件消息，正文落占位文本）。 */
   content: string;
   /** Explicit delivery intent; omitted remains compatible with pre-0.3 clients. */
   behavior?: "start" | "steer" | "follow_up";

@@ -758,7 +758,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
     <button
       type="button"
       className="composer-send"
-      disabled={!draft.trim() || processingPdf}
+      disabled={!(draft.trim() || attachments.length > 0) || processingPdf}
       aria-label={sendLabel()}
       title={processingPdf ? t("正在处理 PDF…", "Processing PDF…") : undefined}
       onClick={submit}

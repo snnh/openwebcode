@@ -294,24 +294,25 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
       if (content.length === 0) continue;
       pushMessage(message, { role: "user", content });
     } else if (message.role === "user") {
-      pushMessage(message, {
-        role: "user",
-        content: message.content.flatMap((block): Anthropic.ContentBlockParam[] => {
-          if (block.type === "text") return [{ type: "text" as const, text: block.text }];
-          // ref 形态（chat 落盘图）由调用方内联为 data 后才进 provider；缺 data 的块跳过
-          if (block.type === "image" && block.data) {
-            return [{
-              type: "image" as const,
-              source: {
-                type: "base64" as const,
-                media_type: block.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
-                data: block.data,
-              },
-            }];
-          }
-          return [];
-        }),
+      // 空 text 块不下发（纯附件的历史消息/占位缺失时可能留空串，部分端点拒收空 text part）；
+      // 过滤后为空则跳过整条（与上方全孤儿 tool 分支同款处理）。
+      const userContent = message.content.flatMap((block): Anthropic.ContentBlockParam[] => {
+        if (block.type === "text") return block.text ? [{ type: "text" as const, text: block.text }] : [];
+        // ref 形态（chat 落盘图）由调用方内联为 data 后才进 provider；缺 data 的块跳过
+        if (block.type === "image" && block.data) {
+          return [{
+            type: "image" as const,
+            source: {
+              type: "base64" as const,
+              media_type: block.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
+              data: block.data,
+            },
+          }];
+        }
+        return [];
       });
+      if (userContent.length === 0) continue;
+      pushMessage(message, { role: "user", content: userContent });
     } else {
       const content: Anthropic.ContentBlockParam[] = [];
       for (const block of message.content) {

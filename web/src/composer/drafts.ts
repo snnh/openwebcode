@@ -63,14 +63,19 @@ export function useDraft(sessionId: string | undefined): [string, (value: string
 }
 
 /**
- * 只关心「草稿非空」布尔的订阅（如命令体系 when 上下文）：
- * 选择器返回布尔，内容变化但非空判定不变时 useSyncExternalStore 不触发重渲染，
+ * 只关心「可发送」布尔的订阅（如命令体系 when 上下文、发送按钮禁用态）：
+ * 草稿非空 **或** 待发附件非空（纯图片/PDF 消息无文字也可发送）；
+ * 选择器返回布尔，内容变化但布尔不变时 useSyncExternalStore 不触发重渲染，
  * 避免每次击键带着订阅整棵树重渲染。
  */
-export function useDraftNonEmpty(sessionId: string | undefined): boolean {
+export function useComposerSendable(sessionId: string | undefined): boolean {
   useComposerSession(sessionId);
-  return useStore(composerStore, (state) => Boolean(sessionId && state[sessionId]?.draft.trim()));
+  return useStore(composerStore, (state) => {
+    const entry = sessionId ? state[sessionId] : undefined;
+    return Boolean(entry && (entry.draft.trim() || entry.attachments.length > 0));
+  });
 }
+
 
 export function getAttachments(sessionId: string): PendingImage[] {
   return ensureEntry(sessionId).attachments;
