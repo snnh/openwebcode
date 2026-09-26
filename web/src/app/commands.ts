@@ -226,14 +226,14 @@ function isSessionRunning(sessionId: string | undefined): boolean {
   return streamBuffer.blocksFor(sessionId).length > 0;
 }
 
-export function buildWhenContext(extra: { draftNonEmpty: boolean; multipleSessions: boolean }): WhenContext {
+export function buildWhenContext(extra: { composerSendable: boolean; multipleSessions: boolean }): WhenContext {
   const ui = uiStore.get();
   const aux = auxViewsStore.get();
   const sessionId = ui.sessionId;
   return {
     sessionActive: Boolean(sessionId),
     running: isSessionRunning(sessionId),
-    draftNonEmpty: extra.draftNonEmpty,
+    composerSendable: extra.composerSendable,
     multipleSessions: extra.multipleSessions,
     dialogOpen: anyDialogOpen(ui),
     editorOpen: Boolean(aux.editor),
@@ -318,7 +318,7 @@ export function registerBuiltinCommands(getActions: () => CommandActions): () =>
     registerCommand({ id: COMMAND_IDS.newSession, title: { zh: "新建会话", en: "New Session" }, handler: () => getActions().newSession() }),
     registerCommand({ id: COMMAND_IDS.importSession, title: { zh: "导入会话（JSONL）", en: "Import Session (JSONL)" }, handler: () => getActions().importSession() }),
     registerCommand({ id: COMMAND_IDS.deleteSession, title: { zh: "删除当前会话", en: "Delete Current Session" }, when: "sessionActive", handler: () => getActions().deleteCurrentSession() }),
-    registerCommand({ id: COMMAND_IDS.send, title: { zh: "发送消息", en: "Send Message" }, when: "sessionActive draftNonEmpty", handler: () => getActions().sendDraft() }),
+    registerCommand({ id: COMMAND_IDS.send, title: { zh: "发送消息", en: "Send Message" }, when: "sessionActive composerSendable", handler: () => getActions().sendDraft() }),
     registerCommand({ id: COMMAND_IDS.abort, title: { zh: "中断当前任务", en: "Stop Current Run" }, when: "sessionActive running", handler: () => getActions().abortRun() }),
     registerCommand({ id: COMMAND_IDS.toggleTheme, title: { zh: "切换深色/浅色主题", en: "Toggle Dark/Light Theme" }, handler: () => getActions().toggleTheme() }),
     registerCommand({ id: COMMAND_IDS.focusComposer, title: { zh: "聚焦输入框", en: "Focus Composer" }, when: "sessionActive", handler: () => getActions().focusComposer() }),

@@ -158,8 +158,11 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
     "/api/sessions/:id/messages",
     { bodyLimit: IMAGE_MESSAGE_BODY_LIMIT },
     async (request, reply) => {
-      if (!request.body || typeof request.body.content !== "string" || !request.body.content) {
-        return reply.code(400).send({ error: "content must be a non-empty string" });
+      if (!request.body || typeof request.body.content !== "string"
+        || (!request.body.content.trim()
+          && !(Array.isArray(request.body.images) && request.body.images.length > 0)
+          && !(Array.isArray(request.body.attachments) && request.body.attachments.length > 0))) {
+        return reply.code(400).send({ error: "content must be a non-empty string, or images/attachments must be provided" });
       }
       if (request.body.behavior !== undefined && !["start", "steer", "follow_up"].includes(request.body.behavior)) {
         return reply.code(400).send({ error: "behavior must be start, steer, or follow_up" });
@@ -286,7 +289,7 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
         }
         // @文件引用：appendMessage 前对每个 path 调 core.readFile（受沙盒），过 boundToolResult（大文件截断 + artifact）；
         // 越界/不可读降级为错误块而非抛错炸掉整个请求；组装为前置 text 块 `[Attachment <path>]\n<内容>`
-        const attachmentBlocks: Array<{ text: string }> = [];
+        const attachmentBlocks: Array<{ path: string; text: string }> = [];
         if (attachments && attachments.length > 0) {
           if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
             await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd) });
@@ -297,17 +300,17 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
           for (const item of attachments) {
             const attachmentPath = item.path.trim();
             if (isPathExcluded(attachmentPath, contextExcludes)) {
-              attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]
+              attachmentBlocks.push({ path: attachmentPath, text: `[Attachment ${attachmentPath}]
 已被会话上下文排除清单跳过（排除只影响上下文组装，不是安全边界；工具仍可按权限读取该文件）` });
               continue;
             }
             try {
               const result = await core.readFile({ sessionId: request.params.id, path: attachmentPath });
               const bounded = await boundToolResult(contextRoot, "read_file", result.content);
-              attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]\n${bounded.content}` });
+              attachmentBlocks.push({ path: attachmentPath, text: `[Attachment ${attachmentPath}]\n${bounded.content}` });
             } catch (error) {
               const reason = errorMessage(error);
-              attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]\n错误：路径越界或不可读（${reason}）` });
+              attachmentBlocks.push({ path: attachmentPath, text: `[Attachment ${attachmentPath}]\n错误：路径越界或不可读（${reason}）` });
             }
           }
         }

@@ -33,7 +33,7 @@ import { ChatView } from "../chat/ChatView";
 import { CONVERSATION_SEARCH_EVENT } from "../chat/types";
 import { streamBuffer } from "../chat/stream-buffer";
 import { clearOlderMessages } from "../chat/pagination-store";
-import { clearComposerState, useDraftNonEmpty } from "../composer/drafts";
+import { clearComposerState, useComposerSendable } from "../composer/drafts";
 import { chatBridge } from "./chat-bridge";
 import { registerBuiltinCommands, useGlobalKeybindings, buildWhenContext, mergeKeybindings, DEFAULT_KEYBINDINGS, cycleZone, type CommandActions } from "./commands";
 import { CommandPalette } from "../dialogs/CommandPalette";
@@ -87,15 +87,15 @@ export function App(): ReactElement {
   const diffActionsRef = useMemo(() => ({ current: diffActions }), []);
 
   // ===== 命令体系（Phase 3）：when 上下文 + 动作面 + 全局键位 =====
-  // 只需「非空」布尔：逐键订阅完整草稿会让 App 整树随每次击键重渲染
-  const draftNonEmpty = useDraftNonEmpty(sessionId);
+  // 只需「可发送」布尔（草稿或附件任一非空）：逐键订阅完整草稿会让 App 整树随每次击键重渲染
+  const composerSendable = useComposerSendable(sessionId);
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const importInput = useRef<HTMLInputElement>(null);
 
   const whenContext = useMemo(() => buildWhenContext({
-    draftNonEmpty,
+    composerSendable,
     multipleSessions: (sessions.data?.length ?? 0) > 1,
-  }), [draftNonEmpty, sessions.data]);
+  }), [composerSendable, sessions.data]);
 
   const stepSession = useCallback((delta: number): void => {
     const list = sessions.data ?? [];

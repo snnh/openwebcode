@@ -293,13 +293,15 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
         .map((block) => block.text)
         .join("");
       // 无图时维持纯字符串 content（兼容只认字符串的端点）；有图时走 parts 数组
+      // 无图时维持纯字符串 content（兼容只认字符串的端点）；有图时走 parts 数组。
+      // 空正文块不下发（纯附件的历史消息/占位缺失时可能留空串，部分端点会拒收空 text part）。
       result.push({
         role: "user",
         content: images.length === 0
           ? text
           : [
               ...images.map((block) => ({ type: "image_url", image_url: { url: `data:${block.mediaType};base64,${block.data}` } })),
-              { type: "text", text },
+              ...(text ? [{ type: "text", text }] : []),
             ],
       });
     } else if (message.role === "assistant") {

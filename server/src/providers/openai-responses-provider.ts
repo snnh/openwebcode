@@ -683,9 +683,10 @@ function toResponsesInput(
   for (const message of messages) {
     if (message.role === "user") {
       // dsh 口径：用户内容恒为 parts 数组，按原始块序（text → input_text；image → input_image）
+      // 空 text 块丢弃（纯附件的历史消息可能留空串）：仅当有其它块时跳过，避免下发空 input_text。
       const content = message.content
         .filter((block): block is TextContent | (ImageContent & { data: string }) =>
-          block.type === "text" || (block.type === "image" && typeof block.data === "string"))
+          (block.type === "text" && Boolean(block.text)) || (block.type === "image" && typeof block.data === "string"))
         .map((block) =>
           block.type === "text"
             ? { type: "input_text", text: sanitizeSurrogates(block.text) }

@@ -248,9 +248,16 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
     // 请求进行中（如 /compact 同步压缩可能耗时）防重复提交：避免二次压缩或 run 与压缩抢写账本
     if (send.isPending) return;
     const text = getDraft(sessionId).trim();
-    if (!text) return;
+    // 纯图片/PDF 消息（无文字）也允许发送：正文由服务端落占位文本（会话格式不变）
+    const hasPendingAttachments = getAttachments(sessionId).length > 0;
+    if (!text && !hasPendingAttachments) return;
     // 编辑重发：走 retry（检出到父节点 + 附带编辑后的 user 消息重跑），不走普通消息 POST
     if (editingMessage && editingMessage.sessionId === sessionId) {
+      // 重发必须带正文（editedContent 只支持文本）
+      if (!text) {
+        notify(t("重发需要正文", "Resending requires message text"), "error");
+        return;
+      }
       const target = editingMessage;
       cancelEdit(false);
       api.retryMessage(sessionId, target.messageId, { editedContent: text })

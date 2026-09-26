@@ -88,6 +88,7 @@ import type { ExtensionManager } from "../extensions/extension-manager.js";
 import type { CompactVaultService } from "../extensions/compact-vault.js";
 import type { PromptHookResult } from "../extensions/types.js";
 import { decodeProcessOutputChunks } from "./output-decoder.js";
+import { userMessageText } from "./message-placeholder.js";
 import { buildSystemPrompt, isoDate } from "./prompts/prompt-builder.js";
 import { PI_BASE_SYSTEM_PROMPT } from "./prompts/pi-base.js";
 import { loadPromptOverride, type PromptOverride } from "./prompts/prompt-overrides.js";
@@ -791,8 +792,9 @@ export interface ManagedWorkspaceRunLease {
 
 interface AgentRunOptions {
   images?: Array<{ mediaType: string; data: string }>;
-  /** 预组装的附件 text 块（app.ts 已读取+截断+包装为 `[Attachment <path>]\n<内容>`）；插入在 images 之后、正文之前 */
-  attachments?: Array<{ text: string }>;
+  /** 预组装的附件 text 块（app.ts 已读取+截断+包装为 `[Attachment <path>]\n<内容>`）；插入在 images 之后、正文之前。
+   *  path 供纯附件消息生成占位正文（见 message-placeholder.ts）；缺省时占位不列文件名。 */
+  attachments?: Array<{ path?: string; text: string }>;
   /** app.ts managed-workspace shared/exclusive lease; absent for direct/test runs. */
   managedWorkspace?: Omit<ManagedWorkspaceRunLease, "release">;
   /** A durable follow-up queue entry which becomes applied when its user message is written. */
@@ -1242,10 +1244,13 @@ export class AgentRunner {
       const configuredSession = await this.sessions.get(sessionId);
       if (!configuredSession) throw new Error("Session not found");
       const appendUserMessage = async (message: string) => {
+        const images = options?.images ?? [];
+        const attachments = options?.attachments ?? [];
         return this.sessions.appendMessage(sessionId, "user", [
-          ...(options?.images ?? []).map((image): MessageContent => ({ type: "image", mediaType: image.mediaType, data: image.data })),
-          ...(options?.attachments ?? []).map((block): MessageContent => ({ type: "text", text: block.text })),
-          { type: "text", text: message },
+          ...images.map((image): MessageContent => ({ type: "image", mediaType: image.mediaType, data: image.data })),
+          ...attachments.map((block): MessageContent => ({ type: "text", text: block.text })),
+          // 纯图片/纯附件消息（无正文）落占位文本：持久化格式不变，且避免空 text 块进 provider 请求
+          { type: "text", text: userMessageText(message, images.length, attachments.flatMap((block) => (block.path ? [block.path] : []))) },
         ]);
       };
       // 输入框 /技能名 手动触发：展开为技能全文 + 用户补充（检查点标题仍用原文）。
