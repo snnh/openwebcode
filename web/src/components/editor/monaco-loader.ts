@@ -13,12 +13,16 @@ export type MonacoApi = typeof Monaco;
 let pending: Promise<MonacoApi> | undefined;
 
 export function loadMonaco(): Promise<MonacoApi> {
+  // 失败时清空缓存：否则一次网络/分块失败会让本页内所有重试永久失败
   pending ??= (async () => {
     const monaco = await import("monaco-editor");
     (self as unknown as { MonacoEnvironment: Monaco.Environment }).MonacoEnvironment = {
       getWorker: () => new EditorWorker(),
     };
     return monaco;
-  })();
+  })().catch((error: unknown) => {
+    pending = undefined;
+    throw error;
+  });
   return pending;
 }

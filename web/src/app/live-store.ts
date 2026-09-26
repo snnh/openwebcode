@@ -125,7 +125,7 @@ export const live = {
         const run = sessionRuns?.[payload.taskId];
         if (!sessionRuns || !run) return {};
         return {
-          subagents: { ...previous.subagents, [sessionId]: { ...sessionRuns, [payload.taskId]: { ...run, turns: payload.turns, toolsUsed: payload.toolsUsed } } },
+          subagents: { ...previous.subagents, [sessionId]: { ...sessionRuns, [payload.taskId]: { ...run, turns: payload.turns, toolsUsed: Array.isArray(payload.toolsUsed) ? payload.toolsUsed : [] } } },
         };
       });
       return;

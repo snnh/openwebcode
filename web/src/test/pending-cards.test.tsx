@@ -4,6 +4,11 @@ import { InteractionCard } from "../chat/cards/InteractionCard";
 import { PlanApprovalCard } from "../chat/cards/PlanApprovalCard";
 import { PermissionCard } from "../chat/cards/PermissionCard";
 import { ChatActionsContext, type ChatActions } from "../chat/types";
+import { App } from "../app/App";
+import { installAppFetchMock } from "./helpers/app-fetch-mock";
+import { makeSession } from "./helpers/fixtures";
+import { setupStubWebSocket } from "./helpers/stub-websocket";
+import { renderWithClient } from "./helpers/with-client";
 import type { InteractionRequest, PendingPermission } from "../lib/contracts";
 function interaction(overrides: Partial<InteractionRequest> = {}): InteractionRequest {
   return {
@@ -48,5 +53,27 @@ describe("待回答卡收起态（手风琴非展开项）", () => {
     expect(screen.queryByText(/先改 A/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "编辑后批准" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "批准执行" })); expect(onRespond).toHaveBeenCalledWith({ decision: "approve" });
+  });
+});
+
+/**
+ * 回归（1.12.0 白屏缺陷）：权限卡所在的待回答区曾渲染在 ChatActionsContext.Provider 之外，
+ * PermissionCard 的 useChatActions() 抛错 → React 卸载整棵树 → 白屏。
+ * 这里从 App 顶层渲染：待决权限出现时必须正常出卡，而不是整页消失。
+ */
+describe("待回答区必须包在 ChatActions Provider 内（白屏回归）", () => {
+  setupStubWebSocket();
+  it("待决权限出现时 App 仍渲染，权限卡可见", async () => {
+    installAppFetchMock({
+      session: makeSession({ id: "s1", title: "权限回归会话" }),
+      models: [],
+      extra: (url, json) => url.includes("/api/sessions/s1/permissions")
+        ? json([{ requestId: "perm-1", tool: "bash", input: { command: "ls -la" } }])
+        : undefined,
+    });
+    const view = renderWithClient(<App />);
+    expect(await screen.findByRole("button", { name: "允许一次" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "拒绝" })).toBeInTheDocument();
+    view.unmount();
   });
 });

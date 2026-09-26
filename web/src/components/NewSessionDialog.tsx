@@ -326,7 +326,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
               <option
                 key={mode}
                 value={mode}
-                disabled={(mode === "wsb" && sandboxCaps !== undefined && !sandboxCaps.wsb.available) || (mode === "bubblewrap" && bwrapUnavailableReason !== undefined)}
+                disabled={(mode === "wsb" && sandboxCaps?.wsb?.available === false) || (mode === "bubblewrap" && bwrapUnavailableReason !== undefined)}
                 title={mode === "bubblewrap" ? bwrapUnavailableReason : undefined}
               >
                 {t(...SANDBOX_MODE_LABELS[mode])}
@@ -354,7 +354,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           <p className="muted-empty dialog-hint">{t("经代理过滤出网（仅 Windows）；Linux 会话不支持该策略。", "Outbound traffic is filtered via a proxy (Windows only); not supported on Linux sessions.")}</p>
         )}
         {isWindows && sandboxCaps && !sandboxCaps.wsb.available && (
-          <p className="muted-empty dialog-hint">{t("Windows Sandbox 不可用：", "Windows Sandbox unavailable: ")}{sandboxCaps.wsb.reason ?? t("未启用可选功能", "optional feature is not enabled")}</p>
+          <p className="muted-empty dialog-hint">{t("Windows Sandbox 不可用：", "Windows Sandbox unavailable: ")}{sandboxCaps.wsb?.reason ?? t("未启用可选功能", "optional feature is not enabled")}</p>
         )}
         {sandboxMode === "wsb" && (
           <label className="settings-field">

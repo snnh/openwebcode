@@ -193,7 +193,9 @@ export function SubagentsPanel({ sessionId }: { sessionId?: string | undefined }
       )}
       {groups.map((group) => {
         if (!group.swarm) {
-          const run = group.runs[0]!;
+          const run = group.runs[0];
+          // 空组（例如事件缺字段导致的空 runs）直接跳过，不整页崩
+          if (!run) return null;
           return (
             <ul key={group.toolCallId} className="subagent-run-items subagents-group">
               <SubagentRunRow run={run} sessionId={sessionId} {...(onOpenInTab ? { onOpenInTab } : {})} />

@@ -64,7 +64,9 @@ export function SubagentStatusChip({ status }: { status: "pending" | LiveSubagen
 export function SubagentRunStats({ run }: { run: LiveSubagentRun }): ReactElement | null {
   const { t } = useI18n();
   if (run.status === "failed") return <span className="subagent-run-error">{run.error ?? t("未知错误", "unknown error")}</span>;
-  const tools = run.toolsUsed.length > 0 ? run.toolsUsed.join(", ") : undefined;
+  // toolsUsed 来自 WS 事件 payload（非契约类型）：缺字段时按空处理，不让单条事件打崩整树
+  const toolsUsed = run.toolsUsed ?? [];
+  const tools = toolsUsed.length > 0 ? toolsUsed.join(", ") : undefined;
   // 历史推导的运行无轮次明细（turns=0）：省略「0 轮」避免误导，仅有工具记录时列出工具
   if (run.status === "done" && run.turns === 0) {
     return tools ? <span className="subagent-run-stats">{tools}</span> : null;

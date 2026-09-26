@@ -128,16 +128,16 @@ export function ChatSettings({ sessionId, onClose, onSaved }: {
 
   // 能力模型候选：按 /api/chat/models 的能力声明过滤（modalities 含 "image" = vision 候选；imageOutput = image_gen 候选）
   const visionCandidates = models.flatMap((entry) =>
-    entry.models.filter((m) => m.modalities.includes("image")).map((m) => ({ provider: entry.provider, model: m.id })));
+    (entry.models ?? []).filter((m) => m.modalities?.includes("image")).map((m) => ({ provider: entry.provider, model: m.id })));
   const imageGenCandidates = models.flatMap((entry) =>
-    entry.models.filter((m) => m.imageOutput).map((m) => ({ provider: entry.provider, model: m.id })));
+    (entry.models ?? []).filter((m) => m.imageOutput).map((m) => ({ provider: entry.provider, model: m.id })));
 
   // 当前 provider 对应的模型候选条目（模型分区的级联下拉复用）
   const currentProviderEntry = models.find((entry) => entry.provider === meta.provider);
   // 主模型自带对应能力时工具冗余：仅前端隐藏开关（server 不过滤 enabledTools）
   const mainModel = currentProviderEntry?.models.find((m) => m.id === meta.model);
   const hiddenTools = new Set<string>();
-  if (mainModel?.modalities.includes("image")) hiddenTools.add("vision");
+  if (mainModel?.modalities?.includes("image")) hiddenTools.add("vision");
   if (mainModel?.imageOutput === true) hiddenTools.add("image_gen");
 
   /** 下拉值编码为 provider/model（provider id 不含 "/"，按首个 "/" 切分）。 */

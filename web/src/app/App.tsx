@@ -40,6 +40,7 @@ import { CommandPalette } from "../dialogs/CommandPalette";
 import { EmptyState } from "../components/EmptyState";
 import { NewSessionDialog, type NewSessionValues } from "../components/NewSessionDialog";
 import { ConfirmDeleteDialog } from "../components/ConfirmDeleteDialog";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 import { IconSprite } from "../components/Icon";
 import { LoadingFallback } from "../components/LoadingFallback";
 import { Toast } from "../components/Toast";
@@ -372,7 +373,7 @@ export function App(): ReactElement {
     const copied = t("已复制到剪贴板，粘贴进会话输入框发送", "Copied to clipboard — paste into the composer to send");
     void writeClipboard(text).then((ok) => ui.notify(ok ? copied : t("复制失败", "Copy failed"), ok ? "info" : "error"));
   };
-  const main = sessionId ? (
+  const mainBody = sessionId ? (
     <div className="wb-main-split">
       <ChatView sessionId={sessionId} currentRun={agentRun.data} subagentTabs={subagentTabs} terminalTabs={terminalTabs} onOpenNavMenu={openNavMenu} />
       {aux.editor && (
@@ -411,15 +412,19 @@ export function App(): ReactElement {
         onOpenNavMenu={openNavMenu} onExample={onExample} />
     </section>
   );
+  // 会话区边界：对话/编辑器/diff 任一出错只降级这一区域，侧栏、面板与输入框仍在
+  const main = <ErrorBoundary label={t("会话区", "Conversation")} resetKey={sessionId}>{mainBody}</ErrorBoundary>;
 
   // 聊天模式（Phase 5）：整页替换工作台外壳
   if (mode === "chat" && chatModeEnabled) {
     return (
       <>
         <IconSprite />
-        <Suspense fallback={<LoadingFallback />}>
-          <ChatModeView />
-        </Suspense>
+        <ErrorBoundary label={t("对话模式", "Chat mode")} resetKey="chat">
+          <Suspense fallback={<LoadingFallback />}>
+            <ChatModeView />
+          </Suspense>
+        </ErrorBoundary>
       </>
     );
   }
@@ -427,6 +432,7 @@ export function App(): ReactElement {
   return (
     <>
       <IconSprite />
+      <ErrorBoundary label={t("工作台", "Workbench")} resetKey="workbench">
       <Suspense fallback={<LoadingFallback />}>
         <Workbench
           sessions={sessions.data}
@@ -460,6 +466,7 @@ export function App(): ReactElement {
           main={main}
         />
       </Suspense>
+      </ErrorBoundary>
       <NewSessionDialog
         open={newSessionOpen}
         providers={providers.data ?? []}

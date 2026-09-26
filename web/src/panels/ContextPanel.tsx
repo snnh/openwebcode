@@ -34,7 +34,7 @@ function SegmentStats({ stats }: { stats: NonNullable<ContextView["stats"]> }): 
         ))}
         <dt>{t("本次构建", "Last build")}</dt>
         <dd>
-          {stats.buildMs.toFixed(1)}ms · {stats.incremental ? t("增量复用", "Incremental") : t("全量重建", "Full rebuild")}
+          {(stats.buildMs ?? 0).toFixed(1)}ms · {stats.incremental ? t("增量复用", "Incremental") : t("全量重建", "Full rebuild")}
         </dd>
         {stats.pinnedTokens > 0 && (
           <>
@@ -303,10 +303,10 @@ function CompactionSection({ sessionId, running, context }: {
           <dd>{t(`前 ${compacted.uptoIndex} 条消息`, `First ${compacted.uptoIndex} messages`)}</dd>
           <dt>{t("时间", "Time")}</dt>
           <dd>{formatDateTime(compacted.createdAt, locale)}</dd>
-          {compacted.instructions.length > 0 && (
+          {(compacted.instructions ?? []).length > 0 && (
             <>
               <dt>{t("用户明确指令（累积）", "Explicit user instructions (cumulative)")}</dt>
-              <dd className="kv-text">{compacted.instructions.map((item) => `· ${item}`).join("\n")}</dd>
+              <dd className="kv-text">{(compacted.instructions ?? []).map((item) => `· ${item}`).join("\n")}</dd>
             </>
           )}
         </dl>

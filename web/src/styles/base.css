@@ -193,6 +193,53 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .toast button { color: var(--text-3); font-size: 15px; }
 .toast button:hover { color: var(--text); }
 
+/* ================= 崩溃兜底（ErrorBoundary：渲染失败不再白屏） ================= */
+.crash-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px;
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font-size: 13px;
+  overflow: auto;
+}
+/* 面板区兜底时占满可用高度，操作按钮始终可见 */
+.panel-content > .crash-fallback { margin: 8px; }
+.crash-fallback-head { display: flex; flex-direction: column; gap: 4px; }
+.crash-fallback-head b { color: var(--danger); font-size: 13px; }
+.crash-fallback-hint { color: var(--text-3); font-size: var(--text-xs); }
+.crash-fallback-message {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  color: var(--text);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.crash-fallback-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.crash-fallback-details summary { cursor: pointer; color: var(--text-3); font-size: var(--text-xs); }
+.crash-fallback-details pre {
+  margin: 8px 0 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* Markdown 渲染失败降级为纯文本：内容不丢，只是不排版 */
+.markdown-degraded > pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+
 /* ================= 动效 ================= */
 @keyframes blink { 50% { opacity: 0; } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
