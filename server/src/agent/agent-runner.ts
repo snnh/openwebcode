@@ -444,6 +444,21 @@ interface TodoItem {
   activeForm?: string;
 }
 
+/** 落盘清单的读回归一化：外部/旧版本文件可能带脏数据，逐条校验后丢弃非法项。 */
+function normalizeTodoItems(value: unknown): TodoItem[] {
+  if (!Array.isArray(value)) return [];
+  const items: TodoItem[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue;
+    const record = raw as { content?: unknown; status?: unknown; activeForm?: unknown };
+    if (typeof record.content !== "string" || !record.content.trim()) continue;
+    const status = record.status === "pending" || record.status === "in_progress" || record.status === "done" ? record.status : undefined;
+    if (!status) continue;
+    items.push({ content: record.content, status, ...(typeof record.activeForm === "string" && record.activeForm ? { activeForm: record.activeForm } : {}) });
+  }
+  return items;
+}
+
 const REMEMBER_TOOL: ProviderTool = {
   name: "remember",
   description:
@@ -2182,13 +2197,25 @@ export class AgentRunner {
     }
   }
 
-  listTodos(sessionId: string): TodoItem[] {
-    return [...(this.todos.get(sessionId) ?? [])];
+  /**
+   * 任务清单：内存优先，未命中回落到会话目录的 todos.json（服务重启后仍能看到上次的进度）。
+   * 返回副本，调用方不得原地改动。
+   */
+  async listTodos(sessionId: string): Promise<TodoItem[]> {
+    const cached = this.todos.get(sessionId);
+    if (cached) return [...cached];
+    const persisted = await this.sessions.readTodos(sessionId).catch(() => undefined);
+    const items = normalizeTodoItems(persisted);
+    if (items.length > 0) this.todos.set(sessionId, items);
+    return [...items];
   }
 
-  /** /clear 清空上下文时同步清空任务清单（内存态 todo_write 状态），并通知前端。 */
+  /** /clear 清空上下文时同步清空任务清单（内存 + 落盘），并通知前端。 */
   clearTodos(sessionId: string): void {
     this.todos.delete(sessionId);
+    void this.sessions.writeTodos(sessionId, []).catch((error: unknown) => {
+      process.stderr.write(`[todos] 清空任务清单落盘失败：${error instanceof Error ? error.message : String(error)}\n`);
+    });
     this.events.publish({ source: "agent", type: "todos.updated", sessionId, payload: { items: [] } });
   }
 
@@ -3687,6 +3714,10 @@ export class AgentRunner {
           return { content, status: item.status as TodoItem["status"], ...(item.activeForm ? { activeForm: item.activeForm } : {}) };
         });
         this.todos.set(sessionId, items);
+        // 落盘：清单要跨重启存活（会话目录 todos.json），失败只记日志——不影响本轮工具结果
+        void this.sessions.writeTodos(sessionId, items).catch((error: unknown) => {
+          process.stderr.write(`[todos] 任务清单落盘失败：${error instanceof Error ? error.message : String(error)}\n`);
+        });
         this.events.publish({ source: "agent", type: "todos.updated", sessionId, payload: { items } });
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { count: items.length } } });
         return { type: "tool_result", toolCallId, content: `Task list replaced (${items.length} item(s)).`, isError: false };

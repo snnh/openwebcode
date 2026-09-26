@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { conclusionExcerpt } from "../chat/SubagentRunCard";
@@ -74,5 +76,14 @@ describe("useSubagentTabs：序号分配", () => {
     act(() => result.current.openFromStarted("s1", started("call-3")));
     expect(result.current.tabsBySession.s1!.find((item) => item.toolCallId === "call-3")!.seq).toBe(3);
     act(() => result.current.openFromStarted("s2", started("call-9"))); expect(result.current.tabsBySession.s2![0]!.seq).toBe(1);
+  });
+});
+
+describe("标签条常驻", () => {
+  it("ChatView 中标签条不再按「子代理/终端/任务清单」条件渲染（主对话标签始终在）", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/chat/ChatView.tsx"), "utf8");
+    // 旧条件：三者皆无时整条隐藏，主对话标签会跟着消失
+    expect(source).not.toContain("currentSubagentTabs.length > 0 || terminalOpen || (todos.data?.length ?? 0) > 0");
+    expect(source).toContain("<SubagentTabStrip");
   });
 });

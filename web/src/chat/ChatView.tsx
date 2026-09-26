@@ -474,7 +474,8 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
         onCreateCheckpoint={() => manualSnapshot.mutate(current.id)}
         {...(onOpenNavMenu ? { onOpenNavMenu } : {})}
       />
-      {(currentSubagentTabs.length > 0 || terminalOpen || (todos.data?.length ?? 0) > 0) && (
+      {/* 标签条常驻：「主对话」标签一直都在，子代理 / 终端 / 任务清单只是追加其后的标签。
+          此前三者皆无时整条隐藏，重启后任务清单（内存态）为空就会连「主对话」一起消失。 */}
       <SubagentTabStrip
         tabs={currentSubagentTabs}
         runs={subagentRuns}
@@ -486,7 +487,6 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
         onSelectTerminal={onSelectTerminal}
         onCloseTerminal={() => terminalTabs.closeTerminal(sessionId)}
       />
-      )}
         {/* 主对话/终端/子代理标签内容互换：MessageList 与终端保持挂载（hidden 隐藏），滚动与 PTY 状态不丢 */}
         <div className="main-tab-panel chat-panel" role="tabpanel" aria-label={t("主对话", "Main")} hidden={!chatVisible}>
           <StreamingMessageList
