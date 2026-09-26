@@ -90,6 +90,9 @@ interface DirNode {
 
 export class RepoMapGenerator {
   private readonly scans = new Map<string, ScanCacheEntry>();
+
+  /** 会话结束（删除/归档）：丢掉该会话的扫描与渲染缓存，避免按会话累积 */
+  forget(sessionId: string): void { this.scans.delete(sessionId); }
   /** Phase 2：可选的索引符号提供者（IndexManager.symbolSummary）。 */
   private symbolProvider?: RepoMapSymbolProvider;
 

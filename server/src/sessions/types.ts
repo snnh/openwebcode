@@ -219,6 +219,11 @@ export interface SessionMeta {
   title: string;
   /** 会话列表置顶；缺省/undefined = 不置顶。 */
   pinned?: boolean;
+  /** 手工标签组名（单分组：一个会话属于一个组）；缺省/undefined = 未分组。 */
+  group?: string;
+  /** 已归档：默认列表不显示，可切到「已归档」查看；缺省/undefined = 未归档。
+   *  归档不改变历史与快照，只影响列表展示与空闲资源（索引/监听随归档释放）。 */
+  archived?: boolean;
   createdAt: string;
   updatedAt: string;
   /** Current history leaf; absent means a legacy linear session. */

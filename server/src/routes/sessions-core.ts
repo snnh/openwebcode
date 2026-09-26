@@ -305,19 +305,51 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     const visible = { ...session, messages: (session.messages ?? []).filter((message) => !isInjectionMessageId(message.id)) };
     return { ...visible, activePersona };
   });
-  /** 会话显示属性：重命名（title ≤120 字符，空串清除覆盖回落派生标题）与置顶（pinned）。 */
-  app.patch<{ Params: { id: string }; Body: { title?: string; pinned?: boolean } }>("/api/sessions/:id", async (request, reply) => {
-    if (!request.body || (request.body.title === undefined && request.body.pinned === undefined)) {
-      return reply.code(400).send({ error: "title or pinned is required" });
+  /**
+   * 会话显示属性：重命名（title ≤120 字符，空串清除覆盖回落派生标题）、置顶（pinned）、
+   * 手工标签组（group ≤40 字符，空串移出分组）、归档（archived）。
+   *
+   * 归档守则（见 help/usage.md「会话组织」）：有活动就不许归档——运行中的 run、仍在跑的后台任务、
+   * 开着的终端 PTY 都算活动，前端据此提示「先停掉再归档」；归档只影响列表展示与空闲资源
+   * （索引进程常驻内存、文件监听、repo map 扫描缓存随归档释放，索引文件仍在磁盘上，
+   * 下次访问自动重建），不删历史、快照与 artifacts；归档会话仍可继续使用（撤销归档即恢复）。
+   */
+  app.patch<{ Params: { id: string }; Body: { title?: string; pinned?: boolean; group?: string; archived?: boolean } }>("/api/sessions/:id", async (request, reply) => {
+    const body = request.body;
+    if (!body || (body.title === undefined && body.pinned === undefined && body.group === undefined && body.archived === undefined)) {
+      return reply.code(400).send({ error: "title, pinned, group or archived is required" });
     }
-    if (request.body.title !== undefined && typeof request.body.title !== "string") {
+    if (body.title !== undefined && typeof body.title !== "string") {
       return reply.code(400).send({ error: "title must be a string" });
     }
-    if (request.body.pinned !== undefined && typeof request.body.pinned !== "boolean") {
+    if (body.pinned !== undefined && typeof body.pinned !== "boolean") {
       return reply.code(400).send({ error: "pinned must be a boolean" });
     }
+    if (body.group !== undefined && (typeof body.group !== "string" || body.group.trim().length > 40)) {
+      return reply.code(400).send({ error: "group must be a string of at most 40 characters" });
+    }
+    if (body.archived !== undefined && typeof body.archived !== "boolean") {
+      return reply.code(400).send({ error: "archived must be a boolean" });
+    }
+    const target = await sessions.get(request.params.id);
+    if (!target) return reply.code(404).send({ error: "Session not found" });
+    if (body.archived === true && target.archived !== true) {
+      if (agent.isRunning(request.params.id)) {
+        return reply.code(409).send({ error: "Session is running; stop it before archiving" });
+      }
+      if (dependencies.backgroundTasks?.hasRunningForSession(request.params.id)) {
+        return reply.code(409).send({ error: "Session has running background tasks; stop them before archiving" });
+      }
+      const ptyOwners = (core as { activePtySessions?: () => Set<string> }).activePtySessions?.();
+      if (ptyOwners?.has(request.params.id)) {
+        return reply.code(409).send({ error: "Session has an open terminal; close it before archiving" });
+      }
+    }
     try {
-      const updated = await sessions.updateDisplay(request.params.id, request.body);
+      const updated = await sessions.updateDisplay(request.params.id, body);
+      // 归档即释放空闲资源：索引进程常驻内存 + 文件监听 + repo map 扫描缓存
+      // （索引文件留在磁盘，撤销归档或下次访问时按磁盘重建；不触碰快照/artifacts）
+      if (body.archived === true && target.archived !== true) releaseIdleResourcesFor(updated);
       events.publish({ source: "session", type: "session.updated", sessionId: updated.id, payload: updated });
       return updated;
     } catch (error) {
@@ -327,6 +359,16 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
       return reply.code(400).send({ error: errorMessage(error) });
     }
   });
+
+  /** 归档释放：索引工作区（内存索引 + 文件监听）与 repo map 扫描缓存；失败不影响归档结果 */
+  function releaseIdleResourcesFor(session: SessionMeta): void {
+    try {
+      agent.discardSession?.(session.id, session.cwd);
+    } catch {
+      // 纯缓存释放失败不阻断归档
+    }
+    void dependencies.indexManager?.release(session.cwd).catch(() => undefined);
+  }
   /**
    * 0.5.0 Phase 2: paginated message history — load older messages before a given message ID.
    * Used by the frontend "load more" when scrolling up in long conversations.

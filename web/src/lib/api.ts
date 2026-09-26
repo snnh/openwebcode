@@ -102,7 +102,7 @@ export const api = {
     request<ManagedWorkspaceSyncResult>(`/api/sessions/${encodeURIComponent(id)}/workspace/sync`, { method: "POST", body: JSON.stringify(body) }),
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
   // 会话显示属性：title ≤120 字符（空串清除覆盖回落派生标题），pinned 控制列表置顶
-  patchSession: (id: string, body: { title?: string; pinned?: boolean }) =>
+  patchSession: (id: string, body: { title?: string; pinned?: boolean; group?: string; archived?: boolean }) =>
     request<Session>(`/api/sessions/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
   sendMessage: (id: string, content: string, images?: Array<{ mediaType: string; data: string }>, attachments?: MessageAttachment[], behavior: "start" | "steer" | "follow_up" = "start") =>
     request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean; result?: { changed: boolean; mode: string; reason?: string }; behavior?: string; reused?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, behavior, ...(images?.length ? { images } : {}), ...(attachments?.length ? { attachments } : {}) }) }),

@@ -4289,6 +4289,8 @@ export class AgentRunner {
     if (cwd) this.promptOverrideCache.delete(cwd);
     // 记忆文件指纹缓存按路径共享（不按会话）：cwd 级条目随会话回收，cwd 未知时全清（纯缓存，代价仅一次重读）
     this.memorySections.discard(cwd);
+    // repo map 扫描缓存按会话键控：会话结束时释放（否则长命进程里按会话累积）
+    this.repoMap.forget(sessionId);
   }
 
   /**

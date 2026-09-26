@@ -388,9 +388,10 @@ export class SessionStore {
     return meta;
   }
 
-  /** 会话显示属性：title 为用户覆盖（空串清除覆盖并回落到派生标题），pinned 控制列表置顶（false 从 meta 删除）。
-   *  纯展示属性：不更新 updatedAt，避免重命名/置顶改变列表排序。 */
-  async updateDisplay(id: string, update: { title?: string; pinned?: boolean }): Promise<SessionMeta> {
+  /** 会话显示属性：title 为用户覆盖（空串清除覆盖并回落到派生标题），pinned 控制列表置顶（false 从 meta 删除），
+   *  group 为手工标签组（空串 = 移出分组），archived 控制是否归档（false 从 meta 删除）。
+   *  纯展示属性：不更新 updatedAt，避免重命名/置顶/归档改变列表排序。 */
+  async updateDisplay(id: string, update: { title?: string; pinned?: boolean; group?: string; archived?: boolean }): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     if (update.title !== undefined) {
       if (typeof update.title !== "string") throw new Error("title must be a string");
@@ -402,6 +403,19 @@ export class SessionStore {
       if (typeof update.pinned !== "boolean") throw new Error("pinned must be a boolean");
       if (update.pinned) meta.pinned = true;
       else delete meta.pinned;
+    }
+    if (update.group !== undefined) {
+      if (typeof update.group !== "string") throw new Error("group must be a string");
+      const group = update.group.trim();
+      if (group.length > 40) throw new Error("group must be at most 40 characters");
+      // 空串 = 移出分组：删键而不是存空串，列表按「未分组」处理
+      if (group) meta.group = group;
+      else delete meta.group;
+    }
+    if (update.archived !== undefined) {
+      if (typeof update.archived !== "boolean") throw new Error("archived must be a boolean");
+      if (update.archived) meta.archived = true;
+      else delete meta.archived;
     }
     await this.writeMeta(meta);
     return meta;

@@ -440,6 +440,11 @@ export class CoreRouter extends EventEmitter {
   }
 
   /** 最近一次 configureSession 记录的会话执行级别；无记录（未配置/已释放）返回 undefined。 */
+  /** 当前仍开着 PTY（终端标签）的会话 id 集合：归档等「有活动就拒绝」的判定用。 */
+  activePtySessions(): Set<string> {
+    return new Set(this.ptySessions.values());
+  }
+
   sandboxStatusFor(sessionId: string): { capability: string; reason?: string; at: number } | undefined {
     return this.sandboxStatus.get(sessionId);
   }
