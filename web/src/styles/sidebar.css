@@ -214,6 +214,8 @@
   background: var(--amber-bg);
 }
 .session-bulk-count { font-size: 12px; color: var(--amber); font-variant-numeric: tabular-nums; margin-right: auto; }
+/* 批量条里的「移动到组」下拉：与其他浮层同款样式，锚在按钮下方 */
+.session-bulk-move { position: relative; display: inline-flex; }
 .rail-search-wrap { position: relative; display: block; margin: 0 12px 8px; color: var(--text-3); }
 .rail-search-wrap svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; }
 .rail-search {
