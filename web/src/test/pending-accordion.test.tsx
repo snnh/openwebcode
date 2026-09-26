@@ -37,6 +37,12 @@ describe("pendingBodyMaxHeight 与 sessionStorage 反序列化", () => {
     expect(pendingBodyMaxHeight(1000, 1200)).toBe(500); expect(pendingBodyMaxHeight(1000, 600)).toBe(360);
     expect(pendingBodyMaxHeight(560, 2000)).toBe(560 - PENDING_LIST_FLOOR - PENDING_CHROME_RESERVE);
     for (const [available, vh] of [[0, 0], [200, 800], [400, 900]]) expect(pendingBodyMaxHeight(available!, vh!)).toBe(120);
+    // 移动端放宽：同一可用高度下内容区更高（ask_user 选项不再被裁到一两行）
+    expect(pendingBodyMaxHeight(600, 700, true)).toBe(600 - 72 - 150);
+    expect(pendingBodyMaxHeight(1200, 1400, true)).toBe(1200 * 0.68);
+    expect(pendingBodyMaxHeight(600, 700, true)).toBeGreaterThan(pendingBodyMaxHeight(600, 700));
+    expect(pendingBodyMaxHeight(420, 500, true)).toBe(420 - 72 - 150);
+    expect(pendingBodyMaxHeight(0, 0, true)).toBe(168);
   });
   it("正常数据按会话读回；坏数据/旧格式按「无记忆」处理（不抛错）", () => {
     expect(parsePendingCards('{"cards":{"s1":{"open":"p2","closed":{"p1":true}}}}')).toEqual({ cards: { s1: { open: "p2", closed: { p1: true } } } });

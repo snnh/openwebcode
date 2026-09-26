@@ -383,6 +383,9 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* 兜底滚动：极端矮屏（移动端软键盘弹出）下卡头/操作行仍可滚到，不会被主列裁掉 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .pending-zone > * { flex: 0 0 auto; }
 .pending-zone .permission-card { margin: 8px 22px; }
@@ -462,6 +465,22 @@
 /* 窄屏：交互卡收边；触屏：卡内按钮保证 36px 触控高度 */
 @media (max-width: 480px) {
   .interaction-card { margin: 8px 12px; }
+}
+/* 移动端（≤768px）：待回答区改为单一滚动容器——卡内容不再各自限高内滚（避免嵌套滚动
+   让 ask_user 选项「滚不动/显示不全」），整体高度仍由 --pending-body-max 与 flex 约束；
+   操作行（提交回答 / 允许一次）吸附在容器底部常驻可见，选项再多也能直接作答。 */
+@media (max-width: 768px) {
+  .pending-zone .pending-body { max-height: none; overflow: visible; }
+  .pending-zone .interaction-actions,
+  .pending-zone .permission-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    margin-top: 6px;
+    padding: 6px 0;
+    background: inherit;
+  }
+  .pending-zone { padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
 }
 @media (hover: none) {
   .permission-actions .btn, .interaction-actions .btn { min-height: 36px; }

@@ -99,16 +99,29 @@ export const pendingCards = {
  * 待回答卡内容区的高度上限（px）：可用高度的一半、视口 60vh、以及「扣掉消息列表保底
  * （120px）与顶栏/输入栏（约 180px）后剩下的高度」三者取小，再兜底 120px。
  * 三者取小保证即使视口很矮也不会把列表或 Composer 挤出可视区（主列不滚动，超出即裁切）。
+ *
+ * 移动端（mobile=true）单独放宽：窄屏本来就没有「上下文并排看」的空间，软键盘弹出后可用
+ * 高度还要再小一截，若仍按桌面比例算，ask_user 选项会被裁到只剩一两行（回答框显示不全）。
+ * 这里把列表保底降到约 2 行、顶栏预留收紧，并把占比提到 0.68 / 0.7 —— 内容区更高仍由
+ * .pending-zone 自身滚动兜底（见 chat-cards.css 的移动端规则）。
  */
-export function pendingBodyMaxHeight(workbenchHeight: number, viewportHeight: number): number {
-  const spare = workbenchHeight - PENDING_LIST_FLOOR - PENDING_CHROME_RESERVE;
-  return Math.max(120, Math.min(workbenchHeight * 0.5, viewportHeight * 0.6, spare));
+export function pendingBodyMaxHeight(workbenchHeight: number, viewportHeight: number, mobile = false): number {
+  const floor = mobile ? PENDING_LIST_FLOOR_MOBILE : PENDING_LIST_FLOOR;
+  const reserve = mobile ? PENDING_CHROME_RESERVE_MOBILE : PENDING_CHROME_RESERVE;
+  const spare = workbenchHeight - floor - reserve;
+  const share = mobile ? 0.68 : 0.5;
+  const viewportShare = mobile ? 0.7 : 0.6;
+  return Math.max(mobile ? 168 : 120, Math.min(workbenchHeight * share, viewportHeight * viewportShare, spare));
 }
 
 /** 消息列表保底高度（px）：卡片再高也保留约 3 行上下文 */
 export const PENDING_LIST_FLOOR = 120;
 /** 顶栏 + 标签条 + Composer 的预留高度（px），用于算卡片上限 */
 export const PENDING_CHROME_RESERVE = 180;
+/** 移动端列表保底（约 2 行）：窄屏下把空间优先让给待回答卡 */
+export const PENDING_LIST_FLOOR_MOBILE = 72;
+/** 移动端顶栏/输入栏预留（比桌面更紧：状态行与工具行本就压扁） */
+export const PENDING_CHROME_RESERVE_MOBILE = 150;
 
 export interface PendingAccordion {
   /** 当前展开的卡片 id；undefined 表示全部收起 */

@@ -12,7 +12,10 @@ function rule(selector: string): string {
 }
 describe("待回答区 CSS 护栏", () => {
   it("容器可收缩、卡片内容区与运行队列限高内滚，消息列表保底 120px", () => {
-    expect(rule(".pending-zone")).toContain("min-height: 0");
+    const zone = rule(".pending-zone");
+    expect(zone).toContain("min-height: 0");
+    // 矮屏兜底：待回答区自身可滚动（卡头/操作行不会被主列裁掉）
+    expect(zone).toContain("overflow-y: auto");
     const body = rule(".pending-body");
     expect(body).toContain("max-height: var(--pending-body-max, 60vh)");
     expect(body).toContain("overflow-y: auto");
@@ -20,5 +23,17 @@ describe("待回答区 CSS 护栏", () => {
     const queue = rule(".steering-queue");
     expect(queue).toContain("max-height: var(--pending-body-max, 60vh)");
     expect(queue).toContain("overflow-y: auto");
+  });
+});
+describe("待回答区移动端规则（回答框显示不全）", () => {
+  it("窄屏改为单一滚动容器 + 操作行吸附底部常驻；桌面端保留卡内限高内滚", () => {
+    const start = css.indexOf("@media (max-width: 768px)");
+    expect(start).toBeGreaterThan(-1);
+    const block = css.slice(start, css.indexOf("\n}\n", css.indexOf(".pending-zone .interaction-actions", start)) + 3);
+    expect(block).toContain(".pending-zone .pending-body { max-height: none; overflow: visible; }");
+    expect(block).toContain("position: sticky");
+    expect(block).toContain("bottom: 0");
+    // 桌面规则仍在（未被移动端覆盖）
+    expect(rule(".pending-body")).toContain("max-height: var(--pending-body-max, 60vh)");
   });
 });
