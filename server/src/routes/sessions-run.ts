@@ -344,7 +344,7 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/todos", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
-    return agent.listTodos(request.params.id);
+    return await agent.listTodos(request.params.id);
   });
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/run", async (request, reply) => {

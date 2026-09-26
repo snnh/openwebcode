@@ -699,6 +699,33 @@ export class SessionStore {
     return path.join(this.sessionPath(id), "messages.jsonl");
   }
 
+  private todosPath(id: string): string {
+    return path.join(this.sessionPath(id), "todos.json");
+  }
+
+  /**
+   * 任务清单（todo_write 的状态）：会话级、与消息历史分离的侧文件。
+   *
+   * 与 ledger.json / queue.json 同族：不是聊天消息（append-only 的 messages.jsonl 只存消息，
+   * 不许把工具状态伪造成消息），但必须跨重启存活——此前只放在 agent 的内存 Map 里，
+   * 服务重启后标签条的「任务清单」chip 与已有进度一起消失。
+   */
+  async readTodos(id: string): Promise<unknown[] | undefined> {
+    try {
+      const parsed: unknown = JSON.parse(await readFile(this.todosPath(id), "utf8"));
+      return Array.isArray(parsed) ? parsed : undefined;
+    } catch {
+      // 缺失/损坏按「无任务清单」处理：清单一类展示态，不值得让整个会话读失败
+      return undefined;
+    }
+  }
+
+  /** 写入任务清单（原子写，0600）；空表写空文件，语义等同「无清单」。 */
+  async writeTodos(id: string, items: readonly unknown[]): Promise<void> {
+    await ensureDirWithMode(this.sessionPath(id), 0o700);
+    await writeUtf8Atomically(this.todosPath(id), `${JSON.stringify(items)}\n`, { mode: 0o600 });
+  }
+
   private async readMeta(id: string): Promise<SessionMeta> {
     const filePath = this.metaPath(id);
     const info = await stat(filePath);
