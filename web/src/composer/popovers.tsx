@@ -257,8 +257,9 @@ export const EFFORT_LABEL: Record<string, [string, string]> = {
   ultra: ["ultra", "ultra"],
 };
 
-/** 模型 + 思考程度合并弹层：模型按供应商分组（可折叠），底部固定区为能力徽章 + 思考开关/程度滑块 + 「更多模型…」。 */
-export function ModelMenu({ current, selectableModels, selectionUnavailable, effortLevels, showEffortSlider, thinkingOn, currentEffort, defaultOnValue, thinkingBadge, thinkingControlSupported, disabled, onSelectModel, onSelectThinking, onOpenModelSettings, capabilities }: {
+/** 模型 + 思考程度合并弹层：模型按供应商分组（可折叠），底部固定区为能力徽章 + 思考开关/程度滑块 + 「更多模型…」。
+ *  disabled 由调用方控制；运行中不禁用——服务端允许热切模型/思考档，主循环下一 turn 生效。 */
+export function ModelMenu({ current, selectableModels, selectionUnavailable, effortLevels, showEffortSlider, thinkingOn, currentEffort, defaultOnValue, thinkingBadge, thinkingControlSupported, disabled = false, onSelectModel, onSelectThinking, onOpenModelSettings, capabilities }: {
   current: { provider: string; model: string };
   selectableModels: ModelProfile[];
   /** 当前会话模型不在可用清单中（provider 未配置等）：顶部固定展示一条选中态 */
@@ -273,7 +274,7 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, eff
   defaultOnValue: string;
   thinkingBadge?: [string, string] | undefined;
   thinkingControlSupported: boolean;
-  disabled: boolean;
+  disabled?: boolean;
   onSelectModel(item: ModelProfile): void;
   onSelectThinking(value: string): void;
   onOpenModelSettings(): void;

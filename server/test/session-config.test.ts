@@ -32,6 +32,7 @@ describe("session model config", () => {
     let shellPending: boolean;
     let running: boolean;
     let reconciled: string[];
+    let modelFallbackResets: string[];
 
     beforeEach(async () => {
       root = await tempRoot("owc-session-config-");
@@ -46,11 +47,13 @@ describe("session model config", () => {
       shellPending = false;
       running = false;
       reconciled = [];
+      modelFallbackResets = [];
       const agent = {
         isRunning: () => running,
         isShellPending: () => shellPending,
         disposePersistentShells: async (sessionId: string) => { disposedShells.push(sessionId); },
         reconcilePermissions: async (sessionId: string) => { reconciled.push(sessionId); },
+        resetModelFallbackOverride: (sessionId: string) => { modelFallbackResets.push(sessionId); },
       } as unknown as AgentRunner;
       app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
     });
@@ -210,7 +213,7 @@ describe("session model config", () => {
       expect(badReviewModel.json().error).toBe('reviewModel must be "fast" or "main"');
     });
 
-    it("运行中仅放行权限类字段：permissionMode/reviewModel 热切并结算挂起审批，其余 409", async () => {
+    it("运行中热切：权限类与模型类字段放行并落盘，agentMode/沙盒等仍 409", async () => {
       const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
       running = true;
       // 权限档热切：200、落盘、触发挂起审批结算
@@ -223,20 +226,35 @@ describe("session model config", () => {
       const review = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { reviewModel: "main" } });
       expect(review.statusCode).toBe(200);
       expect(reconciled).toEqual([session.id, session.id]);
-      // 其余字段运行中仍 409：模型、agentMode、权限字段混合提交；409 不落盘
+      // 模型热切：200、落盘、打标丢弃 fallback 覆盖（主循环下一 turn 生效）
       const model = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5" } });
-      expect(model.statusCode).toBe(409);
+      expect(model.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).toMatchObject({ model: "gpt-5" });
+      expect(modelFallbackResets).toEqual([session.id]);
+      // 思考档热切：200、落盘（同轮现读，无需清 fallback）
+      const thinking = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { thinking: "adaptive" } });
+      expect(thinking.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).toMatchObject({ thinking: "adaptive" });
+      expect(modelFallbackResets).toEqual([session.id]);
+      // 模型未变化的重复提交不打标
+      const same = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5" } });
+      expect(same.statusCode).toBe(200);
+      expect(modelFallbackResets).toEqual([session.id]);
+      // 其余字段运行中仍 409：agentMode、沙盒模式、以及与放行字段混提；409 不落盘
       const agentMode = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "plan" } });
       expect(agentMode.statusCode).toBe(409);
-      const mixed = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "ask", agentMode: "plan" } });
+      const sandbox = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off" } });
+      expect(sandbox.statusCode).toBe(409);
+      const mixed = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5-mini", agentMode: "plan" } });
       expect(mixed.statusCode).toBe(409);
-      expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "yolo", model: "deepseek-chat" });
-      expect(reconciled).toHaveLength(2);
+      // 运行中每次成功更新都会结算挂起审批（放行字段全部 5 次：权限/审核模型/模型/思考/重复模型）
+      expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "yolo", model: "gpt-5" });
+      expect(reconciled).toEqual(Array(5).fill(session.id));
       // 空闲时改权限档不触发结算（无运行中挂起单）
       running = false;
       const idle = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "ask" } });
       expect(idle.statusCode).toBe(200);
-      expect(reconciled).toHaveLength(2);
+      expect(reconciled).toHaveLength(5);
     });
   });
 });

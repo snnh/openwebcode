@@ -739,3 +739,82 @@ describe("spawn_swarm role dispatch", () => {
     expect((fixture.requests.get("role-provider") ?? []).map((request) => request.model)).toEqual(["cheap-model"]);
   });
 });
+
+describe("AgentRunner 运行中热切主模型", () => {
+  it("运行中切换主模型：下一 turn 立即使用新模型，usage 按新模型记账", async () => {
+    const harness = await setup([]);
+    const runner = makeRunner(harness);
+    const seen: string[] = [];
+    harness.providers.register({
+      name: "main",
+      async *streamChat(request) {
+        seen.push(request.model);
+        // 第一轮流式期间用户切了模型（等价于 PUT /config 热切：落盘 + 打标丢弃 fallback 覆盖）
+        if (request.messages.at(-1)?.role === "user") {
+          await harness.sessions.updateConfig(harness.sessionId, { provider: "main", model: "m2" });
+          runner.resetModelFallbackOverride(harness.sessionId);
+        }
+        if (request.model === "m2") {
+          yield { type: "text_delta", text: "switched reply" };
+          yield { ...USAGE, inputTokens: 3, outputTokens: 4 };
+          yield { type: "done", stopReason: "end_turn" };
+          return;
+        }
+        yield { type: "tool_call", id: "call-1", name: "bash", input: { cmd: "echo one" } };
+        yield { ...USAGE };
+        yield { type: "done", stopReason: "tool_use" };
+      },
+    } as Provider);
+
+    await runner.run(harness.sessionId, "先跑命令，随后切模型");
+
+    expect(seen).toEqual(["m1", "m2"]);
+    const usage = (await harness.usageLog.readAll()).map((event) => ({ provider: event.provider, model: event.model }));
+    expect(usage).toEqual([
+      { provider: "main", model: "m1" },
+      { provider: "main", model: "m2" },
+    ]);
+    expect(await harness.sessions.get(harness.sessionId)).toMatchObject({ provider: "main", model: "m2" });
+  });
+
+  it("运行中切换主模型会丢弃在途 fallback 覆盖：下一 turn 回到新主模型", async () => {
+    const harness = await setup([{ provider: "backup", model: "m2" }]);
+    const runner = makeRunner(harness);
+    const seen: string[] = [];
+    harness.providers.register({
+      name: "main",
+      async *streamChat(request) {
+        seen.push(`main/${request.model}`);
+        if (request.model === "m3") {
+          yield { type: "text_delta", text: "switched reply" };
+          yield { ...USAGE };
+          yield { type: "done", stopReason: "end_turn" };
+          return;
+        }
+        // 主模型 m2 在工具回合持续 429：重试耗尽后进入 fallback 链
+        if (request.messages.at(-1)?.role === "tool") throw Object.assign(new Error("rate limited"), { status: 429 });
+        yield { type: "tool_call", id: "call-1", name: "bash", input: { cmd: "echo one" } };
+        yield { ...USAGE };
+        yield { type: "done", stopReason: "tool_use" };
+      },
+    } as Provider);
+    harness.providers.register({
+      name: "backup",
+      async *streamChat() {
+        seen.push("backup/m2");
+        // fallback 生效期间用户切模型：下一轮应改用新主模型而非继续 backup
+        await harness.sessions.updateConfig(harness.sessionId, { provider: "main", model: "m3" });
+        runner.resetModelFallbackOverride(harness.sessionId);
+        yield { type: "tool_call", id: "call-2", name: "bash", input: { cmd: "echo two" } };
+        yield { ...USAGE };
+        yield { type: "done", stopReason: "tool_use" };
+      },
+    } as Provider);
+
+    await runner.run(harness.sessionId, "触发 fallback 后切模型");
+
+    expect(seen[0]).toBe("main/m1");
+    expect(seen.filter((entry) => entry === "backup/m2")).toHaveLength(1);
+    expect(seen.at(-1)).toBe("main/m3");
+  });
+});
