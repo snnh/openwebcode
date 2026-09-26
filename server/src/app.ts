@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import fastifyCompress from "@fastify/compress";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
@@ -288,6 +289,14 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
   // 会话导入走 ndjson/纯文本原文，不经 JSON 解析
   app.addContentTypeParser(["application/x-ndjson", "text/plain"], { parseAs: "string" }, (_request, body, done) => done(null, body));
+  // API JSON 压缩：会话列表/详情与上下文视图的 payload 可达 MB 级（消息正文高度可压）。
+  // 静态资源不在此列——它们由构建期 .br + @fastify/static preCompressed 直接发送，
+  // 运行期零压缩 CPU；compress 也会跳过已带 content-encoding 的响应。
+  await app.register(fastifyCompress, {
+    global: true,
+    threshold: 1024,
+    encodings: ["br", "gzip"],
+  });
   await app.register(websocket);
   if (dependencies.webDist && existsSync(dependencies.webDist)) {
     await app.register(fastifyStatic, {
