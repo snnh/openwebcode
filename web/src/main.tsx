@@ -4,7 +4,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./app/App";
 import { useRoute } from "./app/router";
 import { AuthGate } from "./components/AuthGate";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { LoadingFallback } from "./components/LoadingFallback";
+import { installBootGuards } from "./lib/crash-log";
 import { I18nProvider } from "./i18n";
 import "./styles/tokens.css";
 import "./styles/base.css";
@@ -35,23 +37,33 @@ const queryClient = new QueryClient({
 // share 路由独立 chunk：只读分享页不占主入口体积
 const ShareView = lazy(() => import("./chat-mode/ShareView").then((m) => ({ default: m.ShareView })));
 
-function Root(): ReactElement {
+function Shell(): ReactElement {
   const route = useRoute();
-  if (route.name === "share") {
-    // share 路由公开访问，绕过 AuthGate；ShareView 用 useI18n 故同样需要 I18nProvider
-    return (
-      <I18nProvider>
-        <Suspense fallback={<LoadingFallback />}>
-          <ShareView shareId={route.shareId} slug={route.slug} />
-        </Suspense>
-      </I18nProvider>
-    );
-  }
+  // 顶层边界：任何未预料错误显示可重试的兜底卡片，而不是白屏；路由切换自动复位
+  // （分块加载失败（lazy）也是渲染错误 —— 由这里接手，Suspense 只管等待）
   return (
-    <I18nProvider><AuthGate><App /></AuthGate></I18nProvider>
+    <ErrorBoundary label="应用" resetKey={route.name}>
+      {route.name === "share" ? (
+        // share 路由公开访问，绕过 AuthGate；ShareView 用 useI18n 故同样需要 I18nProvider
+        <I18nProvider>
+          <Suspense fallback={<LoadingFallback />}>
+            <ShareView shareId={route.shareId} slug={route.slug} />
+          </Suspense>
+        </I18nProvider>
+      ) : (
+        <I18nProvider><AuthGate><App /></AuthGate></I18nProvider>
+      )}
+    </ErrorBoundary>
   );
 }
 
+// 早于首次渲染：吞掉分块加载失败并节流重载、记录未捕获异常（白屏现场线索）
+installBootGuards();
+
 createRoot(document.getElementById("root")!).render(
-  <StrictMode><QueryClientProvider client={queryClient}><Root /></QueryClientProvider></StrictMode>,
+  <StrictMode>
+    <QueryClientProvider client={queryClient}>
+      <Shell />
+    </QueryClientProvider>
+  </StrictMode>,
 );

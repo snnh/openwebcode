@@ -13,6 +13,7 @@ interface XtermApi {
 let pending: Promise<XtermApi> | undefined;
 
 export function loadXterm(): Promise<XtermApi> {
+  // 失败时清空缓存：与 monaco-loader 同因 —— 一次分块加载失败不应让本页内重试永久失败
   pending ??= (async () => {
     const [xterm, fit] = await Promise.all([
       import("@xterm/xterm"),
@@ -20,6 +21,9 @@ export function loadXterm(): Promise<XtermApi> {
       import("@xterm/xterm/css/xterm.css"),
     ]);
     return { Terminal: xterm.Terminal, FitAddon: fit.FitAddon };
-  })();
+  })().catch((error: unknown) => {
+    pending = undefined;
+    throw error;
+  });
   return pending;
 }

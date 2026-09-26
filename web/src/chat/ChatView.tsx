@@ -23,6 +23,7 @@ import { deriveSubagentRunsFromMessages, filterHiddenSubagentRuns, mergeSubagent
 import type { UseSubagentTabsResult } from "../hooks/use-subagent-tabs";
 import type { UseTerminalTabsResult } from "../hooks/use-terminal-tabs";
 import { useStreamActive, useStreamBlocks } from "./stream-buffer";
+import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { useOlderMessages, loadOlderMessages } from "./pagination-store";
 import { clearComposerState, getAttachments, getDraft, setDraftValue } from "../composer/drafts";
 import { ChatActionsContext, type ChatActions, type EditingMessage, type MessageListProps } from "./types";
@@ -156,22 +157,28 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
   );
   const accordion = usePendingAccordion(sessionId, pendingIds);
   const workbenchRef = useRef<HTMLElement>(null);
+  // 移动端（≤768px）单独放宽：见 pendingBodyMaxHeight 注释
+  const pendingMobile = useMediaQuery(MOBILE_BREAKPOINT);
   // 卡片内容区上限：可用高度的一半 / 60vh / 扣掉列表保底与顶栏输入栏，三者取小（主列不滚动，超出即裁切）
   useEffect(() => {
     const el = workbenchRef.current;
     if (!el) return undefined;
     const apply = (): void => {
-      el.style.setProperty("--pending-body-max", `${Math.round(pendingBodyMaxHeight(el.clientHeight, window.innerHeight))}px`);
+      // 软键盘弹出时 window.innerHeight 不随之缩小（移动端），visualViewport 才是真实可视高度
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      el.style.setProperty("--pending-body-max", `${Math.round(pendingBodyMaxHeight(el.clientHeight, viewportHeight, pendingMobile))}px`);
     };
     apply();
     window.addEventListener("resize", apply);
+    window.visualViewport?.addEventListener("resize", apply);
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(apply) : undefined;
     observer?.observe(el);
     return () => {
       window.removeEventListener("resize", apply);
+      window.visualViewport?.removeEventListener("resize", apply);
       observer?.disconnect();
     };
-  }, []);
+  }, [pendingMobile]);
   // 新卡出现（id 集合变化）→ 递增信号让消息列表滚到底，看清问题来自哪段对话
   const [scrollToBottomSignal, setScrollToBottomSignal] = useState(0);
   const pendingKeyRef = useRef("");
@@ -444,6 +451,9 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
 
   return (
     <section className="workbench" ref={workbenchRef}>
+      {/* 动作面覆盖整个会话区（含待回答区）：待回答卡里的权限卡经 useChatActions 取 sessionId，
+          卡片一旦渲染在 Provider 之外就会抛错并卸载整棵树（白屏）。 */}
+      <ChatActionsContext.Provider value={chatActions}>
       <SessionHeader
         session={current}
         {...(currentState ? { agentState: currentState } : {})}
@@ -470,7 +480,6 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
         onCloseTerminal={() => terminalTabs.closeTerminal(sessionId)}
       />
       )}
-      <ChatActionsContext.Provider value={chatActions}>
         {/* 主对话/终端/子代理标签内容互换：MessageList 与终端保持挂载（hidden 隐藏），滚动与 PTY 状态不丢 */}
         <div className="main-tab-panel chat-panel" role="tabpanel" aria-label={t("主对话", "Main")} hidden={!chatVisible}>
           <StreamingMessageList
@@ -491,7 +500,6 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
             scrollToBottomSignal={scrollToBottomSignal}
           />
         </div>
-      </ChatActionsContext.Provider>
       {terminalOpen && (
         <div className="main-tab-panel" role="tabpanel" aria-label={t("终端", "Terminal")} hidden={!terminalSelected}>
           <TerminalView sessionId={current.id} />
@@ -550,6 +558,7 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
         {...(editingForComposer ? { editingMessage: editingForComposer } : {})}
         onCancelEdit={() => cancelEdit()}
       />
+      </ChatActionsContext.Provider>
     </section>
   );
 }

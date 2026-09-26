@@ -1,5 +1,6 @@
 import { Fragment, lazy, memo, Suspense, useMemo, useRef, type ReactElement } from "react";
 import { splitMarkdownBlocks } from "./markdown-split";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 // 分块渲染单元：与整篇渲染同一条 react-markdown/katex 管线，只是不带 .markdown 外壳
 const MarkdownBlock = lazy(() =>
@@ -35,15 +36,22 @@ export function Markdown({ children }: { children: string }): ReactElement {
   }, [children]);
   return (
     <Suspense fallback={<div className="markdown">{children}</div>}>
-      <div className="markdown">
-        {blocks.map((block, index) => (
-          // 块间补 "\n" 文本节点：与 react-markdown 整篇渲染时顶层元素间的换行保持一致
-          <Fragment key={index}>
-            {index > 0 ? "\n" : null}
-            <MemoMarkdownBlock>{block}</MemoMarkdownBlock>
-          </Fragment>
-        ))}
-      </div>
+      {/* 边界放在 Suspense 内层：分块加载失败（渲染错误）降级为纯文本，不牵连同屏其它消息 */}
+      <ErrorBoundary
+        label="Markdown"
+        resetKey={children.length}
+        fallback={() => <div className="markdown markdown-degraded"><pre className="mono">{children}</pre></div>}
+      >
+        <div className="markdown">
+          {blocks.map((block, index) => (
+            // 块间补 "\n" 文本节点：与 react-markdown 整篇渲染时顶层元素间的换行保持一致
+            <Fragment key={index}>
+              {index > 0 ? "\n" : null}
+              <MemoMarkdownBlock>{block}</MemoMarkdownBlock>
+            </Fragment>
+          ))}
+        </div>
+      </ErrorBoundary>
     </Suspense>
   );
 }

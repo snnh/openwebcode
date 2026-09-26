@@ -9,6 +9,7 @@ import { sessionStore } from "../app/session-store";
 import { useContextViewQuery, useExtensionsQuery, useModelsQuery, useSessionsQuery } from "../app/queries";
 import { layout, layoutStore, type BottomTab } from "./layout";
 import { useI18n } from "../i18n";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 
 // 底部面板标签各自独立 chunk，仅在打开对应标签页时加载
 const ContextPanel = lazy(() => import("../panels/ContextPanel").then((m) => ({ default: m.ContextPanel })));
@@ -190,6 +191,8 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
       )}
       {bottomOpen && (
         <div className="panel-content" style={{ height }}>
+          {/* 面板分块加载失败或面板内部抛错只影响面板区，不牵动整个工作台（切标签自动复位） */}
+          <ErrorBoundary label="面板" resetKey={tab}>
           <Suspense fallback={<div className="panel-loading">{t("加载中…", "Loading…")}</div>}>
           {tab === "context" && <ContextPanel sessionId={sessionId} running={running} />}
           {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} />}
@@ -199,6 +202,7 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
           {tab === "perf" && <PerfPanel sessionId={sessionId} />}
           {tab === "eval" && evalEnabled && <EvalPanel />}
           </Suspense>
+          </ErrorBoundary>
         </div>
       )}
     </section>

@@ -385,7 +385,7 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
               <option
                 key={mode}
                 value={mode}
-                disabled={(mode === "wsb" && sandboxCapabilities.data !== undefined && !sandboxCapabilities.data.wsb.available) || (mode === "bubblewrap" && bwrapUnavailableReason !== undefined)}
+                disabled={(mode === "wsb" && sandboxCapabilities.data?.wsb?.available === false) || (mode === "bubblewrap" && bwrapUnavailableReason !== undefined)}
                 title={mode === "bubblewrap" ? bwrapUnavailableReason : undefined}
               >
                 {t(...SANDBOX_LABELS[mode])}
