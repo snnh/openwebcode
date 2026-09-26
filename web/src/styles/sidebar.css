@@ -80,6 +80,21 @@
 }
 /* 运行点收进操作钮容器内随排（覆盖 layout.css 的绝对定位极简版） */
 .session-actions .running-dot { position: static; flex: none; }
+/* 待回答角标：别的会话在等你操作时比「运行中」更需要被看见（琥珀底 + 数字） */
+.attention-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  padding: 0 6px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+  color: var(--amber);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 .session-pin,
 .session-rename-btn,
 .session-delete,

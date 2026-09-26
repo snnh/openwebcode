@@ -10,7 +10,7 @@ import type { Session } from "../lib/contracts";
 import { unreadCount } from "../lib/notifications";
 import { useStore } from "../app/store";
 import { ui, uiStore } from "../app/ui-store";
-import { sessionMeta, sessionStore } from "../app/session-store";
+import { sessionMeta, sessionStore, type AttentionCounts } from "../app/session-store";
 import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { useI18n } from "../i18n";
 import { layout, layoutStore, type SidebarView } from "./layout";
@@ -37,6 +37,8 @@ export function Workbench({ sessions, agentState, onShowChat, onOpenDsh, main }:
   const layoutState = useStore(layoutStore, (state) => state);
   const currentId = useStore(uiStore, (state) => state.sessionId);
   const agentStates = useStore(sessionStore, (state) => state.agentStates);
+  // 待回答计数（哪个会话在等你操作）：会话项角标用
+  const attention = useStore(sessionStore, (state) => state.attention);
   const problemsBadges = useStore(sessionStore, (state) => state.problemsBadges);
   const notifications = useStore(uiStore, (state) => state.notifications);
 
@@ -93,7 +95,7 @@ export function Workbench({ sessions, agentState, onShowChat, onOpenDsh, main }:
   };
 
   const sidebarContent = (
-    <SidebarViews sessions={sessions} currentId={currentId} agentStates={agentStates} onSelectSession={selectSession} />
+    <SidebarViews sessions={sessions} currentId={currentId} agentStates={agentStates} attention={attention} onSelectSession={selectSession} />
   );
 
   const currentSession = sessions?.find((session) => session.id === currentId);

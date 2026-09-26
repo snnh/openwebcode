@@ -21,12 +21,16 @@ function makeSession(id: string, overrides: Partial<Session> = {}): Session {
 
 const noop = (): void => undefined;
 
-function renderView(sessions: Session[] | undefined, overrides: { currentId?: string; agentStates?: Record<string, string>; onSelect?: (id: string) => void } = {}) {
+function renderView(
+  sessions: Session[] | undefined,
+  overrides: { currentId?: string; agentStates?: Record<string, string>; attention?: Record<string, { permissions: number; interactions: number }>; onSelect?: (id: string) => void } = {},
+) {
   return renderWithClient(
     <SessionsView
       sessions={sessions}
       currentId={overrides.currentId}
       agentStates={overrides.agentStates ?? {}}
+      attention={overrides.attention ?? {}}
       onSelect={overrides.onSelect ?? noop}
     />,
   );
@@ -181,5 +185,32 @@ describe("SessionsView", () => {
     fireEvent.change(badInput, { target: { files: [new File(["bad"], "bad.jsonl")] } });
     await waitFor(() => expect(uiStore.get().notice?.kind).toBe("error"));
     expect(uiStore.get().notice?.text).toBe("格式不对");
+  });
+});
+
+describe("SessionsView 待回答角标", () => {
+  it("有待办时显示琥珀角标与计数，hover 文案区分待批准/待回答", () => {
+    const { container } = renderView([makeSession("s1", { title: "会话一" })], {
+      attention: { s1: { permissions: 1, interactions: 2 } },
+    });
+    const badge = container.querySelector(".attention-badge")!;
+    expect(badge.textContent).toContain("3");
+    expect(badge.getAttribute("title")).toBe("等待你操作：待批准 1 · 待回答 2");
+    // 有待办但没有运行中：不再显示运行圆点
+    expect(container.querySelector(".running-dot")).toBeNull();
+  });
+
+  it("待办优先于运行圆点，两者并存时同时显示；无待办时退回运行圆点", () => {
+    const { container: both } = renderView([makeSession("s1", { title: "会话一" })], {
+      agentStates: { s1: "tool_running" },
+      attention: { s1: { permissions: 0, interactions: 1 } },
+    });
+    expect(both.querySelector(".attention-badge")).not.toBeNull();
+    expect(both.querySelector(".running-dot")).not.toBeNull();
+    expect(both.querySelector(".attention-badge")!.getAttribute("title")).toBe("等待你操作：待回答 1");
+
+    const { container: plain } = renderView([makeSession("s1", { title: "会话一" })], { agentStates: { s1: "tool_running" } });
+    expect(plain.querySelector(".attention-badge")).toBeNull();
+    expect(plain.querySelector(".running-dot")).not.toBeNull();
   });
 });

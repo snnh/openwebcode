@@ -24,6 +24,8 @@ export function TimelinePanel({ sessionId, running }: {
   const [selectedCheckpoint, setSelectedCheckpoint] = useState<string>();
   const checkpoints = useQuery({
     queryKey: qk.checkpoints(sessionId ?? ""),
+    // 与其他会话级运行态查询同档：切回会话时先用缓存（事件驱动失效立即刷新）
+    staleTime: 10_000,
     queryFn: () => api.checkpoints(sessionId!),
     enabled: Boolean(sessionId),
   });

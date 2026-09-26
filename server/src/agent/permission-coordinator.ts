@@ -73,6 +73,15 @@ export class PermissionCoordinator {
     }
   }
 
+  /** 跨会话待决权限计数（会话列表的 attention 标记用；O(待决数)） */
+  pendingCountsBySession(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const pending of this.pending.values()) {
+      counts.set(pending.sessionId, (counts.get(pending.sessionId) ?? 0) + 1);
+    }
+    return counts;
+  }
+
   listPending(sessionId: string): Array<{ requestId: string; tool: string; input: Record<string, unknown> }> {
     const result: Array<{ requestId: string; tool: string; input: Record<string, unknown> }> = [];
     for (const [requestId, pending] of this.pending) {

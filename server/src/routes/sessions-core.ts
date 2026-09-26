@@ -272,7 +272,20 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     return reply.code(201).send(session);
   });
 
-  app.get("/api/sessions", async () => sessions.list());
+  /**
+   * 会话列表。挂上 attention 标记（哪些会话正等着你回答：待审批权限 + 待答交互），
+   * 前端据此在侧栏会话项显示角标；没有待办的会话不带该字段（保持 payload 紧凑）。
+   * 计数在服务端是内存态，进程重启后清零——重启后没有正在等待的 run，语义一致。
+   */
+  app.get("/api/sessions", async () => {
+    const list = await sessions.list();
+    // 部分装配（测试/精简宿主）可能没有实现该方法：缺省视为无待办
+    const attention = agent.attentionBySession?.() ?? {};
+    return list.map((session) => {
+      const entry = attention[session.id];
+      return entry && (entry.permissions > 0 || entry.interactions > 0) ? { ...session, attention: entry } : session;
+    });
+  });
 
   app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/sessions/:id", async (request, reply) => {
     // 0.5.0 Phase 2: paginated session load — only return last N messages

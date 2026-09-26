@@ -2196,6 +2196,24 @@ export class AgentRunner {
     return this.permissions.listPending(sessionId);
   }
 
+  /**
+   * 跨会话待办标记（会话列表 `GET /api/sessions` 的 attention 字段）：
+   * 哪些会话正等着你回答——待审批权限 + 待答交互。两者都是内存态计数
+   * （permissions 的 pending map、interactions 的写入路径计数），O(待办数)。
+   */
+  attentionBySession(): Record<string, { permissions: number; interactions: number }> {
+    const result: Record<string, { permissions: number; interactions: number }> = {};
+    for (const [sessionId, count] of this.permissions.pendingCountsBySession()) {
+      result[sessionId] = { permissions: count, interactions: 0 };
+    }
+    for (const [sessionId, count] of this.runControl.pendingInteractionCounts()) {
+      const entry = result[sessionId];
+      if (entry) entry.interactions = count;
+      else result[sessionId] = { permissions: 0, interactions: count };
+    }
+    return result;
+  }
+
   async preparePermissionResponse(sessionId: string, requestId: string, decision: PermissionDecision, reason?: string): Promise<(() => void) | undefined> {
     const response = this.permissions.respond(sessionId, requestId, decision, reason);
     if (!response) return undefined;
@@ -4266,6 +4284,8 @@ export class AgentRunner {
     this.usageCostSnapshots.delete(sessionId);
     this.todos.delete(sessionId);
     this.modelOverrideResets.delete(sessionId);
+    // 待答交互的内存计数随会话删除一起清（否则会话列表角标残留）
+    this.runControl.forgetInteractions(sessionId);
     if (cwd) this.promptOverrideCache.delete(cwd);
     // 记忆文件指纹缓存按路径共享（不按会话）：cwd 级条目随会话回收，cwd 未知时全清（纯缓存，代价仅一次重读）
     this.memorySections.discard(cwd);

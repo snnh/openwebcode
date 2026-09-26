@@ -139,7 +139,11 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
         sessionMeta.setAgentState(event.sessionId, state);
         // 终态/空闲：run 已结束，压缩不可能仍在进行——清掉错过 context.compacted/
         // compact_failed 事件留下的「运行中」占位（WS 缺口自愈；跨会话同样生效）
-        if (INACTIVE_STATES.has(state)) deps.clearRunningCompaction(event.sessionId);
+        if (INACTIVE_STATES.has(state)) {
+          deps.clearRunningCompaction(event.sessionId);
+          // 会话已停止：不可能还挂着待答（run 中止会作废未答交互），清掉待办角标
+          sessionMeta.clearAttention(event.sessionId);
+        }
         if (state === "thinking" || state === "starting" || state === "preparing_context") {
           sessionMeta.clearRunFailure(event.sessionId);
         }
@@ -272,6 +276,20 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
       const resolved = event.payload as { requestId?: string };
       if (resolved.requestId) sessionMeta.removePermission(resolved.requestId);
       queryClient.invalidateQueries({ queryKey: ["permissions", event.sessionId] });
+    }
+
+    // 跨会话待办角标（会话列表「等你回答」）：任何会话的权限/交互请求都计数，与当前会话无关。
+    // 计数在服务端由 GET /api/sessions 的 attention 播种，这里只做事件增量；
+    // run 终态时清掉该会话（未答的交互随 run 中止作废，不会有对应 answered 事件）。
+    if (event.sessionId && (event.type === "permission.request" || event.type === "permission.resolved"
+      || event.type === "interaction.requested" || event.type === "interaction.answered"
+      || event.type === "run.completed" || event.type === "run.failed" || event.type === "run.aborted")) {
+      const sessionId = event.sessionId;
+      if (event.type === "permission.request") sessionMeta.bumpAttention(sessionId, "permissions", 1);
+      else if (event.type === "permission.resolved") sessionMeta.bumpAttention(sessionId, "permissions", -1);
+      else if (event.type === "interaction.requested") sessionMeta.bumpAttention(sessionId, "interactions", 1);
+      else if (event.type === "interaction.answered") sessionMeta.bumpAttention(sessionId, "interactions", -1);
+      else sessionMeta.clearAttention(sessionId);
     }
 
     if (!event.sessionId || event.sessionId !== currentId) return;

@@ -110,6 +110,10 @@ export class RunControl {
   }
 
   async listInteractions(sessionId: string): Promise<InteractionRequest[]> { return this.interactions.list(sessionId); }
+  /** 跨会话待答交互计数（会话列表 attention 标记用） */
+  pendingInteractionCounts(): Map<string, number> { return this.interactions.pendingCountsBySession(); }
+  /** 会话删除：清掉该会话的待答计数 */
+  forgetInteractions(sessionId: string): void { this.interactions.forgetSession(sessionId); }
   async createInteraction(sessionId: string, input: { runId: string; toolCallId?: string; kind: InteractionKind; title: string; prompt: string; options?: Array<{ id: string; label: string; description?: string }>; allowOther?: boolean }): Promise<InteractionRequest> {
     const item = await this.interactions.create(sessionId, input);
     this.deps.events.publish({ source: "agent", type: "interaction.requested", sessionId, runId: item.runId, payload: item });
