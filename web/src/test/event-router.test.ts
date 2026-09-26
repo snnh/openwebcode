@@ -147,4 +147,29 @@ describe("createEventRouter", () => {
       vi.useRealTimers();
     }
   });
+
+  it("run 内多次 tool.end / context.usage 不逐次重取：detail/context 静默 400ms 后各合并重取一次", async () => {
+    vi.useFakeTimers();
+    try {
+      const { queryClient, route } = setup("s1");
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      const refetch = vi.spyOn(queryClient, "refetchQueries");
+      // 一个 run 内密集到达的 detail/context 事件（多工具并行收尾 + 用量帧）
+      for (let i = 0; i < 5; i += 1) route({ type: "tool.end", sessionId: "s1", payload: {} });
+      route({ type: "context.usage", sessionId: "s1", payload: {} });
+      route({ type: "context.usage", sessionId: "s1", payload: {} });
+      // 窗口内只标脏、不立即重取
+      expect(refetch).not.toHaveBeenCalled();
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["session", "s1"], refetchType: "none" });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["context", "s1"], refetchType: "none" });
+      // 静默 400ms 后统一重取：session/context 各恰好一次（与其他 key 共享同一合并窗口）
+      await vi.advanceTimersByTimeAsync(400);
+      const refetchedKeys = refetch.mock.calls.map(([arg]) => JSON.stringify(arg));
+      expect(refetchedKeys.filter((arg) => arg.includes('"session"'))).toEqual([JSON.stringify({ queryKey: ["session", "s1"], type: "active" })]);
+      expect(refetchedKeys.filter((arg) => arg.includes('"context"'))).toEqual([JSON.stringify({ queryKey: ["context", "s1"], type: "active" })]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+

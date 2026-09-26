@@ -95,6 +95,8 @@ export class OpenAIResponsesProvider implements Provider {
   readonly interfaceType = "openai-responses" as const;
   private readonly fetch: typeof fetch;
   private readonly maxTokens: number | undefined;
+  /** 同一 request 对象的序列化 body 缓存（见 requestBody）。 */
+  private readonly requestBodyCache = new WeakMap<StreamChatRequest, string>();
 
   constructor(private readonly options: OpenAIResponsesProviderOptions) {
     this.name = options.name ?? "openai-responses";
@@ -102,8 +104,16 @@ export class OpenAIResponsesProvider implements Provider {
     this.maxTokens = options.maxTokens;
   }
 
-  async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
-    let response: Response;
+  /**
+   * 序列化请求体（按 request 对象缓存）：collectProviderTurn 的重试逐 attempt 调 streamChat
+   * 且复用同一 request 对象；大会话视图的转换（toResponsesInput 逐块 sanitizeSurrogates 拷贝）
+   * + JSON.stringify 单次即可达数十 MB，undici 还会再把整串编码成 Buffer——逐 attempt 重建
+   * 会把这份瞬时分配放大数倍（默认 3 次）。WeakMap 以 request 为 key、随其释放自动回收；
+   * 调用方每轮构建新 request 对象字面量，不存在同对象内容变更后复用旧 body 的路径。
+   */
+  private requestBody(request: StreamChatRequest): string {
+    const cached = this.requestBodyCache.get(request);
+    if (cached !== undefined) return cached;
     const maxTokens = request.maxTokens ?? this.maxTokens;
     // 加密回放模式（官方 OpenAI same-model 口径）：请求 reasoning.encrypted_content，历史
     // reasoning/message/function_call item 按原始结构原样回放（含 rs_/fc_ id）
@@ -126,45 +136,52 @@ export class OpenAIResponsesProvider implements Provider {
     // system 组装：稳定前缀 + 动态尾部（Responses 无 system 角色，统一进 instructions）
     const suffix = request.systemSuffix?.trim();
     const instructions = suffix ? `${request.system}\n\n${suffix}` : request.system;
+    const body = JSON.stringify({
+      ...this.options.extraBody,
+      model: request.model,
+      stream: true,
+      // 仅在配置显式指定时发送 store。部分 Responses 兼容端点不认识该字段，
+      // 默认省略可避免无意义的 400；本地回放仍由 input 完整维护上下文。
+      ...(this.options.store === undefined ? {} : { store: this.options.store }),
+      instructions,
+      input: toResponsesInput(request.messages, this.name, reasoningSummary, this.options.diagnosticWriter ?? defaultDiagnosticWriter, encrypted),
+      // dsh 口径：max_output_tokens 显式设置时不低于 16（OpenAI 拒绝更小值）
+      ...(maxTokens !== undefined ? { max_output_tokens: Math.max(maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS) } : {}),
+      // 加密回放模式请求 reasoning.encrypted_content：include 与 reasoning 开关/effort 绑定
+      // （dsh 条件：include 紧随 reasoning effort/summary 下发）
+      ...(encrypted && (reasoningSummary || request.effort !== undefined) ? { include: ["reasoning.encrypted_content"] } : {}),
+      // 请求级采样参数：Responses 的推理档（请求携带 effort）拒绝 temperature/top_p，
+      // 此时不下发，避免 400；非推理请求按请求级配置透传
+      ...(request.effort === undefined && request.temperature !== undefined ? { temperature: request.temperature } : {}),
+      ...(request.effort === undefined && request.topP !== undefined ? { top_p: request.topP } : {}),
+      ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
+      ...(request.tools.length > 0 || request.serverWebSearch === true
+        ? {
+            tools: [
+              // Responses 扁平 function 结构（区别于 chat 的 nested function 格式）
+              ...request.tools.map((tool) => ({
+                type: "function",
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.inputSchema,
+              })),
+              // 服务端联网搜索工具：DeepSeek 等端点在服务端执行并回传 web_search_call 项
+              ...(request.serverWebSearch === true ? [{ type: "web_search" }] : []),
+            ],
+          }
+        : {}),
+    });
+    this.requestBodyCache.set(request, body);
+    return body;
+  }
+
+  async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
+    let response: Response;
     try {
       response = await this.fetch(`${this.options.baseURL.replace(/\/$/, "")}/responses`, {
         method: "POST",
         headers: providerRequestHeaders(this.options.apiKey),
-        body: JSON.stringify({
-          ...this.options.extraBody,
-          model: request.model,
-          stream: true,
-          // 仅在配置显式指定时发送 store。部分 Responses 兼容端点不认识该字段，
-          // 默认省略可避免无意义的 400；本地回放仍由 input 完整维护上下文。
-          ...(this.options.store === undefined ? {} : { store: this.options.store }),
-          instructions,
-          input: toResponsesInput(request.messages, this.name, reasoningSummary, this.options.diagnosticWriter ?? defaultDiagnosticWriter, encrypted),
-          // dsh 口径：max_output_tokens 显式设置时不低于 16（OpenAI 拒绝更小值）
-          ...(maxTokens !== undefined ? { max_output_tokens: Math.max(maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS) } : {}),
-          // 加密回放模式请求 reasoning.encrypted_content：include 与 reasoning 开关/effort 绑定
-          // （dsh 条件：include 紧随 reasoning effort/summary 下发）
-          ...(encrypted && (reasoningSummary || request.effort !== undefined) ? { include: ["reasoning.encrypted_content"] } : {}),
-          // 请求级采样参数：Responses 的推理档（请求携带 effort）拒绝 temperature/top_p，
-          // 此时不下发，避免 400；非推理请求按请求级配置透传
-          ...(request.effort === undefined && request.temperature !== undefined ? { temperature: request.temperature } : {}),
-          ...(request.effort === undefined && request.topP !== undefined ? { top_p: request.topP } : {}),
-          ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
-          ...(request.tools.length > 0 || request.serverWebSearch === true
-            ? {
-                tools: [
-                  // Responses 扁平 function 结构（区别于 chat 的 nested function 格式）
-                  ...request.tools.map((tool) => ({
-                    type: "function",
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: tool.inputSchema,
-                  })),
-                  // 服务端联网搜索工具：DeepSeek 等端点在服务端执行并回传 web_search_call 项
-                  ...(request.serverWebSearch === true ? [{ type: "web_search" }] : []),
-                ],
-              }
-            : {}),
-        }),
+        body: this.requestBody(request),
         signal: request.signal,
       });
     } catch (error) {

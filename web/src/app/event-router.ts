@@ -20,18 +20,27 @@ import type { StreamBuffer } from "../chat/stream-buffer";
  * 面板上的显式操作（提交/暂存/刷新按钮）不走这里，仍是立即刷新。
  */
 const COALESCE_REFETCH_MS = 400;
-const pendingRefetches = new Map<string, { timer: ReturnType<typeof setTimeout>; keys: Set<string> }>();
+const pendingRefetches = new Map<string, { timer: ReturnType<typeof setTimeout>; keys: Set<string>; waiters: Array<() => void> }>();
 
-function scheduleCoalescedRefetch(queryClient: QueryClient, sessionId: string, keys: string[]): void {
+/**
+ * 合并重取：先把相关查询标脏（refetchType:"none"，不立即取数），静默 400ms 后对活动查询
+ * 统一重取一次。返回的 Promise 在合并后的实际重取完成时兑现（永不拒绝）——idle 收尾等
+ * 「等持久化拉完再撤临时流」的语义据此保持。
+ */
+function scheduleCoalescedRefetch(queryClient: QueryClient, sessionId: string, keys: string[]): Promise<void> {
   for (const key of keys) queryClient.invalidateQueries({ queryKey: [key, sessionId], refetchType: "none" });
   const pending = pendingRefetches.get(sessionId);
   if (pending) clearTimeout(pending.timer);
   const merged = new Set([...(pending?.keys ?? []), ...keys]);
+  const waiters = [...(pending?.waiters ?? [])];
+  const done = new Promise<void>((resolve) => waiters.push(resolve));
   const timer = setTimeout(() => {
     pendingRefetches.delete(sessionId);
-    for (const key of merged) void queryClient.refetchQueries({ queryKey: [key, sessionId], type: "active" });
+    void Promise.all([...merged].map((key) => queryClient.refetchQueries({ queryKey: [key, sessionId], type: "active" })))
+      .finally(() => { for (const waiter of waiters) waiter(); });
   }, COALESCE_REFETCH_MS);
-  pendingRefetches.set(sessionId, { timer, keys: merged });
+  pendingRefetches.set(sessionId, { timer, keys: merged, waiters });
+  return done;
 }
 
 export interface EventRouterDeps {
@@ -367,13 +376,14 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
     const clearsWatermark = ["context.restored", "context.evicted", "context.compacted", "context.cleared"].includes(event.type);
     const refreshCheckpoints = ["checkpoint.created", "checkpoint.restored", "checkpoint.deleted", "checkpoint.failed"].includes(event.type);
     if (refreshDetail || refreshContext || refreshCheckpoints) {
-      const detailRefresh = refreshDetail
-        ? queryClient.invalidateQueries({ queryKey: qk.session(event.sessionId) })
+      if (refreshContext && clearsWatermark) sessionMeta.clearWatermark(event.sessionId);
+      // detail/context 走合并重取：一个 run 内 tool.end 会多次到达（多工具并行时几乎同时），
+      // 逐次立即重取会把「100 条消息 + 上下文视图」两个大 payload 成倍放大；400ms 窗口内
+      // 只付一次成本。idle 收尾的「等持久化拉完再撤临时流」由返回的 done promise 保持。
+      const coalescedKeys = [...(refreshDetail ? ["session"] : []), ...(refreshContext ? ["context"] : [])];
+      const detailRefresh = coalescedKeys.length > 0
+        ? scheduleCoalescedRefetch(queryClient, event.sessionId!, coalescedKeys)
         : Promise.resolve();
-      if (refreshContext) {
-        if (clearsWatermark) sessionMeta.clearWatermark(event.sessionId);
-        queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
-      }
       if (refreshCheckpoints) queryClient.invalidateQueries({ queryKey: ["checkpoints", event.sessionId] });
       // 完整回滚会截断消息并替换账本：同时刷新消息列表与上下文视图，避免展示回退前的旧历史
       if (event.type === "checkpoint.restored") {

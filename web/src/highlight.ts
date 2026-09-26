@@ -68,9 +68,65 @@ function ensureLanguage(highlighter: HighlighterCore, lang: string): Promise<voi
 
 // 高亮结果缓存：同一代码块（语言+内容）只高亮一次。流式代码块内容变化时 key 随之变化，
 // 天然只重算正在更新的块；已完成块重新挂载（虚拟化窗口滚动回来）直接命中缓存。
+// 双重上限：条数防 key 无限增长，累计体积防大代码块把内存吃掉（256 条 × 数十 KB ≈ 数十 MB）。
 const HIGHLIGHT_CACHE_LIMIT = 256;
+/**
+ * 缓存累计体积上限（字节口径）：按缓存值的 UTF-16 码元数 × 2 估算——JS 字符串超过一定长度后
+ * V8 用 two-byte 表示（高亮 HTML 几乎全为 ASCII，按 2 计是保守高估），string[] 逐行累加。
+ * 8 MiB 约等于 400 个 20 KB 的高亮块，远大于虚拟化列表同时可见的块数。
+ */
+const HIGHLIGHT_CACHE_BYTES_LIMIT = 8 * 1024 * 1024;
+
+interface CacheEntry {
+  promise: Promise<string | string[] | undefined>;
+  /** 结果落地后的估算字节数；Promise 未落地时按 0 计（体积逐出因此晚一个微任务生效） */
+  bytes: number;
+}
+
 // 缓存值：整文件高亮 HTML（string）或按行高亮片段（string[]），由 cacheKey 前缀区分
-const highlightCache = new Map<string, Promise<string | string[] | undefined>>();
+const highlightCache = new Map<string, CacheEntry>();
+let highlightCacheBytes = 0;
+
+/** 估算缓存值的字节占用：string 按 length×2，string[] 逐行累加，undefined（高亮失败）记 0 */
+function estimateBytes(value: string | string[] | undefined): number {
+  if (typeof value === "string") return value.length * 2;
+  if (Array.isArray(value)) return value.reduce((sum, line) => sum + line.length * 2, 0);
+  return 0;
+}
+
+/** LRU 逐出：条数或累计体积超限时，从最旧（最久未用）条目开始删 */
+function evictOverflow(): void {
+  while (highlightCache.size > HIGHLIGHT_CACHE_LIMIT || highlightCacheBytes > HIGHLIGHT_CACHE_BYTES_LIMIT) {
+    const oldest = highlightCache.keys().next().value;
+    if (oldest === undefined) return;
+    const entry = highlightCache.get(oldest);
+    highlightCache.delete(oldest);
+    if (entry) highlightCacheBytes -= entry.bytes;
+  }
+}
+
+/** 命中即移到最新位：Map 保持插入序，delete + set 即一次 LRU touch */
+function touchCache(key: string, entry: CacheEntry): void {
+  highlightCache.delete(key);
+  highlightCache.set(key, entry);
+}
+
+/** 写入缓存并按双重上限逐出；结果落地后才知道真实体积，故再补一次体积维度的逐出 */
+function putCache<T extends string | string[] | undefined>(key: string, promise: Promise<T>): Promise<T> {
+  const entry: CacheEntry = { promise, bytes: 0 };
+  highlightCache.set(key, entry);
+  evictOverflow();
+  void promise
+    .then((value) => {
+      // 已被逐出（或同 key 已被新条目替换）则丢弃这次统计，避免字节计数错账
+      if (highlightCache.get(key) !== entry) return;
+      entry.bytes = estimateBytes(value);
+      highlightCacheBytes += entry.bytes;
+      evictOverflow();
+    })
+    .catch(() => undefined);
+  return promise;
+}
 
 /** 简单的字符串 hash（FNV-1a 32bit），配合长度把碰撞概率降到可忽略 */
 function hashCode(text: string): number {
@@ -89,7 +145,10 @@ export async function highlightCode(code: string, lang?: string): Promise<string
   if (!target) return undefined;
   const cacheKey = `${target}:${code.length}:${hashCode(code)}`;
   const cached = highlightCache.get(cacheKey);
-  if (cached) return cached as Promise<string | undefined>;
+  if (cached) {
+    touchCache(cacheKey, cached);
+    return cached.promise as Promise<string | undefined>;
+  }
   const promise = (async (): Promise<string | undefined> => {
     try {
       const highlighter = await getHighlighter();
@@ -102,13 +161,7 @@ export async function highlightCode(code: string, lang?: string): Promise<string
       return undefined;
     }
   })();
-  highlightCache.set(cacheKey, promise);
-  // LRU：超限时淘汰最久未用的条目
-  if (highlightCache.size > HIGHLIGHT_CACHE_LIMIT) {
-    const oldest = highlightCache.keys().next().value;
-    if (oldest !== undefined) highlightCache.delete(oldest);
-  }
-  return promise;
+  return putCache(cacheKey, promise);
 }
 
 function escapeHtml(text: string): string {
@@ -125,7 +178,10 @@ export async function highlightLines(code: string, lang?: string): Promise<strin
   if (!target) return undefined;
   const cacheKey = `lines:${target}:${code.length}:${hashCode(code)}`;
   const cached = highlightCache.get(cacheKey);
-  if (cached) return cached as Promise<string[] | undefined>;
+  if (cached) {
+    touchCache(cacheKey, cached);
+    return cached.promise as Promise<string[] | undefined>;
+  }
   const promise = (async (): Promise<string[] | undefined> => {
     try {
       const highlighter = await getHighlighter();
@@ -149,10 +205,5 @@ export async function highlightLines(code: string, lang?: string): Promise<strin
       return undefined;
     }
   })();
-  highlightCache.set(cacheKey, promise);
-  if (highlightCache.size > HIGHLIGHT_CACHE_LIMIT) {
-    const oldest = highlightCache.keys().next().value;
-    if (oldest !== undefined) highlightCache.delete(oldest);
-  }
-  return promise;
+  return putCache(cacheKey, promise);
 }

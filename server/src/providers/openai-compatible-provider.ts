@@ -60,6 +60,8 @@ export class OpenAICompatibleProvider implements Provider {
   readonly interfaceType = "openai-chat-completions" as const;
   private readonly fetch: typeof fetch;
   private readonly maxTokens: number | undefined;
+  /** 同一 request 对象的序列化 body 缓存（见 requestBody）。 */
+  private readonly requestBodyCache = new WeakMap<StreamChatRequest, string>();
 
   constructor(private readonly options: OpenAICompatibleProviderOptions) {
     this.name = options.name ?? "openai";
@@ -67,46 +69,61 @@ export class OpenAICompatibleProvider implements Provider {
     this.maxTokens = options.maxTokens;
   }
 
-  async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
-    let response: Response;
+  /**
+   * 序列化请求体（按 request 对象缓存）：collectProviderTurn 的重试逐 attempt 调 streamChat
+   * 且复用同一 request 对象；大会话视图的转换（toOpenAIMessages 逐块 join/拷贝）+
+   * JSON.stringify 单次即可达数十 MB，undici 还会再把整串编码成 Buffer——逐 attempt 重建
+   * 会把这份瞬时分配放大数倍（默认 3 次）。WeakMap 以 request 为 key、随其释放自动回收；
+   * 调用方每轮构建新 request 对象字面量，不存在同对象内容变更后复用旧 body 的路径。
+   */
+  private requestBody(request: StreamChatRequest): string {
+    const cached = this.requestBodyCache.get(request);
+    if (cached !== undefined) return cached;
     const maxTokens = request.maxTokens ?? this.maxTokens;
     // 思维链回传：请求级（模型能力声明）优先，回落 provider 级配置（默认开）
     const reasoningContent = request.reasoningContent ?? (this.options.reasoningContent !== false);
+    const body = JSON.stringify({
+      ...this.options.extraBody,
+      model: request.model,
+      stream: true,
+      ...(this.options.includeUsage !== false ? { stream_options: { include_usage: true } } : {}),
+      // 未显式配置则不发送 max_tokens：不限制输出长度
+      ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
+      // 请求级采样参数（chat 模式助手预设下发）；undefined 时不发，由端点默认决定
+      ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+      ...(request.topP !== undefined ? { top_p: request.topP } : {}),
+      ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
+      // 思考开关按模型目录声明（thinkingStyle）分发 key；值不设限（用户选什么传什么）：
+      // - thinking/fixed：thinking:{type:enabled/disabled}（fixed 用户显式选择时仍尝试发送）
+      // - enable_thinking：顶层 enable_thinking:bool（qwen）
+      // - effort_only/extended/adaptive/未声明：不发开关（由模型自动；effort 有值已随 reasoning_effort 发）
+      // 声明为本地：端点差异见 model-metadata.ts 各模型族默认。
+      ...thinkingSwitchParam(request.thinkingStyle, request.thinking),
+      messages: toOpenAIMessages(request.system, request.messages, this.name, reasoningContent),
+      ...(request.tools.length > 0
+        ? {
+            tools: request.tools.map((tool) => ({
+              type: "function",
+              function: {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.inputSchema,
+              },
+            })),
+          }
+        : {}),
+    });
+    this.requestBodyCache.set(request, body);
+    return body;
+  }
+
+  async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
+    let response: Response;
     try {
       response = await this.fetch(`${this.options.baseURL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: providerRequestHeaders(this.options.apiKey),
-      body: JSON.stringify({
-        ...this.options.extraBody,
-        model: request.model,
-        stream: true,
-        ...(this.options.includeUsage !== false ? { stream_options: { include_usage: true } } : {}),
-        // 未显式配置则不发送 max_tokens：不限制输出长度
-        ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
-        // 请求级采样参数（chat 模式助手预设下发）；undefined 时不发，由端点默认决定
-        ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
-        ...(request.topP !== undefined ? { top_p: request.topP } : {}),
-        ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
-        // 思考开关按模型目录声明（thinkingStyle）分发 key；值不设限（用户选什么传什么）：
-        // - thinking/fixed：thinking:{type:enabled/disabled}（fixed 用户显式选择时仍尝试发送）
-        // - enable_thinking：顶层 enable_thinking:bool（qwen）
-        // - effort_only/extended/adaptive/未声明：不发开关（由模型自动；effort 有值已随 reasoning_effort 发）
-        // 声明为本地：端点差异见 model-metadata.ts 各模型族默认。
-        ...thinkingSwitchParam(request.thinkingStyle, request.thinking),
-        messages: toOpenAIMessages(request.system, request.messages, this.name, reasoningContent),
-        ...(request.tools.length > 0
-          ? {
-              tools: request.tools.map((tool) => ({
-                type: "function",
-                function: {
-                  name: tool.name,
-                  description: tool.description,
-                  parameters: tool.inputSchema,
-                },
-              })),
-            }
-          : {}),
-      }),
+      body: this.requestBody(request),
         signal: request.signal,
       });
     } catch (error) {
