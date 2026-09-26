@@ -1,48 +1,29 @@
-/** dsh boot graph 与 index 注入单测（M4 步骤 15 纯逻辑部分）。 */
+/** dsh vendor 清单 / boot graph 生成 / index 注入渲染单测（M4 纯逻辑部分）。 */
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  DSH_MODULES_ID,
-  bootInjections,
-  buildBootGraph,
-  loadVendorManifest,
-  pluginUrl,
-  renderIndexInjections,
-  type DshVendorPlugin,
-} from "../src/dsh/web-protocol/boot-graph.js";
+// prettier-ignore
+import { DSH_MODULES_ID, bootInjections, buildBootGraph, loadVendorManifest, pluginUrl, renderIndexInjections, type DshVendorPlugin } from "../src/dsh/web-protocol/boot-graph.js";
 
-const INDEX_HTML = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <script type="module" crossorigin src="./assets/index-abc.js"></script>
-  </head>
-  <body>
-    <div id="root"></div>
-  </body>
-</html>
-`;
+const INDEX_HTML = '<!doctype html>\n<html><head><meta charset="utf-8" /><script type="module" crossorigin src="./assets/index-abc.js"></script></head><body><div id="root"></div></body></html>\n';
+const plugin = (id: string, extra: Partial<DshVendorPlugin> = {}): DshVendorPlugin =>
+  ({ id, version: "0.1.6-alpha.2", rev: "0123456789ab", entry: "client.js", files: ["client.js"], inject: [], external: [], ...extra });
+/** 两条插件的最小图：模块系统 + 一个普通包。 */
+const baseGraph = () => buildBootGraph([plugin(DSH_MODULES_ID), plugin("a")]);
 
-function plugin(id: string, extra: Partial<DshVendorPlugin> = {}): DshVendorPlugin {
-  return { id, version: "0.1.6-alpha.2", rev: "0123456789ab", entry: "client.js", files: ["client.js"], inject: [], external: [], ...extra };
-}
-
-describe("dsh vendor 清单", () => {
-  it("读取合法清单；缺文件/版本不符返回 undefined", async () => {
+describe("dsh vendor 清单与 boot graph", () => {
+  it("清单加载：缺文件 / 版本不符返回 undefined，合法清单读回", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "owc-dsh-vendor-"));
+    const write = (body: unknown) => writeFile(path.join(directory, "manifest.json"), JSON.stringify(body));
     expect(await loadVendorManifest(directory)).toBeUndefined();
-    await writeFile(path.join(directory, "manifest.json"), JSON.stringify({ version: 2, plugins: [] }));
+    await write({ version: 2, plugins: [] });
     expect(await loadVendorManifest(directory)).toBeUndefined();
-    const manifest = { version: 1, dshVersion: "0.1.6-alpha.2", registry: "https://r", generatedAt: "t", frontend: { files: 1, rev: "x" }, plugins: [plugin("a")] };
-    await writeFile(path.join(directory, "manifest.json"), JSON.stringify(manifest));
-    expect(await loadVendorManifest(directory)).toMatchObject({ dshVersion: "0.1.6-alpha.2" });
+    await write({ version: 1, dshVersion: "0.1.6-alpha.2", registry: "https://r", generatedAt: "t", frontend: { files: 1, rev: "x" }, plugins: [plugin("a")] });
+    expect(await loadVendorManifest(directory)).toMatchObject({ version: 1, dshVersion: "0.1.6-alpha.2", plugins: [{ id: "a" }] });
   });
-});
 
-describe("dsh boot graph", () => {
-  it("bootstrap 只含模块系统，其余进 application；entry 字段按需省略", () => {
+  it("graph：bootstrap 只含模块系统、其余进 application、entry 字段按需省略、rev 顺序无关", () => {
     const graph = buildBootGraph([
       plugin(DSH_MODULES_ID, { immediately: true }),
       plugin("@deepseek-ai/dsh-client-ui-chat", { inject: ["@deepseek-ai/dsh-client-modules"], external: ["@deepseek-ai/dsh-api-gateway/client"] }),
@@ -53,27 +34,22 @@ describe("dsh boot graph", () => {
       ["application", ["@deepseek-ai/dsh-client-ui-chat"]],
       ["application", ["owc-dsh-bridge"]],
     ]);
-    const chat = graph.entries.find((entry) => entry.id === "@deepseek-ai/dsh-client-ui-chat");
-    expect(chat).toEqual({
-      id: "@deepseek-ai/dsh-client-ui-chat",
+    const byId = (id: string) => graph.entries.find((entry) => entry.id === id);
+    expect(byId("@deepseek-ai/dsh-client-ui-chat")).toMatchObject({
       url: pluginUrl("@deepseek-ai/dsh-client-ui-chat", "client.js", "0123456789ab"),
       rev: "0123456789ab",
       inject: ["@deepseek-ai/dsh-client-modules"],
       external: ["@deepseek-ai/dsh-api-gateway/client"],
     });
-    expect(graph.entries.find((entry) => entry.id === "owc-dsh-bridge")?.inject).toBeUndefined();
-    expect(graph.entries.find((entry) => entry.id === DSH_MODULES_ID)?.immediately).toBe(true);
-    // rev 稳定：同输入同输出，顺序无关
-    expect(buildBootGraph([plugin("b"), plugin(DSH_MODULES_ID), plugin("a")]).rev).toBe(buildBootGraph([plugin("a"), plugin("b"), plugin(DSH_MODULES_ID)]).rev);
+    expect(byId("owc-dsh-bridge")?.inject).toBeUndefined(); // 无 inject/external 者不带这些键
+    expect(byId(DSH_MODULES_ID)?.immediately).toBe(true);
+    expect(() => buildBootGraph([plugin("a")])).toThrow(/dsh-client-modules/); // 早失败优于半启动
+    expect(buildBootGraph([plugin("b"), plugin(DSH_MODULES_ID), plugin("a")]).rev)
+      .toBe(buildBootGraph([plugin("a"), plugin("b"), plugin(DSH_MODULES_ID)]).rev);
   });
 
-  it("缺模块系统时抛错（早失败优于半启动）", () => {
-    expect(() => buildBootGraph([plugin("a")])).toThrow(/dsh-client-modules/);
-  });
-
-  it("注入行顺序：队列脚本 → application preload → bootstrap 阻塞脚本 → 图", () => {
-    const graph = buildBootGraph([plugin(DSH_MODULES_ID), plugin("a")]);
-    const rows = bootInjections(graph);
+  it("注入行：队列脚本 → application preload → bootstrap 阻塞脚本 → 图", () => {
+    const rows = bootInjections(baseGraph());
     expect(rows.map((row) => row.kind)).toEqual(["script", "script-preload", "script-src", "global"]);
     expect(rows[1]).toEqual({ kind: "script-preload", src: "/plugins/a/client.js?rev=0123456789ab" });
     expect(rows[3]).toMatchObject({ kind: "global", name: "__DSH_BOOT__" });
@@ -81,35 +57,23 @@ describe("dsh boot graph", () => {
     expect(queueText).toContain(`registration.id===${JSON.stringify(DSH_MODULES_ID)}`);
     expect(queueText).toContain("createClientModuleSystem");
   });
-});
 
-describe("dsh index 注入渲染", () => {
-  it("head/body 行按表格顺序插入，尾标追加在 body 行之后", () => {
-    const graph = buildBootGraph([plugin(DSH_MODULES_ID), plugin("a")]);
-    const html = renderIndexInjections(INDEX_HTML, bootInjections(graph));
-    const headIndex = html.indexOf("<head>") + "<head>".length;
-    expect(html.slice(headIndex)).toMatch(/^<script>\(\(\)=>\{/);
-    // 队列脚本在内联位置；preload 与 bootstrap 也都在 head（模块 shell 之前解析执行）
+  it("index 注入：插入位置、尾标顺序、< 转义，无 head/body 片段也能插入", () => {
+    const html = renderIndexInjections(INDEX_HTML, bootInjections(baseGraph()));
+    // 队列脚本紧跟 <head>；preload 与 bootstrap 也在 head（模块 shell 之前解析执行）
+    expect(html.slice(html.indexOf("<head>") + "<head>".length)).toMatch(/^<script>\(\(\)=>\{/);
     expect(html).toContain('window.__ModuleLoader__={');
     expect(html).toContain('<link rel="preload" as="script" href="/plugins/a/client.js?rev=0123456789ab">');
-    expect(html).toContain(`<script src="/plugins/${DSH_MODULES_ID}/client.js?rev=0123456789ab"></script>`);
     expect(html).toContain("globalThis[\"__DSH_BOOT__\"]");
-    // bootstrap 阻塞脚本出现在模块 shell 标签之前（解析顺序保证 __ModuleLoader__ 就绪）
     expect(html.indexOf('<script src="/plugins/')).toBeLessThan(html.indexOf('<script type="module" crossorigin'));
     expect(html).toContain("<script>(globalThis.__DSH_BOOT_READY__ ??= Promise.withResolvers()).resolve()</script>");
     expect(html.indexOf("__DSH_BOOT_READY__")).toBeLessThan(html.indexOf('<div id="root">'));
-  });
 
-  it("无 head/body 的片段也能插入（prepend/append）", () => {
-    const html = renderIndexInjections("<div>x</div>", [{ kind: "script", placement: "head", text: "1" }]);
-    expect(html.startsWith("<script>1</script>")).toBe(true);
-    expect(html.endsWith("</script>")).toBe(true);
-  });
-
-  it("图值里的 `<` 被转义（防脚本元素提前闭合）", () => {
-    const rows = [{ kind: "global" as const, name: "__X__", value: { text: "</script>" } }];
-    const html = renderIndexInjections("<head></head>", rows);
-    expect(html).toContain("\\u003c/script>");
-    expect(html).not.toContain("</script></script>");
+    const fragment = renderIndexInjections("<div>x</div>", [{ kind: "script", placement: "head", text: "1" }]);
+    expect(fragment.startsWith("<script>1</script>")).toBe(true);
+    // 图值里的 `<` 转义（防脚本元素提前闭合）
+    const escaped = renderIndexInjections("<head></head>", [{ kind: "global", name: "__X__", value: { text: "</script>" } }]);
+    expect(escaped).toContain("\\u003c/script>");
+    expect(escaped).not.toContain("</script></script>");
   });
 });

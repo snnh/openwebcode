@@ -13,10 +13,7 @@ import { tempRoot } from "./helpers/temp-roots.js";
 function textProvider(name: string, text = "ok"): Provider {
   return {
     name,
-    async *streamChat() {
-      yield { type: "text_delta", text };
-      yield { type: "done", stopReason: "end_turn" };
-    },
+    async *streamChat() { yield { type: "text_delta", text }; yield { type: "done", stopReason: "end_turn" }; },
   };
 }
 
@@ -26,20 +23,15 @@ async function makeRunner(options: { prefix: string; provider: Provider; session
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: options.provider.name, model: "test-model" });
   await sessions.updateConfig(session.id, {
-    provider: options.provider.name,
-    model: "test-model",
-    snapshotMode: "manual",
-    ...(options.agentMode ? { agentMode: options.agentMode } : {}),
-    ...options.sessionConfig,
+    provider: options.provider.name, model: "test-model", snapshotMode: "manual",
+    ...(options.agentMode ? { agentMode: options.agentMode } : {}), ...options.sessionConfig,
   });
   await sessions.updatePermissions(session.id, "yolo", []);
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
   await pricing.initialize();
   const providers = new ProviderRegistry();
   providers.register(options.provider);
-  const events = new EventBus();
-  const runner = new AgentRunner(sessions, providers, makeFakeCore(), events, pricing);
-  return { root, sessions, session, runner, events };
+  return { sessions, session, runner: new AgentRunner(sessions, providers, makeFakeCore(), new EventBus(), pricing) };
 }
 
 function injectionsOf(detail: SessionDetail | undefined, prefix: string): string[] {
@@ -74,9 +66,7 @@ describe("subagent fan-out：每条 tool_call 必须有对应 tool_result", () =
     };
     // 工具白名单里没有 subagent → 两条调用都进「不可用」分支
     const { sessions, session, runner } = await makeRunner({
-      prefix: "owc-fanout-blocked-",
-      provider,
-      sessionConfig: { toolsAllow: ["read_file"] },
+      prefix: "owc-fanout-blocked-", provider, sessionConfig: { toolsAllow: ["read_file"] },
     });
 
     await runner.run(session.id, "并行探索");
@@ -91,28 +81,23 @@ describe("subagent fan-out：每条 tool_call 必须有对应 tool_result", () =
 });
 
 describe("plan/goal 注入节奏", () => {
-  it("exit 提醒只注入一次（本 run 的 exit 注入不算 lastPlan）", async () => {
+  it("exit 提醒只注入一次；轮内跨日刷新注入新日期锚点且不重复", async () => {
     const provider = textProvider("inject");
     const { sessions, session, runner } = await makeRunner({ prefix: "owc-plan-exit-", provider, agentMode: "plan" });
-
     await runner.run(session.id, "先出实施计划");
     // 批准计划 = 退出 plan 模式（updateConfig 的 agentMode 缺省即删除）
     await sessions.updateConfig(session.id, { provider: provider.name, model: "test-model" });
-
     await runner.run(session.id, "按计划执行第一步");
     await runner.run(session.id, "继续第二步");
-
     const detail = await sessions.get(session.id);
     expect(injectionsOf(detail, "inj:plan:full:")).toHaveLength(1);
     expect(injectionsOf(detail, "inj:plan:exit:")).toHaveLength(1);
-  });
 
-  it("长运行跨日：轮内日期刷新注入新日期锚点且不重复", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       vi.setSystemTime(new Date("2024-03-01T23:30:00Z"));
       let turn = 0;
-      const provider: Provider = {
+      const crossDayProvider: Provider = {
         name: "date",
         async *streamChat(request) {
           turn += 1;
@@ -128,23 +113,18 @@ describe("plan/goal 注入节奏", () => {
           yield { type: "done", stopReason: "end_turn" };
         },
       };
-      const { root, sessions, session, runner } = await makeRunner({ prefix: "owc-date-refresh-", provider });
-      // 昨天的日期锚点已在活动路径上（跨日后的轮内刷新只比对变体，不重复注入同日）
-      await sessions.appendMessage(session.id, "user", [{ type: "text", text: "<system-reminder>\nCurrent date: 2024-03-01 (UTC).\n</system-reminder>" }], {
-        id: "inj:date:2024-03-01:seed",
-        internal: true,
+      const dated = await makeRunner({ prefix: "owc-date-refresh-", provider: crossDayProvider });
+      // 昨天的锚点已在活动路径上（轮内刷新只比对变体，不重复注入同日）
+      await dated.sessions.appendMessage(dated.session.id, "user", [{ type: "text", text: "<system-reminder>\nCurrent date: 2024-03-01 (UTC).\n</system-reminder>" }], {
+        id: "inj:date:2024-03-01:seed", internal: true,
       });
 
-      await runner.run(session.id, "跨日长运行");
+      await dated.runner.run(dated.session.id, "跨日长运行");
+      // 断言点必须在第二轮 run 之前：run 启动时的刷新本就会补锚点，只有轮内刷新生效时第一轮内跨日就能拿到新日期
+      expect(injectionsOf(await dated.sessions.get(dated.session.id), "inj:date:2024-03-02:")).toHaveLength(1);
 
-      // 断言点必须在第二轮 run 之前：run 启动时的日期刷新（flags.dateRefresh=true）本就会补锚点，
-      // 只有轮内刷新真正生效时，第一轮 run 内跨日就能拿到新日期。
-      expect(root).toBeTruthy();
-      expect(injectionsOf(await sessions.get(session.id), "inj:date:2024-03-02:")).toHaveLength(1);
-
-      await runner.run(session.id, "再跑一轮");
-      const detail = await sessions.get(session.id);
-      expect(injectionsOf(detail, "inj:date:2024-03-02:")).toHaveLength(1);
+      await dated.runner.run(dated.session.id, "再跑一轮");
+      expect(injectionsOf(await dated.sessions.get(dated.session.id), "inj:date:2024-03-02:")).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

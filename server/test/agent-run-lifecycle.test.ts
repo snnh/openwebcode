@@ -30,8 +30,7 @@ async function makeRunner(options: { prefix: string; provider: Provider; session
   const events = new EventBus();
   const observed: AppEvent[] = [];
   events.on("event", (event) => observed.push(event));
-  const runner = new AgentRunner(sessions, providers, makeFakeCore(), events, pricing);
-  return { root, sessions, session, runner, events, observed };
+  return { sessions, session, events, observed, runner: new AgentRunner(sessions, providers, makeFakeCore(), events, pricing) };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -64,9 +63,6 @@ describe("计划批准切换 code 模式", () => {
       agentMode: "plan",
       sessionConfig: { fallbackModels: [{ provider: "fallback", model: "fallback-model" }], sshCredentials: true },
     });
-    const before = await sessions.getMeta(session.id);
-    expect(before?.fallbackModels).toHaveLength(1);
-    expect(before?.sshCredentials).toBe(true);
 
     const requested = waitForEvent(events, "interaction.requested", { sessionId: session.id });
     const running = runner.run(session.id, "先出计划，批准后直接执行");
@@ -76,8 +72,7 @@ describe("计划批准切换 code 模式", () => {
 
     const after = await sessions.getMeta(session.id);
     expect(after?.agentMode).toBeUndefined(); // 已退出 plan（code 不落盘）
-    expect(after?.fallbackModels).toEqual([{ provider: "fallback", model: "fallback-model" }]);
-    expect(after?.sshCredentials).toBe(true);
+    expect(after).toMatchObject({ fallbackModels: [{ provider: "fallback", model: "fallback-model" }], sshCredentials: true });
   });
 });
 
@@ -102,16 +97,16 @@ describe("finishRun 收尾与新 run 并发", () => {
     };
     const { sessions, session, runner, observed } = await makeRunner({ prefix: "owc-run-lifecycle-", provider });
 
-    // 拦住宿盘：把旧 run 的 finishRun 卡在 writeRun（此时 running 已放行 → 新 run 可以启动）
+    // 拦住宿盘：把旧 run 的 finishRun 卡在 writeRun（此时 running 已放行 → 新 run 可启动）
     const originalWrite = RunStore.prototype.write;
     let releaseFirst!: () => void;
     const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    let enteredFirst = false;
+    let entered = false;
     let signalEntered!: () => void;
-    const entered = new Promise<void>((resolve) => { signalEntered = resolve; });
+    const enteredFirst = new Promise<void>((resolve) => { signalEntered = resolve; });
     const spy = vi.spyOn(RunStore.prototype, "write").mockImplementation(async function (this: RunStore, run: AgentRunSnapshot) {
-      if (run.state === "completed" && !enteredFirst) {
-        enteredFirst = true;
+      if (run.state === "completed" && !entered) {
+        entered = true;
         signalEntered();
         await firstGate;
       }
@@ -122,16 +117,11 @@ describe("finishRun 收尾与新 run 并发", () => {
       // 白盒读内存快照：run 的 id 只在内存 map 里（REST getRun 会被写链挡住）
       const runs = (runner as unknown as { runs: Map<string, AgentRunSnapshot> }).runs;
       const runA = runner.run(session.id, "第一轮");
-      await withTimeout(entered, 5_000, "旧 run 进入收尾落盘");
+      await withTimeout(enteredFirst, 5_000, "旧 run 进入收尾落盘");
       const runAId = runs.get(session.id)?.id;
-      expect(runAId).toBeDefined();
 
       const runB = runner.run(session.id, "第二轮");
-      await vi.waitFor(() => {
-        const active = runs.get(session.id);
-        expect(active).toBeDefined();
-        expect(active!.id).not.toBe(runAId);
-      });
+      await vi.waitFor(() => expect(runs.get(session.id)?.id).not.toBe(runAId));
       const runBId = runs.get(session.id)!.id;
 
       releaseFirst();

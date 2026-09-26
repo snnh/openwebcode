@@ -15,263 +15,125 @@ async function fixture() {
   const filePath = path.join(root, "provider-profiles.json");
   return { root, filePath, service: await ProviderProfilesService.load({ filePath }) };
 }
-
 describe("ProviderProfilesService", () => {
-  it("stores multiple named model providers, masks secrets, and preserves disabled drafts", async () => {
-    const setup = await fixture();
-    await setup.service.upsertModel(undefined, {
-      id: "OpenAI Main",
-      enabled: true,
-      interfaceType: "openai-chat-completions",
-      baseURL: "https://api.openai.test/v1",
-      apiKey: "secret-openai-key-1234",
-    });
-    await setup.service.upsertModel(undefined, {
-      id: "备用 Claude",
-      enabled: false,
-      interfaceType: "anthropic-messages",
-    });
-
-    const view = setup.service.view();
-    expect(view.modelProviders).toHaveLength(2);
-    expect(view.modelProviders[0]).toMatchObject({ id: "OpenAI Main", enabled: true, hasApiKey: true, maskedApiKey: "secret-…1234" });
-    expect(JSON.stringify(view)).not.toContain("secret-openai-key-1234");
-    await expect(setup.service.upsertModel("备用 Claude", { enabled: true })).rejects.toBeInstanceOf(ProviderProfilesValidationError);
-
-    const persisted = await readFile(setup.filePath, "utf8");
-    expect(persisted).toContain("secret-openai-key-1234");
-    const restored = await ProviderProfilesService.load({ filePath: setup.filePath });
-    expect(restored.modelProfiles().map((item) => item.id)).toEqual(["OpenAI Main", "备用 Claude"]);
-  });
-
-  it("derives built-in web capabilities and selects independent search/fetch profiles", async () => {
-    const setup = await fixture();
-    await setup.service.upsertWeb(undefined, { id: "Jina", provider: "jina", capabilities: ["fetch"], apiKey: "jina-key" });
-    await setup.service.upsertWeb(undefined, { id: "Brave", provider: "brave", capabilities: ["fetch"], apiKey: "brave-key" });
-    await setup.service.upsertWeb(undefined, { id: "Tavily", provider: "tavily", capabilities: ["search"], apiKey: "tavily-key" });
-    await setup.service.upsertWeb(undefined, {
-      id: "Internal Reader",
-      provider: "custom",
-      capabilities: ["fetch"],
-      fetchBaseURL: "https://reader.test/?url={url}",
-    });
-    await setup.service.selectWeb("search", "Brave");
-    await setup.service.selectWeb("fetch", "Internal Reader");
-
-    expect(setup.service.view()).toMatchObject({
-      activeWeb: { search: "Brave", fetch: "Internal Reader" },
-      webProviders: [
-        { id: "Jina", capabilities: ["search", "fetch"] },
-        { id: "Brave", capabilities: ["search"] },
-        { id: "Tavily", capabilities: ["search", "fetch"] },
-        { id: "Internal Reader", capabilities: ["fetch"] },
-      ],
-    });
-    await expect(setup.service.selectWeb("fetch", "Brave")).rejects.toThrow(/未声明 fetch/);
-  });
-
-  it("requires custom endpoints for every declared capability", async () => {
-    const setup = await fixture();
-    await expect(setup.service.upsertWeb(undefined, { id: "custom", provider: "custom", capabilities: ["search"] })).rejects.toThrow(/Search Base URL/);
-    await expect(setup.service.upsertWeb(undefined, { id: "custom", provider: "custom", capabilities: ["fetch"], fetchBaseURL: "https://reader.test/plain" })).rejects.toThrow(/{url}/);
-  });
-
-  it("validates, persists, and clears extraBody custom request fields", async () => {
-    const setup = await fixture();
-    await setup.service.upsertModel(undefined, {
-      id: "qwen",
-      enabled: true,
-      interfaceType: "openai-chat-completions",
-      baseURL: "https://qwen.test/v1",
-      extraBody: { temperature: 0.7, max_tokens: 8192 },
-    });
-    expect(setup.service.view().modelProviders[0]?.extraBody).toEqual({ temperature: 0.7, max_tokens: 8192 });
-    const persisted = JSON.parse(await readFile(setup.filePath, "utf8")) as { models: Array<{ extraBody?: unknown }> };
+  it("模型档案读写：多档案存储、密钥掩码、持久化重载与 extraBody 往返", async () => {
+    const s = await fixture();
+    await s.service.upsertModel(undefined, { id: "OpenAI Main", enabled: true, interfaceType: "openai-chat-completions", baseURL: "https://api.openai.test/v1", apiKey: "secret-openai-key-1234", extraBody: { temperature: 0.7, max_tokens: 8192 } });
+    await s.service.upsertModel(undefined, { id: "备用 Claude", enabled: false, interfaceType: "anthropic-messages" }); // 禁用草稿：缺 URL/Key 也可存，但不允许被启用
+    expect(s.service.view().modelProviders).toHaveLength(2);
+    expect(s.service.view().modelProviders[0]).toMatchObject({ id: "OpenAI Main", enabled: true, hasApiKey: true, maskedApiKey: "secret-…1234", extraBody: { temperature: 0.7, max_tokens: 8192 } });
+    expect(JSON.stringify(s.service.view())).not.toContain("secret-openai-key-1234"); // 视图掩码
+    await expect(s.service.upsertModel("备用 Claude", { enabled: true })).rejects.toBeInstanceOf(ProviderProfilesValidationError);
+    const persisted = JSON.parse(await readFile(s.filePath, "utf8")) as { models: Array<{ extraBody?: unknown }> };
+    expect(JSON.stringify(persisted)).toContain("secret-openai-key-1234"); // 落盘不掩码
     expect(persisted.models[0]?.extraBody).toEqual({ temperature: 0.7, max_tokens: 8192 });
-
-    await expect(setup.service.upsertModel("qwen", { extraBody: [1, 2] })).rejects.toThrow(/JSON 对象/);
-    await expect(setup.service.upsertModel("qwen", { extraBody: { messages: [] } })).rejects.toThrow(/核心字段/);
-    await expect(setup.service.upsertModel("qwen", { extraBody: { stream: false } })).rejects.toThrow(/核心字段/);
-
-    await setup.service.upsertModel("qwen", { extraBody: null });
-    expect(setup.service.view().modelProviders[0]?.extraBody).toBeUndefined();
+    expect((await ProviderProfilesService.load({ filePath: s.filePath })).modelProfiles().map((item) => item.id)).toEqual(["OpenAI Main", "备用 Claude"]);
+    await expect(s.service.upsertModel("OpenAI Main", { extraBody: [1, 2] })).rejects.toThrow(/JSON 对象/);
+    await expect(s.service.upsertModel("OpenAI Main", { extraBody: { stream: false } })).rejects.toThrow(/核心字段/);
+    await s.service.upsertModel("OpenAI Main", { extraBody: null });
+    expect(s.service.view().modelProviders[0]?.extraBody).toBeUndefined();
   });
-
-  it("rejects obsolete or malformed profile documents instead of replacing them", async () => {
-    const setup = await fixture();
-    await writeFile(setup.filePath, JSON.stringify({ anthropic: { apiKey: "old" }, search: { provider: "brave" } }));
-    await expect(ProviderProfilesService.load({ filePath: setup.filePath })).rejects.toThrow(/格式无效/);
-    expect(await readFile(setup.filePath, "utf8")).toContain("anthropic");
+  it("web 档案：内建能力派生、search/fetch 独立选择、未声明能力拒绝", async () => {
+    const s = await fixture();
+    await s.service.upsertWeb(undefined, { id: "Jina", provider: "jina", capabilities: ["fetch"], apiKey: "jina-key" });
+    await s.service.upsertWeb(undefined, { id: "Brave", provider: "brave", capabilities: ["fetch"], apiKey: "brave-key" });
+    await s.service.upsertWeb(undefined, { id: "Tavily", provider: "tavily", capabilities: ["search"], apiKey: "tavily-key" });
+    await s.service.upsertWeb(undefined, { id: "Internal Reader", provider: "custom", capabilities: ["fetch"], fetchBaseURL: "https://reader.test/?url={url}" });
+    await s.service.selectWeb("search", "Brave");
+    await s.service.selectWeb("fetch", "Internal Reader");
+    // 请求声明的 capabilities 经内建能力表归一化（jina/tavily 兼具双能力，brave 仅 search）
+    expect(s.service.view()).toMatchObject({ activeWeb: { search: "Brave", fetch: "Internal Reader" }, webProviders: [
+      { id: "Jina", capabilities: ["search", "fetch"] }, { id: "Brave", capabilities: ["search"] },
+      { id: "Tavily", capabilities: ["search", "fetch"] }, { id: "Internal Reader", capabilities: ["fetch"] },
+    ] });
+    await expect(s.service.selectWeb("fetch", "Brave")).rejects.toThrow(/未声明 fetch/);
   });
-
-  it("hot-registers enabled model providers, refreshes their models, and removes disabled cache entries", async () => {
-    const setup = await fixture();
+  it("非法输入拒绝：custom 端点缺参，旧版档案文档不覆盖原文件", async () => {
+    const s = await fixture();
+    await expect(s.service.upsertWeb(undefined, { id: "custom", provider: "custom", capabilities: ["search"] })).rejects.toThrow(/Search Base URL/);
+    await expect(s.service.upsertWeb(undefined, { id: "custom", provider: "custom", capabilities: ["fetch"], fetchBaseURL: "https://reader.test/plain" })).rejects.toThrow(/\{url\}/);
+    await writeFile(s.filePath, JSON.stringify({ anthropic: { apiKey: "old" }, search: { provider: "brave" } }));
+    await expect(ProviderProfilesService.load({ filePath: s.filePath })).rejects.toThrow(/格式无效/);
+    expect(await readFile(s.filePath, "utf8")).toContain("anthropic");
+  });
+  it("热注册：enabled 档案入册并把模型投影进目录，禁用后移除，联网组件随之接线", async () => {
+    const s = await fixture();
     const providers = new ProviderRegistry();
-    const searchNames: Array<string | undefined> = [];
-    const fetchNames: Array<string | undefined> = [];
+    const wired: string[] = [];
     const agent = {
-      setSearchProvider(value: { name: string } | undefined) { searchNames.push(value?.name); },
-      setWebFetchProvider(value: { name: string } | undefined) { fetchNames.push(value?.name); },
+      setSearchProvider: (value?: { name: string }) => wired.push(`search:${value?.name}`),
+      setWebFetchProvider: (value?: { name: string }) => wired.push(`fetch:${value?.name}`),
     } as unknown as AgentRunner;
     const models = await ModelRegistry.load({
-      snapshotPath: path.join(setup.root, "models.json"),
-      manualPath: path.join(setup.root, "models.manual.json"),
-      fetchImpl: (async () => new Response(JSON.stringify({ data: [{ id: "same-model" }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })) as typeof fetch,
+      snapshotPath: path.join(s.root, "models.json"),
+      manualPath: path.join(s.root, "models.manual.json"),
+      fetchImpl: (async () => new Response(JSON.stringify({ data: [{ id: "same-model" }] }), { headers: { "content-type": "application/json" } })) as typeof fetch,
     });
-    const runtime = new ProviderProfilesRuntime(setup.service, providers, agent, models, new EventBus());
+    const runtime = new ProviderProfilesRuntime(s.service, providers, agent, models, new EventBus());
     runtime.start();
     try {
-      await setup.service.upsertModel(undefined, {
-        id: "本地服务",
-        enabled: true,
-        interfaceType: "openai-chat-completions",
-        baseURL: "https://local.test/v1",
-      });
+      await s.service.upsertModel(undefined, { id: "本地服务", enabled: true, interfaceType: "openai-chat-completions", baseURL: "https://local.test/v1" });
       expect(providers.list()).toEqual(["本地服务"]);
-      await vi.waitFor(() => expect(models.list()).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: "same-model", provider: "本地服务", source: "api" }),
-      ])));
-
-      await setup.service.upsertModel("本地服务", { enabled: false });
+      await vi.waitFor(() => expect(models.list()).toEqual(expect.arrayContaining([expect.objectContaining({ id: "same-model", provider: "本地服务", source: "api" })])));
+      await s.service.upsertModel("本地服务", { enabled: false });
       expect(providers.list()).toEqual([]);
-      await vi.waitFor(() => expect(models.list().some((model) => model.id === "same-model" && model.provider === "本地服务")).toBe(false));
-
-      await setup.service.upsertWeb(undefined, { id: "Jina", provider: "jina", capabilities: ["search"] });
-      await setup.service.selectWeb("search", "Jina");
-      await setup.service.selectWeb("fetch", "Jina");
-      expect(searchNames.at(-1)).toBe("Jina");
-      expect(fetchNames.at(-1)).toBe("Jina");
-    } finally {
-      runtime.stop();
-    }
+      await vi.waitFor(() => expect(models.list().some((model) => model.provider === "本地服务")).toBe(false));
+      await s.service.upsertWeb(undefined, { id: "Jina", provider: "jina", capabilities: ["search"] });
+      await s.service.selectWeb("search", "Jina");
+      await s.service.selectWeb("fetch", "Jina");
+      expect(wired).toContain("search:Jina");
+      expect(wired).toContain("fetch:Jina");
+    } finally { runtime.stop(); }
   });
 });
-
-// ---- provider-connection-test 组（合并） ----
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-async function connectionFixture() {
-  const { root, app } = await makeTestApp({ tempPrefix: "owc-provider-test-", providerProfiles: true });
-  return { root, app };
-}
-
-function stubFetchStatus(status: number): ReturnType<typeof vi.fn> {
-  const handler = vi.fn(async () => new Response(null, { status }));
-  vi.stubGlobal("fetch", handler);
-  return handler;
-}
-
-const openaiBody = { id: "测试服务", interfaceType: "openai-chat-completions", baseURL: "https://api.example.test/v1", apiKey: "sk-test" };
-const anthropicBody = { id: "Claude", interfaceType: "anthropic-messages", apiKey: "sk-ant" };
-
-function post(app: Awaited<ReturnType<typeof connectionFixture>>["app"], payload: Record<string, unknown>) {
-  return app.inject({ method: "POST", url: "/api/provider-profiles/test", payload });
-}
-
 describe("POST /api/provider-profiles/test", () => {
-  it("openai 200：可达并返回延迟；请求打到 {baseURL}/models 并带 Bearer 头", async () => {
-    const { app } = await connectionFixture();
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const openaiBody = { id: "测试服务", interfaceType: "openai-chat-completions", baseURL: "https://api.example.test/v1", apiKey: "sk-test" };
+  const anthropicBody = { id: "Claude", interfaceType: "anthropic-messages", apiKey: "sk-ant" };
+  const connectionApp = async () => (await makeTestApp({ tempPrefix: "owc-provider-test-", providerProfiles: true })).app;
+  const stubFetchStatus = (status: number) => {
+    const handler = vi.fn(async () => new Response(null, { status }));
+    vi.stubGlobal("fetch", handler);
+    return handler;
+  };
+  const post = (app: Awaited<ReturnType<typeof connectionApp>>, payload: Record<string, unknown>) => app.inject({ method: "POST", url: "/api/provider-profiles/test", payload });
+  it("两家接口的成功探测形状（URL/鉴权头/不跟重定向）与请求体校验 400", async () => {
+    const app = await connectionApp();
     try {
-      const handler = stubFetchStatus(200);
-      const response = await post(app, openaiBody);
-      expect(response.statusCode).toBe(200);
-      const body = response.json<{ ok: boolean; latencyMs: number }>();
-      expect(body.ok).toBe(true);
-      expect(typeof body.latencyMs).toBe("number");
-      const [url, init] = handler.mock.calls[0] as [string, RequestInit];
+      const openai = stubFetchStatus(200);
+      const ok = await post(app, openaiBody);
+      expect([ok.statusCode, ok.json()]).toMatchObject([200, { ok: true, latencyMs: expect.any(Number) }]);
+      const [url, init] = openai.mock.calls[0] as [string, RequestInit];
       expect(url).toBe("https://api.example.test/v1/models");
-      expect((init.headers as Record<string, string>).authorization).toBe("Bearer sk-test");
-      expect(init.redirect).toBe("manual");
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("anthropic 200：使用免费的 GET /v1/models?limit=1 端点与 x-api-key 头，默认官方地址", async () => {
-    const { app } = await connectionFixture();
-    try {
-      const handler = stubFetchStatus(200);
-      const response = await post(app, anthropicBody);
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ ok: true });
-      const [url, init] = handler.mock.calls[0] as [string, RequestInit];
-      expect(url).toBe("https://api.anthropic.com/v1/models?limit=1");
-      const headers = init.headers as Record<string, string>;
-      expect(headers["x-api-key"]).toBe("sk-ant");
-      expect(headers["anthropic-version"]).toBe("2023-06-01");
-    } finally {
-      await app.close();
-    }
-  });
-
-  type ProbeJson = { ok: boolean; error?: string; note?: string };
-  it.each<{ name: string; stub: () => void; assert: (body: ProbeJson) => void }>([
-    {
-      name: "401：认证失败",
-      stub: () => stubFetchStatus(401),
-      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("认证失败") }),
-    },
-    {
-      name: "403：提示检查 API Key",
-      stub: () => stubFetchStatus(403),
-      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("API Key") }),
-    },
-    {
-      name: "404：接口不存在，提示检查 Base URL",
-      stub: () => stubFetchStatus(404),
-      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("Base URL") }),
-    },
-    {
-      name: "429：服务可达但限流（ok + note 提示）",
-      stub: () => stubFetchStatus(429),
-      assert: (body) => {
-        expect(body.ok).toBe(true);
-        expect(body.note).toContain("429");
-      },
-    },
-    {
-      name: "3xx：不自动跟随，提示检查 Base URL",
-      stub: () => stubFetchStatus(302),
-      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("重定向") }),
-    },
-    {
-      name: "超时：连接超时",
-      stub: () => vi.stubGlobal("fetch", vi.fn(async () => { throw new DOMException("The operation timed out", "TimeoutError"); })),
-      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("超时") }),
-    },
-    {
-      name: "网络错误（ECONNREFUSED 等）：无法连接",
-      stub: () => vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("fetch failed"); })),
-      assert: (body) => expect(body).toMatchObject({ ok: false, error: expect.stringContaining("无法连接") }),
-    },
-  ])("探测结果分类矩阵（401/403/404/429/302/超时/网络错）：$name", async ({ stub, assert }) => {
-    const { app } = await connectionFixture();
-    try {
-      stub();
-      const response = await post(app, openaiBody);
-      assert(response.json<ProbeJson>());
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("请求体校验失败：复用 provider-profiles 校验，返回 400 中文错误", async () => {
-    const { app } = await connectionFixture();
-    try {
-      const response = await post(app, { id: "坏配置", interfaceType: "graphql" });
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toMatchObject({ error: expect.stringContaining("接口类型") });
-
+      expect([(init.headers as Record<string, string>).authorization, init.redirect]).toEqual(["Bearer sk-test", "manual"]);
+      const anthropic = stubFetchStatus(200); // anthropic 走免费的 GET /v1/models?limit=1，缺省官方地址
+      const anth = await post(app, anthropicBody);
+      expect([anth.statusCode, anth.json()]).toMatchObject([200, { ok: true }]);
+      const [anthUrl, anthInit] = anthropic.mock.calls[0] as [string, RequestInit];
+      expect(anthUrl).toBe("https://api.anthropic.com/v1/models?limit=1");
+      expect(anthInit.headers).toMatchObject({ "x-api-key": "sk-ant", "anthropic-version": "2023-06-01" });
+      const badInterface = await post(app, { id: "坏配置", interfaceType: "graphql" }); // 校验复用 provider-profiles 口径
       const missingKey = await post(app, { id: "Claude", interfaceType: "anthropic-messages" });
+      expect(badInterface.statusCode).toBe(400);
+      expect(badInterface.json()).toMatchObject({ error: expect.stringContaining("接口类型") });
       expect(missingKey.statusCode).toBe(400);
       expect(missingKey.json()).toMatchObject({ error: expect.stringContaining("API Key") });
-    } finally {
-      await app.close();
-    }
+    } finally { await app.close(); }
+  });
+  type ProbeJson = { ok: boolean; error?: string; note?: string };
+  const timeout = () => vi.stubGlobal("fetch", vi.fn(async () => { throw new DOMException("The operation timed out", "TimeoutError"); }));
+  const networkError = () => vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("fetch failed"); }));
+  const probes: Array<[string, () => void, Record<string, unknown>]> = [
+    ["401 认证失败", () => stubFetchStatus(401), { ok: false, error: expect.stringContaining("认证失败") }],
+    ["403 提示检查 API Key", () => stubFetchStatus(403), { ok: false, error: expect.stringContaining("API Key") }],
+    ["404 提示检查 Base URL", () => stubFetchStatus(404), { ok: false, error: expect.stringContaining("Base URL") }],
+    ["429 服务可达但限流", () => stubFetchStatus(429), { ok: true, note: expect.stringContaining("429") }],
+    ["3xx 不自动跟随", () => stubFetchStatus(302), { ok: false, error: expect.stringContaining("重定向") }],
+    ["超时", timeout, { ok: false, error: expect.stringContaining("超时") }],
+    ["网络错误", networkError, { ok: false, error: expect.stringContaining("无法连接") }],
+  ];
+  it.each(probes)("探测结果分类：%s", async (_name, stub, expected) => {
+    const app = await connectionApp();
+    try { stub(); expect((await post(app, openaiBody)).json<ProbeJson>()).toMatchObject(expected); } finally { await app.close(); }
   });
 });

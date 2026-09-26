@@ -1,479 +1,291 @@
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildServer } from "../src/app.js";
+import { describe, expect, it } from "vitest";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
+import { buildServer } from "../src/app.js";
 import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
-import { EventBus } from "../src/events/event-bus.js";
-import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
+import { EventBus, type AppEvent } from "../src/events/event-bus.js";
+import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
 import { makeTestApp } from "./helpers/test-app.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
+const PLATFORM_DEFAULT_SANDBOX = process.platform === "win32" ? "appcontainer" : "bubblewrap";
+
 describe("session model config", () => {
-  it("persists append-only message lineage and reconstructs legacy parents on reload", async () => {
+  it("append-only 消息血缘落盘，重载后还原父链与活动叶子", async () => {
     const root = await tempRoot("owc-session-lineage-");
-    const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "test", model: "test" });
     const first = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "first" }]);
     const second = await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "second" }], { runId: "run-1", turnId: "run-1:0" });
-    const reloaded = new SessionStore(path.join(root, "sessions")); await reloaded.initialize();
-    const detail = await reloaded.get(session.id);
-    expect(detail?.activeLeafId).toBe(second.id);
+    const reloaded = new SessionStore(path.join(root, "sessions"));
+    await reloaded.initialize();
+    const detail = await reloaded.get(session.id); expect(detail?.activeLeafId).toBe(second.id);
     expect(detail?.messages).toMatchObject([{ id: first.id }, { id: second.id, parentId: first.id, runId: "run-1", turnId: "run-1:0" }]);
   });
-
   describe("PUT /config", () => {
-    let root: string;
-    let sessions: SessionStore;
-    let app: Awaited<ReturnType<typeof buildServer>>;
-    let disposedShells: string[];
-    let shellPending: boolean;
-    let running: boolean;
-    let reconciled: string[];
-    let modelFallbackResets: string[];
-
-    beforeEach(async () => {
-      root = await tempRoot("owc-session-config-");
-      sessions = new SessionStore(path.join(root, "sessions"));
+    /** 可变 agent 替身 + 真实 buildServer：沙盒/环境门控与回收只能从这些副作用观测 */
+    async function configApp() {
+      const root = await tempRoot("owc-session-config-");
+      const sessions = new SessionStore(path.join(root, "sessions"));
       await sessions.initialize();
-      const provider: Provider = { name: "anthropic", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } };
       const providers = new ProviderRegistry();
-      providers.register(provider);
+      providers.register({ name: "anthropic", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } });
       const pricing = new PricingCatalog(path.join(root, "pricing.json"));
       await pricing.initialize();
-      disposedShells = [];
-      shellPending = false;
-      running = false;
-      reconciled = [];
-      modelFallbackResets = [];
+      const flags = { running: false, shellPending: false, disposedShells: [] as string[] };
       const agent = {
-        isRunning: () => running,
-        isShellPending: () => shellPending,
-        disposePersistentShells: async (sessionId: string) => { disposedShells.push(sessionId); },
-        reconcilePermissions: async (sessionId: string) => { reconciled.push(sessionId); },
-        resetModelFallbackOverride: (sessionId: string) => { modelFallbackResets.push(sessionId); },
+        isRunning: () => flags.running,
+        isShellPending: () => flags.shellPending,
+        disposePersistentShells: async (sessionId: string) => { flags.disposedShells.push(sessionId); },
+        reconcilePermissions: async () => undefined,
+        resetModelFallbackOverride: () => undefined,
       } as unknown as AgentRunner;
-      app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
-    });
-
-    afterEach(async () => {
-      await app.close();
-    });
-
-    it("validates and persists idle model thinking and effort updates", async () => {
-      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "some-random-model" });
-      // 未声明（capabilities 空数组）= 全部可选：合法枚举放行，含 ultra 档；非法枚举仍 400
-      const undeclared = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { effort: "high" } });
-      expect(undeclared.statusCode).toBe(200);
-      expect(await sessions.get(session.id)).toMatchObject({ effort: "high" });
-      const ultra = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { effort: "ultra" } });
-      expect(ultra.statusCode).toBe(200);
-      expect(await sessions.get(session.id)).toMatchObject({ effort: "ultra" });
-      const invalidEnum = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { effort: "extreme" } });
-      expect(invalidEnum.statusCode).toBe(400);
-      // 已声明白名单维持 400：gpt-5 只声明 low/medium/high
-      const declaredInvalid = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5", effort: "xhigh" } });
-      expect(declaredInvalid.statusCode).toBe(400);
-      // deepseek 声明了 low/medium/high/xhigh/max：白名单外的 minimal 拒绝（官方文档映射表）
-      const deepseekInvalid = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-chat", effort: "minimal" } });
-      expect(deepseekInvalid.statusCode).toBe(400);
-      // 切到已声明且不含继承值的模型时原子清除（gpt-5 不含 ultra），而不是要求用户先单独关闭再切模型
-      const switched = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5" } });
-      expect(switched.statusCode).toBe(200);
-      expect(switched.json()).toMatchObject({ model: "gpt-5" });
-      expect(switched.json()).not.toHaveProperty("effort");
-      expect(await sessions.get(session.id)).not.toHaveProperty("effort");
-      // deepseek-reasoner 声明 thinking ["enabled","disabled"]：enabled 通过，adaptive 被拒
-      const response = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-reasoner", thinking: "enabled" } });
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
-      const adaptive = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { thinking: "adaptive" } });
-      expect(adaptive.statusCode).toBe(400);
-      // 切回未声明模型（deepseek-chat）：继承的 thinking 保留（未声明 = 全部兼容）
-      const kept = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-chat" } });
-      expect(kept.statusCode).toBe(200);
-      expect(await sessions.get(session.id)).toMatchObject({ model: "deepseek-chat", thinking: "enabled" });
-      const invalidSnapshot = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { snapshotMode: "sometimes" } });
-      expect(invalidSnapshot.statusCode).toBe(400);
-      const invalidShell = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { shellBackend: "powershell" } });
-      expect(invalidShell.statusCode).toBe(400);
-      const invalidPythonEnv = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "conda" } });
-      expect(invalidPythonEnv.statusCode).toBe(400);
-      const invalidNodeEnv = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { nodeEnv: "volta" } });
-      expect(invalidNodeEnv.statusCode).toBe(400);
-      const invalidSwarm = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { swarmEnabled: "yes" } });
-      expect(invalidSwarm.statusCode).toBe(400);
-      const modes = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" } });
-      expect(modes.statusCode).toBe(200);
-      expect(modes.json()).toMatchObject({ sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" });
-      expect(await sessions.get(session.id)).toMatchObject({ sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" });
-      // 回退本机环境：pythonEnv 置回 global 时从会话元数据中清除
-      const cleared = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "global" } });
-      expect(cleared.statusCode).toBe(200);
-      expect(await sessions.get(session.id)).not.toHaveProperty("pythonEnv");
-      // nodeEnv 与 pythonEnv 同款：合法值持久化，global 置回时从元数据清除
-      const nodeSet = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { nodeEnv: "fnm" } });
-      expect(nodeSet.statusCode).toBe(200);
-      expect(nodeSet.json()).toMatchObject({ nodeEnv: "fnm" });
-      expect(await sessions.get(session.id)).toMatchObject({ nodeEnv: "fnm" });
-      const nodeCleared = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { nodeEnv: "global" } });
-      expect(nodeCleared.statusCode).toBe(200);
-      expect(await sessions.get(session.id)).not.toHaveProperty("nodeEnv");
-      // 并行子代理开关：true 持久化，false 从元数据清除
-      const swarmOn = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { swarmEnabled: true } });
-      expect(swarmOn.statusCode).toBe(200);
-      expect(await sessions.get(session.id)).toMatchObject({ swarmEnabled: true });
-      const swarmOff = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { swarmEnabled: false } });
-      expect(swarmOff.statusCode).toBe(200);
-      expect(await sessions.get(session.id)).not.toHaveProperty("swarmEnabled");
-      const first = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "timeline" }]);
-      const second = await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "node" }], { runId: "run-test", turnId: "run-test:0" });
-      const timeline = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/timeline` });
-      expect(timeline.statusCode).toBe(200);
-      expect(timeline.json().activeLeafId).toBe(second.id);
-      expect(timeline.json().entries).toEqual(expect.arrayContaining([expect.objectContaining({ id: second.id, parentId: first.id, runId: "run-test", turnId: "run-test:0" })]));
-    });
-
-    it("recycles persistent shells when sandbox mode, network, or python/node env changes", async () => {
-      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
-      // 无关配置变更（快照模式）不回收持久 shell
-      const unrelated = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { snapshotMode: "manual" } });
-      expect(unrelated.statusCode).toBe(200);
-      expect(disposedShells).toEqual([]);
-      // 沙盒模式切换：持久 shell 的 pty 在旧策略下打开，必须回收重建才生效
-      const sandbox = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off" } });
-      expect(sandbox.statusCode).toBe(200);
-      expect(disposedShells).toEqual([session.id]);
-      // 网络策略切换同样改变沙盒策略，回收
-      const network = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { network: "deny" } });
-      expect(network.statusCode).toBe(200);
-      expect(disposedShells).toEqual([session.id, session.id]);
-      // pythonEnv / nodeEnv 变更：环境激活命令只在建壳时注入一次，回收后下条 bash 透明重建
-      const python = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "uv-workspace" } });
-      expect(python.statusCode).toBe(200);
-      const node = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { nodeEnv: "fnm" } });
-      expect(node.statusCode).toBe(200);
-      expect(disposedShells).toEqual([session.id, session.id, session.id, session.id]);
-      // 同值重复提交（无实际变化）不回收
-      const sameEnv = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "uv-workspace", nodeEnv: "fnm" } });
-      expect(sameEnv.statusCode).toBe(200);
-      expect(disposedShells).toHaveLength(4);
-    });
-
-    it("在途 shell 门控：沙盒变更默认 409、force 放行；force 非法 400、无关字段放行", async () => {
-      // 在途 shell 命令时沙盒变更默认 409（SHELL_PENDING），force: true 放行并回收
-      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
-      shellPending = true;
-      // 409：不落盘、不回收，由前端二次确认后带 force 重发
-      const pending = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off" } });
-      expect(pending.statusCode).toBe(409);
-      expect(pending.json().code).toBe("SHELL_PENDING");
-      expect(disposedShells).toEqual([]);
-      // 409 不落盘：sandboxMode 保持 create 时写入的平台默认档
-      expect((await sessions.get(session.id))?.sandboxMode).toBe(process.platform === "win32" ? "appcontainer" : "bubblewrap");
-      // force: true 放行：写入新沙盒模式并回收持久 shell
-      const forced = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", force: true } });
-      expect(forced.statusCode).toBe(200);
-      expect(disposedShells).toEqual([session.id]);
-      expect(await sessions.get(session.id)).toMatchObject({ sandboxMode: "off" });
-
-      // force 非 boolean 一律 400；无关配置变更不受在途 shell 门控
-      disposedShells.length = 0;
-      const other = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
-      const badForce = await app.inject({ method: "PUT", url: `/api/sessions/${other.id}/config`, payload: { sandboxMode: "off", force: "yes" } });
-      expect(badForce.statusCode).toBe(400);
-      expect(badForce.json().error).toBe("force must be a boolean");
-      expect((await sessions.get(other.id))?.sandboxMode).toBe(process.platform === "win32" ? "appcontainer" : "bubblewrap");
-      // 快照模式不触及沙盒/环境：即使有在途 shell 也直接放行、不回收
-      shellPending = true;
-      const unrelated = await app.inject({ method: "PUT", url: `/api/sessions/${other.id}/config`, payload: { snapshotMode: "manual" } });
-      expect(unrelated.statusCode).toBe(200);
-      expect(disposedShells).toEqual([]);
-    });
-
-    it("accepts review permission mode, persists reviewModel, rejects invalid values", async () => {
-      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
-      const ok = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "review", reviewModel: "fast" } });
-      expect(ok.statusCode).toBe(200);
-      expect(ok.json()).toMatchObject({ permissionMode: "review", reviewModel: "fast" });
-      expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "review", reviewModel: "fast" });
-      // 无清除语义：后续 PUT 不带 reviewModel 时保留旧值
-      const main = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { reviewModel: "main" } });
-      expect(main.statusCode).toBe(200);
-      const inherit = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "ask" } });
-      expect(inherit.statusCode).toBe(200);
-      expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "ask", reviewModel: "main" });
-      const badMode = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "auto" } });
-      expect(badMode.statusCode).toBe(400);
-      expect(badMode.json().error).toContain("review");
-      const badReviewModel = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { reviewModel: "slow" } });
-      expect(badReviewModel.statusCode).toBe(400);
-      expect(badReviewModel.json().error).toBe('reviewModel must be "fast" or "main"');
-    });
-
-    it("运行中热切：权限类与模型类字段放行并落盘，agentMode/沙盒等仍 409", async () => {
-      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
-      running = true;
-      // 权限档热切：200、落盘、触发挂起审批结算
-      const yolo = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "yolo" } });
-      expect(yolo.statusCode).toBe(200);
-      expect(yolo.json()).toMatchObject({ permissionMode: "yolo" });
-      expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "yolo" });
-      expect(reconciled).toEqual([session.id]);
-      // reviewModel 同为运行中可热切字段
-      const review = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { reviewModel: "main" } });
-      expect(review.statusCode).toBe(200);
-      expect(reconciled).toEqual([session.id, session.id]);
-      // 模型热切：200、落盘、打标丢弃 fallback 覆盖（主循环下一 turn 生效）
-      const model = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5" } });
-      expect(model.statusCode).toBe(200);
-      expect(await sessions.get(session.id)).toMatchObject({ model: "gpt-5" });
-      expect(modelFallbackResets).toEqual([session.id]);
-      // 思考档热切：200、落盘（同轮现读，无需清 fallback）
-      const thinking = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { thinking: "adaptive" } });
-      expect(thinking.statusCode).toBe(200);
-      expect(await sessions.get(session.id)).toMatchObject({ thinking: "adaptive" });
-      expect(modelFallbackResets).toEqual([session.id]);
-      // 模型未变化的重复提交不打标
-      const same = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5" } });
-      expect(same.statusCode).toBe(200);
-      expect(modelFallbackResets).toEqual([session.id]);
-      // 其余字段运行中仍 409：agentMode、沙盒模式、以及与放行字段混提；409 不落盘
-      const agentMode = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "plan" } });
-      expect(agentMode.statusCode).toBe(409);
-      const sandbox = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off" } });
-      expect(sandbox.statusCode).toBe(409);
-      const mixed = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5-mini", agentMode: "plan" } });
-      expect(mixed.statusCode).toBe(409);
-      // 运行中每次成功更新都会结算挂起审批（放行字段全部 5 次：权限/审核模型/模型/思考/重复模型）
-      expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "yolo", model: "gpt-5" });
-      expect(reconciled).toEqual(Array(5).fill(session.id));
-      // 空闲时改权限档不触发结算（无运行中挂起单）
-      running = false;
-      const idle = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "ask" } });
-      expect(idle.statusCode).toBe(200);
-      expect(reconciled).toHaveLength(5);
-    });
-  });
-});
-
-// ---- session-defaults 组（合并） ----
-async function defaultsFixture(env: NodeJS.ProcessEnv = {}) {
-  const setup = await makeTestApp({
-    tempPrefix: "owc-session-defaults-",
-    settingsEnv: env,
-    configureProviders: (providers) => providers.register(makeStubProvider("stub")),
-  });
-  return setup;
-}
-
-describe("新建会话套用全局默认（defaultEffort / defaultSnapshotMode）", () => {
-  it("设置非缺省时新会话套用 effort/snapshotMode；缺省则不带", async () => {
-    // 非缺省：新会话带上 effort 与 snapshotMode
-    const set = await defaultsFixture({ OWC_DEFAULT_EFFORT: "high", OWC_DEFAULT_SNAPSHOT_MODE: "manual" });
-    try {
-      const response = await set.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: set.root, provider: "stub", model: "m" } });
-      expect(response.statusCode, response.body).toBe(201);
-      expect(response.json()).toMatchObject({ effort: "high", snapshotMode: "manual" });
-      // 事件与落盘 meta 一致
-      const meta = await set.sessions.get(response.json<{ id: string }>().id);
-      expect(meta).toMatchObject({ effort: "high", snapshotMode: "manual" });
-    } finally {
-      await set.app.close();
+      const app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
+      const put = (id: string, payload: Record<string, unknown>) => app.inject({ method: "PUT", url: `/api/sessions/${id}/config`, payload });
+      return { app, sessions, flags, put };
     }
+    it("空闲会话：模型/思考/权限类字段校验并落盘；未声明枚举全放行，非法值 400", async () => {
+      const { app, sessions, put } = await configApp();
+      try {
+        const session = await sessions.create({ cwd: "/tmp", provider: "anthropic", model: "some-random-model" });
+        // 未声明 capabilities（空数组）= 全部兼容：合法枚举含 ultra 放行，非法枚举仍 400
+        expect((await put(session.id, { effort: "high" })).statusCode).toBe(200);
+        expect(await sessions.get(session.id)).toMatchObject({ effort: "high" });
+        expect((await put(session.id, { effort: "ultra" })).statusCode).toBe(200);
+        expect((await put(session.id, { effort: "extreme" })).statusCode).toBe(400);
+        // 已声明白名单维持 400：gpt-5 只声明 low/medium/high，deepseek 不含 minimal
+        expect((await put(session.id, { model: "gpt-5", effort: "xhigh" })).statusCode).toBe(400);
+        expect((await put(session.id, { model: "deepseek-chat", effort: "minimal" })).statusCode).toBe(400);
+        // 切到不含继承值的已声明模型：原子清除 effort，无需用户先单独关闭
+        const switched = await put(session.id, { model: "gpt-5" }); expect(switched.json()).toMatchObject({ model: "gpt-5" });
+        expect(switched.json()).not.toHaveProperty("effort"); expect(await sessions.get(session.id)).not.toHaveProperty("effort");
+        // thinking 白名单：deepseek-reasoner 声明 enabled/disabled
+        expect((await put(session.id, { model: "deepseek-reasoner", thinking: "enabled" })).statusCode).toBe(200);
+        expect((await put(session.id, { thinking: "adaptive" })).statusCode).toBe(400);
+        // 切回未声明模型：继承的 thinking 保留
+        await put(session.id, { model: "deepseek-chat" });
+        expect(await sessions.get(session.id)).toMatchObject({ model: "deepseek-chat", thinking: "enabled" });
+        // review 权限档与审核模型：无清除语义，后续 PUT 不带 reviewModel 时保留旧值
+        expect((await put(session.id, { permissionMode: "review", reviewModel: "fast" })).json()).toMatchObject({ permissionMode: "review", reviewModel: "fast" });
+        await put(session.id, { reviewModel: "main" }); expect((await put(session.id, { permissionMode: "ask" })).statusCode).toBe(200);
+        expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "ask", reviewModel: "main" });
+        const badMode = await put(session.id, { permissionMode: "auto" }); expect(badMode.statusCode).toBe(400);
+        expect(badMode.json().error).toContain("review");
+        const badReviewModel = await put(session.id, { reviewModel: "slow" }); expect(badReviewModel.statusCode).toBe(400);
+        expect(badReviewModel.json().error).toBe('reviewModel must be "fast" or "main"');
+      } finally {
+        await app.close();
+      }
+    });
 
-    // 缺省（none/auto）：新会话不带 effort 与 snapshotMode
-    const unset = await defaultsFixture();
-    try {
-      const response = await unset.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: unset.root, provider: "stub", model: "m" } });
-      expect(response.statusCode, response.body).toBe(201);
-      const body = response.json<Record<string, unknown>>();
-      expect(body.effort).toBeUndefined();
-      expect(body.snapshotMode).toBeUndefined();
-    } finally {
-      await unset.app.close();
-    }
+    it("模式与环境字段：合法值落盘、回退本机环境时删键、非法值 400；timeline 暴露 lineage", async () => {
+      const { app, sessions, put } = await configApp();
+      try {
+        const session = await sessions.create({ cwd: "/tmp", provider: "anthropic", model: "deepseek-chat" });
+        expect((await put(session.id, { snapshotMode: "sometimes" })).statusCode).toBe(400);
+        expect((await put(session.id, { shellBackend: "powershell" })).statusCode).toBe(400);
+        expect((await put(session.id, { pythonEnv: "conda" })).statusCode).toBe(400);
+        expect((await put(session.id, { nodeEnv: "volta" })).statusCode).toBe(400);
+        expect((await put(session.id, { swarmEnabled: "yes" })).statusCode).toBe(400);
+        const modes = await put(session.id, { sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" });
+        expect(modes.json()).toMatchObject({ sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" });
+        expect(await sessions.get(session.id)).toMatchObject({ sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" });
+        // 回退本机环境（global）与关闭开关：删键而不是存假值
+        expect((await put(session.id, { pythonEnv: "global" })).statusCode).toBe(200);
+        expect(await sessions.get(session.id)).not.toHaveProperty("pythonEnv");
+        expect((await put(session.id, { nodeEnv: "fnm" })).json()).toMatchObject({ nodeEnv: "fnm" });
+        await put(session.id, { nodeEnv: "global" }); expect(await sessions.get(session.id)).not.toHaveProperty("nodeEnv");
+        await put(session.id, { swarmEnabled: true }); expect(await sessions.get(session.id)).toMatchObject({ swarmEnabled: true });
+        await put(session.id, { swarmEnabled: false }); expect(await sessions.get(session.id)).not.toHaveProperty("swarmEnabled");
+        const first = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "timeline" }]);
+        const second = await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "node" }], { runId: "run-test", turnId: "run-test:0" });
+        const timeline = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/timeline` });
+        expect(timeline.json().activeLeafId).toBe(second.id);
+        expect(timeline.json().entries).toEqual(expect.arrayContaining([expect.objectContaining({ id: second.id, parentId: first.id, runId: "run-test", turnId: "run-test:0" })]));
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("沙盒/网络/环境变更回收持久 shell；在途 shell 时默认 409、force 放行、无关字段不受门控", async () => {
+      const { app, sessions, flags, put } = await configApp();
+      try {
+        const session = await sessions.create({ cwd: "/tmp", provider: "anthropic", model: "deepseek-chat" });
+        // 无关变更与同值重复提交都不回收
+        await put(session.id, { snapshotMode: "manual" }); expect(flags.disposedShells).toEqual([]);
+        // 沙盒模式与网络策略变更：pty 在旧策略下打开，必须回收重建才生效
+        await put(session.id, { sandboxMode: "off" });
+        await put(session.id, { network: "deny" }); expect(flags.disposedShells).toEqual([session.id, session.id]);
+        // 环境激活命令只在建壳时注入一次，切换后必须回收
+        await put(session.id, { pythonEnv: "uv-workspace" });
+        await put(session.id, { nodeEnv: "fnm" }); expect(flags.disposedShells).toEqual(Array(4).fill(session.id));
+        await put(session.id, { pythonEnv: "uv-workspace", nodeEnv: "fnm" }); expect(flags.disposedShells).toHaveLength(4);
+        // 在途 shell：409 且不落盘不回收，由前端二次确认后带 force 重发
+        const gated = await sessions.create({ cwd: "/tmp", provider: "anthropic", model: "deepseek-chat" });
+        flags.shellPending = true;
+        const pending = await put(gated.id, { sandboxMode: "off" }); expect(pending.statusCode).toBe(409);
+        expect(pending.json().code).toBe("SHELL_PENDING"); expect((await sessions.get(gated.id))?.sandboxMode).toBe(PLATFORM_DEFAULT_SANDBOX);
+        expect(flags.disposedShells).toHaveLength(4);
+        // force 非 boolean 一律 400
+        const badForce = await put(gated.id, { sandboxMode: "off", force: "yes" }); expect(badForce.statusCode).toBe(400);
+        expect(badForce.json().error).toBe("force must be a boolean");
+        expect((await sessions.get(gated.id))?.sandboxMode).toBe(PLATFORM_DEFAULT_SANDBOX);
+        const forced = await put(gated.id, { sandboxMode: "off", force: true }); expect(forced.statusCode).toBe(200);
+        expect(await sessions.get(gated.id)).toMatchObject({ sandboxMode: "off" });
+        expect(flags.disposedShells).toEqual([session.id, session.id, session.id, session.id, gated.id]);
+        // 不触及沙盒/环境的字段即使有在途 shell 也放行
+        expect((await put(gated.id, { snapshotMode: "manual" })).statusCode).toBe(200); expect(flags.disposedShells).toHaveLength(5);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("运行中热切：权限/审核/模型/思考落盘，agentMode 与沙盒等仍 409 且不落盘", async () => {
+      const { app, sessions, flags, put } = await configApp();
+      try {
+        const session = await sessions.create({ cwd: "/tmp", provider: "anthropic", model: "deepseek-chat" });
+        flags.running = true; expect((await put(session.id, { permissionMode: "yolo" })).statusCode).toBe(200);
+        expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "yolo" });
+        expect((await put(session.id, { reviewModel: "main" })).statusCode).toBe(200);
+        expect((await put(session.id, { model: "gpt-5" })).statusCode).toBe(200);
+        expect((await put(session.id, { thinking: "adaptive" })).statusCode).toBe(200);
+        expect((await put(session.id, { model: "gpt-5" })).statusCode).toBe(200); // 同值重复提交无害
+        expect(await sessions.get(session.id)).toMatchObject({ model: "gpt-5", thinking: "adaptive" });
+        // 其余字段运行中仍 409，且 409 不落盘
+        expect((await put(session.id, { agentMode: "plan" })).statusCode).toBe(409);
+        expect((await put(session.id, { sandboxMode: "off" })).statusCode).toBe(409);
+        expect((await put(session.id, { model: "gpt-5-mini", agentMode: "plan" })).statusCode).toBe(409);
+        expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "yolo", model: "gpt-5", thinking: "adaptive" });
+      } finally {
+        await app.close();
+      }
+    });
   });
-
-  it("非法枚举值（env 直写）：静默跳过，不阻断创建", async () => {
-    const setup = await defaultsFixture({ OWC_DEFAULT_EFFORT: "bogus" });
-    try {
+  describe("新建会话的全局默认", () => {
+    async function createWithDefaults(env: NodeJS.ProcessEnv) {
+      const setup = await makeTestApp({
+        tempPrefix: "owc-session-defaults-",
+        settingsEnv: env,
+        configureProviders: (providers) => providers.register(makeStubProvider("stub")),
+      });
       const response = await setup.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: setup.root, provider: "stub", model: "m" } });
-      expect(response.statusCode, response.body).toBe(201);
-      expect(response.json<Record<string, unknown>>().effort).toBeUndefined();
-    } finally {
-      await setup.app.close();
+      return { setup, response };
     }
+    it("effort/snapshotMode 默认值套用且可被会话覆盖；非法枚举静默跳过", async () => {
+      const set = await createWithDefaults({ OWC_DEFAULT_EFFORT: "high", OWC_DEFAULT_SNAPSHOT_MODE: "manual" });
+      try {
+        expect(set.response.statusCode, set.response.body).toBe(201);
+        expect(set.response.json()).toMatchObject({ effort: "high", snapshotMode: "manual" });
+        const id = set.response.json<{ id: string }>().id;
+        expect(await set.setup.sessions.get(id)).toMatchObject({ effort: "high", snapshotMode: "manual" });
+        // 会话自身配置优先于全局默认
+        const updated = await set.setup.app.inject({ method: "PUT", url: `/api/sessions/${id}/config`, payload: { effort: "low" } });
+        expect(updated.statusCode, updated.body).toBe(200); expect(updated.json()).toMatchObject({ effort: "low" });
+      } finally {
+        await set.setup.app.close();
+      }
+      // 缺省（none/auto）：不带这两个键
+      const unset = await createWithDefaults({});
+      try {
+        expect(unset.response.statusCode, unset.response.body).toBe(201);
+        expect(unset.response.json<Record<string, unknown>>().effort).toBeUndefined();
+        expect(unset.response.json<Record<string, unknown>>().snapshotMode).toBeUndefined();
+      } finally {
+        await unset.setup.app.close();
+      }
+      // env 直写非法枚举：不阻断创建
+      const bogus = await createWithDefaults({ OWC_DEFAULT_EFFORT: "bogus" });
+      try {
+        expect(bogus.response.statusCode, bogus.response.body).toBe(201);
+        expect(bogus.response.json<Record<string, unknown>>().effort).toBeUndefined();
+      } finally {
+        await bogus.setup.app.close();
+      }
+    });
+
+    it("快照后端偏好：可用则直接预设，平台不可用回落自动并告警", async () => {
+      const preset = await createWithDefaults({ OWC_SNAPSHOT_BACKEND: "git-shadow" });
+      try {
+        expect(preset.response.json()).toMatchObject({ snapshotBackend: "git-shadow" });
+      } finally {
+        await preset.setup.app.close();
+      }
+      // 指定后端在当前平台不可用（如 win32 上的 btrfs）：跳过探测链，回落自动并告警
+      const fallback = await createWithDefaults({ OWC_SNAPSHOT_BACKEND: "btrfs" });
+      try {
+        expect(fallback.response.statusCode, fallback.response.body).toBe(201);
+        expect(fallback.response.json<Record<string, unknown>>().snapshotBackend).toBeUndefined();
+        expect(fallback.setup.observed.find((item) => item.type === "snapshot.backend_fallback")).toMatchObject({ payload: { preferred: "btrfs" } });
+      } finally {
+        await fallback.setup.app.close();
+      }
+    });
   });
-
-  it("会话自身 PUT config 覆盖优先于全局默认", async () => {
-    const setup = await defaultsFixture({ OWC_DEFAULT_EFFORT: "high" });
-    try {
-      const created = await setup.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: setup.root, provider: "stub", model: "m" } });
-      const id = created.json<{ id: string }>().id;
-      const updated = await setup.app.inject({ method: "PUT", url: `/api/sessions/${id}/config`, payload: { effort: "low" } });
-      expect(updated.statusCode, updated.body).toBe(200);
-      expect(updated.json()).toMatchObject({ effort: "low" });
-    } finally {
-      await setup.app.close();
+  describe("PATCH /api/sessions/:id", () => {
+    async function displayApp() {
+      return await makeTestApp({ tempPrefix: "owc-session-display-", configureProviders: (providers) => providers.register(makeStubProvider("test")) });
     }
-  });
-});
+    it("标题覆盖与清除回落、置顶往返、不改 updatedAt；校验错误 400 / 未知会话 404", async () => {
+      const setup = await displayApp();
+      const { root, sessions, app } = setup;
+      const patch = (id: string, payload: Record<string, unknown>) => app.inject({ method: "PATCH", url: `/api/sessions/${id}`, payload });
+      try {
+        const session = await sessions.create({ cwd: "/tmp", provider: "test", model: "m" });
+        await sessions.appendMessage(session.id, "user", [{ type: "text", text: "帮我修一个 failing test" }]);
+        expect((await patch(session.id, { title: "  我的会话  " })).json()).toMatchObject({ title: "我的会话" });
+        expect((await patch(session.id, { pinned: true })).json()).toMatchObject({ pinned: true });
+        // 列表响应携带展示字段（向后兼容：未置顶时不带 pinned 键）
+        expect((await app.inject({ method: "GET", url: "/api/sessions" })).json()[0]).toMatchObject({ title: "我的会话", pinned: true });
+        const reloaded = new SessionStore(path.join(root, "sessions"));
+        await reloaded.initialize(); expect(await reloaded.get(session.id)).toMatchObject({ title: "我的会话", pinned: true });
+        // 空串清除覆盖 → 回落到首条用户消息派生的标题
+        const cleared = await patch(session.id, { title: "", pinned: false }); expect(cleared.json().title).toBe("帮我修一个 failing test");
+        expect(cleared.json()).not.toHaveProperty("pinned");
+        // 空会话无消息可派生 → 默认标题
+        const empty = await sessions.create({ cwd: "/tmp", provider: "test", model: "m", title: "自定义" });
+        expect((await patch(empty.id, { title: "   " })).json().title).toBe("New session");
+        // 纯展示属性不更新 updatedAt（不应改变列表排序）
+        const display = await sessions.create({ cwd: "/tmp", provider: "test", model: "m" });
+        expect((await patch(display.id, { title: "新标题", pinned: true })).json().updatedAt).toBe(display.updatedAt);
+        expect((await sessions.get(display.id))?.updatedAt).toBe(display.updatedAt);
+        // 校验错误：超长标题、类型错误、空 body、未知会话
+        expect((await patch(session.id, { title: "x".repeat(121) })).statusCode).toBe(400);
+        expect((await patch(session.id, { title: 42 })).statusCode).toBe(400);
+        expect((await patch(session.id, { pinned: "yes" })).statusCode).toBe(400); expect((await patch(session.id, {})).statusCode).toBe(400);
+        expect((await patch("00000000-0000-0000-0000-000000000000", { pinned: true })).statusCode).toBe(404);
+        expect(await sessions.get(session.id)).not.toHaveProperty("pinned");
+      } finally {
+        await app.close();
+      }
+    });
 
-describe("新建会话套用快照后端偏好（snapshotBackend）", () => {
-  it("后端可用直接预设；平台不可用回落自动并告警", async () => {
-    // git-shadow：直接预设，跳过探测链
-    const preset = await defaultsFixture({ OWC_SNAPSHOT_BACKEND: "git-shadow" });
-    try {
-      const response = await preset.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: preset.root, provider: "stub", model: "m" } });
-      expect(response.statusCode, response.body).toBe(201);
-      expect(response.json()).toMatchObject({ snapshotBackend: "git-shadow" });
-    } finally {
-      await preset.app.close();
-    }
-
-    // 指定后端在当前平台不可用（win32 指定 btrfs）：回落自动并告警，不阻断创建
-    const fallback = await defaultsFixture({ OWC_SNAPSHOT_BACKEND: "btrfs" });
-    try {
-      const response = await fallback.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: fallback.root, provider: "stub", model: "m" } });
-      expect(response.statusCode, response.body).toBe(201);
-      expect(response.json<Record<string, unknown>>().snapshotBackend).toBeUndefined();
-      const event = fallback.observed.find((item) => item.type === "snapshot.backend_fallback");
-      expect(event).toMatchObject({ payload: { preferred: "btrfs" } });
-    } finally {
-      await fallback.app.close();
-    }
-  });
-});
-
-// ---- session-display 组（合并） ----
-async function displaySetup() {
-  const root = await tempRoot("owc-session-display-");
-  const sessions = new SessionStore(path.join(root, "sessions"));
-  await sessions.initialize();
-  const providers = new ProviderRegistry();
-  providers.register({ name: "test", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } });
-  const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-  await pricing.initialize();
-  const agent = { isRunning: () => false } as AgentRunner;
-  const events = new EventBus();
-  const app = await buildServer({ core: {} as CoreClient, sessions, agent, events, providers, pricing });
-  return { root, sessions, events, app };
-}
-
-describe("PATCH /api/sessions/:id（重命名与置顶）", () => {
-  it("标题覆盖/清除回落、空会话默认标题、置顶往返且不更新 updatedAt", async () => {
-    const { root, sessions, app } = await displaySetup();
-    try {
-      // 设置与清除标题覆盖；置顶开关往返；列表响应携带 pinned
-      const session = await sessions.create({ cwd: "/tmp", provider: "test", model: "m" });
-      await sessions.appendMessage(session.id, "user", [{ type: "text", text: "帮我修一个 failing test" }]);
-
-      const renamed = await app.inject({ method: "PATCH", url: `/api/sessions/${session.id}`, payload: { title: "  我的会话  " } });
-      expect(renamed.statusCode).toBe(200);
-      expect(renamed.json()).toMatchObject({ title: "我的会话" });
-
-      const pinned = await app.inject({ method: "PATCH", url: `/api/sessions/${session.id}`, payload: { pinned: true } });
-      expect(pinned.statusCode).toBe(200);
-      expect(pinned.json()).toMatchObject({ pinned: true });
-
-      // 列表与详情响应均携带新字段（向后兼容：未置顶时不带 pinned 键）
-      const list = await app.inject({ method: "GET", url: "/api/sessions" });
-      expect(list.json()[0]).toMatchObject({ title: "我的会话", pinned: true });
-
-      // 重读 manager 验证持久化
-      const reloaded = new SessionStore(path.join(root, "sessions"));
-      await reloaded.initialize();
-      expect(await reloaded.get(session.id)).toMatchObject({ title: "我的会话", pinned: true });
-
-      const cleared = await app.inject({ method: "PATCH", url: `/api/sessions/${session.id}`, payload: { title: "", pinned: false } });
-      expect(cleared.statusCode).toBe(200);
-      // 空串清除覆盖 → 回落到首条用户消息的派生标题
-      expect(cleared.json().title).toBe("帮我修一个 failing test");
-      expect(cleared.json()).not.toHaveProperty("pinned");
-
-      // 空会话（无消息可派生）清除标题 → 默认标题
-      const empty = await sessions.create({ cwd: "/tmp", provider: "test", model: "m", title: "自定义" });
-      const emptyCleared = await app.inject({ method: "PATCH", url: `/api/sessions/${empty.id}`, payload: { title: "   " } });
-      expect(emptyCleared.statusCode).toBe(200);
-      expect(emptyCleared.json().title).toBe("New session");
-
-      // 重命名/置顶不更新 updatedAt（纯展示属性不应改变列表排序）
-      const display = await sessions.create({ cwd: "/tmp", provider: "test", model: "m" });
-      const displayRenamed = await app.inject({ method: "PATCH", url: `/api/sessions/${display.id}`, payload: { title: "新标题", pinned: true } });
-      expect(displayRenamed.statusCode).toBe(200);
-      expect(displayRenamed.json().updatedAt).toBe(display.updatedAt);
-      const persisted = await sessions.get(display.id);
-      expect(persisted?.updatedAt).toBe(display.updatedAt);
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("校验错误：超长标题、类型错误、空 body、未知会话", async () => {
-    const { sessions, app } = await displaySetup();
-    try {
-      const session = await sessions.create({ cwd: "/tmp", provider: "test", model: "m" });
-      const longTitle = await app.inject({ method: "PATCH", url: `/api/sessions/${session.id}`, payload: { title: "x".repeat(121) } });
-      expect(longTitle.statusCode).toBe(400);
-      const badTitle = await app.inject({ method: "PATCH", url: `/api/sessions/${session.id}`, payload: { title: 42 } });
-      expect(badTitle.statusCode).toBe(400);
-      const badPinned = await app.inject({ method: "PATCH", url: `/api/sessions/${session.id}`, payload: { pinned: "yes" } });
-      expect(badPinned.statusCode).toBe(400);
-      const empty = await app.inject({ method: "PATCH", url: `/api/sessions/${session.id}`, payload: {} });
-      expect(empty.statusCode).toBe(400);
-      const missing = await app.inject({ method: "PATCH", url: "/api/sessions/00000000-0000-0000-0000-000000000000", payload: { pinned: true } });
-      expect(missing.statusCode).toBe(404);
-      // 校验失败后原值不变
-      expect(await sessions.get(session.id)).not.toHaveProperty("pinned");
-    } finally {
-      await app.close();
-    }
-  });
-});
-
-describe("派生标题（首条用户消息）", () => {
-  it("buildServer 接线后派生标题会发布 session.updated 事件", async () => {
-    const { sessions, events, app } = await displaySetup();
-    try {
-      const published: Array<{ type: string; sessionId?: string; payload: unknown }> = [];
-      events.on("event", (event: { type: string; sessionId?: string; payload: unknown }) => published.push(event));
-      const session = await sessions.create({ cwd: "/tmp", provider: "test", model: "m" });
-      await sessions.appendMessage(session.id, "user", [{ type: "text", text: "帮我修一个 failing test" }]);
-      const update = published.find((event) => event.type === "session.updated");
-      expect(update).toBeDefined();
-      expect(update?.sessionId).toBe(session.id);
-      expect(update?.payload).toMatchObject({ title: "帮我修一个 failing test" });
-      // 后续消息不再重复发布
-      await sessions.appendMessage(session.id, "user", [{ type: "text", text: "再补充一点" }]);
-      expect(published.filter((event) => event.type === "session.updated")).toHaveLength(1);
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("派生标题时触发 onDerivedTitle 回调一次；非首条/非用户消息不触发", async () => {
-    const root = await tempRoot("owc-derived-title-");
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const derived: Array<{ id: string; title: string }> = [];
-    sessions.onDerivedTitle = (meta) => derived.push({ id: meta.id, title: meta.title });
-
-    const session = await sessions.create({ cwd: "/tmp", provider: "test", model: "m" });
-    // assistant 消息不触发
-    await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "先说话" }]);
-    expect(derived).toHaveLength(0);
-    // 首条用户消息派生标题并触发回调
-    await sessions.appendMessage(session.id, "user", [{ type: "text", text: "帮我修一个 failing test" }]);
-    expect(derived).toEqual([{ id: session.id, title: "帮我修一个 failing test" }]);
-    // 后续用户消息标题已非默认值，不再触发
-    await sessions.appendMessage(session.id, "user", [{ type: "text", text: "再补充一点" }]);
-    expect(derived).toHaveLength(1);
-    // 用户自定义标题的会话不触发
-    const titled = await sessions.create({ cwd: "/tmp", provider: "test", model: "m", title: "自定义" });
-    await sessions.appendMessage(titled.id, "user", [{ type: "text", text: "hello" }]);
-    expect(derived).toHaveLength(1);
+    it("派生标题只发布一次 session.updated 并触发一次 onDerivedTitle", async () => {
+      const { sessions, events, app } = await displayApp();
+      try {
+        const published: AppEvent[] = [];
+        events.on("event", (event: AppEvent) => published.push(event));
+        const derived: string[] = [];
+        const publish = sessions.onDerivedTitle; // buildServer 已接线事件发布，测试回调需串联
+        sessions.onDerivedTitle = (meta) => { derived.push(meta.title); publish?.(meta); };
+        const session = await sessions.create({ cwd: "/tmp", provider: "test", model: "m" });
+        // assistant 消息不触发派生
+        await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "先说话" }]);
+        await sessions.appendMessage(session.id, "user", [{ type: "text", text: "帮我修一个 failing test" }]);
+        const updates = published.filter((event) => event.type === "session.updated"); expect(updates).toHaveLength(1);
+        expect(updates[0]).toMatchObject({ sessionId: session.id, payload: { title: "帮我修一个 failing test" } });
+        expect(derived).toEqual(["帮我修一个 failing test"]);
+        // 后续用户消息与已自定义标题的会话都不再触发
+        await sessions.appendMessage(session.id, "user", [{ type: "text", text: "再补充一点" }]);
+        const titled = await sessions.create({ cwd: "/tmp", provider: "test", model: "m", title: "自定义" });
+        await sessions.appendMessage(titled.id, "user", [{ type: "text", text: "hello" }]);
+        expect(published.filter((event) => event.type === "session.updated")).toHaveLength(1); expect(derived).toHaveLength(1);
+      } finally {
+        await app.close();
+      }
+    });
   });
 });

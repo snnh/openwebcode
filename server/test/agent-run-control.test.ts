@@ -8,8 +8,7 @@ import { tempRoot } from "./helpers/temp-roots.js";
 
 /**
  * RunControl 单测（goal 续跑计数 / follow-up 队列回收 / ask_user 等待竞态）。
- * 一律用真实 SessionStore + MessageQueue（queue.json/interactions.json 走真实落盘），
- * 只有 run 回调按用例替换。
+ * 一律用真实 SessionStore + MessageQueue（queue.json/interactions.json 走真实落盘），只有 run 回调按用例替换。
  */
 async function makeControl(prefix: string) {
   const root = await tempRoot(prefix);
@@ -20,25 +19,23 @@ async function makeControl(prefix: string) {
   const observed: Array<{ type: string; payload: unknown }> = [];
   events.on("event", (event) => observed.push({ type: event.type, payload: event.payload }));
   const running = new Map<string, AbortController>();
-  const settling = new Set<string>();
   let runImpl: (sessionId: string, text: string, options: { queueItemId: string }) => Promise<void> = async () => undefined;
   const control = new RunControl({
     sessions,
     events,
     running,
-    settling,
+    settling: new Set<string>(),
     run: (sessionId, text, options) => runImpl(sessionId, text, options),
     notify: async () => undefined,
   });
   return {
-    root,
     sessions,
     session,
-    events,
     observed,
     running,
     control,
     setRun: (impl: typeof runImpl) => { runImpl = impl; },
+    queuedFollowUps: async () => (await control.listQueue(session.id)).filter((item) => item.kind === "follow_up"),
   };
 }
 
@@ -48,7 +45,6 @@ const GOAL_INCOMPLETE_ASSISTANT = "还剩收尾工作\nGOAL_INCOMPLETE: 还有�
 async function seedGoalPath(sessions: SessionStore, sessionId: string, continuations: number): Promise<void> {
   await sessions.appendMessage(sessionId, "user", [{ type: "text", text: "目标：把 agent 域的 bug 修完" }]);
   for (let index = 0; index < continuations; index += 1) {
-    // run 启动注入（user 角色、inj: 前缀）夹在普通用户消息与续跑消息之间
     await sessions.appendMessage(sessionId, "user", [{ type: "text", text: "<system-reminder>\nGOAL mode\n</system-reminder>" }], {
       id: `inj:goal:full:${index}`,
       internal: true,
@@ -59,38 +55,28 @@ async function seedGoalPath(sessions: SessionStore, sessionId: string, continuat
 }
 
 describe("RunControl goal 模式自动续跑计数（注入消息不打断计数）", () => {
-  it("已续跑 9 次（每次夹一条 inj:goal:full）：仍追加一轮续跑", async () => {
-    const { sessions, session, running, control } = await makeControl("owc-goal-count-");
-    await sessions.updateConfig(session.id, { provider: "test", model: "test-model", agentMode: "goal" });
-    await seedGoalPath(sessions, session.id, 9);
-    running.set(session.id, new AbortController());
+  it("9 次续跑后仍追加；10 次达到上限时不再追加并发布 goal.stopped", async () => {
+    const atNine = await makeControl("owc-goal-count-");
+    await atNine.sessions.updateConfig(atNine.session.id, { provider: "test", model: "test-model", agentMode: "goal" });
+    await seedGoalPath(atNine.sessions, atNine.session.id, 9);
+    atNine.running.set(atNine.session.id, new AbortController());
+    await atNine.control.maybeScheduleGoalContinuation(atNine.session.id);
+    expect(await atNine.queuedFollowUps()).toMatchObject([{ status: "queued", content: expect.stringContaining("[goal-continuation]") }]);
 
-    await control.maybeScheduleGoalContinuation(session.id);
-
-    const queued = (await control.listQueue(session.id)).filter((item) => item.kind === "follow_up" && item.status === "queued");
-    expect(queued).toHaveLength(1);
-    expect(queued[0]!.content.startsWith("[goal-continuation]")).toBe(true);
-  });
-
-  it("已续跑 10 次：达到上限，不再追加并发布 goal.stopped", async () => {
-    const { sessions, session, running, control, observed } = await makeControl("owc-goal-max-");
-    await sessions.updateConfig(session.id, { provider: "test", model: "test-model", agentMode: "goal" });
+    const atTen = await makeControl("owc-goal-max-");
+    await atTen.sessions.updateConfig(atTen.session.id, { provider: "test", model: "test-model", agentMode: "goal" });
     // 每轮 run 启动注入（inj:goal:full）都要被跳过，否则计数被截断为 1、上限失效
-    await seedGoalPath(sessions, session.id, 10);
-    await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: GOAL_INCOMPLETE_ASSISTANT }]);
-    running.set(session.id, new AbortController());
-
-    await control.maybeScheduleGoalContinuation(session.id);
-
-    expect((await control.listQueue(session.id)).filter((item) => item.kind === "follow_up" && item.status === "queued")).toHaveLength(0);
-    const stopped = observed.find((event) => event.type === "goal.stopped");
-    expect(stopped?.payload).toMatchObject({ reason: "max_continuations", count: 10 });
+    await seedGoalPath(atTen.sessions, atTen.session.id, 10);
+    atTen.running.set(atTen.session.id, new AbortController());
+    await atTen.control.maybeScheduleGoalContinuation(atTen.session.id);
+    expect(await atTen.queuedFollowUps()).toHaveLength(0);
+    expect(atTen.observed.find((event) => event.type === "goal.stopped")?.payload).toMatchObject({ reason: "max_continuations", count: 10 });
   });
 });
 
 describe("RunControl follow-up 消费失败回收", () => {
-  it("run() 的三互斥守卫抛错时队列项回到 queued（不永久卡 consuming）", async () => {
-    const { session, running, control, observed, setRun } = await makeControl("owc-follow-up-requeue-");
+  it("run() 的三互斥守卫抛错时队列项回到 queued（不永久卡 consuming，内容不丢）", async () => {
+    const { session, running, control, observed, setRun, queuedFollowUps } = await makeControl("owc-follow-up-requeue-");
     running.set(session.id, new AbortController());
     await control.enqueueFollowUp(session.id, "继续下一步");
     running.clear();
@@ -99,24 +85,17 @@ describe("RunControl follow-up 消费失败回收", () => {
     setRun(async () => { throw new Error("A shell command is pending; respond to its permission request first"); });
     await control.startFollowUp(session.id);
 
-    await vi.waitFor(async () => {
-      const items = (await control.listQueue(session.id)).filter((item) => item.kind === "follow_up");
-      expect(items).toHaveLength(1);
-      expect(items[0]!.status).toBe("queued");
-    });
+    await vi.waitFor(async () => expect(await queuedFollowUps()).toMatchObject([{ status: "queued", content: "继续下一步" }]));
     expect(observed.some((event) => event.type === "queue.run_failed")).toBe(true);
-    // 内容不丢：仍可被下一次 startFollowUp 消费
-    expect((await control.listQueue(session.id)).filter((item) => item.kind === "follow_up")[0]!.content).toBe("继续下一步");
   });
 });
 
 describe("RunControl ask_user 等待竞态", () => {
-  it("应答先于 waiter 注册落盘时不会永久挂起", async () => {
+  it("应答先于 waiter 注册落盘不会永久挂起；abort 后注册的 waiter 立即以 cancelled 结算且不留悬挂条目", async () => {
     const { sessions, session, control } = await makeControl("owc-interaction-race-");
     const interaction = await control.createInteraction(session.id, { runId: "run-1", kind: "confirm", title: "确认", prompt: "继续吗？" });
 
-    // 白盒：把 list 卡在应答之前的 pending 快照上，强制制造「respond 落在 list 读取与
-    // waiter 注册之间」的窗口（修复前该窗口会漏掉应答并永久挂起）。
+    // 白盒卡住 list，强制制造「respond 落在 list 读取与 waiter 注册之间」的窗口（修复前该窗口会漏掉应答）
     const coordinator = (control as unknown as { interactions: { list: (sessionId: string) => Promise<unknown[]> } }).interactions;
     const realList = coordinator.list.bind(coordinator);
     let snapshot: unknown[] | undefined;
@@ -132,23 +111,16 @@ describe("RunControl ask_user 等待竞态", () => {
     await vi.waitFor(() => expect(snapshot).toBeDefined());
     await control.respondInteraction(session.id, interaction.id, "ok");
     releaseList();
-
     const outcome = await Promise.race([
       waiting,
       new Promise((resolve) => setTimeout(() => resolve("timeout"), 1_000)),
     ]);
     expect(outcome).toEqual({ cancelled: false, answer: "ok" });
     expect(await sessions.get(session.id)).toBeDefined();
-  });
 
-  it("abort 后注册的 waiter 立即以 cancelled 结算，且不留悬挂条目", async () => {
-    const { control, session } = await makeControl("owc-interaction-abort-");
-    const interaction = await control.createInteraction(session.id, { runId: "run-1", kind: "confirm", title: "确认", prompt: "继续吗？" });
-    const controller = new AbortController();
-    controller.abort();
-
-    await expect(control.waitForInteractionAnswer(session.id, interaction.id, controller.signal)).resolves.toEqual({ cancelled: true });
-    const waiters = (control as unknown as { interactionWaiters: Map<string, unknown> }).interactionWaiters;
-    expect(waiters.size).toBe(0);
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(control.waitForInteractionAnswer(session.id, interaction.id, aborted.signal)).resolves.toEqual({ cancelled: true });
+    expect((control as unknown as { interactionWaiters: Map<string, unknown> }).interactionWaiters.size).toBe(0);
   });
 });

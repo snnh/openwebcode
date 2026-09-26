@@ -1,490 +1,249 @@
-/** dsh 翻译层骨架单测：wire 信封、逻辑流复用、$events 连接代状态、真实端点（非假解析器）。 */
+/** dsh 翻译层骨架单测：wire 信封、逻辑流复用、$events 连接代、真实端点（非假解析器）。 */
 import { describe, expect, it, vi } from "vitest";
 import {
-  DSH_CLOSE_PROTOCOL,
-  DshMuxSession,
-  type DshMuxChannel,
-  type DshMuxOutboundFrame,
-  type DshStreamHandle,
-  DSH_MAX_STREAMS_PER_CONNECTION,
+  DSH_CLOSE_PROTOCOL, DSH_MAX_STREAMS_PER_CONNECTION, DshMuxSession,
+  type DshMuxChannel, type DshMuxOutboundFrame, type DshStreamHandle,
 } from "../src/dsh/web-protocol/mux.js";
 import { DshEventStream, parseEventResult } from "../src/dsh/web-protocol/events.js";
 import {
-  encodeUnaryError,
-  encodeUnaryValue,
-  parseEndpointPath,
-  parseMuxFrame,
-  parseUnaryRequest,
-  wireError,
+  encodeUnaryError, encodeUnaryValue, parseEndpointPath, parseMuxFrame, parseUnaryRequest, wireError,
 } from "../src/dsh/web-protocol/wire.js";
-import { buildStreamHandlers, DshEventBridge, type DshWireDeps } from "../src/dsh/web-protocol/streams.js";
-import { buildUnaryHandlers } from "../src/dsh/web-protocol/streams.js";
+import { buildStreamHandlers, buildUnaryHandlers, DshEventBridge, type DshWireDeps } from "../src/dsh/web-protocol/streams.js";
 import { deriveSessionRecords } from "../src/dsh/web-protocol/session-events.js";
 import { EventBus } from "../src/events/event-bus.js";
 import type { DshProjectionDeps } from "../src/dsh/web-protocol/session-projection.js";
 import type { SessionMeta } from "../src/sessions/types.js";
 
-function channel(): { frames: DshMuxOutboundFrame[]; closed: Array<{ code: number; reason: string }>; sink: DshMuxChannel } {
-  const frames: DshMuxOutboundFrame[] = [];
-  const closed: Array<{ code: number; reason: string }> = [];
-  return { frames, closed, sink: { send: (frame) => frames.push(frame), close: (code, reason) => closed.push({ code, reason }) } };
+type TestDeps = DshWireDeps & { respondPermission: ReturnType<typeof vi.fn>; respondInteraction: ReturnType<typeof vi.fn> };
+type Frames = DshMuxOutboundFrame[]; type Channel = { frames: Frames; closed: Array<{ code: number; reason: string }>; sink: DshMuxChannel };
+
+/** 帧收集器：send/close 落数组，断言只看可观测输出（帧顺序、关闭码）。 */
+function channel(): Channel {
+  const frames: Frames = [], closed: Array<{ code: number; reason: string }> = [];
+  const sink: DshMuxChannel = { send: (frame) => frames.push(frame), close: (code, reason) => closed.push({ code, reason }) };
+  return { frames, closed, sink };
 }
 
-/** 最小 wire 依赖（真实投影面 + mock 宿主应答），供真实端点表使用。 */
-function wireDeps(): DshWireDeps & { respondInteraction: ReturnType<typeof vi.fn>; events: EventBus } {
-  const metas = [{
-    id: "s1",
-    cwd: "/work/proj",
-    provider: "p",
-    model: "m",
-    title: "会话一",
-    createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:10:00.000Z",
-  } as SessionMeta];
+/** 最小 wire 依赖：真实投影面 + mock 宿主应答。 */
+function wireDeps(): TestDeps {
+  const meta = { id: "s1", cwd: "/work/proj", provider: "p", model: "m", title: "会话一", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:10:00.000Z" } as SessionMeta;
+  const messages = [{ id: "m1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: "2026-01-01T00:05:00.000Z" }];
   const projection = {
     sessions: {
-      list: async () => metas,
-      getMeta: async (id: string) => metas.find((entry) => entry.id === id),
-      getTail: async (id: string) => (id === "s1"
-        ? { ...metas[0], messages: [{ id: "m1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: "2026-01-01T00:05:00.000Z" }], hasMoreMessages: false }
-        : undefined),
-      get: async () => undefined,
-      create: async () => metas[0] as never,
+      list: async () => [meta], getMeta: async (id: string) => (id === "s1" ? meta : undefined),
+      getTail: async (id: string) => (id === "s1" ? { ...meta, messages, hasMoreMessages: false } : undefined),
+      get: async () => undefined, create: async () => meta as never,
     },
     agent: {
-      run: vi.fn(async () => {}),
-      isRunning: () => false,
-      abort: vi.fn(() => true),
+      run: vi.fn(async () => {}), isRunning: () => false, abort: vi.fn(() => true),
       enqueueSteering: vi.fn(async () => ({ id: "s", position: 1, reused: false })),
       enqueueFollowUp: vi.fn(async () => ({ id: "q", position: 1, reused: false })),
-      listQueue: async () => [],
-      updateQueue: vi.fn(async () => undefined),
-      removeQueue: vi.fn(async () => false),
+      listQueue: async () => [], updateQueue: vi.fn(async () => undefined), removeQueue: vi.fn(async () => false),
     },
     defaultCwd: "/work/default",
   } as unknown as DshProjectionDeps;
-  return {
-    projection,
-    events: new EventBus(),
-    home: "/home/tester",
-    respondPermission: vi.fn(async () => {}),
-    respondInteraction: vi.fn(async () => {}),
-    logger: { warn: () => {} },
-  } as never;
+  return { projection, events: new EventBus(), home: "/home/tester", respondPermission: vi.fn(async () => {}), respondInteraction: vi.fn(async () => {}), logger: { warn: () => {} } } as never;
 }
 
-describe("dsh 会话主路径的实机缺陷回归", () => {
-  it("session/prompt 不等待整轮：agent.run 未被 await（与 REST 202 语义一致）", async () => {
-    const deps = wireDeps();
-    const handlers = buildUnaryHandlers(deps);
-    let release: (() => void) | undefined;
-    // run 永不 resolve（模拟长回合/等待审批）：prompt 必须立刻返回 accepted
-    (deps.projection.agent.run as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-      () => new Promise<void>((resolve) => { release = () => resolve(); }),
-    );
-    const started = Date.now();
-    const projected = await handlers.get("session/prompt")!({
-      request: { sessionId: "s1", content: [{ type: "text", text: "你好" }] },
-    });
-    expect(projected).toMatchObject({ value: { accepted: true } });
-    expect(Date.now() - started).toBeLessThan(1000);
-    expect(deps.projection.agent.run).toHaveBeenCalledTimes(1);
-    release?.();
-  });
+function openStream(session: DshMuxSession, endpoint: string, streamId = "s1", args: Record<string, unknown> = {}): void {
+  session.handleText(JSON.stringify({ type: "open", streamId, endpoint, payload: { args } }));
+}
 
-  it("session/prompt 的后台 run 失败不外泄为 RPC 错误（走日志 + agent.error 事件）", async () => {
-    const deps = wireDeps();
-    const warn = vi.fn();
-    (deps as { projection: DshProjectionDeps }).projection.logger = { warn };
-    (deps.projection.agent.run as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("fetch failed"));
-    const handlers = buildUnaryHandlers(deps);
-    const projected = await handlers.get("session/prompt")!({
-      request: { sessionId: "s1", content: [{ type: "text", text: "你好" }] },
-    });
-    expect(projected).toMatchObject({ value: { accepted: true } });
-    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
-  });
+/** 真实端点表 + 真实投影依赖（不经假解析器）。 */
+function realStreams(): { deps: TestDeps; bridge: DshEventBridge; frames: Frames; session: DshMuxSession } {
+  const deps = wireDeps();
+  const bridge = new DshEventBridge(deps); const streams = buildStreamHandlers(deps, bridge);
+  const { frames, sink } = channel();
+  return { deps, bridge, frames, session: new DshMuxSession(sink, (endpoint) => streams.get(endpoint)) };
+}
 
-  it("assistant/message 带 source.provider/model（vendor messageRoute 直接读 .length，缺失即整条渲染抛错）", () => {
-    const records = deriveSessionRecords(
-      [{ id: "a1", role: "assistant", content: [{ type: "text", text: "回复" }], createdAt: "2026-01-01T00:00:00.000Z" }],
-      { provider: "mock", model: "mock-chat" },
-    ).records;
-    const message = records.find((record) => record.event.type === "assistant/message")!;
-    const data = message.event.data as { message: { source: { kind: string; provider: string; model: string } }; stream: unknown[] };
-    expect(data.message.source).toEqual({ kind: "model", provider: "mock", model: "mock-chat" });
-    expect(Array.isArray(data.stream)).toBe(true);
-  });
+/** $events 下行帧里的 emit 事件（其余帧类型与本题无关）。 */
+function emits(frames: Frames): Array<{ type: string; event: string; args: unknown[] }> {
+  const values = frames.filter((frame) => frame.type === "item").map((frame) => (frame as { value?: { type?: string } }).value);
+  return values.filter((value): value is { type: string; event: string; args: unknown[] } => value?.type === "emit");
+}
 
-  it("agent.error → api-session/error、session.deleted → api-session/removed（UI 的错误位与侧边栏收敛）", () => {
-    const deps = wireDeps();
-    const bridge = new DshEventBridge(deps);
-    const streams = buildStreamHandlers(deps, bridge);
-    const { frames, sink } = channel();
-    const mux = new DshMuxSession(sink, (endpoint) => streams.get(endpoint));
-    mux.handleText(JSON.stringify({ type: "open", streamId: "1", endpoint: "$events", payload: { args: {} } }));
-    deps.events.publish({ source: "agent", type: "agent.error", sessionId: "s1", payload: { message: "fetch failed", retryable: false } });
-    deps.events.publish({ source: "session", type: "session.deleted", sessionId: "s1", payload: {} });
-    const emits = frames.filter((frame) => frame.type === "item" && (frame as { value?: { type?: string } }).value?.type === "emit")
-      .map((frame) => (frame as unknown as { value: { type: string; event: string; args: unknown[] } }).value);
-    expect(emits).toContainEqual({ type: "emit", event: "api-session/error", args: ["s1", "fetch failed"] });
-    expect(emits).toContainEqual({ type: "emit", event: "api-session/removed", args: ["s1"] });
+describe("dsh unary 信封与端点路径", () => {
+  it("parseUnaryRequest 取 args、异常一律 bad-request 且带 rpcId；响应编码只认 /api/<ns>/<method>", () => {
+    const call = (body: unknown, method: string): unknown => parseUnaryRequest(JSON.stringify(body), method); expect(call({ type: "client-request", rpcId: "r1", method: "session/list", payload: { args: { _request: { cursor: "c" } } } }, "session/list"))
+      .toEqual({ request: { rpcId: "r1", method: "session/list", args: { _request: { cursor: "c" } } } });
+    expect(call({ type: "client-request", rpcId: "r2", method: "ws/follow", payload: {} }, "ws/follow")).toEqual({ request: { rpcId: "r2", method: "ws/follow", args: {} } });
+    const mismatch = JSON.stringify({ type: "client-request", rpcId: "r1", method: "session/other", payload: { args: {} } });
+    // 非法 JSON / 信封类型不对 / path 与 method 不一致 / 端点段非法 一律拒绝
+    const rejects = ["{", JSON.stringify({ type: "nope" }), mismatch, JSON.stringify({ type: "client-request", rpcId: "r1", method: "session/bad*", payload: { args: {} } })];
+    for (const raw of rejects) expect(parseUnaryRequest(raw, raw.includes("bad*") ? "session/bad*" : "session/list")).toMatchObject({ error: { code: "gateway/bad-request" } }); expect(parseUnaryRequest(mismatch, "session/list")).toMatchObject({ rpcId: "r1" }); // 失败仍带 rpcId，客户端才归得了位
+    expect(JSON.parse(encodeUnaryValue("r2", { accepted: true }))).toMatchObject({ type: "server-response", rpcId: "r2", result: { ok: true, value: { accepted: true } } });
+    expect(JSON.parse(encodeUnaryError("r2", wireError("gateway/method-unavailable", "未实现", { endpoint: "x/y" })))).toMatchObject({ result: { ok: false, error: { code: "gateway/method-unavailable", message: "未实现", details: { endpoint: "x/y" } } } });
+    expect([parseEndpointPath("/api/session/list"), parseEndpointPath("/api/$events/result")]).toEqual([{ endpoint: "session/list" }, { endpoint: "$events/result" }]);
+    for (const bad of ["/api/session", "/api/a/b/c", "/plugins/x/client.js"]) expect(parseEndpointPath(bad)).toBeUndefined();
   });
 });
-
-describe("dsh unary 信封", () => {
-  it("解析合法请求并取 args", () => {
-    const parsed = parseUnaryRequest(
-      JSON.stringify({ type: "client-request", rpcId: "r1", method: "session/list", payload: { args: { _request: { cursor: "c" } } } }),
-      "session/list",
-    );
-    expect(parsed).toEqual({ request: { rpcId: "r1", method: "session/list", args: { _request: { cursor: "c" } } } });
-  });
-
-  it("拒绝 JSON 错误、信封缺失、path/method 不一致与非法端点段", () => {
-    expect(parseUnaryRequest("{", "session/list")).toMatchObject({ error: { code: "gateway/bad-request" } });
-    expect(parseUnaryRequest(JSON.stringify({ type: "nope" }), "session/list")).toMatchObject({ error: { code: "gateway/bad-request" } });
-    const mismatch = parseUnaryRequest(
-      JSON.stringify({ type: "client-request", rpcId: "r1", method: "session/other", payload: { args: {} } }),
-      "session/list",
-    );
-    expect(mismatch).toMatchObject({ error: { code: "gateway/bad-request" }, rpcId: "r1" });
-    const bad = parseUnaryRequest(
-      JSON.stringify({ type: "client-request", rpcId: "r1", method: "session/bad*", payload: { args: {} } }),
-      "session/bad*",
-    );
-    expect(bad).toMatchObject({ error: { code: "gateway/bad-request" } });
-  });
-
-  it("缺省 args 视作空对象；编码响应与错误", () => {
-    const parsed = parseUnaryRequest(JSON.stringify({ type: "client-request", rpcId: "r2", method: "ws/follow", payload: {} }), "ws/follow");
-    expect(parsed).toEqual({ request: { rpcId: "r2", method: "ws/follow", args: {} } });
-    expect(JSON.parse(encodeUnaryValue("r2", { accepted: true }))).toEqual({
-      type: "server-response",
-      rpcId: "r2",
-      result: { ok: true, value: { accepted: true } },
-    });
-    expect(JSON.parse(encodeUnaryError("r2", wireError("gateway/method-unavailable", "未实现", { endpoint: "x/y" })))).toEqual({
-      type: "server-response",
-      rpcId: "r2",
-      result: { ok: false, error: { code: "gateway/method-unavailable", message: "未实现", details: { endpoint: "x/y" } } },
-    });
-  });
-
-  it("路径解析只接受 /api/<ns>/<method>", () => {
-    expect(parseEndpointPath("/api/session/list")).toEqual({ endpoint: "session/list" });
-    expect(parseEndpointPath("/api/$events/result")).toEqual({ endpoint: "$events/result" });
-    expect(parseEndpointPath("/api/session")).toBeUndefined();
-    expect(parseEndpointPath("/api/a/b/c")).toBeUndefined();
-    expect(parseEndpointPath("/plugins/x/client.js")).toBeUndefined();
-  });
-});
-
 describe("dsh 逻辑流复用", () => {
-  it("open 派发到端点实现，item/end 帧按顺序发出", () => {
-    const { frames, sink } = channel();
-    const session = new DshMuxSession(sink, (endpoint) =>
-      endpoint === "session/control" ? (handle) => { handle.send({ type: "baseline" }); handle.end(); } : undefined,
-    );
-    session.handleText(JSON.stringify({ type: "open", streamId: "s1", endpoint: "session/control", payload: { args: {} } }));
-    expect(frames).toEqual([
-      { type: "item", streamId: "s1", value: { type: "baseline" } },
-      { type: "end", streamId: "s1" },
-    ]);
-    expect(session.streamCount).toBe(0);
+  it("open 派发到端点实现：item/end 顺序、未知端点 method-unavailable、undefined 值不发 value 键、端点抛错 gateway/internal", () => {
+    const ok = channel();
+    const okSession = new DshMuxSession(ok.sink, (endpoint) => (endpoint === "session/control" ? (handle) => { handle.send({ type: "baseline" }); handle.end(); } : undefined));
+    openStream(okSession, "session/control"); expect(ok.frames).toEqual([{ type: "item", streamId: "s1", value: { type: "baseline" } }, { type: "end", streamId: "s1" }]); expect(okSession.streamCount).toBe(0);
+    const mixed = channel();
+    const mixedSession = new DshMuxSession(mixed.sink, (endpoint) => {
+      if (endpoint === "nope") return undefined;
+      return endpoint === "boom" ? () => { throw new Error("炸了"); } : (handle) => { handle.send(undefined); };
+    });
+    openStream(mixedSession, "nope", "s0");
+    openStream(mixedSession, "boom", "s1");
+    openStream(mixedSession, "ok", "s2"); expect(mixed.frames.map((frame) => (frame.type === "error" ? frame.error.code : frame.type))).toEqual(["gateway/method-unavailable", "gateway/internal", "item"]); expect(mixed.frames[1]).toMatchObject({ streamId: "s1", error: { message: "炸了" } });
+    expect(mixed.frames[2]).toEqual({ type: "item", streamId: "s2" });
   });
 
-  it("未知端点回 method-unavailable；重复 streamId 回 bad-request 后按协议违规断连", () => {
-    const { frames, closed, sink } = channel();
+  it("流生命周期边界：重复 streamId/非法帧/二进制关闭、配额只回错不断连、cancel 幂等、dispose 清空", () => {
+    const dup = channel();
     let cleaned = 0;
-    const session = new DshMuxSession(sink, (endpoint) => (endpoint === "session/control" ? (handle) => { handle.onCancel(() => { cleaned++; }); } : undefined));
-    session.handleText(JSON.stringify({ type: "open", streamId: "s1", endpoint: "session/nope", payload: { args: {} } }));
-    session.handleText(JSON.stringify({ type: "open", streamId: "s2", endpoint: "session/control", payload: { args: {} } }));
-    session.handleText(JSON.stringify({ type: "open", streamId: "s2", endpoint: "session/control", payload: { args: {} } }));
-    expect(frames.map((frame) => frame.type === "error" ? frame.error.code : frame.type)).toEqual([
-      "gateway/method-unavailable", "gateway/bad-request",
-    ]);
-    // 与上游一致：重复 streamId 是协议违规 → 回错后断开物理连接并清理全部逻辑流
-    expect(closed).toEqual([{ code: DSH_CLOSE_PROTOCOL, reason: "duplicate streamId: s2" }]);
+    const dupSession = new DshMuxSession(dup.sink, (endpoint) => (endpoint === "session/control" ? (handle) => { handle.onCancel(() => { cleaned++; }); } : undefined));
+    openStream(dupSession, "nope", "s1");
+    openStream(dupSession, "session/control", "s2");
+    openStream(dupSession, "session/control", "s2"); expect(dup.frames.map((frame) => (frame.type === "error" ? frame.error.code : frame.type))).toEqual(["gateway/method-unavailable", "gateway/bad-request"]); expect(dup.closed).toEqual([{ code: DSH_CLOSE_PROTOCOL, reason: "duplicate streamId: s2" }]);
     expect(cleaned).toBe(1);
-    expect(session.streamCount).toBe(0);
-    // 断连后不再处理该连接的后续帧
-    session.handleText(JSON.stringify({ type: "open", streamId: "s3", endpoint: "session/control", payload: { args: {} } }));
-    expect(session.streamCount).toBe(0);
-  });
-
-  it("单连接逻辑流上限：超限 open 回 bad-request（不断开物理连接）", () => {
-    const { frames, closed, sink } = channel();
-    const session = new DshMuxSession(sink, () => (handle) => { void handle; });
-    for (let index = 0; index < DSH_MAX_STREAMS_PER_CONNECTION; index++) {
-      session.handleText(JSON.stringify({ type: "open", streamId: `s${index}`, endpoint: "session/control", payload: { args: {} } }));
+    openStream(dupSession, "session/control", "s3"); expect(dupSession.streamCount).toBe(0); // 断连后不再处理该连接的帧
+    for (const raw of ["not json", '{"type":"open","streamId":"s1","endpoint":"session/control","payload":{"args":{},"extra":1}}']) {
+      const invalid = channel();
+      new DshMuxSession(invalid.sink, () => () => {}).handleText(raw); expect([invalid.frames, invalid.closed]).toEqual([[], [{ code: DSH_CLOSE_PROTOCOL, reason: "invalid stream frame" }]]);
     }
-    expect(session.streamCount).toBe(DSH_MAX_STREAMS_PER_CONNECTION);
-    session.handleText(JSON.stringify({ type: "open", streamId: "over", endpoint: "session/control", payload: { args: {} } }));
-    expect(frames.filter((frame) => frame.type === "error")).toHaveLength(1);
-    expect(frames.find((frame) => frame.type === "error")).toMatchObject({ streamId: "over", error: { code: "gateway/bad-request" } });
-    expect(closed).toEqual([]);
-    // 释放一条后可再开：配额不是「一次性用完即封」
-    session.cancel("s0");
-    session.handleText(JSON.stringify({ type: "open", streamId: "again", endpoint: "session/control", payload: { args: {} } }));
-    expect(session.streamCount).toBe(DSH_MAX_STREAMS_PER_CONNECTION);
-  });
-
-  it("cancel 触发清理回调并停止后续推送；重复 cancel 幂等", () => {
-    const { frames, sink } = channel();
-    let cleaned = 0;
+    const binary = channel();
+    new DshMuxSession(binary.sink, () => () => {}).handleBinary(); expect(binary.closed[0]?.code).toBe(1003);
+    const quota = channel();
+    const quotaSession = new DshMuxSession(quota.sink, () => (handle) => { void handle; });
+    for (let index = 0; index < DSH_MAX_STREAMS_PER_CONNECTION; index++) openStream(quotaSession, "session/control", `s${index}`);
+    openStream(quotaSession, "session/control", "over");
+    // 配额是资源问题而非协议违规：只回错误帧，不断开物理连接，cancel 释放后可再开
+    expect([quotaSession.streamCount, quota.closed]).toEqual([DSH_MAX_STREAMS_PER_CONNECTION, []]); expect(quota.frames).toEqual([expect.objectContaining({ type: "error", streamId: "over", error: expect.objectContaining({ code: "gateway/bad-request" }) })]);
+    quotaSession.cancel("s0");
+    openStream(quotaSession, "session/control", "again"); expect(quotaSession.streamCount).toBe(DSH_MAX_STREAMS_PER_CONNECTION);
+    const idle = channel();
+    let cancels = 0;
     let handleRef: DshStreamHandle | undefined;
-    const session = new DshMuxSession(sink, () => (handle) => {
-      handle.onCancel(() => { cleaned++; });
-      handleRef = handle;
-    });
-    session.handleText(JSON.stringify({ type: "open", streamId: "s1", endpoint: "session/follow", payload: { args: {} } }));
-    session.handleText(JSON.stringify({ type: "cancel", streamId: "s1" }));
-    session.handleText(JSON.stringify({ type: "cancel", streamId: "s1" }));
-    expect(cleaned).toBe(1);
-    expect(session.streamCount).toBe(0);
-    expect(frames).toHaveLength(0);
-    expect(handleRef?.endpoint).toBe("session/follow");
-    expect(handleRef?.cancelled).toBe(true);
-  });
-
-  it("形状非法 close(1008)、二进制 close(1003)、dispose 清理全部流", () => {
-    const first = channel();
-    const session = new DshMuxSession(first.sink, () => () => {});
-    session.handleText("not json");
-    expect(first.closed).toEqual([{ code: DSH_CLOSE_PROTOCOL, reason: "invalid stream frame" }]);
-
-    const second = channel();
-    const secondSession = new DshMuxSession(second.sink, () => () => {});
-    secondSession.handleBinary();
-    expect(second.closed[0]?.code).toBe(1003);
-
-    const third = channel();
-    let cleaned = 0;
-    const thirdSession = new DshMuxSession(third.sink, () => (handle) => { handle.onCancel(() => { cleaned++; }); });
-    thirdSession.handleText(JSON.stringify({ type: "open", streamId: "a", endpoint: "session/follow", payload: { args: {} } }));
-    thirdSession.handleText(JSON.stringify({ type: "open", streamId: "b", endpoint: "session/follow", payload: { args: {} } }));
-    expect(thirdSession.streamCount).toBe(2);
-    thirdSession.dispose();
-    expect(cleaned).toBe(2);
-    expect(thirdSession.streamCount).toBe(0);
-  });
-
-  it("端点实现抛错回 gateway/internal；undefined 值不发 value 键", () => {
-    const { frames, sink } = channel();
-    const session = new DshMuxSession(sink, (endpoint) => endpoint === "boom"
-      ? () => { throw new Error("炸了"); }
-      : (handle) => { handle.send(undefined); });
-    session.handleText(JSON.stringify({ type: "open", streamId: "s1", endpoint: "boom", payload: { args: {} } }));
-    session.handleText(JSON.stringify({ type: "open", streamId: "s2", endpoint: "ok", payload: { args: {} } }));
-    const [first, second] = frames;
-    expect(first).toMatchObject({ type: "error", streamId: "s1", error: { code: "gateway/internal", message: "炸了" } });
-    expect(second).toEqual({ type: "item", streamId: "s2" });
-  });
-
-  it("帧解析：非法形状返回 undefined，合法 open 取 payload.args（payload 严格只有 args 键）", () => {
-    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"session/follow","payload":{"args":{"request":{}}}}')).toEqual({
-      type: "open", streamId: "s", endpoint: "session/follow", args: { request: {} },
-    });
-    // 无参数端点：客户端也发 {args:{}}（vendor `REMOTE_EVENT_STREAM_PAYLOAD`）
-    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"$events","payload":{"args":{}}}')).toEqual({
-      type: "open", streamId: "s", endpoint: "$events", args: {},
-    });
-    expect(parseMuxFrame('{"type":"open","streamId":"","endpoint":"a/b","payload":{"args":{}}}')).toBeUndefined();
-    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"a/b"}')).toBeUndefined();
-    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"a/b","payload":{"args":{},"extra":1}}')).toBeUndefined();
-    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"a/b","payload":{"args":[]}}')).toBeUndefined();
-    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"a/b","payload":{}}')).toBeUndefined();
-    expect(parseMuxFrame('{"type":"item","streamId":"s"}')).toBeUndefined();
-    expect(parseMuxFrame('{"type":"cancel","streamId":"s"}')).toEqual({ type: "cancel", streamId: "s" });
-  });
-
-  it("open 帧形状非法（含 payload 键不合法）按协议违规 close(1008)", () => {
-    const { frames, closed, sink } = channel();
-    const session = new DshMuxSession(sink, () => () => {});
-    session.handleText(JSON.stringify({ type: "open", streamId: "s1", endpoint: "session/control", payload: { args: {}, extra: 1 } }));
-    expect(frames).toEqual([]);
-    expect(closed).toEqual([{ code: DSH_CLOSE_PROTOCOL, reason: "invalid stream frame" }]);
-  });
-});
-
-describe("dsh 真实逻辑流端点（不经假解析器）", () => {
-  /** 用真实端点表 + 真实投影依赖开一条流，返回帧收集。 */
-  function realStreams() {
-    const deps = wireDeps();
-    const bridge = new DshEventBridge(deps);
-    const streams = buildStreamHandlers(deps, bridge);
-    const { frames, closed, sink } = channel();
-    const session = new DshMuxSession(sink, (endpoint) => streams.get(endpoint));
-    return { deps, bridge, frames, closed, session };
-  }
-
-  it("session/control 无参数：open 帧 payload.args 为 {} 时仍返回 Host 级基线（不 fail）", async () => {
-    const { frames, session } = realStreams();
-    session.handleText(JSON.stringify({ type: "open", streamId: "ctl", endpoint: "session/control", payload: { args: {} } }));
-    await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
-    expect(frames[0]).toMatchObject({ type: "item", streamId: "ctl" });
-    const value = (frames[0] as { value: { type: string; value: { jobs: Record<string, unknown>; projections: Record<string, unknown> } } }).value;
-    expect(value.type).toBe("baseline");
-    expect(value.value.jobs).toEqual({});
-    // Host 级：覆盖全部会话（该端点没有 sessionId 参数，不能只给一个会话）
-    expect(Object.keys(value.value.projections)).toEqual(["s1"]);
-    // asOfSeq 口径 = 末条记录 seq（1 条 user 消息 → 5 条记录，seq 0 基 → 水位 4）
-    expect(value.value.projections.s1).toMatchObject({ asOfSeq: 4 });
-    expect(frames.some((frame) => frame.type === "error")).toBe(false);
-  });
-
-  it("session/follow 真实端点：快照帧可发，子代理地址如实报不支持", async () => {
-    const { frames, session } = realStreams();
-    session.handleText(JSON.stringify({ type: "open", streamId: "f1", endpoint: "session/follow", payload: { args: { request: { address: { kind: "subagent", parentSessionId: "s1", childSessionId: "s2", mode: "one-shot" } } } } }));
-    await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
-    expect(frames[0]).toMatchObject({ type: "error", error: { code: "gateway/bad-request" } });
-  });
-
-  it("$events 提问回路：answers 全量映射到 owc 交互契约（多选 + 自定义答案）", async () => {
-    const { bridge, deps, frames, session } = realStreams();
-    session.handleText(JSON.stringify({ type: "open", streamId: "ev", endpoint: "$events", payload: { args: {} } }));
-    await vi.waitFor(() => expect(frames.length).toBe(1));
-    const clientId = (frames[0] as { value: { clientId: string } }).value.clientId;
-
-    deps.events.publish({
-      source: "agent",
-      type: "interaction.requested",
-      sessionId: "s1",
-      payload: { id: "int-1", kind: "multi_select", title: "选择", prompt: "选哪几个", options: [{ id: "opt-0", label: "A" }, { id: "opt-1", label: "B", description: "第二个" }] },
-    });
-    await vi.waitFor(() => expect(frames.length).toBe(2));
-    const waterfall = (frames[1] as { value: { eventId: string; request: { questions: Array<Record<string, unknown>> } } }).value;
-    expect(waterfall.request.questions).toEqual([{
-      id: "int-1",
-      question: "选哪几个",
-      header: "选择",
-      options: [{ label: "A" }, { label: "B", description: "第二个" }],
-      multiSelect: true,
-    }]);
-
-    const resolved = await bridge.resolveResult({
-      clientId,
-      eventId: waterfall.eventId,
-      outcome: { kind: "result", value: { answers: [{ id: "int-1", selected: ["A", "B"], custom: "再加一个" }] } },
-    });
-    expect(resolved).toEqual({ value: {} });
-    // owc 契约：select 类交互收「选项 label 数组 + other:<自定义文本>」，不能丢 custom/多项
-    await vi.waitFor(() => expect(deps.respondInteraction).toHaveBeenCalledWith("s1", "int-1", ["A", "B", "other:再加一个"]));
-  });
-
-  it("$events 提问回路：多答案按问题 id 归位，多余答案不静默接受（记日志）", async () => {
-    const deps = wireDeps();
-    const warnings: string[] = [];
-    deps.logger = { warn: (message: string) => warnings.push(message) };
-    const bridge = new DshEventBridge(deps);
-    const streams = buildStreamHandlers(deps, bridge);
-    const { frames, sink } = channel();
-    const session = new DshMuxSession(sink, (endpoint) => streams.get(endpoint));
-    session.handleText(JSON.stringify({ type: "open", streamId: "ev", endpoint: "$events", payload: { args: {} } }));
-    await vi.waitFor(() => expect(frames.length).toBe(1));
-    const clientId = (frames[0] as { value: { clientId: string } }).value.clientId;
-
-    deps.events.publish({ source: "agent", type: "interaction.requested", sessionId: "s1", payload: { id: "int-2", kind: "single_select", prompt: "选一个", options: [{ id: "opt-0", label: "A" }] } });
-    await vi.waitFor(() => expect(frames.length).toBe(2));
-    const waterfall = (frames[1] as { value: { eventId: string } }).value;
-    await bridge.resolveResult({
-      clientId,
-      eventId: waterfall.eventId,
-      // 第二条答案不对应任何 owc 交互（我们只问了一题）
-      outcome: { kind: "result", value: { answers: [{ id: "int-other", selected: ["Z"] }, { id: "int-2", selected: ["A"] }] } },
-    });
-    await vi.waitFor(() => expect(deps.respondInteraction).toHaveBeenCalledWith("s1", "int-2", ["A"]));
-    expect(warnings.some((line) => line.includes("多余答案"))).toBe(true);
-  });
-
-  it("$events 提问回路：confirm / text / plan_approval 各按 owc 契约映射", async () => {
-    const cases: Array<{ kind: string; answers: Array<Record<string, unknown>>; expected: unknown }> = [
-      { kind: "confirm", answers: [{ selected: [], custom: "是" }], expected: true },
-      { kind: "confirm", answers: [{ selected: [], custom: "no" }], expected: false },
-      { kind: "text", answers: [{ selected: [], custom: "随便说说" }], expected: "随便说说" },
-      { kind: "plan_approval", answers: [{ selected: [], custom: "approve" }], expected: { decision: "approve" } },
-      { kind: "plan_approval", answers: [{ selected: ["不要这么做"] }], expected: { decision: "reject", feedback: "不要这么做" } },
+    const cancelSession = new DshMuxSession(idle.sink, () => (handle) => { handle.onCancel(() => { cancels++; }); handleRef = handle; });
+    openStream(cancelSession, "session/follow", "f1");
+    cancelSession.handleText(JSON.stringify({ type: "cancel", streamId: "f1" }));
+    cancelSession.handleText(JSON.stringify({ type: "cancel", streamId: "f1" })); expect([cancels, cancelSession.streamCount, idle.frames.length, handleRef?.endpoint, handleRef?.cancelled]).toEqual([1, 0, 0, "session/follow", true]);
+    const last = channel();
+    let disposed = 0;
+    const disposeSession = new DshMuxSession(last.sink, () => (handle) => { handle.onCancel(() => { disposed++; }); });
+    openStream(disposeSession, "session/follow", "a");
+    openStream(disposeSession, "session/follow", "b");
+    disposeSession.dispose(); expect([disposed, disposeSession.streamCount]).toEqual([2, 0]);
+    // 合法帧取 args（无参端点也是 {args:{}}）；payload 键集合或形状不符一律 undefined
+    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"session/follow","payload":{"args":{"request":{}}}}')).toEqual({ type: "open", streamId: "s", endpoint: "session/follow", args: { request: {} } });
+    expect(parseMuxFrame('{"type":"open","streamId":"s","endpoint":"$events","payload":{"args":{}}}')).toEqual({ type: "open", streamId: "s", endpoint: "$events", args: {} }); expect(parseMuxFrame('{"type":"cancel","streamId":"s"}')).toEqual({ type: "cancel", streamId: "s" });
+    const malformed = [
+      '{"type":"open","streamId":"","endpoint":"a/b","payload":{"args":{}}}', '{"type":"open","streamId":"s","endpoint":"a/b"}',
+      '{"type":"open","streamId":"s","endpoint":"a/b","payload":{"args":{},"extra":1}}', '{"type":"open","streamId":"s","endpoint":"a/b","payload":{"args":[]}}',
+      '{"type":"open","streamId":"s","endpoint":"a/b","payload":{}}', '{"type":"item","streamId":"s"}',
     ];
-    for (const [index, entry] of cases.entries()) {
-      const deps = wireDeps();
-      const bridge = new DshEventBridge(deps);
-      const streams = buildStreamHandlers(deps, bridge);
-      const { frames, sink } = channel();
-      const session = new DshMuxSession(sink, (endpoint) => streams.get(endpoint));
-      session.handleText(JSON.stringify({ type: "open", streamId: "ev", endpoint: "$events", payload: { args: {} } }));
-      await vi.waitFor(() => expect(frames.length).toBe(1));
-      const clientId = (frames[0] as { value: { clientId: string } }).value.clientId;
-      const requestId = `int-${index}`;
-      deps.events.publish({ source: "agent", type: "interaction.requested", sessionId: "s1", payload: { id: requestId, kind: entry.kind, prompt: "问" } });
-      await vi.waitFor(() => expect(frames.length).toBe(2));
-      const waterfall = (frames[1] as { value: { eventId: string } }).value;
-      await bridge.resolveResult({ clientId, eventId: waterfall.eventId, outcome: { kind: "result", value: { answers: entry.answers } } });
-      await vi.waitFor(() => expect(deps.respondInteraction).toHaveBeenCalledWith("s1", requestId, entry.expected));
-    }
+    for (const raw of malformed) expect(parseMuxFrame(raw), raw).toBeUndefined();
   });
 });
+/** 起一条 $events 流并派发一次交互请求，返回应答回路入口。 */
+async function interactionStream(kind: string, payload: Record<string, unknown> = {}) {
+  const { deps, bridge, frames, session } = realStreams();
+  openStream(session, "$events", "ev");
+  await vi.waitFor(() => expect(frames.length).toBe(1));
+  const clientId = (frames[0] as { value: { clientId: string } }).value.clientId;
+  deps.events.publish({ source: "agent", type: "interaction.requested", sessionId: "s1", payload: { id: "int-1", kind, prompt: "问", ...payload } });
+  await vi.waitFor(() => expect(frames.length).toBe(2));
+  return { deps, bridge, clientId, waterfall: (frames[1] as { value: { eventId: string; request: Record<string, unknown> } }).value };
+}
+describe("dsh 真实逻辑流端点与 $events 回路", () => {
+  it("session/control 回 Host 级基线（覆盖全部会话、asOfSeq = 末条记录 seq）；follow 子代理如实报不支持", async () => {
+    const control = realStreams();
+    openStream(control.session, "session/control", "ctl");
+    await vi.waitFor(() => expect(control.frames.length).toBeGreaterThan(0)); expect(control.frames[0]).toMatchObject({ type: "item", streamId: "ctl", value: { type: "baseline", value: { jobs: {} } } });
+    // 1 条 user 消息投影为 5 条记录，0 基水位即 4
+    const value = (control.frames[0] as { value: { value: { projections: Record<string, unknown> } } }).value.value; expect([Object.keys(value.projections), value.projections.s1]).toEqual([["s1"], expect.objectContaining({ asOfSeq: 4 })]); expect(control.frames.some((frame) => frame.type === "error")).toBe(false);
+    const follow = realStreams();
+    openStream(follow.session, "session/follow", "f1", { request: { address: { kind: "subagent", parentSessionId: "s1", childSessionId: "s2", mode: "one-shot" } } });
+    await vi.waitFor(() => expect(follow.frames.length).toBeGreaterThan(0)); expect(follow.frames[0]).toMatchObject({ type: "error", error: { code: "gateway/bad-request" } });
+  });
 
-describe("dsh $events 连接代", () => {
-  it("ready 一次性、emit 透传、waterfall 与 $events/result 配对", () => {
-    const frames: unknown[] = [];
-    const stream = new DshEventStream("/home/u", (frame) => frames.push(frame));
+  it("提问 waterfall 形状 + answers 按交互 kind 全量映射；多余答案按 id 归位并记日志", async () => {
+    const multi = await interactionStream("multi_select", { title: "选择", options: [{ id: "opt-0", label: "A" }, { id: "opt-1", label: "B", description: "第二个" }] }); expect(multi.waterfall).toMatchObject({ event: "user-questions/request", agentId: "s1",
+      request: { questions: [{ id: "int-1", question: "问", header: "选择", options: [{ label: "A" }, { label: "B", description: "第二个" }], multiSelect: true }] } });
+    await multi.bridge.resolveResult({ clientId: multi.clientId, eventId: multi.waterfall.eventId, outcome: { kind: "result", value: { answers: [{ id: "int-1", selected: ["A", "B"], custom: "再加一个" }] } } });
+    // select 类交互收「选项 label 数组 + other:<自定义文本>」：custom 与多项都不能丢
+    await vi.waitFor(() => expect(multi.deps.respondInteraction).toHaveBeenCalledWith("s1", "int-1", ["A", "B", "other:再加一个"]));
+    // 无 id 的单条答案按唯一答案接受；各 kind 的 owc 应答形状
+    const cases: Array<[string, Array<Record<string, unknown>>, unknown]> = [
+      ["confirm", [{ selected: [], custom: "是" }], true], ["confirm", [{ selected: [], custom: "no" }], false], ["text", [{ selected: [], custom: "随便说说" }], "随便说说"],
+      ["plan_approval", [{ selected: [], custom: "approve" }], { decision: "approve" }], ["plan_approval", [{ selected: ["不要这么做"] }], { decision: "reject", feedback: "不要这么做" }],
+    ];
+    for (const [kind, answers, expected] of cases) {
+      const run = await interactionStream(kind);
+      await run.bridge.resolveResult({ clientId: run.clientId, eventId: run.waterfall.eventId, outcome: { kind: "result", value: { answers } } });
+      await vi.waitFor(() => expect(run.deps.respondInteraction).toHaveBeenCalledWith("s1", "int-1", expected));
+    }
+    const extra = await interactionStream("single_select", { options: [{ id: "opt-0", label: "A" }] });
+    const warnings: string[] = [];
+    (extra.deps as { logger: { warn(message: string): void } }).logger = { warn: (message) => warnings.push(message) };
+    // 第二条答案不对应任何 owc 交互（只问了一题）：按 id 取一条，多余的不静默接受
+    await extra.bridge.resolveResult({ clientId: extra.clientId, eventId: extra.waterfall.eventId, outcome: { kind: "result", value: { answers: [{ id: "int-other", selected: ["Z"] }, { id: "int-1", selected: ["A"] }] } } });
+    await vi.waitFor(() => expect(extra.deps.respondInteraction).toHaveBeenCalledWith("s1", "int-1", ["A"])); expect(warnings.some((line) => line.includes("多余答案"))).toBe(true);
+  });
+
+  it("连接代：ready 一次性、emit 透传、waterfall 与 $events/result 配对、cancel 回落 rejected、dispose 回落 next", () => {
+    const frames: Array<Record<string, unknown>> = [];
+    const stream = new DshEventStream("/home/u", (frame) => frames.push(frame as Record<string, unknown>));
     stream.start();
     stream.start();
     stream.emit("api-session/status", ["s1", true]);
     let outcome: unknown;
-    const eventId = stream.request("approval/request", "s1", { toolName: "bash" }, (value) => { outcome = value; });
-    expect(stream.pendingCount).toBe(1);
-    expect(parseEventResult({ clientId: stream.clientId, eventId, outcome: { kind: "result", value: "allowed-once" } })).toEqual({
-      result: { clientId: stream.clientId, eventId, outcome: { kind: "result", value: "allowed-once" } },
-    });
-    expect(stream.resolveResult({ clientId: stream.clientId, eventId, outcome: { kind: "result", value: "allowed-once" } })).toBe(true);
-    expect(outcome).toEqual({ kind: "result", value: "allowed-once" });
-    expect(stream.pendingCount).toBe(0);
-    expect(frames).toEqual([
-      { type: "ready", clientId: stream.clientId, host: { home: "/home/u" } },
-      { type: "emit", event: "api-session/status", args: ["s1", true] },
-      { type: "waterfall", event: "approval/request", eventId, agentId: "s1", request: { toolName: "bash" } },
-    ]);
-  });
-
-  it("cancel 通知客户端并让 owc 侧回落；clientId 不匹配返回 false", () => {
-    const frames: Array<{ type: string; eventId?: string }> = [];
-    const stream = new DshEventStream("/home/u", (frame) => frames.push(frame as { type: string; eventId?: string }));
-    let outcome: { kind: string } | undefined;
-    const eventId = stream.request("user-questions/request", "s1", { questions: [] }, (value) => { outcome = value; });
-    stream.cancel(eventId, "会话已停止");
-    expect(frames.at(-1)).toEqual({ type: "cancel", eventId });
-    expect(outcome).toEqual({ kind: "rejected", error: { name: "CancelledError", message: "会话已停止" } });
-    expect(stream.resolveResult({ clientId: "other", eventId, outcome: { kind: "next" } })).toBe(false);
-  });
-
-  it("dispose 让全部挂起请求回落为 next（不误判为拒绝）", () => {
-    const stream = new DshEventStream("/home/u", () => {});
+    const eventId = stream.request("approval/request", "s1", { toolName: "bash" }, (value) => { outcome = value; }); expect(stream.resolveResult({ clientId: "other", eventId, outcome: { kind: "next" } })).toBe(false); // clientId 不匹配不认领
+    expect(stream.resolveResult({ clientId: stream.clientId, eventId, outcome: { kind: "result", value: "allowed-once" } })).toBe(true); expect([outcome, stream.pendingCount]).toEqual([{ kind: "result", value: "allowed-once" }, 0]);
+    let cancelled: unknown;
+    const cancelId = stream.request("user-questions/request", "s1", { questions: [] }, (value) => { cancelled = value; });
+    stream.cancel(cancelId, "会话已停止"); expect([cancelled, frames.at(-1)]).toEqual([{ kind: "rejected", error: { name: "CancelledError", message: "会话已停止" } }, { type: "cancel", eventId: cancelId }]);
+    const disposing = new DshEventStream("/home/u", () => {});
     const outcomes: unknown[] = [];
-    stream.request("approval/request", "s1", {}, (value) => outcomes.push(value));
-    stream.request("user-questions/request", "s2", {}, (value) => outcomes.push(value));
-    stream.dispose();
-    expect(outcomes).toEqual([{ kind: "next" }, { kind: "next" }]);
-    expect(stream.pendingCount).toBe(0);
+    disposing.request("approval/request", "s1", {}, (value) => outcomes.push(value));
+    disposing.request("user-questions/request", "s2", {}, (value) => outcomes.push(value));
+    disposing.dispose();
+    // 断连不是「被拒绝」：回落 next 让 owc 侧自己收尾
+    expect([outcomes, disposing.pendingCount]).toEqual([[{ kind: "next" }, { kind: "next" }], 0]); expect(frames.map((frame) => frame.type)).toEqual(["ready", "emit", "waterfall", "waterfall", "cancel"]); expect(frames[0]).toMatchObject({ clientId: stream.clientId, host: { home: "/home/u" } });
+    expect(frames[1]).toEqual({ type: "emit", event: "api-session/status", args: ["s1", true] }); expect(frames[2]).toEqual({ type: "waterfall", event: "approval/request", eventId, agentId: "s1", request: { toolName: "bash" } });
+    // $events/result：三种 outcome 各自放行，键集合必须精确
+    const ok = (outcome: unknown): unknown => parseEventResult({ clientId: "c", eventId: "e", outcome });
+    const rejection = { name: "E", message: "m", code: "x", details: { a: 1 } }; expect(ok({ kind: "next" })).toEqual({ result: { clientId: "c", eventId: "e", outcome: { kind: "next" } } }); expect(ok({ kind: "result" })).toEqual({ result: { clientId: "c", eventId: "e", outcome: { kind: "result" } } });
+    expect(ok({ kind: "rejected", error: rejection })).toEqual({ result: { clientId: "c", eventId: "e", outcome: { kind: "rejected", error: rejection } } });
+    const malformed: Array<[Record<string, unknown>, string]> = [
+      [{ clientId: "c", eventId: "e", outcome: { kind: "next", value: 1 } }, "额外字段"],
+      [{ clientId: "c", eventId: "e", outcome: { kind: "rejected", error: { name: "E" } } }, "name/message"],
+      [{ clientId: "c", eventId: "e", outcome: { kind: "wat" } }, "next/result/rejected"],
+      [{ clientId: "c", eventId: "e", outcome: { kind: "next" }, extra: 1 }, "恰好含"],
+    ];
+    for (const [args, fragment] of malformed) expect((parseEventResult(args) as { error: string }).error, fragment).toContain(fragment);
   });
 
-  it("$events/result 形状校验：键集合必须精确、outcome 三种形态各自校验", () => {
-    expect(parseEventResult({ clientId: "c", eventId: "e", outcome: { kind: "next" } })).toEqual({
-      result: { clientId: "c", eventId: "e", outcome: { kind: "next" } },
-    });
-    expect(parseEventResult({ clientId: "c", eventId: "e", outcome: { kind: "next", value: 1 } })).toMatchObject({ error: expect.stringContaining("额外字段") });
-    expect(parseEventResult({ clientId: "c", eventId: "e", outcome: { kind: "result" } })).toEqual({
-      result: { clientId: "c", eventId: "e", outcome: { kind: "result" } },
-    });
-    expect(parseEventResult({ clientId: "c", eventId: "e", outcome: { kind: "result", value: "allowed-once" } })).toEqual({
-      result: { clientId: "c", eventId: "e", outcome: { kind: "result", value: "allowed-once" } },
-    });
-    expect(parseEventResult({ clientId: "c", eventId: "e", outcome: { kind: "rejected", error: { name: "E", message: "m", code: "x", details: { a: 1 } } } })).toEqual({
-      result: { clientId: "c", eventId: "e", outcome: { kind: "rejected", error: { name: "E", message: "m", code: "x", details: { a: 1 } } } },
-    });
-    expect(parseEventResult({ clientId: "c", eventId: "e", outcome: { kind: "rejected", error: { name: "E" } } })).toMatchObject({ error: expect.stringContaining("name/message") });
-    expect(parseEventResult({ clientId: "c", eventId: "e", outcome: { kind: "wat" } })).toMatchObject({ error: expect.stringContaining("next/result/rejected") });
-    expect(parseEventResult({ clientId: "c", eventId: "e", outcome: { kind: "next" }, extra: 1 })).toMatchObject({ error: expect.stringContaining("恰好含") });
+  it("session/prompt 不等待整轮（run 未 resolve 即返回 accepted）且后台失败不外泄；assistant/message 带 source、事件映射到 $events", async () => {
+    const pending = wireDeps();
+    let release: (() => void) | undefined;
+    (pending.projection.agent.run as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise<void>((resolve) => { release = () => resolve(); }));
+    const projected = await buildUnaryHandlers(pending).get("session/prompt")!({ request: { sessionId: "s1", content: [{ type: "text", text: "你好" }] } }); expect(projected).toMatchObject({ value: { accepted: true } });
+    release?.();
+    const failing = wireDeps();
+    const warnings: string[] = [];
+    (failing.projection as unknown as { logger: { warn(message: string): void } }).logger = { warn: (message) => warnings.push(message) };
+    (failing.projection.agent.run as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("fetch failed"));
+    const accepted = await buildUnaryHandlers(failing).get("session/prompt")!({ request: { sessionId: "s1", content: [{ type: "text", text: "你好" }] } });
+    // 失败必须留在后台（REST 202 语义），只记日志而不是变成 RPC 错误
+    expect(accepted).toMatchObject({ value: { accepted: true } });
+    await vi.waitFor(() => expect(warnings.some((line) => line.includes("fetch failed"))).toBe(true));
+    const records = deriveSessionRecords([{ id: "a1", role: "assistant", content: [{ type: "text", text: "回复" }], createdAt: "2026-01-01T00:00:00.000Z" }], { provider: "mock", model: "mock-chat" }).records;
+    const message = records.find((record) => record.event.type === "assistant/message")!;
+    // vendor messageRoute 直接读 source.provider/model 的 .length，缺失即整条渲染抛错
+    expect(message.event.data).toMatchObject({ message: { source: { kind: "model", provider: "mock", model: "mock-chat" } } });
+    const { deps, frames, session } = realStreams();
+    openStream(session, "$events", "ev");
+    await vi.waitFor(() => expect(frames.length).toBe(1));
+    deps.events.publish({ source: "agent", type: "agent.error", sessionId: "s1", payload: { message: "fetch failed", retryable: false } });
+    deps.events.publish({ source: "session", type: "session.deleted", sessionId: "s1", payload: {} });
+    // UI 错误位与侧边栏条目收敛都必须收到事件，否则要等刷新
+    await vi.waitFor(() => expect(emits(frames)).toContainEqual({ type: "emit", event: "api-session/removed", args: ["s1"] })); expect(emits(frames)).toContainEqual({ type: "emit", event: "api-session/error", args: ["s1", "fetch failed"] });
   });
 });

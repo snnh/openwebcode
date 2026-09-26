@@ -1,9 +1,7 @@
 /**
- * dsh boot 完整性检查（M4 步骤 19，vendor 缺失时跳过）。
- *
- * 这些是**真实 boot 阻断级**的不变量：boot graph 的每条 entry 必须指向一个真实存在、
- * 且以该 entry id 自注册的 bundle；每个插件文件的 rev 必须与清单一致。任何一条不满足，
- * dsh SPA 都会在浏览器里启动失败（而这些错在服务端静默 200 是查不出来的）。
+ * dsh boot 完整性检查（M4 步骤 19，vendor 缺失时跳过）。这些是**真实 boot 阻断级**不变量：
+ * graph 每条 entry 必须指向真实存在且以该 id 自注册的 bundle，rev 与文件内容一致（否则 /plugins
+ * 路由会长期发旧 bundle）；挂载集合锁定到钉版 roster，且不得含「仅作为依赖存在、官方未挂载」的包。
  */
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -11,142 +9,98 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import {
-  DSH_MODULES_ID,
-  bootInjections,
-  buildBootGraph,
-  loadVendorManifest,
-  type DshBootGraph,
-} from "../src/dsh/web-protocol/boot-graph.js";
+// prettier-ignore
+import { DSH_MODULES_ID, bootInjections, buildBootGraph, loadVendorManifest, type DshBootGraph, type DshVendorPlugin } from "../src/dsh/web-protocol/boot-graph.js";
 import { loadBridgePlugin } from "../src/dsh/web-protocol/bridge.js";
 
 const SERVER_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const VENDOR = path.join(SERVER_ROOT, "assets", "dsh-web");
 const VENDOR_READY = existsSync(path.join(VENDOR, "manifest.json"));
+/** shell 静态播种的模块（不进图，但被 inject 引用合法）。 */
+const SEEDED = new Set([
+  "react", "react/jsx-runtime", "react-dom", "react-dom/client", "@deepseek-ai/cordis",
+  "@deepseek-ai/dsh-client-store", "@deepseek-ai/dsh-client-ui-slots",
+  "@deepseek-ai/dsh-client-ui-primitives", "@deepseek-ai/dsh-client-ui-dockkit",
+]);
+const packageNameOf = (specifier: string): string => {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0] ?? specifier;
+};
+
+async function vendor(): Promise<{ plugins: DshVendorPlugin[]; ids: Set<string>; graph: DshBootGraph }> {
+  const manifest = await loadVendorManifest(VENDOR);
+  expect(manifest, "vendor 清单缺失").toBeDefined();
+  const plugins = manifest!.plugins;
+  return { plugins, ids: new Set(plugins.map((plugin) => plugin.id)), graph: buildBootGraph(plugins) };
+}
 
 describe.skipIf(!VENDOR_READY)("dsh boot 完整性（需 vendor）", () => {
-  it("每条 graph entry 的 bundle 存在、自注册 id 与 entry id 一致、rev 与文件内容一致", async () => {
-    const manifest = await loadVendorManifest(VENDOR);
-    expect(manifest).toBeDefined();
-    const graph = buildBootGraph(manifest!.plugins);
-    // 挂载集合锁定到钉版 roster（58）：插件数漂移（少装/混入未挂载包）必须在这里变红，
-    // 而不是等浏览器落到 dsh 错误页
-    expect(manifest!.plugins.length).toBe(58);
-    expect(graph.entries.length).toBe(manifest!.plugins.length);
+  it("roster 锁定 + 每条 entry 的 bundle 存在、自注册 id 与 entry id 一致、rev 与文件内容一致", async () => {
+    const { plugins, graph } = await vendor();
+    // 插件数漂移（少装/混入未挂载包）必须在这里变红，而不是等浏览器落到 dsh 错误页
+    expect(plugins.length).toBe(58);
+    expect(graph.entries.length).toBe(plugins.length);
     const failures: string[] = [];
     for (const entry of graph.entries) {
-      const file = path.join(VENDOR, "plugins", entry.id, "client.js");
-      const body = await readFile(file).catch(() => undefined);
+      const body = await readFile(path.join(VENDOR, "plugins", entry.id, "client.js")).catch(() => undefined);
       if (body === undefined) {
         failures.push(`${entry.id}: bundle 缺失`);
         continue;
       }
-      const source = body.toString("utf8");
-      const declared = /__ModuleLoader__\.load\(\{\s*id:\s*"([^"]+)"/.exec(source)?.[1];
+      const declared = /__ModuleLoader__\.load\(\{\s*id:\s*"([^"]+)"/.exec(body.toString("utf8"))?.[1];
       if (declared !== entry.id) failures.push(`${entry.id}: 自注册 id 为 ${declared ?? "(未声明)"}`);
-      if (!entry.url.includes(encodeURIComponent(entry.rev)) && !entry.url.includes(entry.rev)) {
-        failures.push(`${entry.id}: url 未携带 rev`);
-      }
-      // rev 必须与磁盘内容一致：`/plugins` 路由按 manifest.rev 做缓存失效，
-      // 不一致等于客户端会长期拿到旧 bundle（此前只断言 url 带 rev，属假绿）
+      if (!entry.url.includes(entry.rev)) failures.push(`${entry.id}: url 未携带 rev`);
+      // rev 必须与磁盘内容一致：`/plugins` 路由按 manifest.rev 做缓存失效
       const expected = createHash("sha1").update(body).digest("hex").slice(0, 12);
       if (expected !== entry.rev) failures.push(`${entry.id}: rev ${entry.rev} ≠ 内容 sha1 ${expected}`);
     }
     expect(failures).toEqual([]);
   });
 
-  it("boot graph：bootstrap 恰为模块系统，application 覆盖其余 entry，每个 entry 恰好属于一个 batch", async () => {
-    const manifest = await loadVendorManifest(VENDOR);
-    const graph = buildBootGraph(manifest!.plugins);
+  it("batch 划分：bootstrap 恰为模块系统，application 覆盖其余 entry，每个 entry 恰好一 batch", async () => {
+    const { plugins, graph } = await vendor();
     const bootstrap = graph.batches.filter((batch) => batch.phase === "bootstrap");
     expect(bootstrap).toHaveLength(1);
     expect(bootstrap[0]?.entries).toEqual([DSH_MODULES_ID]);
     const batched = graph.batches.flatMap((batch) => batch.entries);
     expect(batched.sort()).toEqual(graph.entries.map((entry) => entry.id).sort());
     expect(new Set(batched).size).toBe(batched.length);
-    // immediately 包（stage-one 预取）必须都在图里（缺一即启动卡住）
-    const immediately = manifest!.plugins.filter((plugin) => plugin.immediately === true).map((plugin) => plugin.id);
+    // immediately 包（stage-one 预取）缺一即启动卡住
+    const immediately = plugins.filter((plugin) => plugin.immediately === true).map((plugin) => plugin.id);
     expect(immediately.length).toBeGreaterThan(0);
-    for (const id of immediately) expect(graph.entries.some((entry) => entry.id === id)).toBe(true);
+    expect(immediately.filter((id) => !graph.entries.some((entry) => entry.id === id))).toEqual([]);
   });
 
-  it("external 声明的目标包在图中存在（缺失即运行时模块解析失败）", async () => {
-    const manifest = await loadVendorManifest(VENDOR);
-    const ids = new Set(manifest!.plugins.map((plugin) => plugin.id));
-    const missing: string[] = [];
-    for (const plugin of manifest!.plugins) {
-      for (const external of plugin.external) {
-        // external 可指向 `@scope/pkg/subpath`：按包名（前两段）判定
-        const parts = external.split("/");
-        const packageName = external.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0] ?? external;
-        if (!ids.has(packageName)) missing.push(`${plugin.id} → ${external}`);
-      }
-    }
+  it("依赖闭包：external/inject 目标都在图中或为 shell 播种；未挂载的依赖闭包页不得混入", async () => {
+    const { plugins, ids } = await vendor();
+    const missing = plugins.flatMap((plugin) =>
+      [...plugin.external, ...plugin.inject]
+        .filter((specifier) => !ids.has(packageNameOf(specifier)) && !SEEDED.has(packageNameOf(specifier)))
+        .map((specifier) => `${plugin.id} → ${specifier}`));
     expect(missing).toEqual([]);
+    // 官方挂载规则：不在 patch 名单者必须被引用。实测 directory-picker-browse 只作为依赖存在，
+    // 被当作插件激活会让启动自检 failed（整个 SPA 落错误页），必须排除。
+    expect(plugins.some((plugin) => plugin.id.includes("directory-picker"))).toBe(false);
   });
 
-  it("inject 声明的目标也在图中（或由 shell 静态播种），且挂载集合不含未挂载的依赖闭包页", async () => {
-    const manifest = await loadVendorManifest(VENDOR);
-    const ids = new Set(manifest!.plugins.map((plugin) => plugin.id));
-    // shell 静态播种的模块（`PLATFORM_MODULES`）：它们不进图，但 inject 引用它们是合法的
-    const seeded = new Set([
-      "react", "react/jsx-runtime", "react-dom", "react-dom/client", "@deepseek-ai/cordis",
-      "@deepseek-ai/dsh-client-store", "@deepseek-ai/dsh-client-ui-slots",
-      "@deepseek-ai/dsh-client-ui-primitives", "@deepseek-ai/dsh-client-ui-dockkit",
-    ]);
-    const packageNameOf = (specifier: string): string => {
-      const parts = specifier.split("/");
-      return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0] ?? specifier;
-    };
-    const missing: string[] = [];
-    for (const plugin of manifest!.plugins) {
-      for (const inject of plugin.inject) {
-        const name = packageNameOf(inject);
-        if (!ids.has(name) && !seeded.has(name)) missing.push(`${plugin.id} → ${inject}`);
-      }
-    }
-    expect(missing).toEqual([]);
-
-    // 挂载规则回归：依赖闭包里「作为依赖存在但官方未挂载」的包不得进图。
-    // 实测踩过：directory-picker-browse 被当作插件激活时在启动自检里 failed（整个 SPA 落到错误页），
-    // 它与 native 都只作为依赖存在、不被任何插件 inject/external 引用 → 必须被排除。
-    expect(manifest!.plugins.some((plugin) => plugin.id.includes("directory-picker"))).toBe(false);
-    // 规则本身也要成立（不只盯 directory-picker 一个包名）：挂载集合必须是
-    // 「被其它已挂载插件 inject/external 引用的包」的定点闭包——即引用目标的包名要么在图中，
-    // 要么是 shell 静态播种；反过来，图中不得出现既不被引用、也无其它挂载来源的孤立包。
-    // （patch.yml 名单在测试期不可得，故这里闭包方向只做「已挂载 → 引用目标在图中」的断言。）
-    for (const plugin of manifest!.plugins) {
-      for (const dependency of [...plugin.inject, ...plugin.external]) {
-        const name = packageNameOf(dependency);
-        expect(
-          ids.has(name) || seeded.has(name),
-          `${plugin.id} 引用的 ${dependency}（包 ${name}）既不在挂载图中也非 shell 静态播种`,
-        ).toBe(true);
-      }
-    }
-  });
-
-  it("注入行覆盖每条 batch：application 都有 preload、bootstrap 有阻塞脚本", async () => {
-    const manifest = await loadVendorManifest(VENDOR);
-    const graph = buildBootGraph(manifest!.plugins);
+  it("注入行覆盖每条 batch（application 有 preload、bootstrap 有阻塞脚本）且图为 global 行", async () => {
+    const { graph } = await vendor();
     const rows = bootInjections(graph);
-    const preloads = rows.filter((row) => row.kind === "script-preload").map((row) => (row as { src: string }).src);
-    const blocking = rows.filter((row) => row.kind === "script-src").map((row) => (row as { src: string }).src);
-    const application = graph.batches.filter((batch) => batch.phase === "application").map((batch) => batch.url);
-    expect(preloads.sort()).toEqual([...application].sort());
-    expect(blocking).toEqual(graph.batches.filter((batch) => batch.phase === "bootstrap").map((batch) => batch.url));
-    // 图作为 global 行注入，且 `__DSH_BOOT_READY__` 尾标在渲染结果里
+    const srcOf = (kind: string) => rows.filter((row) => row.kind === kind).map((row) => (row as { src: string }).src);
+    const urlsOf = (phase: string) => graph.batches.filter((batch) => batch.phase === phase).map((batch) => batch.url);
+    expect(srcOf("script-preload").sort()).toEqual(urlsOf("application").sort());
+    expect(srcOf("script-src")).toEqual(urlsOf("bootstrap"));
     const globalRow = rows.find((row) => row.kind === "global");
     expect(globalRow).toMatchObject({ name: "__DSH_BOOT__" });
     expect((globalRow as { value: DshBootGraph }).value.rev).toBe(graph.rev);
   });
 
   it("桥接插件与 vendor 同图共存，且 graph rev 对条目变化敏感", async () => {
-    const manifest = await loadVendorManifest(VENDOR);
+    const { plugins, graph } = await vendor();
     const bridge = await loadBridgePlugin(path.join(SERVER_ROOT, "assets", "dsh-bridge"));
-    const withBridge = buildBootGraph([...manifest!.plugins, ...(bridge === undefined ? [] : [bridge])]);
-    expect(withBridge.entries.some((entry) => entry.id === "owc-dsh-bridge")).toBe(bridge !== undefined);
-    const withoutBridge = buildBootGraph(manifest!.plugins);
-    if (bridge !== undefined) expect(withBridge.rev).not.toBe(withoutBridge.rev);
+    expect(bridge, "桥接插件缺失").toBeDefined();
+    const withBridge = buildBootGraph([...plugins, bridge!]);
+    expect(withBridge.entries.some((entry) => entry.id === "owc-dsh-bridge")).toBe(true);
+    expect(withBridge.rev).not.toBe(graph.rev);
   });
 });

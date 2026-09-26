@@ -7,566 +7,308 @@ import { activePathMessages } from "../src/sessions/session-tree.js";
 import type { ChatMessage } from "../src/sessions/types.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
-describe("SessionStore.appendMessage 并发串行化", () => {
-  it("并发追加大消息无交织坏行；串行化链失败不阻断后续追加", async () => {
-    // 并发 1MB 级消息追加：底层多次 write，未串行化时最易交织坏行
-    const root = await tempRoot("owc-session-store-");
-    const store = new SessionStore(path.join(root, "sessions"));
-    await store.initialize();
-    const session = await store.create({ cwd: root, provider: "p", model: "m" });
-
-    const big = "x".repeat(1024 * 1024);
-    await Promise.all(
-      Array.from({ length: 8 }, (_, index) =>
-        store.appendMessage(session.id, "user", [{ type: "text", text: `${index}:${big}` }])),
-    );
-
-    const raw = await readFile(path.join(root, "sessions", session.id, "messages.jsonl"), "utf8");
-    const lines = raw.split("\n").filter((line) => line.trim());
-    expect(lines).toHaveLength(8);
-    const seen = new Set<string>();
-    for (const line of lines) {
-      const parsed = JSON.parse(line) as { content: Array<{ text: string }> };
-      const match = /^(\d):x+$/.exec(parsed.content[0]!.text);
-      expect(match, "每行必须是完整 JSON 且内容未被其他消息交织").toBeTruthy();
-      seen.add(match![1]!);
-    }
-    expect(seen.size).toBe(8);
-
-    // 串行化链不阻断后续追加：前一条失败后一条仍正常落盘
-    // 对不存在的会话追加失败（readMeta 抛错），同会话后续追加不受影响
-    const failing = await tempRoot("owc-session-store-");
-    const store2 = new SessionStore(path.join(failing, "sessions"));
-    await store2.initialize();
-    const session2 = await store2.create({ cwd: failing, provider: "p", model: "m" });
-    await expect(store2.appendMessage("missing-session", "user", [{ type: "text", text: "x" }])).rejects.toThrow();
-    const message = await store2.appendMessage(session2.id, "user", [{ type: "text", text: "正常消息" }]);
-    expect(message.content).toEqual([{ type: "text", text: "正常消息" }]);
-    const detail = await store2.get(session2.id);
-    expect(detail?.messages).toHaveLength(1);
-  });
-});
-
-describe("SessionStore.updateSandboxMode", () => {
-  it("sandboxMode undefined 保留现值；显式值写入（含 appcontainer 真值）；空 setupScript 删除", async () => {
-    const root = await tempRoot("owc-sandbox-mode-");
-    const store = new SessionStore(path.join(root, "sessions"));
-    await store.initialize();
-    const session = await store.create({ cwd: root, provider: "p", model: "m" });
-
-    await store.updateSandboxMode(session.id, "bubblewrap", undefined);
-    // sandboxMode 缺省（undefined）：保留现值；setupScript 照常写入
-    const preserved = await store.updateSandboxMode(session.id, undefined, "echo hi");
-    expect(preserved.sandboxMode).toBe("bubblewrap");
-    expect(preserved.setupScript).toBe("echo hi");
-    // 显式值写入；setupScript 缺省/空 → 从元数据删除
-    const off = await store.updateSandboxMode(session.id, "off", undefined);
-    expect(off.sandboxMode).toBe("off");
-    expect(off).not.toHaveProperty("setupScript");
-    // 显式 jobobject（不再是默认档）持久化
-    const jobobject = await store.updateSandboxMode(session.id, "jobobject", undefined);
-    expect(jobobject.sandboxMode).toBe("jobobject");
-    // 显式 appcontainer 同样真值落盘：缺省字段只属于 1.10.0 前的存量 meta（readMeta 迁移）
-    const cleared = await store.updateSandboxMode(session.id, "appcontainer", undefined);
-    expect(cleared.sandboxMode).toBe("appcontainer");
-    // 落盘一致
-    expect((await store.get(session.id))?.sandboxMode).toBe("appcontainer");
-  });
-
-  it("create 显式落盘平台默认档；Windows 存量缺字段 meta 迁移为 jobobject", async () => {
-    const root = await tempRoot("owc-sandbox-migrate-");
-    const store = new SessionStore(path.join(root, "sessions"));
-    await store.initialize();
-    const session = await store.create({ cwd: root, provider: "p", model: "m" });
-    // 新会话：sandboxMode 显式落盘（win32=appcontainer，POSIX=bubblewrap）
-    expect(session.sandboxMode).toBe(process.platform === "win32" ? "appcontainer" : "bubblewrap");
-
-    // 模拟 1.10.0 前的存量 meta：手工写入缺 sandboxMode 的 meta.json
-    const legacyId = "00000000-0000-4000-8000-000000000001";
-    const legacy = path.join(root, "sessions", legacyId);
-    await mkdir(legacy, { recursive: true });
-    const legacyMeta = { id: legacyId, cwd: root, provider: "p", model: "m", title: "legacy", createdAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-01T00:00:00.000Z" };
-    await writeFile(path.join(legacy, "meta.json"), JSON.stringify(legacyMeta), "utf8");
-    await writeFile(path.join(legacy, "messages.jsonl"), "", "utf8");
-    const loaded = await store.get(legacyId);
-    if (process.platform === "win32") {
-      // Windows 存量：保持创建时的 Job Object 档位（一次性补写），不被静默改判 AppContainer
-      expect(loaded?.sandboxMode).toBe("jobobject");
-      const persisted = JSON.parse(await readFile(path.join(legacy, "meta.json"), "utf8")) as { sandboxMode?: string };
-      expect(persisted.sandboxMode).toBe("jobobject");
-    } else {
-      // POSIX 存量：不迁移，缺省即当前默认后端（bubblewrap）
-      expect(loaded?.sandboxMode).toBeUndefined();
-    }
-  });
-});
-
-// ---- session-pagination 组（合并） ----
 async function storeAt(root: string): Promise<SessionStore> {
   const store = new SessionStore(path.join(root, "sessions"));
   await store.initialize();
   return store;
 }
 
-async function seedMessages(store: SessionStore, sessionId: string, count: number): Promise<ChatMessage[]> {
-  const messages: ChatMessage[] = [];
-  for (let i = 0; i < count; i++) {
-    const msg = await store.appendMessage(sessionId, "user", [{ type: "text", text: `message-${i}` }]);
-    messages.push(msg);
-  }
-  return messages;
+async function newSession(store: SessionStore, cwd = os.tmpdir()): Promise<string> {
+  return (await store.create({ cwd, provider: "p", model: "m" })).id;
 }
 
-describe("session pagination (0.5.0 Phase 2)", () => {
-  it("getTail 边界：超限截尾 N、少于上限全量、空会话为空", async () => {
-    const store = await storeAt(await tempRoot("owc-page-"));
-
-    // 超过上限：只返回最后 N 条并带分页元数据
-    const big = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const all = await seedMessages(store, big.id, 250);
-    const tail = await store.getTail(big.id, 100);
-    expect(tail).toBeDefined();
-    expect(tail!.messages).toHaveLength(100);
-    expect(tail!.messages[0]!.id).toBe(all[150]!.id);
-    expect(tail!.messages[99]!.id).toBe(all[249]!.id);
-    expect(tail!.hasMoreMessages).toBe(true);
-    expect(tail!.messageCount).toBe(250);
-
-    // 少于上限：全量返回
-    const small = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, small.id, 30);
-    const few = await store.getTail(small.id, 100);
-    expect(few!.messages).toHaveLength(30);
-    expect(few!.hasMoreMessages).toBe(false);
-    expect(few!.messageCount).toBe(30);
-
-    // 新会话：空
-    const empty = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const none = await store.getTail(empty.id, 100);
-    expect(none!.messages).toHaveLength(0);
-    expect(none!.hasMoreMessages).toBe(false);
-    expect(none!.messageCount).toBe(0);
-  });
-
-  it("cached tail index extends correctly after append-only growth", async () => {
-    const store = await storeAt(await tempRoot("owc-page-"));
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, session.id, 250);
-    const before = await store.getTail(session.id, 100);
-    expect(before?.messageCount).toBe(250);
-
-    const appended = await store.appendMessage(session.id, "user", [{ type: "text", text: "after-index" }]);
-    const after = await store.getTail(session.id, 100);
-    expect(after?.messageCount).toBe(251);
-    expect(after?.messages.at(-1)?.id).toBe(appended.id);
-    expect(after?.messages[0]?.id).toBe(before?.messages[1]?.id);
-  });
-
-  it("getMessagesBefore 边界：中段分页/近开头/未知 id/未知会话", async () => {
-    const store = await storeAt(await tempRoot("owc-page-"));
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const all = await seedMessages(store, session.id, 250);
-
-    // 中段：Request 50 messages before message index 200 (all[200])
-    const page = await store.getMessagesBefore(session.id, all[200]!.id, 50);
-    expect(page).toBeDefined();
-    expect(page!.messages).toHaveLength(50);
-    // Should be messages at indices 150..199
-    expect(page!.messages[0]!.id).toBe(all[150]!.id);
-    expect(page!.messages[49]!.id).toBe(all[199]!.id);
-    expect(page!.hasMore).toBe(true);
-    expect(page!.totalLines).toBe(250);
-
-    // 近开头：Request 50 messages before message index 10 (all[10])
-    const nearStart = await store.getMessagesBefore(session.id, all[10]!.id, 50);
-    expect(nearStart!.messages).toHaveLength(10);
-    expect(nearStart!.messages[0]!.id).toBe(all[0]!.id);
-    expect(nearStart!.messages[9]!.id).toBe(all[9]!.id);
-    expect(nearStart!.hasMore).toBe(false);
-
-    // beforeId 不存在 → 空
-    const unknownId = await store.getMessagesBefore(session.id, "nonexistent-id", 50);
-    expect(unknownId!.messages).toHaveLength(0);
-    expect(unknownId!.hasMore).toBe(false);
-
-    // 会话不存在 → undefined
-    const unknownSession = await store.getMessagesBefore("00000000-0000-4000-8000-000000000000", "some-msg-id", 50);
-    expect(unknownSession).toBeUndefined();
-  });
-
-  it("list() surfaces recovery state (tail corruption, missing history, healthy)", async () => {
-    const store = await storeAt(await tempRoot("owc-page-"));
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await store.appendMessage(session.id, "user", [{ type: "text", text: "valid" }]);
-    // 健康会话：list() 不解析全部消息，仅做尾部轻量检查
-    const healthy = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, healthy.id, 100);
-
-    // Corrupt the tail
-    const storeRoot = (store as unknown as { root: string }).root;
-    const { writeFile, rm: rmFile } = await import("node:fs/promises");
-    await writeFile(
-      path.join(storeRoot, session.id, "messages.jsonl"),
-      `${JSON.stringify({ id: "valid", role: "user", content: [], createdAt: "x" })}\n{corrupt`,
-      "utf8",
-    );
-
-    const list = await store.list();
-    const found = list.find((item) => item.id === session.id);
-    expect(found?.recovery).toMatchObject({ state: "recovered" });
-    const healthyFound = list.find((item) => item.id === healthy.id);
-    expect(healthyFound).toBeDefined();
-    expect(healthyFound!.recovery).toBeUndefined();
-
-    // messages.jsonl 整体缺失：list() 标记 needs_repair
-    await rmFile(path.join(storeRoot, session.id, "messages.jsonl"));
-    expect((await store.list()).find((item) => item.id === session.id)?.recovery).toMatchObject({ state: "needs_repair" });
-  });
-
-  it("full pagination flow: tail → load more → load more → no more", async () => {
-    const store = await storeAt(await tempRoot("owc-page-"));
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const all = await seedMessages(store, session.id, 250);
-
-    // Initial load: last 100
-    const tail = await store.getTail(session.id, 100);
-    expect(tail!.messages).toHaveLength(100);
-    expect(tail!.hasMoreMessages).toBe(true);
-
-    // Load more: 100 before the oldest loaded message
-    const oldestLoaded = tail!.messages[0]!.id;
-    const page1 = await store.getMessagesBefore(session.id, oldestLoaded, 100);
-    expect(page1!.messages).toHaveLength(100);
-    expect(page1!.hasMore).toBe(true);
-    expect(page1!.messages[0]!.id).toBe(all[50]!.id);
-
-    // Load more again
-    const oldest2 = page1!.messages[0]!.id;
-    const page2 = await store.getMessagesBefore(session.id, oldest2, 100);
-    expect(page2!.messages).toHaveLength(50);
-    expect(page2!.hasMore).toBe(false);
-    expect(page2!.messages[0]!.id).toBe(all[0]!.id);
-
-    // Total loaded: 100 + 100 + 50 = 250 = all messages
-    const totalLoaded = tail!.messages.length + page1!.messages.length + page2!.messages.length;
-    expect(totalLoaded).toBe(250);
-  });
-});
-
-async function freshRead(root: string, sessionId: string) {
-  const fresh = await storeAt(root);
-  return fresh.get(sessionId);
+async function seedMessages(store: SessionStore, sessionId: string, count: number): Promise<ChatMessage[]> {
+  const messages: ChatMessage[] = [];
+  for (let i = 0; i < count; i++) messages.push(await store.appendMessage(sessionId, "user", [{ type: "text", text: `message-${i}` }]));
+  return messages;
 }
 
 function messagesPathOf(root: string, sessionId: string): string {
   return path.join(root, "sessions", sessionId, "messages.jsonl");
 }
 
-// readMessages 整表缓存的等价性测试：缓存路径的 get() 必须与全新实例
-// （空缓存、纯磁盘读取）的 get() 深度一致，覆盖追加穿透、外部写入失效、
-// steering 插入、truncate、recovery 与 parentId 派生等全部语义。
+/** 全新实例且空缓存地读一遍：缓存路径的 get() 必须与它深度一致 */
+async function freshRead(root: string, sessionId: string) {
+  return (await storeAt(root)).get(sessionId);
+}
 
-describe("session messages cache (readMessages whole-list cache)", () => {
-  it("cached get() equals fresh read after seeding", async () => {
-    const root = await tempRoot("owc-msgcache-");
+describe("SessionStore.appendMessage 并发串行化", () => {
+  it("并发追加大消息不交织坏行；单条失败不阻断后续追加", async () => {
+    const root = await tempRoot("owc-session-store-");
     const store = await storeAt(root);
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, session.id, 20);
+    const session = await store.create({ cwd: root, provider: "p", model: "m" });
+    // 1MB 级消息底层多次 write，未串行化时最易交织成坏行
+    const big = "x".repeat(1024 * 1024);
+    await Promise.all(Array.from({ length: 8 }, (_, index) =>
+      store.appendMessage(session.id, "user", [{ type: "text", text: `${index}:${big}` }])));
+    const lines = (await readFile(messagesPathOf(root, session.id), "utf8")).split("\n").filter((line) => line.trim());
+    expect(lines).toHaveLength(8);
+    const seen = new Set<string>();
+    for (const line of lines) {
+      const parsed = JSON.parse(line) as { content: Array<{ text: string }> };
+      const match = /^(\d):x+$/.exec(parsed.content[0]!.text); expect(match, "每行必须是完整 JSON 且内容未被其他消息交织").toBeTruthy();
+      seen.add(match![1]!);
+    }
+    expect(seen.size).toBe(8);
+    // 对不存在的会话追加失败（readMeta 抛错）后，同一 store 的后续追加仍能落盘
+    const other = await newSession(store, root);
+    await expect(store.appendMessage("missing-session", "user", [{ type: "text", text: "x" }])).rejects.toThrow();
+    await store.appendMessage(other, "user", [{ type: "text", text: "正常消息" }]);
+    expect((await store.get(other))!.messages).toHaveLength(1);
+  });
+});
 
-    const first = await store.get(session.id); // 冷加载，建立缓存
-    const second = await store.get(session.id); // 缓存命中
-    const fresh = await freshRead(root, session.id);
-    expect(second).toEqual(fresh);
-    expect(first).toEqual(fresh);
-    expect(second!.messages).toHaveLength(20);
+describe("SessionStore.updateSandboxMode", () => {
+  it("sandboxMode undefined 保留现值；显式值落盘；空 setupScript 删除", async () => {
+    const root = await tempRoot("owc-sandbox-mode-");
+    const store = await storeAt(root);
+    const id = await newSession(store, root);
+    const preserved = await store.updateSandboxMode(id, "bubblewrap", undefined);
+    expect(preserved.sandboxMode).toBe("bubblewrap");
+    // sandboxMode 缺省：保留现值；setupScript 照常写入
+    expect(await store.updateSandboxMode(id, undefined, "echo hi")).toMatchObject({ sandboxMode: "bubblewrap", setupScript: "echo hi" });
+    // setupScript 缺省/空 → 从元数据删除
+    const off = await store.updateSandboxMode(id, "off", undefined); expect(off).toMatchObject({ sandboxMode: "off" });
+    expect(off).not.toHaveProperty("setupScript");
+    // 显式 jobobject/appcontainer 同样真值落盘
+    expect((await store.updateSandboxMode(id, "jobobject", undefined)).sandboxMode).toBe("jobobject");
+    await store.updateSandboxMode(id, "appcontainer", undefined); expect((await store.get(id))?.sandboxMode).toBe("appcontainer");
   });
 
-  it("append-through/外部写入/truncate 后 cached get() 均等于 fresh read", async () => {
+  it("create 显式落盘平台默认档；Windows 存量缺字段 meta 迁移为 jobobject", async () => {
+    const root = await tempRoot("owc-sandbox-migrate-");
+    const store = await storeAt(root);
+    const session = await store.create({ cwd: root, provider: "p", model: "m" });
+    expect(session.sandboxMode).toBe(process.platform === "win32" ? "appcontainer" : "bubblewrap");
+    // 1.10.0 前的存量 meta：手工写入缺 sandboxMode 的 meta.json
+    const legacyId = "00000000-0000-4000-8000-000000000001";
+    const legacy = path.join(root, "sessions", legacyId);
+    await mkdir(legacy, { recursive: true });
+    await writeFile(path.join(legacy, "meta.json"), JSON.stringify({
+      id: legacyId, cwd: root, provider: "p", model: "m", title: "legacy",
+      createdAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-01T00:00:00.000Z",
+    }), "utf8");
+    await writeFile(path.join(legacy, "messages.jsonl"), "", "utf8");
+    const loaded = await store.get(legacyId);
+    if (process.platform === "win32") {
+      // Windows 存量保持创建时的 Job Object 档位（一次性补写），不被静默改判 AppContainer
+      expect(loaded?.sandboxMode).toBe("jobobject");
+      expect(JSON.parse(await readFile(path.join(legacy, "meta.json"), "utf8"))).toMatchObject({ sandboxMode: "jobobject" });
+    } else {
+      // POSIX 存量不迁移：缺省即当前默认后端
+      expect(loaded?.sandboxMode).toBeUndefined();
+    }
+  });
+});
+
+describe("会话分页", () => {
+  it("getTail 边界（超限截尾/不足全量/空会话）与追加后的增量索引", async () => {
+    const store = await storeAt(await tempRoot("owc-page-"));
+    const big = await newSession(store);
+    const all = await seedMessages(store, big, 250);
+    const tail = await store.getTail(big, 100); expect(tail!.messages).toHaveLength(100);
+    expect(tail!.messages[0]!.id).toBe(all[150]!.id); expect(tail!.messages[99]!.id).toBe(all[249]!.id);
+    expect(tail!.hasMoreMessages).toBe(true); expect(tail!.messageCount).toBe(250);
+    const small = await newSession(store);
+    await seedMessages(store, small, 30);
+    const few = await store.getTail(small, 100); expect(few!.messages).toHaveLength(30);
+    expect(few).toMatchObject({ hasMoreMessages: false, messageCount: 30 });
+    expect(await store.getTail(await newSession(store), 100)).toMatchObject({ messages: [], hasMoreMessages: false, messageCount: 0 });
+    // 追加穿透已建立的尾部索引
+    const appended = await store.appendMessage(big, "user", [{ type: "text", text: "after-index" }]);
+    const after = await store.getTail(big, 100); expect(after?.messageCount).toBe(251);
+    expect(after?.messages.at(-1)?.id).toBe(appended.id); expect(after?.messages[0]?.id).toBe(tail!.messages[1]!.id);
+  });
+
+  it("getMessagesBefore 分页边界与 tail→load more 链", async () => {
+    const store = await storeAt(await tempRoot("owc-page-"));
+    const session = await newSession(store);
+    const all = await seedMessages(store, session, 250);
+    const page = await store.getMessagesBefore(session, all[200]!.id, 50);
+    expect(page!.messages.map((message) => message.id)).toEqual(all.slice(150, 200).map((message) => message.id));
+    expect(page).toMatchObject({ hasMore: true, totalLines: 250 });
+    const nearStart = await store.getMessagesBefore(session, all[10]!.id, 50);
+    expect(nearStart!.messages.map((message) => message.id)).toEqual(all.slice(0, 10).map((message) => message.id));
+    expect(nearStart!.hasMore).toBe(false);
+    expect(await store.getMessagesBefore(session, "nonexistent-id", 50)).toMatchObject({ messages: [], hasMore: false });
+    expect(await store.getMessagesBefore("00000000-0000-4000-8000-000000000000", "some-msg-id", 50)).toBeUndefined();
+    // 连续翻页：100 + 100 + 50 覆盖全部消息
+    const tail = await store.getTail(session, 100);
+    const page1 = await store.getMessagesBefore(session, tail!.messages[0]!.id, 100);
+    const page2 = await store.getMessagesBefore(session, page1!.messages[0]!.id, 100);
+    expect(page1!.messages[0]!.id).toBe(all[50]!.id); expect(page1!.hasMore).toBe(true); expect(page2!.messages).toHaveLength(50);
+    expect(page2!.messages[0]!.id).toBe(all[0]!.id); expect(page2!.hasMore).toBe(false);
+    expect(tail!.messages.length + page1!.messages.length + page2!.messages.length).toBe(250);
+  });
+
+  it("list() 上报恢复状态：尾行损坏 / 整体缺失 / 健康", async () => {
+    const root = await tempRoot("owc-page-");
+    const store = await storeAt(root);
+    const healthy = await newSession(store);
+    await seedMessages(store, healthy, 100);
+    const session = await newSession(store);
+    await writeFile(messagesPathOf(root, session), `${JSON.stringify({ id: "valid", role: "user", content: [], createdAt: "x" })}\n{corrupt`, "utf8");
+    const list = await store.list();
+    expect(list.find((item) => item.id === session)?.recovery).toMatchObject({ state: "recovered" });
+    // 健康会话 list() 不解析全部消息，不带 recovery
+    expect(list.find((item) => item.id === healthy)).not.toHaveProperty("recovery");
+    const { rm } = await import("node:fs/promises");
+    await rm(messagesPathOf(root, session));
+    expect((await store.list()).find((item) => item.id === session)?.recovery).toMatchObject({ state: "needs_repair" });
+  });
+});
+describe("readMessages 整表缓存的等价性", () => {
+  it("append-through（含 parentId 链）与绕过 SessionStore 的外部写入后，缓存读取等于全新实例", async () => {
     const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
-
-    // append-through（run 风格追加）
-    const runSession = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, runSession.id, 10);
-    await store.get(runSession.id); // 建立缓存
-
-    // 模拟 agent run 的 turn：assistant + tool_result 追加，turn 边界再次 get()
-    const assistant = await store.appendMessage(runSession.id, "assistant", [
+    const session = await newSession(store);
+    await seedMessages(store, session, 10);
+    await store.get(session); // 建立缓存
+    const assistant = await store.appendMessage(session, "assistant", [
       { type: "text", text: "reply" },
       { type: "tool_call", id: "call_1", name: "read_file", input: { path: "a.ts" } },
     ]);
-    await store.appendMessage(runSession.id, "tool", [
-      { type: "tool_result", toolCallId: "call_1", content: "ok", isError: false },
-    ]);
-    const cached = await store.get(runSession.id);
-    const fresh = await freshRead(root, runSession.id);
-    expect(cached).toEqual(fresh);
-    expect(cached!.messages).toHaveLength(12);
-    expect(cached!.messages.at(-2)!.id).toBe(assistant.id);
-    // parentId 链保持：assistant 的 parent 是追加前最后一条
+    await store.appendMessage(session, "tool", [{ type: "tool_result", toolCallId: "call_1", content: "ok", isError: false }]);
+    const cached = await store.get(session); expect(cached).toEqual(await freshRead(root, session));
+    expect(cached!.messages).toHaveLength(12); expect(cached!.messages.at(-2)!.id).toBe(assistant.id);
     expect(cached!.messages.at(-2)!.parentId).toBe(cached!.messages.at(-3)!.id);
     expect(cached!.messages.at(-1)!.parentId).toBe(assistant.id);
-
-    // 外部追加（绕过 SessionStore）使缓存失效
-    const externalSession = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, externalSession.id, 5);
-    await store.get(externalSession.id);
-
-    const external: ChatMessage = {
-      id: "00000000-0000-4000-8000-0000000000aa",
-      role: "user",
-      content: [{ type: "text", text: "external" }],
-      createdAt: new Date().toISOString(),
-    };
-    await appendFile(messagesPathOf(root, externalSession.id), `${JSON.stringify(external)}\n`, "utf8");
-
-    const afterExternal = await store.get(externalSession.id);
-    const externalFresh = await freshRead(root, externalSession.id);
-    expect(afterExternal).toEqual(externalFresh);
+    // 外部追加使缓存失效，且外部消息无 parentId 时派生链接到前一条
+    const externalSession = await newSession(store);
+    await seedMessages(store, externalSession, 5);
+    await store.get(externalSession);
+    await appendFile(messagesPathOf(root, externalSession), `${JSON.stringify({
+      id: "00000000-0000-4000-8000-0000000000aa", role: "user", content: [{ type: "text", text: "external" }], createdAt: new Date().toISOString(),
+    })}\n`, "utf8");
+    const afterExternal = await store.get(externalSession); expect(afterExternal).toEqual(await freshRead(root, externalSession));
     expect(afterExternal!.messages).toHaveLength(6);
-    // 外部消息无 parentId：读取派生链接到前一条
     expect(afterExternal!.messages.at(-1)!.parentId).toBe(afterExternal!.messages.at(-2)!.id);
-
-    // truncateMessages 使缓存失效
-    const truncSession = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, truncSession.id, 10);
-    await store.get(truncSession.id);
-
-    await store.truncateMessages(truncSession.id, 4);
-    const afterTruncate = await store.get(truncSession.id);
-    const truncateFresh = await freshRead(root, truncSession.id);
-    expect(afterTruncate).toEqual(truncateFresh);
-    expect(afterTruncate!.messages).toHaveLength(4);
   });
 
-  it("steering-style insert with explicit lineage parentId stays equivalent", async () => {
+  it("steering 显式 lineage 与旧线性日志的 parentId 派生在缓存路径下保持一致", async () => {
     const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const seeded = await seedMessages(store, session.id, 5);
-    await store.get(session.id);
-
-    // steering/follow-up 插入走 appendMessage + 显式 lineage（agent-runner.ts:1705）
-    const steered = await store.appendMessage(session.id, "user", [{ type: "text", text: "steer" }], {
-      parentId: seeded[2]!.id,
-      runId: "run-1",
-      turnId: "turn-1",
+    // steering/follow-up 插入走 appendMessage + 显式 lineage
+    const session = await newSession(store);
+    const seeded = await seedMessages(store, session, 5);
+    await store.get(session);
+    const steered = await store.appendMessage(session, "user", [{ type: "text", text: "steer" }], {
+      parentId: seeded[2]!.id, runId: "run-1", turnId: "turn-1",
     });
-    const cached = await store.get(session.id);
-    const fresh = await freshRead(root, session.id);
-    expect(cached).toEqual(fresh);
+    const cached = await store.get(session); expect(cached).toEqual(await freshRead(root, session));
     expect(cached!.messages.at(-1)).toMatchObject({ id: steered.id, parentId: seeded[2]!.id, runId: "run-1", turnId: "turn-1" });
-  });
-
-  it("derives parentId for old linear logs and keeps it stable across cache hits", async () => {
-    const root = await tempRoot("owc-msgcache-");
-    const store = await storeAt(root);
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const lines = ["a", "b", "c"].map((text, i) => JSON.stringify({
-      id: `00000000-0000-4000-8000-00000000000${i}`,
-      role: "user",
-      content: [{ type: "text", text }],
-      createdAt: "2026-01-01T00:00:00.000Z",
-    }));
-    await writeFile(messagesPathOf(root, session.id), lines.join("\n") + "\n", "utf8");
-
-    const first = await store.get(session.id);
-    const second = await store.get(session.id);
-    const fresh = await freshRead(root, session.id);
-    expect(first).toEqual(fresh);
-    expect(second).toEqual(fresh);
-    expect(second!.messages[0]!.parentId).toBeUndefined();
-    expect(second!.messages[1]!.parentId).toBe(second!.messages[0]!.id);
+    // 无 parentId 的旧线性日志：读取时派生父链，且缓存命中后保持稳定
+    const legacy = await newSession(store);
+    await writeFile(messagesPathOf(root, legacy), ["a", "b", "c"].map((text, i) => JSON.stringify({
+      id: `00000000-0000-4000-8000-00000000000${i}`, role: "user", content: [{ type: "text", text }], createdAt: "2026-01-01T00:00:00.000Z",
+    })).join("\n") + "\n", "utf8");
+    const first = await store.get(legacy);
+    const second = await store.get(legacy); expect(first).toEqual(await freshRead(root, legacy)); expect(second).toEqual(first);
+    expect(second!.messages[0]!.parentId).toBeUndefined(); expect(second!.messages[1]!.parentId).toBe(second!.messages[0]!.id);
     expect(second!.messages[2]!.parentId).toBe(second!.messages[1]!.id);
   });
-
-  it("corrupt tail: cached get() reports recovered and equals fresh read", async () => {
+  // B1 回归：截断（检查点回退）后不重置 activeLeafId 会留下悬空父链，
+  // 后续 appendMessage 的 parentId 指向已删消息，模型上下文只剩新消息。
+  it("truncateMessages 使缓存与分页索引失效，且回退后接续追加保持活动路径完整", async () => {
     const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, session.id, 5);
-    await appendFile(messagesPathOf(root, session.id), "{corrupt-tail", "utf8");
-
-    const cached = await store.get(session.id);
-    const again = await store.get(session.id); // 命中缓存的 recovery 也要一致
-    const fresh = await freshRead(root, session.id);
-    expect(cached).toEqual(fresh);
-    expect(again).toEqual(fresh);
-    expect(cached!.recovery).toMatchObject({ state: "recovered" });
-    expect(cached!.messages).toHaveLength(5);
+    const session = await newSession(store);
+    const early = await seedMessages(store, session, 3);
+    expect((await store.getTail(session, 2))!.messages.map((message) => message.id)).toEqual([early[1]!.id, early[2]!.id]);
+    await store.appendMessage(session, "assistant", [{ type: "text", text: "later-1" }]);
+    const later = await store.appendMessage(session, "user", [{ type: "text", text: "later-2" }]);
+    await store.truncateMessages(session, 3); // 与 POST /checkpoints/:id/restore 的消息侧动作一致
+    // 分页索引按新文件重建：已截掉的消息不再可定位
+    expect((await store.getMessagesBefore(session, later.id, 10))!.messages).toEqual([]);
+    const afterRestore = await store.appendMessage(session, "user", [{ type: "text", text: "after-restore" }]);
+    const detail = await store.get(session); expect(detail!.messages).toHaveLength(4);
+    expect(detail!.activeLeafId).toBe(afterRestore.id); expect(afterRestore.parentId).toBe(early[2]!.id);
+    expect(activePathMessages(detail!.messages, detail!.activeLeafId).map((message) => message.id))
+      .toEqual([early[0]!.id, early[1]!.id, early[2]!.id, afterRestore.id]);
+    expect(detail).toEqual(await freshRead(root, session));
+    expect((await store.getTail(session, 10))!.messages.map((message) => message.id))
+      .toEqual([early[0]!.id, early[1]!.id, early[2]!.id, afterRestore.id]);
   });
 
-  it("append after a corrupt tail repairs the tail record instead of burying it", async () => {
+  it("损坏尾行 / 中间行 / 整体缺失：recovery 状态与缓存读取一致", async () => {
     const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, session.id, 5);
-    await appendFile(messagesPathOf(root, session.id), "{corrupt-tail\n", "utf8");
-    await store.get(session.id); // 缓存 recovery=recovered（已知尾行损坏）
-
-    // 追加前先截掉损坏尾行：坏行不再变成中间行，读取也就不再升格 needs_repair
-    await store.appendMessage(session.id, "user", [{ type: "text", text: "after-corrupt" }]);
-    const cached = await store.get(session.id);
-    const fresh = await freshRead(root, session.id);
-    expect(cached).toEqual(fresh);
-    expect(cached!.recovery).toBeUndefined();
-    expect(cached!.messages).toHaveLength(6);
-    // 盘上不再残留坏行
-    expect(await readFile(messagesPathOf(root, session.id), "utf8")).not.toContain("corrupt-tail");
+    const tailCorrupt = await newSession(store);
+    await seedMessages(store, tailCorrupt, 5);
+    await appendFile(messagesPathOf(root, tailCorrupt), "{corrupt-tail", "utf8");
+    const cached = await store.get(tailCorrupt); expect(cached).toEqual(await freshRead(root, tailCorrupt));
+    expect(cached).toMatchObject({ recovery: { state: "recovered" } }); expect(cached!.messages).toHaveLength(5);
+    expect(await store.get(tailCorrupt)).toEqual(cached);
+    const middleCorrupt = await newSession(store);
+    await seedMessages(store, middleCorrupt, 5);
+    await store.get(middleCorrupt);
+    const lines = (await readFile(messagesPathOf(root, middleCorrupt), "utf8")).split("\n");
+    lines[2] = "{corrupt-middle";
+    await writeFile(messagesPathOf(root, middleCorrupt), lines.join("\n"), "utf8");
+    const middle = await store.get(middleCorrupt); expect(middle).toEqual(await freshRead(root, middleCorrupt));
+    expect(middle).toMatchObject({ recovery: { state: "needs_repair" } }); expect(middle!.messages).toHaveLength(4);
+    const { rm } = await import("node:fs/promises");
+    const missing = await newSession(store);
+    await rm(messagesPathOf(root, missing));
+    expect(await store.get(missing)).toMatchObject({ recovery: { state: "needs_repair", message: "messages.jsonl is missing" }, messages: [] });
+    await appendFile(messagesPathOf(root, missing), `${JSON.stringify({ id: "00000000-0000-4000-8000-0000000000bb", role: "user", content: [], createdAt: "x" })}\n`, "utf8");
+    const restored = await store.get(missing); expect(restored).toEqual(await freshRead(root, missing));
+    expect(restored!.messages).toHaveLength(1); expect(restored!.recovery).toBeUndefined();
   });
 
-  it("append after an interrupted tail repairs the record boundary", async () => {
+  it("追加前修复损坏的尾部记录，而不是把坏行埋进中间", async () => {
     const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
+    const session = await newSession(store);
+    await seedMessages(store, session, 5);
+    await appendFile(messagesPathOf(root, session), "{corrupt-tail\n", "utf8");
+    await store.get(session); // 缓存 recovery=recovered（已知尾行损坏）
+    await store.appendMessage(session, "user", [{ type: "text", text: "after-corrupt" }]);
+    const cached = await store.get(session); expect(cached).toEqual(await freshRead(root, session));
+    expect(cached!.recovery).toBeUndefined(); expect(cached!.messages).toHaveLength(6);
+    expect(await readFile(messagesPathOf(root, session), "utf8")).not.toContain("corrupt-tail");
+  });
 
-    // 崩溃中断在行中：末记录是无终止换行的残缺字节 → 追加前截掉
-    const broken = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, broken.id, 3);
-    const brokenPath = messagesPathOf(root, broken.id);
-    await appendFile(brokenPath, '{"id":"partial","role":"user"', "utf8");
-    // 全新实例追加：没有内存缓存，靠「末字节不是 \n」照样识别
-    const freshStore = await storeAt(root);
-    await freshStore.appendMessage(broken.id, "user", [{ type: "text", text: "after-partial" }]);
-    expect(await readFile(brokenPath, "utf8")).not.toContain('"id":"partial"');
-    const repaired = await freshStore.get(broken.id);
-    expect(repaired!.recovery).toBeUndefined();
+  it("追加前修复被中断的尾部记录：残缺字节丢弃，缺终止换行只补换行", async () => {
+    const root = await tempRoot("owc-msgcache-");
+    const store = await storeAt(root);
+    // 崩在行中：末记录是无终止换行的残缺字节
+    const broken = await newSession(store);
+    await seedMessages(store, broken, 3);
+    await appendFile(messagesPathOf(root, broken), '{"id":"partial","role":"user"', "utf8");
+    const freshStore = await storeAt(root); // 全新实例：无内存缓存，靠「末字节不是 \n」识别
+    await freshStore.appendMessage(broken, "user", [{ type: "text", text: "after-partial" }]);
+    expect(await readFile(messagesPathOf(root, broken), "utf8")).not.toContain('"id":"partial"');
+    const repaired = await freshStore.get(broken); expect(repaired!.recovery).toBeUndefined();
     expect(repaired!.messages).toHaveLength(4);
-
-    // 末记录完整但缺终止换行（崩在写 \n 之前）：只补换行——不丢记录、不与下一条拼行
-    const unterminated = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const kept = await seedMessages(store, unterminated.id, 2);
-    const unterminatedPath = messagesPathOf(root, unterminated.id);
-    await writeFile(unterminatedPath, JSON.stringify(kept[1]), "utf8");
+    // 末记录完整但缺终止换行（崩在写 \n 之前）：只补换行，不丢记录也不与下一条拼行
+    const unterminated = await newSession(store);
+    const kept = await seedMessages(store, unterminated, 2);
+    await writeFile(messagesPathOf(root, unterminated), JSON.stringify(kept[1]), "utf8");
     const storeB = await storeAt(root);
-    await storeB.appendMessage(unterminated.id, "user", [{ type: "text", text: "third" }]);
-    const lines = (await readFile(unterminatedPath, "utf8")).split("\n").filter((line) => line.trim());
-    expect(lines).toHaveLength(2);
-    expect((JSON.parse(lines[0]!) as { id: string }).id).toBe(kept[1]!.id);
-    const detail = await storeB.get(unterminated.id);
-    expect(detail!.recovery).toBeUndefined();
+    await storeB.appendMessage(unterminated, "user", [{ type: "text", text: "third" }]);
+    const lines = (await readFile(messagesPathOf(root, unterminated), "utf8")).split("\n").filter((line) => line.trim());
+    expect(lines).toHaveLength(2); expect((JSON.parse(lines[0]!) as { id: string }).id).toBe(kept[1]!.id);
+    const detail = await storeB.get(unterminated); expect(detail!.recovery).toBeUndefined();
     expect(detail!.messages).toHaveLength(2);
   });
 
-  // B1 回归：截断（检查点回退的消息侧）后不重置 activeLeafId 会留下悬空父链，
-  // 后续 appendMessage 的 parentId 指向已删消息，activePathMessages 回溯中途截断
-  // ——模型上下文只剩新消息（历史还在盘上却不可达）。
-  it("truncateMessages 后接续追加保持活动路径完整（检查点回退回归）", async () => {
+  it("并发会话缓存不串味；调用方改动返回的数组不污染缓存", async () => {
     const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-
-    // 建会话 → 多条消息 → 记检查点（messageCount 取此刻消息数，与路由侧一致）
-    const early = await seedMessages(store, session.id, 3);
-    const checkpointMessageCount = (await store.get(session.id))!.messages.length;
-    // 检查点之后继续对话（回退时这些消息要被截掉）
-    await store.appendMessage(session.id, "assistant", [{ type: "text", text: "later-1" }]);
-    await store.appendMessage(session.id, "user", [{ type: "text", text: "later-2" }]);
-
-    // 回退到早期检查点：消息侧动作与 POST /checkpoints/:id/restore 相同
-    await store.truncateMessages(session.id, checkpointMessageCount);
-
-    // 回退后发新消息：parentId 必须接在截断后的最后一条上，活动路径完整
-    const afterRestore = await store.appendMessage(session.id, "user", [{ type: "text", text: "after-restore" }]);
-    const detail = await store.get(session.id);
-    expect(detail!.messages).toHaveLength(4);
-    expect(detail!.activeLeafId).toBe(afterRestore.id);
-    expect(afterRestore.parentId).toBe(early[2]!.id);
-    expect(activePathMessages(detail!.messages, detail!.activeLeafId).map((message) => message.id))
-      .toEqual([early[0]!.id, early[1]!.id, early[2]!.id, afterRestore.id]);
-    // 与全新实例（空缓存、纯磁盘读）一致
-    expect(detail).toEqual(await freshRead(root, session.id));
-  });
-
-  // B7：整表改写（截断/格式升级）必须让 message-reader 的分页索引失效——改写后
-  // getTail/getMessagesBefore 的字节偏移索引不得指向旧内容。
-  it("truncate 后分页索引失效：getTail/getMessagesBefore 读到的是截断后的内容", async () => {
-    const root = await tempRoot("owc-msgcache-");
-    const store = await storeAt(root);
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const all = await seedMessages(store, session.id, 6);
-    // 先建索引（分页路径）
-    expect((await store.getTail(session.id, 2))!.messages.map((message) => message.id)).toEqual([all[4]!.id, all[5]!.id]);
-
-    await store.truncateMessages(session.id, 3);
-    const tail = await store.getTail(session.id, 10);
-    expect(tail!.messages.map((message) => message.id)).toEqual([all[0]!.id, all[1]!.id, all[2]!.id]);
-    expect(tail!.messageCount).toBe(3);
-    // 已截掉的消息不再可定位（索引按新文件重建）
-    expect((await store.getMessagesBefore(session.id, all[5]!.id, 10))!.messages).toEqual([]);
-  });
-
-  it("corrupt middle record: needs_repair, equals fresh read", async () => {
-    const root = await tempRoot("owc-msgcache-");
-    const store = await storeAt(root);
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, session.id, 5);
-    await store.get(session.id);
-
-    const filePath = messagesPathOf(root, session.id);
-    const { readFile } = await import("node:fs/promises");
-    const raw = await readFile(filePath, "utf8");
-    const lines = raw.split("\n");
-    lines[2] = "{corrupt-middle";
-    await writeFile(filePath, lines.join("\n"), "utf8");
-
-    const cached = await store.get(session.id);
-    const again = await store.get(session.id);
-    const fresh = await freshRead(root, session.id);
-    expect(cached).toEqual(fresh);
-    expect(again).toEqual(fresh);
-    expect(cached!.recovery).toMatchObject({ state: "needs_repair" });
-    expect(cached!.messages).toHaveLength(4);
-  });
-
-  it("missing messages.jsonl: needs_repair, and recovery after external recreate", async () => {
-    const root = await tempRoot("owc-msgcache-");
-    const store = await storeAt(root);
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const { rm: rmFile } = await import("node:fs/promises");
-    await rmFile(messagesPathOf(root, session.id));
-
-    const missing = await store.get(session.id);
-    expect(missing!.recovery).toMatchObject({ state: "needs_repair", message: "messages.jsonl is missing" });
-    expect(missing!.messages).toHaveLength(0);
-
-    await appendFile(messagesPathOf(root, session.id), `${JSON.stringify({ id: "00000000-0000-4000-8000-0000000000bb", role: "user", content: [], createdAt: "x" })}\n`, "utf8");
-    const restored = await store.get(session.id);
-    const fresh = await freshRead(root, session.id);
-    expect(restored).toEqual(fresh);
-    expect(restored!.recovery).toBeUndefined();
-    expect(restored!.messages).toHaveLength(1);
-  });
-
-  it("concurrent sessions do not cross-contaminate the cache", async () => {
-    const root = await tempRoot("owc-msgcache-");
-    const store = await storeAt(root);
-    const a = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const b = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, a.id, 5);
-    await seedMessages(store, b.id, 7);
-    await store.get(a.id);
-    await store.get(b.id);
-
-    await store.appendMessage(a.id, "user", [{ type: "text", text: "only-a" }]);
-    const cachedA = await store.get(a.id);
-    const cachedB = await store.get(b.id);
-    expect(cachedA).toEqual(await freshRead(root, a.id));
-    expect(cachedB).toEqual(await freshRead(root, b.id));
-    expect(cachedA!.messages).toHaveLength(6);
+    const a = await newSession(store);
+    const b = await newSession(store);
+    await seedMessages(store, a, 5);
+    await seedMessages(store, b, 7);
+    await store.get(a);
+    await store.get(b);
+    await store.appendMessage(a, "user", [{ type: "text", text: "only-a" }]);
+    const cachedA = await store.get(a);
+    const cachedB = await store.get(b); expect(cachedA).toEqual(await freshRead(root, a));
+    expect(cachedB).toEqual(await freshRead(root, b)); expect(cachedA!.messages).toHaveLength(6);
     expect(cachedB!.messages).toHaveLength(7);
-  });
-
-  it("mutating the returned array does not poison the cache", async () => {
-    const root = await tempRoot("owc-msgcache-");
-    const store = await storeAt(root);
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, session.id, 5);
-    const first = await store.get(session.id);
-    first!.messages.push({ id: "fake", role: "user", content: [], createdAt: "x" } as ChatMessage);
-    first!.messages.splice(0, 2);
-
-    const second = await store.get(session.id);
-    expect(second!.messages).toHaveLength(5);
-    expect(second).toEqual(await freshRead(root, session.id));
+    cachedA!.messages.push({ id: "fake", role: "user", content: [], createdAt: "x" } as ChatMessage);
+    cachedA!.messages.splice(0, 2);
+    const second = await store.get(a); expect(second!.messages).toHaveLength(6); expect(second).toEqual(await freshRead(root, a));
   });
 });
