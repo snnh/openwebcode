@@ -356,6 +356,8 @@ export interface RouteContext {
   totpTicketOf: (request: { headers: Record<string, string | string[] | undefined> }) => string | undefined;
   totpAuthenticated: (request: { headers: Record<string, string | string[] | undefined> }) => boolean;
   totpCookieHeader: (token: string) => string;
+  /** 反代 HTTPS 时给 set-cookie 补 Secure（明文 HTTP 保持原样）。 */
+  secureCookie: (request: { headers: Record<string, string | string[] | undefined> }, header: string) => string;
   originAllowed: (origin: string | undefined, nativeClient: boolean, hostHeader?: string | undefined) => boolean;
   hostAllowed: (host: string | string[] | undefined) => boolean;
   clients: Set<WsClient>;
