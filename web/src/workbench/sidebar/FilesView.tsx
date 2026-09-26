@@ -3,7 +3,7 @@
  * 长文件「加载更多」分页、「在编辑器中打开」跳编辑器分栏（auxViews.openEditor）。
  * 数据经 api.listFiles/readFile（react-query）；无会话时按空态提示。
  */
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError } from "../../lib/api";
 import type { FileEntry } from "../../lib/contracts";
@@ -20,6 +20,12 @@ const joinPath = (base: string, name: string): string => (base === "." ? name : 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp"]);
 /** 加载更多步长（行），与 core 默认读取上限对齐 */
 const LOAD_STEP = 2000;
+/**
+ * 目录/预览读路径的客户端缓存时长：文件树每次展开/折叠都会重挂载 DirChildren，
+ * 全局 staleTime=0 时每次都会重新拉取；10s 内直接命中缓存（缓存内容仍即时可见，
+ * 写入类事件经 event-router 标脏，用户下次展开即取新）。
+ */
+const FILES_STALE_MS = 10_000;
 /** 实际行数：末尾换行不算一行 */
 const countLines = (text: string): number => (text.length === 0 ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
 
@@ -38,8 +44,15 @@ function DirChildren({ sessionId, path, depth, selectedFile, onSelect }: {
   onSelect(path: string): void;
 }): ReactElement {
   const { t } = useI18n();
-  const files = useQuery({ queryKey: ["files", sessionId, path], queryFn: () => api.listFiles(sessionId, path) });
+  const files = useQuery({
+    queryKey: ["files", sessionId, path],
+    queryFn: () => api.listFiles(sessionId, path),
+    staleTime: FILES_STALE_MS,
+  });
   const indent = { paddingLeft: 10 + depth * 14 };
+  // 排序结果按 entries 引用缓存：父组件因选中文件等状态重渲染时不再重复 O(n log n) 排序
+  const entries = files.data?.entries;
+  const sorted = useMemo(() => (entries ? sortEntries(entries) : []), [entries]);
   if (files.isPending) return <p className="muted-empty tree-note" style={indent}>{t("加载中…", "Loading…")}</p>;
   if (files.isError) return (
     <p className="panel-error tree-note" role="alert" style={indent}>
@@ -50,7 +63,7 @@ function DirChildren({ sessionId, path, depth, selectedFile, onSelect }: {
   if (files.data.entries.length === 0) return <p className="muted-empty tree-note" style={indent}>{t("（空目录）", "(Empty directory)")}</p>;
   return (
     <>
-      {sortEntries(files.data.entries).map((entry) =>
+      {sorted.map((entry) =>
         entry.type === "directory" ? (
           <TreeDir
             key={entry.name}
@@ -73,6 +86,12 @@ function DirChildren({ sessionId, path, depth, selectedFile, onSelect }: {
             <small>{formatBytes(entry.size)}</small>
           </button>
         ),
+      )}
+      {/* core 单目录有条目上限：超出部分不会出现（此前无提示，用户会以为文件不存在） */}
+      {files.data.truncated && (
+        <p className="muted-empty tree-note" style={indent}>
+          {t("条目过多，仅列出前一部分；用 Quick Open（Ctrl+P 面板的「跳转文件」）或输入 @ 搜索其余文件", "Too many entries — only the first batch is listed; use Quick Open (Go to File) or type @ to search the rest")}
+        </p>
       )}
     </>
   );
@@ -139,6 +158,7 @@ export function FilesView({ sessionId }: { sessionId?: string | undefined }): Re
     queryKey: ["file", sessionId, selectedFile],
     queryFn: () => api.readFile(sessionId!, selectedFile!),
     enabled: Boolean(sessionId && selectedFile && !isImage),
+    staleTime: FILES_STALE_MS,
   });
 
   if (!sessionId) {

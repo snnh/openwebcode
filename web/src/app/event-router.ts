@@ -12,6 +12,28 @@ import { qk } from "./queries";
 import { sessionMeta } from "./session-store";
 import type { StreamBuffer } from "../chat/stream-buffer";
 
+/**
+ * 写类事件（scm.updated / run 终态）的合并重取窗口。
+ * agent 在一个 run 内可能连续写很多文件，每次都立即重取会让 SCM 的 git status（大仓库全树扫描）
+ * 与文件树目录请求成倍放大；这里先把相关查询标脏（refetchType: "none"，不立即取数），
+ * 静默 400ms 后对活动查询统一重取一次——用户看到的仍是「自动刷新」，但一次批量写入只付一次成本。
+ * 面板上的显式操作（提交/暂存/刷新按钮）不走这里，仍是立即刷新。
+ */
+const COALESCE_REFETCH_MS = 400;
+const pendingRefetches = new Map<string, { timer: ReturnType<typeof setTimeout>; keys: Set<string> }>();
+
+function scheduleCoalescedRefetch(queryClient: QueryClient, sessionId: string, keys: string[]): void {
+  for (const key of keys) queryClient.invalidateQueries({ queryKey: [key, sessionId], refetchType: "none" });
+  const pending = pendingRefetches.get(sessionId);
+  if (pending) clearTimeout(pending.timer);
+  const merged = new Set([...(pending?.keys ?? []), ...keys]);
+  const timer = setTimeout(() => {
+    pendingRefetches.delete(sessionId);
+    for (const key of merged) void queryClient.refetchQueries({ queryKey: [key, sessionId], type: "active" });
+  }, COALESCE_REFETCH_MS);
+  pendingRefetches.set(sessionId, { timer, keys: merged });
+}
+
 export interface EventRouterDeps {
   queryClient: QueryClient;
   getCurrentSessionId(): string | undefined;
@@ -127,11 +149,9 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
     // 进行中的压缩，清掉滞留占位。跨会话生效（任意会话的终态都清）。
     if (event.sessionId && (event.type === "run.completed" || event.type === "run.failed" || event.type === "run.aborted")) {
       deps.clearRunningCompaction(event.sessionId);
-      // run 期间工作树可能被 bash/命令改动，而 scm.updated 只在工具写文件与 SCM 自身操作时发布：
-      // 终态补一次失效，避免 SCM 面板停在旧状态（未挂载时只是标脏，不产生额外请求）。
-      queryClient.invalidateQueries({ queryKey: ["scm-status", event.sessionId] });
-      queryClient.invalidateQueries({ queryKey: ["scm-worktrees", event.sessionId] });
-      queryClient.invalidateQueries({ queryKey: ["scm-diff", event.sessionId] });
+      // run 期间工作树可能被 bash/命令改动（这类改动不发 scm.updated）：终态补一次标脏，
+      // 覆盖 SCM 面板与文件树（未挂载的查询只是标脏，不产生额外请求）。
+      scheduleCoalescedRefetch(queryClient, event.sessionId, ["scm-status", "scm-worktrees", "scm-diff", "files"]);
     }
 
     // 桌面通知：页面失焦时，权限待批/交互待答/run 终态弹系统通知（跨会话）
@@ -180,9 +200,8 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
     }
     // SCM 更新：刷新源代码管理面板数据；不弹窗不打断
     if (event.type === "scm.updated" && event.sessionId) {
-      queryClient.invalidateQueries({ queryKey: ["scm-status", event.sessionId] });
-      queryClient.invalidateQueries({ queryKey: ["scm-worktrees", event.sessionId] });
-      queryClient.invalidateQueries({ queryKey: ["scm-diff", event.sessionId] });
+      // 工具写文件/编辑器保存 → SCM 面板与文件树一起刷新（合并重取，见 scheduleCoalescedRefetch）
+      scheduleCoalescedRefetch(queryClient, event.sessionId, ["scm-status", "scm-worktrees", "scm-diff", "files"]);
       deps.pushEventNotification(t("源代码管理状态已更新", "Source control state updated"), "info", { sessionId: event.sessionId, view: "scm" });
     }
     if (event.type === "agent.error" && event.sessionId) {
