@@ -3,7 +3,7 @@ import { isLoopbackOrLAN } from "../auth-totp.js";
 import type { RouteContext } from "./route-context.js";
 
 export function registerAuthRoutes(app: FastifyInstance, ctx: RouteContext): void {
-  const { totp, listenHost, totpGateEnabled, totpAuthenticated, bearerAuthorized, totpTicketOf, totpCookieHeader } = ctx;
+  const { totp, listenHost, totpGateEnabled, totpAuthenticated, bearerAuthorized, totpTicketOf, totpCookieHeader, secureCookie } = ctx;
 
 
   // ---- TOTP 全局登录认证（提交⑥）：/api/auth/* 全组匿名可达（门禁豁免），登录限流在服务端内存 ----
@@ -64,7 +64,7 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: RouteContext): voi
     }
     totp.recordLoginSuccess(request.ip);
     const ticket = totp.issueTicket();
-    reply.header("set-cookie", totpCookieHeader(ticket));
+    reply.header("set-cookie", secureCookie(request, totpCookieHeader(ticket)));
     return { ok: true };
   });
   app.post("/api/auth/logout", async (request, reply) => {

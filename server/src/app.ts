@@ -195,6 +195,16 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     totp !== undefined && totp.validateTicket(totpTicketOf(request));
   const totpCookieHeader = (token: string): string =>
     `owc_totp_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(TOTP_TICKET_TTL_MS / 1_000)}`;
+  /**
+   * 经 HTTPS（TLS 反代）访问时给 cookie 补 Secure，明文 HTTP 下不加——加了浏览器根本不会回传，
+   * 反而不可能登录。只依据 X-Forwarded-Proto 判定：伪造该头只会给伪造者自己的会话加 Secure。
+   */
+  const secureCookie = (request: { headers: Record<string, string | string[] | undefined> }, header: string): string => {
+    const proto = request.headers["x-forwarded-proto"];
+    const value = Array.isArray(proto) ? proto[0] : proto;
+    const https = value?.split(",")[0]?.trim() === "https";
+    return https && !/;\s*secure\b/i.test(header) ? `${header}; Secure` : header;
+  };
   const originAllowed = (origin: string | undefined, nativeClient: boolean, hostHeader?: string | undefined) => {
     if (auth) {
       if (!origin) return nativeClient;
@@ -249,7 +259,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
           ? (request.query as Record<string, unknown>).token
           : undefined;
         if (request.method === "GET" && request.url.split("?", 1)[0] === "/" && typeof queryToken === "string" && safeTokenEqual(auth.accessToken, queryToken)) {
-          reply.header("set-cookie", `owc_access_token=${encodeURIComponent(auth.accessToken)}; HttpOnly; SameSite=Strict; Path=/`);
+          reply.header("set-cookie", secureCookie(request, `owc_access_token=${encodeURIComponent(auth.accessToken)}; HttpOnly; SameSite=Strict; Path=/`));
           return reply.redirect("/");
         }
         return;
@@ -282,7 +292,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (totpAuthenticated(request)) {
       // 滑动续期：同步刷新 cookie Max-Age
       const ticket = totpTicketOf(request);
-      if (ticket) reply.header("set-cookie", totpCookieHeader(ticket));
+      if (ticket) reply.header("set-cookie", secureCookie(request, totpCookieHeader(ticket)));
       return;
     }
     return reply.code(401).send({ error: "Authentication required" });
@@ -529,7 +539,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     platform, defaultCurrency, defaultLanguage, getPreferences,
     auth,
     isAuthorized, bearerAuthorized,
-    totp, listenHost, totpGateEnabled, totpTicketOf, totpAuthenticated, totpCookieHeader,
+    totp, listenHost, totpGateEnabled, totpTicketOf, totpAuthenticated, totpCookieHeader, secureCookie,
     originAllowed, hostAllowed,
     clients, wsStats,
     configuredSessions, managedSyncingSessions, managedSyncAbortControllers, managedCheckpointingSessions, restoringSessions,

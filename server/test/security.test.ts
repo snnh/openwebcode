@@ -66,6 +66,10 @@ describe("remote listener security", () => {
       expect((await app.inject({ method: "GET", url: "/api/health", headers: { "x-openwebcode-token": "wrong" } })).statusCode).toBe(401);
       const bootstrap = await app.inject({ method: "GET", url: `/?token=${encodeURIComponent(token)}` }); expect(bootstrap.statusCode).toBe(302); expect(bootstrap.headers.location).toBe("/");
       expect(bootstrap.headers["set-cookie"]).toContain("HttpOnly"); expect(bootstrap.headers["set-cookie"]).toContain(encodeURIComponent(token));
+      // 明文 HTTP 不加 Secure（加了浏览器不回传）；TLS 反代（X-Forwarded-Proto: https）才加
+      expect(String(bootstrap.headers["set-cookie"])).not.toContain("Secure");
+      const proxied = await app.inject({ method: "GET", url: `/?token=${encodeURIComponent(token)}`, headers: { "x-forwarded-proto": "https" } });
+      expect(String(proxied.headers["set-cookie"])).toContain("; Secure");
       const cookie = String(bootstrap.headers["set-cookie"]).split(";", 1)[0]; expect((await app.inject({ method: "GET", url: "/api/health", headers: { cookie } })).statusCode).toBe(200);
       expect(sanitizeRequestUrl(`/?token=${encodeURIComponent(token)}&next=1`)).toBe("/?token=%5BREDACTED%5D&next=1");
       const { url } = await listen(app);
