@@ -35,6 +35,16 @@ const MAX_COMMIT_MESSAGE_CHARS = 2_000;
 const GIT_JOB_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 50;
 
+/**
+ * 读路径短缓存（status / diff / 仓库探针）：SCM 面板在「打开面板、切回标签、切会话、每次
+ * 文件写入事件」都会重新取数，而每次 git status/diff 都是真实进程（大仓库全树扫描）。
+ * 同一会话短时间内的重复取数复用结果，并合并并发请求（in-flight 去重）；
+ * 文件写入/SCC 自身操作发布的 `scm.updated` 会立即失效对应缓存，保证写入后仍看到新状态。
+ */
+const READ_CACHE_TTL_MS = 1_500;
+/** 仓库探针（rev-parse）缓存：仓库归属极少变化，长 TTL 摊掉每次读取的一次进程。 */
+const REPO_PROBE_TTL_MS = 10_000;
+
 /** 严格白名单：分支名/worktree 名/ref（禁空格、引号、shell 元字符、连续点、开头短横线）。 */
 const SAFE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$/;
 /** 相对路径白名单：普通空格由 quoteArg 安全引用；拒绝控制符与 shell 元字符。 */
@@ -142,12 +152,71 @@ function parseStatusPorcelainZ(text: string): Omit<GitStatusResult, "isRepo"> {
  * （仓库 .git 之外的服务端数据目录），会话结束不自动删除，用户经 REST 决定清理。
  */
 export class ScmService {
+  private readonly readCache = new Map<string, { at: number; value: unknown }>();
+  private readonly inflight = new Map<string, Promise<unknown>>();
+
   constructor(
     private readonly core: CoreClientLike,
     private readonly sessions: SessionStore,
     private readonly events: EventBus,
     private readonly options: { worktreeRoot: string; exec?: GitExec } ,
-  ) {}
+  ) {
+    // 会话内任何写路径（agent 文件工具、bash、SCM 自身操作）都会发布 scm.updated：
+    // 读到的事件即丢弃该会话的读缓存，避免「刚提交/刚写文件仍看到旧状态」。
+    this.events.on("event", (event) => {
+      if (event.type === "scm.updated" && event.sessionId) this.invalidateReadCache(event.sessionId);
+    });
+  }
+
+  /** 丢弃某会话（不带 sessionId 时全部）的读缓存与在途去重表。 */
+  invalidateReadCache(sessionId?: string): void {
+    if (!sessionId) {
+      this.readCache.clear();
+      return;
+    }
+    const prefix = `${sessionId}|`;
+    for (const key of [...this.readCache.keys()]) {
+      if (key.startsWith(prefix)) this.readCache.delete(key);
+    }
+  }
+
+  /**
+   * 读缓存 + 在途去重：同 key 的并发调用共享同一次计算；TTL 内的重复调用直接复用结果。
+   * fresh=true 跳读缓存（仍合并并发），供显式刷新使用。
+   */
+  private async cached<T>(key: string, ttlMs: number, compute: () => Promise<T>, fresh = false): Promise<T> {
+    if (!fresh) {
+      const hit = this.readCache.get(key);
+      if (hit && Date.now() - hit.at < ttlMs) return hit.value as T;
+    }
+    const running = this.inflight.get(key);
+    if (running) return running as Promise<T>;
+    const promise = (async () => {
+      try {
+        const value = await compute();
+        this.readCache.set(key, { at: Date.now(), value });
+        return value;
+      } finally {
+        this.inflight.delete(key);
+      }
+    })();
+    this.inflight.set(key, promise);
+    return promise;
+  }
+
+  /**
+   * 读路径入口：带取消信号（agent 工具调用）的请求不参与共享——一个调用方的 abort 不应让
+   * 另一个并发调用方收到中止错误，也不该把中止结果写进缓存；REST 侧（无信号）走缓存与去重。
+   */
+  private async readPath<T>(
+    key: string,
+    ttlMs: number,
+    context: { signal?: AbortSignal },
+    compute: () => Promise<T>,
+  ): Promise<T> {
+    if (context.signal) return compute();
+    return this.cached(key, ttlMs, compute);
+  }
 
   private publish(sessionId: string, reason: string, detail: Record<string, unknown> = {}): void {
     this.events.publish({ source: "agent", type: "scm.updated", sessionId, payload: { sessionId, reason, ...detail } });
@@ -198,26 +267,37 @@ export class ScmService {
     return this.runGitViaCore(args, cwd, { sessionId, shellBackend: context.shellBackend ?? "default", ...(context.signal ? { signal: context.signal } : {}) });
   }
 
+  /** 仓库探针（rev-parse）：带 TTL 缓存，同一会话的连续 status/diff/写操作共用一次进程。 */
+  private async probeRepo(sessionId: string, cwd: string, context: { shellBackend?: ShellBackend; signal?: AbortSignal } = {}): Promise<boolean> {
+    return this.readPath(`${sessionId}|repo`, REPO_PROBE_TTL_MS, context, async () => {
+      const probe = await this.git(sessionId, cwd, ["rev-parse", "--is-inside-work-tree"], context);
+      return probe.exitCode === 0 && probe.stdout.trim() === "true";
+    });
+  }
+
   private async requireRepo(sessionId: string, cwd: string, context: { shellBackend?: ShellBackend; signal?: AbortSignal } = {}): Promise<void> {
-    const probe = await this.git(sessionId, cwd, ["rev-parse", "--is-inside-work-tree"], context);
-    if (probe.exitCode !== 0 || probe.stdout.trim() !== "true") {
+    if (!await this.probeRepo(sessionId, cwd, context)) {
       throw new NotARepoError("Not a git repository (or any parent up to mount point)");
     }
   }
 
   async status(sessionId: string, cwd: string, context: { shellBackend?: ShellBackend; signal?: AbortSignal } = {}): Promise<GitStatusResult> {
-    const probe = await this.git(sessionId, cwd, ["rev-parse", "--is-inside-work-tree"], context);
-    if (probe.exitCode !== 0 || probe.stdout.trim() !== "true") {
-      return { isRepo: false, staged: [], unstaged: [], untracked: [], totals: { staged: 0, unstaged: 0, untracked: 0 }, truncated: false };
-    }
-    const result = await this.git(sessionId, cwd, ["status", "--porcelain=v1", "--branch", "-z"], context);
-    if (result.exitCode !== 0) throw new Error(`git status failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
-    return { isRepo: true, ...parseStatusPorcelainZ(result.stdout) };
+    // 直接以 git status 的失败信息判定「不是仓库」：省掉每次读取的一次 rev-parse 进程
+    // （首次打开面板、切回标签、每次写文件事件都会走这里）。
+    return this.readPath(`${sessionId}|status`, READ_CACHE_TTL_MS, context, async () => {
+      const result = await this.git(sessionId, cwd, ["status", "--porcelain=v1", "--branch", "-z"], context);
+      if (result.exitCode !== 0) {
+        if (/not a git repository/i.test(result.stderr)) {
+          return { isRepo: false, staged: [], unstaged: [], untracked: [], totals: { staged: 0, unstaged: 0, untracked: 0 }, truncated: false } satisfies GitStatusResult;
+        }
+        throw new Error(`git status failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
+      }
+      return { isRepo: true, ...parseStatusPorcelainZ(result.stdout) } satisfies GitStatusResult;
+    });
   }
 
   async diff(sessionId: string, cwd: string, options: GitDiffOptions = {}, context: { shellBackend?: ShellBackend; signal?: AbortSignal } = {}): Promise<GitDiffResult> {
-    const probe = await this.git(sessionId, cwd, ["rev-parse", "--is-inside-work-tree"], context);
-    if (probe.exitCode !== 0 || probe.stdout.trim() !== "true") {
+    if (!await this.probeRepo(sessionId, cwd, context)) {
       return { isRepo: false, stat: "", totalBytes: 0, truncated: false };
     }
     const scope: string[] = [];
@@ -226,20 +306,24 @@ export class ScmService {
     const file = options.file !== undefined ? validateRelativePath(options.file) : undefined;
     const statArgs = ["diff", "--stat", ...scope, ...(file ? ["--", file] : [])];
     const diffArgs = ["diff", ...scope, ...(file ? ["--", file] : [])];
-    const stat = await this.git(sessionId, cwd, statArgs, context);
-    if (stat.exitCode !== 0) throw new Error(`git diff --stat failed: ${stat.stderr.trim() || `exit ${stat.exitCode}`}`);
-    const full = await this.git(sessionId, cwd, diffArgs, context);
-    if (full.exitCode !== 0) throw new Error(`git diff failed: ${full.stderr.trim() || `exit ${full.exitCode}`}`);
-    const totalBytes = Buffer.byteLength(full.stdout, "utf8");
-    if (totalBytes <= MAX_INLINE_DIFF_BYTES) {
-      return { isRepo: true, stat: stat.stdout, diff: full.stdout, totalBytes, truncated: false };
-    }
-    // 大 diff：只给 stat + 摘要，完整 diff 落 sessions artifact（read_artifact 可续读）
-    const artifactId = `artifact-${randomUUID()}`;
-    const directory = path.join(this.sessions.contextRoot(sessionId), "artifacts");
-    await mkdir(directory, { recursive: true });
-    await writeFile(path.join(directory, `${artifactId}.txt`), full.stdout, "utf8");
-    return { isRepo: true, stat: stat.stdout, artifactId, totalBytes, truncated: true };
+    // 同一文件/范围的 diff 在 TTL 内复用（选中文件、主区 diff 视图、写文件事件后重取都会命中）
+    const cacheKey = `${sessionId}|diff|${scope.join(" ")}|${file ?? ""}`;
+    return this.readPath(cacheKey, READ_CACHE_TTL_MS, context, async () => {
+      const stat = await this.git(sessionId, cwd, statArgs, context);
+      if (stat.exitCode !== 0) throw new Error(`git diff --stat failed: ${stat.stderr.trim() || `exit ${stat.exitCode}`}`);
+      const full = await this.git(sessionId, cwd, diffArgs, context);
+      if (full.exitCode !== 0) throw new Error(`git diff failed: ${full.stderr.trim() || `exit ${full.exitCode}`}`);
+      const totalBytes = Buffer.byteLength(full.stdout, "utf8");
+      if (totalBytes <= MAX_INLINE_DIFF_BYTES) {
+        return { isRepo: true, stat: stat.stdout, diff: full.stdout, totalBytes, truncated: false } satisfies GitDiffResult;
+      }
+      // 大 diff：只给 stat + 摘要，完整 diff 落 sessions artifact（read_artifact 可续读）
+      const artifactId = `artifact-${randomUUID()}`;
+      const directory = path.join(this.sessions.contextRoot(sessionId), "artifacts");
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, `${artifactId}.txt`), full.stdout, "utf8");
+      return { isRepo: true, stat: stat.stdout, artifactId, totalBytes, truncated: true } satisfies GitDiffResult;
+    });
   }
 
   /**

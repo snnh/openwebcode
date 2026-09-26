@@ -97,6 +97,13 @@ function StatusGroup({ title, entries, total, onOpen, actions, confirmingPath, c
   );
 }
 
+/**
+ * SCM 读路径的客户端缓存时长：面板在「切回标签、切会话」时会重新挂载，
+ * staleTime=0 会让每次挂载都重跑 git status/diff；10s 内命中缓存，
+ * 写路径（scm.updated 事件、run 终态、提交/暂存后的 refresh）仍会立即失效重取。
+ */
+const SCM_READ_STALE_MS = 10_000;
+
 export function ScmView({ sessionId }: { sessionId?: string | undefined }): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -118,16 +125,21 @@ export function ScmView({ sessionId }: { sessionId?: string | undefined }): Reac
     setMergeConflicts(undefined);
   }, [sessionId]);
 
+  // 全局 staleTime=0：面板每次挂载/切回标签都会重跑 git status（大仓库一次全树扫描）。
+  // 这里给读路径一个短 staleTime：重复取数命中缓存；写路径由 scm.updated 事件与 run 终态
+  // 失效（服务端同一时刻也会丢缓存），因此不会漏掉文件变更。
   const status = useQuery({
     queryKey: ["scm-status", sessionId],
     queryFn: () => api.scmStatus(sessionId!),
     enabled: Boolean(sessionId),
+    staleTime: SCM_READ_STALE_MS,
     retry: false,
   });
   const diff = useQuery({
     queryKey: ["scm-diff", sessionId, selected?.path, selected?.staged],
     queryFn: () => api.scmDiff(sessionId!, { staged: selected!.staged, file: selected!.path }),
     enabled: Boolean(sessionId && selected && !selected.untracked),
+    staleTime: SCM_READ_STALE_MS,
     retry: false,
   });
   // 未跟踪文件没有 diff 可言：直接读文件内容预览
@@ -135,12 +147,14 @@ export function ScmView({ sessionId }: { sessionId?: string | undefined }): Reac
     queryKey: ["scm-file", sessionId, selected?.path],
     queryFn: () => api.readFile(sessionId!, selected!.path),
     enabled: Boolean(sessionId && selected?.untracked),
+    staleTime: SCM_READ_STALE_MS,
     retry: false,
   });
   const worktrees = useQuery({
     queryKey: ["scm-worktrees", sessionId],
     queryFn: () => api.scmWorktrees(sessionId!),
     enabled: Boolean(sessionId),
+    staleTime: SCM_READ_STALE_MS,
     retry: false,
   });
   // 历史区：折叠时不拉取，展开后才请求
@@ -148,6 +162,7 @@ export function ScmView({ sessionId }: { sessionId?: string | undefined }): Reac
     queryKey: ["scm-log", sessionId],
     queryFn: () => api.scmLog(sessionId!, 50),
     enabled: Boolean(sessionId && historyOpen),
+    staleTime: SCM_READ_STALE_MS,
     retry: false,
   });
 
