@@ -37,6 +37,7 @@
 - **在线更新的版本号加 semver 白名单**：release tag 派生的版本号会拼进更新包文件名、下载目录与 Windows 安装命令行，被污染的更新元数据此前可用 `../` 越出 updater 目录或在 `cmd.exe` 命令串里注入命令（SHA256SUMS 与资产同源，只能证明一致性）；现在非 semver 形状一律拒绝。
 - **WebUI 安全响应头补齐**：新增 `frame-ancestors 'none'` 与 `X-Frame-Options: DENY`（此前页面可被任意站点 iframe 嵌入做点击劫持）、`Referrer-Policy: no-referrer`（`?token=` 引导链接跳外站时不再把访问令牌带进 Referer）。
 - **反代 HTTPS 场景的 cookie 补 `Secure`**：经 TLS 反代访问（`X-Forwarded-Proto: https`）时，访问令牌与 TOTP 票据 cookie 带上 `Secure`；明文 HTTP 下不加（加了浏览器不回传，本地直连会无法登录）。
+- **chat 分享口令改为 scrypt 加盐派生**：分享口令此前存无盐的单轮 SHA-256（`meta.json` 一旦被备份/同步/误提交，弱口令可离线暴破），现在用 scrypt（内存硬）+ 每口令独立盐，存储为自描述串 `scrypt$<salt>$<hash>`，校验走常时比较；旧格式哈希一律判为不匹配，**已有分享需要重新设置口令**（不提供迁移）。
 - **补全路径的 glob 元字符净化**：会话文件补全此前把用户输入直接拼进 core 的 glob 模式，输入 `*` 会退化成把整个工作区列一遍；现在按字面匹配。
 
 ## [1.12.0-beta2]

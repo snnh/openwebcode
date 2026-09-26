@@ -1,10 +1,11 @@
-import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import path from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { errorMessage } from "../error-utils.js";
 import { timingSafeHashEqual } from "../auth-totp.js";
+import { hashSharePassword, verifySharePassword } from "../chat/share-password.js";
 import type { MessageContent, TextContent } from "../sessions/types.js";
 import type { ChatAssistant, ChatConfig, ChatImageInput, ChatRunner, ChatSessionMeta, ChatShare } from "../chat/index.js";
 import { CHAT_IMAGE_MAX_BYTES, CHAT_INLINE_IMAGE_MAX_BYTES, extForMediaType, mediaTypeForFile, resolveSessionPath } from "../chat/index.js";
@@ -530,7 +531,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
       // 折叠重复 "-"、去首尾 "-"，空则回退 "chat"
       slug: meta.title.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "").slice(0, 30) || "chat",
       createdAt: new Date().toISOString(),
-      ...(password ? { passwordHash: createHash("sha256").update(password).digest("hex") } : {}),
+      ...(password ? { passwordHash: await hashSharePassword(password) } : {}),
     };
     const updated = await chatSessions.updateMeta(request.params.id, { share });
     return reply.code(201).send(publicMeta(updated).share);
@@ -658,8 +659,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
     if (session.share.passwordHash) {
       const password = request.body?.password;
       if (typeof password !== "string" || !password) return reply.code(401).send({ error: "Password required" });
-      const hash = createHash("sha256").update(password).digest("hex");
-      if (!timingSafeHashEqual(session.share.passwordHash, hash)) {
+      if (!(await verifySharePassword(password, session.share.passwordHash))) {
         recordShareVerifyFailure(ip);
         return reply.code(401).send({ error: "Invalid password" });
       }
