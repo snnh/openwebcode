@@ -245,6 +245,15 @@ describe("createEventRouter", () => {
     },
   );
 
+  it("run 终态补失效 SCM 读查询（bash 等命令改动工作树不发 scm.updated）", () => {
+    const { queryClient, router } = setup("s1");
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    router.route(makeEvent({ type: "run.completed", sessionId: "s1", payload: {} }));
+    for (const key of ["scm-status", "scm-worktrees", "scm-diff"]) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: [key, "s1"] });
+    }
+  });
+
   it("压缩事件正常到达不清占位（运行中→原位沉降/失败由 live-store 处理）", () => {
     const { deps, router } = setup("s1");
     router.route(makeEvent({ type: "context.compacting", sessionId: "s1", payload: { forced: true, mode: "vault" } }));

@@ -127,6 +127,11 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
     // 进行中的压缩，清掉滞留占位。跨会话生效（任意会话的终态都清）。
     if (event.sessionId && (event.type === "run.completed" || event.type === "run.failed" || event.type === "run.aborted")) {
       deps.clearRunningCompaction(event.sessionId);
+      // run 期间工作树可能被 bash/命令改动，而 scm.updated 只在工具写文件与 SCM 自身操作时发布：
+      // 终态补一次失效，避免 SCM 面板停在旧状态（未挂载时只是标脏，不产生额外请求）。
+      queryClient.invalidateQueries({ queryKey: ["scm-status", event.sessionId] });
+      queryClient.invalidateQueries({ queryKey: ["scm-worktrees", event.sessionId] });
+      queryClient.invalidateQueries({ queryKey: ["scm-diff", event.sessionId] });
     }
 
     // 桌面通知：页面失焦时，权限待批/交互待答/run 终态弹系统通知（跨会话）
