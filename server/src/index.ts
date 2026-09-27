@@ -524,6 +524,10 @@ async function shutdown(): Promise<void> {
 installGracefulShutdown({ shutdown });
 
 await app.listen({ host: config.host, port: config.port });
+// 启动完成即归还启动期空闲页：索引扫描/会话装载/扩展宿主拉起产生数百 MB 临时分配，
+// V8 归还保守（实测启动 44s RSS 907MB → 两次 full GC 后 289MB）。排到事件循环末尾执行，
+// 不阻塞首批请求；global.gc 仅在 --expose-gc 下存在（launcher 已注入）。
+setTimeout(() => global.gc?.(), 1000).unref();
 // 非回环监听：启动后打印一次带 token 的访问链接（局域网/移动端直接打开即写入登录 Cookie）
 if (authState && !isLoopbackHost(config.host)) {
   for (const url of buildAccessUrls(config.host, config.port, lanAddresses, authState.accessToken)) {
