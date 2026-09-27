@@ -215,10 +215,12 @@
 @media (max-width: 768px) {
   .wb-main > .wb-main-split { flex: 1 1 0; min-height: 0; height: 100%; position: relative; }
   .editor-pane { position: absolute; inset: 0; max-width: none; z-index: var(--z-overlay); border-left: 0; }
-  /* 浮层移动端近全屏；底部留出 Home 指示条安全区 */
+  /* 浮层移动端近全屏；顶部让开安全区（12vh 偏移在窄屏+键盘下挤占可用高度）、
+     底部留出 Home 指示条安全区 */
+  .wb-overlay-backdrop { padding-top: calc(env(safe-area-inset-top) + 8px); }
   .wb-overlay {
     width: calc(100vw - 16px);
-    max-height: 84vh;
+    max-height: calc(100dvh - env(safe-area-inset-top) - 24px);
     padding-bottom: env(safe-area-inset-bottom);
   }
 }

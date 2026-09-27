@@ -24,6 +24,8 @@ import { useI18n } from "../i18n";
 import { useAgentRun } from "../hooks/use-agent-run";
 import { useSubagentTabs } from "../hooks/use-subagent-tabs";
 import { useTerminalTabs } from "../hooks/use-terminal-tabs";
+// iOS 软键盘适配：键盘弹出时把真实可视高度写入 --vvh，移动端外壳随键盘压缩
+import { installVisualViewportHeight } from "./visual-viewport";
 import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { live, liveStore } from "./live-store";
 import { layout, layoutStore, type SidebarView } from "../workbench/layout";
@@ -179,6 +181,8 @@ export function App(): ReactElement {
     findInConversation: () => window.dispatchEvent(new CustomEvent(CONVERSATION_SEARCH_EVENT)),
   };
   useEffect(() => registerBuiltinCommands(() => actionsRef.current), []);
+  // iOS 软键盘适配（幂等）：键盘弹出只缩 visualViewport 不改布局视口，外壳高度跟随 --vvh
+  useEffect(() => { installVisualViewportHeight(); }, []);
   const keybindingOverrides = useKeybindingOverrides();
   // 分发注册表 = 默认 + 自定义覆盖（keybindingsStore 订阅，变更即热生效）
   const keybindings = useMemo(() => mergeKeybindings(DEFAULT_KEYBINDINGS, keybindingOverrides), [keybindingOverrides]);

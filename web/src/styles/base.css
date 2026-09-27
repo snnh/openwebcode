@@ -95,9 +95,17 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .collapse-row:hover { color: var(--accent); }
 
 /* 事件流断线重连横幅：顶部细条，仅提示不阻塞交互 */
+/* 点按灰色高亮闪烁在移动端很抢眼，全局关掉（保留 :focus-visible 键盘可达性）；
+   manipulation 去掉按钮双击缩放延迟（保留滚动与捏合缩放） */
+button, a, [role="button"], summary, select, .icon-btn {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
 .connection-banner {
   position: fixed;
-  top: 8px;
+  /* 凹屏安全区：横幅避开刘海/状态栏（桌面 env() 为 0，无影响） */
+  top: calc(8px + env(safe-area-inset-top));
   left: 50%;
   transform: translateX(-50%);
   z-index: var(--z-drawer);
@@ -119,7 +127,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   margin: 0;
   padding: 4px;
   list-style: none;
-  min-width: min(320px, calc(100vw - 24px));
+  /* min 与移动端 max-width（composer.css calc(100vw - 32px)）同口径：
+     320px 视口下 min(296px) > max(288px) 会让 min 胜出、右侧溢出 8px */
+  min-width: min(320px, calc(100vw - 32px));
   max-width: 100%;
   max-height: 260px;
   overflow-y: auto;

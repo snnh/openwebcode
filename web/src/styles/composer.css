@@ -369,11 +369,12 @@
   .composer-menu-btn { min-height: 30px; padding: 0 6px; gap: 4px; font-size: var(--text-xs); }
   .model-menu-btn-label { max-width: 30vw; gap: 3px; }
   .composer textarea { font-size: 16px; }
-  /* 凹屏安全区：输入卡片避开 Home 指示条与左右圆角 */
+  /* 凹屏安全区：输入卡片避开左右圆角；底部安全区由恒渲染的 StatusBar 承担，
+     composer 不是最底部元素（其下还有面板标签条/状态条），重复叠加会多出约 34px 空档 */
   .composer {
     padding-left: calc(12px + env(safe-area-inset-left));
     padding-right: calc(12px + env(safe-area-inset-right));
-    padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+    padding-bottom: var(--space-3);
   }
   /* 弹层窄屏收边：min-width 不再顶出视口（弹层锚定触发按钮，形态接近底栏弹层） */
   .composer-popup { max-width: calc(100vw - 32px); }
@@ -383,7 +384,7 @@
 }
 
 @media (max-width: 480px) {
-  .composer { padding: 6px calc(8px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left)); }
+  .composer { padding: 6px calc(8px + env(safe-area-inset-right)) 8px calc(8px + env(safe-area-inset-left)); }
   .composer-card { padding: 6px 10px 8px; }
   /* 超窄屏再压一档：模型名收得更短，避免与三按钮挤爆同行 */
   .composer-menu-btn { padding: 0 5px; }

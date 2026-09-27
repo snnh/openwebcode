@@ -75,7 +75,7 @@
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  padding: var(--space-2) 0 calc(var(--space-2) + env(safe-area-inset-bottom));
+  padding: calc(var(--space-2) + env(safe-area-inset-top)) 0 calc(var(--space-2) + env(safe-area-inset-bottom));
   background: var(--panel);
   border-right: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
@@ -641,6 +641,9 @@
     flex-direction: column;
     height: 100vh;
     height: 100dvh;
+    /* iOS 软键盘：键盘弹出只缩 visualViewport，--vvh 由 app/visual-viewport.ts 写入，
+       外壳随键盘压缩，Composer 始终贴在键盘上缘（键盘收起时变量移除，回退 100dvh） */
+    height: var(--vvh, 100dvh);
     overflow: hidden;
   }
   /* 窄屏不渲染桌面活动栏：导航由左上角触发的左侧滑出菜单（.mobile-nav）承担 */
@@ -653,6 +656,9 @@
     bottom: 0;
     z-index: var(--z-drawer);
     width: min(420px, 92vw);
+    /* 抽屉全高固定：顶/底都让开安全区（底部「新建会话」不压 Home 指示条） */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
     background: var(--panel);
     border-right: 1px solid var(--border);
     animation: mobile-nav-in 0.18s ease;
@@ -679,7 +685,8 @@
   .wb-main { flex: 1 1 0; min-height: 0; }
   .wb-status { flex: 0 0 auto; }
   .workbench { height: 100%; min-height: 0; display: flex; flex-direction: column; }
-  .job-header { padding: 4px 12px; row-gap: 0; }
+  /* 凹屏安全区：顶栏避开刘海/状态栏（viewport-fit=cover 下 Safari 不自动内缩） */
+  .job-header { padding: calc(4px + env(safe-area-inset-top)) 12px 4px; row-gap: 0; }
   .job-header h1 { font-size: 14px; }
   /* 行1 不折行：信息项整体不收缩不换行，标题让位截断并紧挨触发图标；信息项间隔收紧 */
   .job-header-info { gap: 0; flex-wrap: nowrap; align-items: center; }
@@ -688,7 +695,8 @@
   .job-header-info h1 { line-height: 1.2; }
   .job-header-info .job-info { line-height: 1.2; }
   .job-header-info .job-title { flex: 0 1 auto; min-width: 0; }
-  .job-header-info .job-info { flex: 0 0 auto; gap: 0; }
+  /* 信息项可收缩兜底：多项同时出现且模型名长时截断尾部（hidden），不撑破视口 */
+  .job-header-info .job-info { flex: 0 1 auto; min-width: 0; overflow: hidden; gap: 0; }
   .job-header-info .job-info > *:not(:last-child)::after { margin-left: 3px; }
   .cost-summary, .window-usage { font-size: 11px; gap: 5px; }
   .budget-bar { width: 28px; flex: none; }
@@ -713,7 +721,7 @@
   .job-header-toggle { width: 32px; height: 32px; }
   /* 凹屏安全区：底部状态条避开 Home 指示条 */
   .status-bar { padding-bottom: calc(3px + env(safe-area-inset-bottom)); }
-  .toast { right: 12px; bottom: 12px; left: 12px; max-width: none; }
+  .toast { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); left: 12px; max-width: none; }
   /* 密度优化：会话信息条纯文本折行显示，单位缩写 tok，不截断不横滚 */
   .unit-full { display: none; }
   .unit-narrow { display: inline; }
