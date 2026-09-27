@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { ContextManager, type BudgetUpdate } from "../context/context-manager.js";
+import { pickSegmentBoundary } from "../context/context-ledger-ops.js";
 import type { Currency } from "../context/model-profile.js";
 import { parseDecimalToScaled } from "../cost/exchange-rate.js";
 import type { IndexManager } from "../index/index-manager.js";
@@ -237,15 +238,22 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
   });
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/context", async (request, reply) => {
-    const session = await sessions.get(request.params.id);
-    if (!session) return reply.code(404).send({ error: "Session not found" });
     const manager = new ContextManager(sessions.contextRoot(request.params.id));
+    // 活动段加载：前端每轮工具事件都会刷新本视图（400ms 合并），整表 buildView 在大会话上
+    // 每次 60MB 解析 + 百 MB 级瞬时分配（分配采样实证）——段输入产出的 stats/ledger 与整表等价
+    //（buildView 段模式语义，见 test/active-segment.test.ts 逐字节等价断言）。
+    const ledgerForBoundary = await manager.load();
+    const session = await sessions.getActive(request.params.id, pickSegmentBoundary(ledgerForBoundary));
+    if (!session) return reply.code(404).send({ error: "Session not found" });
     // 选择性上下文是 context-saver 扩展能力：扩展关闭时与 agent 循环一致传空（面板数据 = 实际注入）
     const saverOn = !dependencies.extensions || dependencies.extensions.isEnabled("context-saver");
     const selection = saverOn
       ? { pins: session.contextPins ?? [], excludes: session.contextExcludes ?? [] }
       : { pins: [] as string[], excludes: [] as string[] };
-    const view = await manager.buildView(session.messages, { selection });
+    const view = await manager.buildView(
+      session.messages,
+      { selection, ...(session.segmentBoundary ? { segmentBoundary: session.segmentBoundary } : {}) },
+    );
     const prefs = getPreferences();
     // 响应不含消息体（view.messages）：前端面板只消费 stats/ledger/selection/preferences
     // （消息摘要取自会话详情查询），长会话逐轮全量消息体的序列化与传输纯属浪费（P3）。
