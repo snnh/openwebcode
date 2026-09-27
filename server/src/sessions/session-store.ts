@@ -8,7 +8,7 @@ import { monotonicTimestamp } from "../monotonic-clock.js";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import { activePathMessages } from "./session-tree.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
-import { readMessagesTail, readMessagesBefore, readAllMessages, readMessagesHead, checkRecoveryTail, invalidateMessageIndex, readLastRecordRange, sweepIdleMessageIndexes, DEFAULT_PAGE_SIZE } from "./message-reader.js";
+import { readMessagesTail, readMessagesBefore, readAllMessages, readMessagesAfter, readMessagesHead, checkRecoveryTail, invalidateMessageIndex, readLastRecordRange, sweepIdleMessageIndexes, DEFAULT_PAGE_SIZE } from "./message-reader.js";
 import { isCacheEntryIdle } from "../cache-policy.js";
 import { deriveTitleFromMessages, serializeByKey, titleFromContent } from "./store-utils.js";
 import type { BindLinkSpec, ChatMessage, FallbackModelEntry, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SandboxNetwork, SessionDetail, SessionMeta } from "./types.js";
@@ -47,6 +47,12 @@ interface MessagesCacheEntry {
   /** 驻留权重：堆字节估算 = messages.jsonl 字节 × HEAP_BYTES_PER_FILE_BYTE（实测 3.11×） */
   weight: number;
   messages: ChatMessage[];
+  /**
+   * 活动段条目标记：messages 是从该边界消息（含）开始的后缀段而非整表（agent run 热路径
+   * 经 getActive 建立）。整表读取（get/readMessages）对段条目穿透重读、不命中也不顶替；
+   * unpinMessages 时段条目直接逐出（段对 fork/export/timeline 等整表消费方无用）。
+   */
+  segment?: { boundaryId: string };
   recovery?: NonNullable<SessionMeta["recovery"]>;
 }
 
@@ -204,6 +210,74 @@ export class SessionStore {
     return { ...meta, ...(recovery ? { recovery } : {}), messages };
   }
 
+  /**
+   * 活动段读取（agent run 热路径专用）：boundary 非空时只驻留「边界消息（含）之后」的后缀段——
+   * 大会话（/clear 或压缩之后）run 期间不再把整份 messages.jsonl 的解析产物常驻
+   *（60MB 文件 ≈ 180MB 堆 → 段通常只有几 MB）。返回 detail 附带 segmentBoundary，
+   * 调用方将其传给 buildView 的同名选项（段首即边界消息，buildView 裁掉它，语义与整表一致）。
+   * 段缓存按 boundaryId + 文件指纹双重校验：/clear、/compact 边界前移后下一 turn 自动重读。
+   * 回退整表（segmentBoundary 为 undefined）：无边界 / 边界 id 被截断抹掉 /
+   * 活动叶子在边界之下（用户 checkout 回历史分叉）——三种情况都必须看到完整消息树。
+   */
+  async getActive(id: string, boundary?: { uptoMessageId: string; kind: "cleared" | "compacted" }): Promise<(SessionDetail & { segmentBoundary?: { uptoMessageId: string; kind: "cleared" | "compacted" } }) | undefined> {
+    let meta: SessionMeta;
+    try {
+      meta = await this.readMeta(id);
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+    if (!boundary) {
+      const { messages, recovery } = await this.readMessages(id);
+      return { ...meta, ...(recovery ? { recovery } : {}), messages };
+    }
+    const filePath = this.messagesPath(id);
+    let info: Awaited<ReturnType<typeof stat>>;
+    try {
+      info = await stat(filePath);
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+      this.dropMessagesCache(id);
+      return { ...meta, recovery: { state: "needs_repair", message: "messages.jsonl is missing" }, messages: [] };
+    }
+    const cached = this.messagesCache.get(id);
+    if (cached?.segment && cached.segment.boundaryId === boundary.uptoMessageId
+        && cached.size === info.size && cached.mtimeMs === info.mtimeMs && cached.ctimeMs === info.ctimeMs) {
+      this.touchMessagesCache(id, cached);
+      // 浅拷贝返回：调用方不得改动缓存数组本身（与整表缓存同一纪律）
+      return { ...meta, ...(cached.recovery ? { recovery: cached.recovery } : {}), messages: cached.messages.slice(), segmentBoundary: boundary };
+    }
+    const segment = await readMessagesAfter<ChatMessage>(filePath, boundary.uptoMessageId, { ...(meta.activeLeafId ? { requireId: meta.activeLeafId } : {}) });
+    if (!segment.boundaryFound || !segment.leafInSegment) {
+      const { messages, recovery } = await this.readMessages(id);
+      return { ...meta, ...(recovery ? { recovery } : {}), messages };
+    }
+    // 旧线性日志不落盘迁移：段内补齐父链（段首边界消息的 parent 在段外，属正常，不补）
+    for (let index = 1; index < segment.messages.length; index += 1) {
+      const message = segment.messages[index]!;
+      if (!message.parentId) message.parentId = segment.messages[index - 1]!.id;
+    }
+    this.touchMessagesCache(id, {
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+      ctimeMs: info.ctimeMs,
+      lastAccess: Date.now(),
+      // 段条目按段字节计权重（而非整文件），驻留账目诚实
+      weight: segment.segmentBytes * HEAP_BYTES_PER_FILE_BYTE,
+      messages: segment.messages,
+      segment: { boundaryId: boundary.uptoMessageId },
+      ...(segment.recovery ? { recovery: segment.recovery } : {}),
+    });
+    return { ...meta, ...(segment.recovery ? { recovery: segment.recovery } : {}), messages: segment.messages.slice(), segmentBoundary: boundary };
+  }
+
+  /** 消息总条数（checkpoint 快照计数）：走字节索引行数，不整表解析。损坏尾行会多计 1，
+   *  truncateMessages(count) 的 slice 语义对此双向安全（越界取到尾/少一条均无害）。 */
+  async countMessages(id: string): Promise<number> {
+    const { totalLines } = await readMessagesTail(this.messagesPath(id), 1);
+    return totalLines;
+  }
+
   /** 只读 meta.json（不触碰 messages.jsonl）：热路径上仅取配置字段的调用点用。 */
   async getMeta(id: string): Promise<SessionMeta | undefined> {
     try {
@@ -230,6 +304,11 @@ export class SessionStore {
     if (!this.pinnedMessages.delete(id)) return;
     const entry = this.messagesCache.get(id);
     if (!entry) return;
+    // 段条目（活动段后缀）对整表消费方无用，解除钉住即逐出，不留进普通缓存纪律
+    if (entry.segment) {
+      this.dropMessagesCache(id);
+      return;
+    }
     if (entry.weight > MAX_CACHED_MESSAGES_PER_SESSION_BYTES) {
       this.dropMessagesCache(id);
       return;
@@ -861,7 +940,9 @@ export class SessionStore {
       return { messages: [], recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
     }
     const cached = this.messagesCache.get(id);
-    if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs && cached.ctimeMs === info.ctimeMs) {
+    // 段条目（getActive 的活动段）不命中整表读：穿透重读整表，且不顶替段条目
+    //（pinned run 期间段是热路径驻留；整表读是一次性管理面操作，读完即弃）
+    if (cached && !cached.segment && cached.size === info.size && cached.mtimeMs === info.mtimeMs && cached.ctimeMs === info.ctimeMs) {
       this.touchMessagesCache(id, cached);
       // 浅拷贝返回：调用方不得改动缓存数组本身（消息对象语义上只读）。
       return { messages: cached.messages.slice(), ...(cached.recovery ? { recovery: cached.recovery } : {}) };
@@ -873,15 +954,17 @@ export class SessionStore {
       const message = messages[index]!;
       if (!message.parentId) message.parentId = messages[index - 1]!.id;
     }
-    this.touchMessagesCache(id, {
-      size: info.size,
-      mtimeMs: info.mtimeMs,
-      ctimeMs: info.ctimeMs,
-      lastAccess: Date.now(),
-      weight: info.size * HEAP_BYTES_PER_FILE_BYTE,
-      messages,
-      ...(recovery ? { recovery } : {}),
-    });
+    if (!cached?.segment) {
+      this.touchMessagesCache(id, {
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+        ctimeMs: info.ctimeMs,
+        lastAccess: Date.now(),
+        weight: info.size * HEAP_BYTES_PER_FILE_BYTE,
+        messages,
+        ...(recovery ? { recovery } : {}),
+      });
+    }
     return { messages: messages.slice(), ...(recovery ? { recovery } : {}) };
   }
 

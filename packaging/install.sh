@@ -680,6 +680,12 @@ OWC_NODE="$OWC_HOME/node/bin/node"
 EOF
 fi
 cat >> "$PREFIX/bin/owc" <<'EOF'
+# --expose-gc：进程内可显式触发 full GC（run 结束/空闲清扫后归还 V8 空闲页，压制 RSS 峰值驻留）。
+# 仅暴露 API，不改变 GC 策略，无 OOM 风险；已带该参数时不重复追加（用户可自设 NODE_OPTIONS）。
+case " ${NODE_OPTIONS:-} " in
+    *" --expose-gc "*) ;;
+    *) export NODE_OPTIONS="${NODE_OPTIONS:-} --expose-gc" ;;
+esac
 # owc run ... 走 headless CLI；不带 run 则启动 server。
 if [ "${1:-}" = "run" ]; then
     exec "$OWC_NODE" "$OWC_HOME/server/dist/cli.js" "$@"

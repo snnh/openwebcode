@@ -171,6 +171,13 @@ export interface BuildViewOptions {
   selection?: ContextSelection;
   /** 强制全量重建（压缩、配置变更、会话恢复后的首次构建；等价性测试亦用）。 */
   forceFullRebuild?: boolean;
+  /**
+   * 活动段模式：输入 messages 是从该边界消息（含）开始的段（SessionStore.getActive 产出），
+   * 边界裁剪已在加载层完成——段首即边界消息，uptoIndex ≡ 1（裁掉段首），
+   * 段外更旧的另一条边界记录不再参与定位（其 uptoIndex 下标在段空间无意义）。
+   * 防御：messages[0].id 与 uptoMessageId 不符时忽略本选项，按整表语义正常计算。
+   */
+  segmentBoundary?: { uptoMessageId: string; kind: "cleared" | "compacted" };
 }
 
 /** 视图中一条消息的构建片段：最终注入形态（驱逐占位/图像预算已应用）+ 预估算 tokens + 按块段归因。 */

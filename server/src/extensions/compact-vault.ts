@@ -8,6 +8,7 @@ import type { FastModelClient } from "../fast-model.js";
 import type { HookRunner } from "../hooks.js";
 import { appendMemory, parseSedimentSections } from "../memory.js";
 import { ContextManager, compactionIndexIn, estimateFragmentTokens, recordCompaction } from "../context/context-manager.js";
+import { pickSegmentBoundary } from "../context/context-ledger-ops.js";
 import { extractInstructions, mergeInstructions, type CompactResult } from "../context/compactor.js";
 import { withTimeout } from "../http-utils.js";
 import type { ProviderRegistry } from "../providers/provider.js";
@@ -182,16 +183,18 @@ export class CompactVaultService {
   ) {}
 
   async compact(sessionId: string, options: { keepTail?: number; chunkSize?: number; maxTokens?: number } = {}): Promise<CompactResult> {
-    const session = await this.sessions.get(sessionId);
-    if (!session) throw new Error("Session not found");
     const context = new ContextManager(this.sessions.contextRoot(sessionId));
     const ledger = await context.load();
+    // 活动段加载：/clear 或压缩锚点之后的后缀段（段首即边界）——整表在大会话上是 180MB 级
+    const session = await this.sessions.getActive(sessionId, pickSegmentBoundary(ledger));
+    if (!session) throw new Error("Session not found");
     // 区段边界与 Compactor 同纪律：按活动路径计算（含分叉时索引不错位）；
     // 旧压缩边界优先按 uptoMessageId 锚定（分叉离路径时归 0，从新区段重新归档）
     const activeMessages = activePathMessages(session.messages, session.activeLeafId);
     const compactedUpto = ledger.compacted ? compactionIndexIn(activeMessages, ledger.compacted) : 0;
     const clearedUpto = Math.min(ledger.cleared?.uptoIndex ?? 0, activeMessages.length);
-    const previousUpto = Math.max(compactedUpto, clearedUpto);
+    // 段模式（getActive 返回段）：段首即既有边界消息，previousUpto 恒为 1（段空间下标）
+    const previousUpto = session.segmentBoundary ? 1 : Math.max(compactedUpto, clearedUpto);
     const keepTail = Math.max(0, Math.floor(options.keepTail ?? 10));
     const uptoIndex = Math.max(previousUpto, activeMessages.length - keepTail);
     if (uptoIndex <= previousUpto) {

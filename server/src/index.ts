@@ -326,10 +326,12 @@ const chatPythonEnv = ChatPythonEnv.forDataDir(
 const chatSessions = new ChatSessionStore(dataDir);
 // 常驻缓存的空闲清扫：60s 一次、unref（进程空转时内存也能回落）。惰性清扫在读写路径上兜底，
 // 这里保证「没有任何缓存操作」时同样会被释放。
+// 清扫后按需触发一次 full GC：V8 空闲页在默认调度下归还 OS 很慢（大会话 run 后的堆峰值
+// 驻留成 RSS 尖峰），global.gc 只在进程带 --expose-gc 时可用（未暴露时零成本跳过）。
 setInterval(() => {
   const now = Date.now();
-  sessions.sweepIdleCachesAndIndexes(now);
-  chatSessions.sweepIdleCachesAndIndexes(now);
+  const evicted = sessions.sweepIdleCachesAndIndexes(now) + chatSessions.sweepIdleCachesAndIndexes(now);
+  if (evicted > 0) global.gc?.();
 }, 60_000).unref();
 const chatAssistantStore = new ChatAssistantStore(path.join(dataDir, "chat-assistants.json"));
 await chatAssistantStore.init();

@@ -11,6 +11,7 @@ import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import type { UsageLog } from "../usage-log.js";
 import { ContextManager, compactionIndexIn, estimateFragmentTokens, recordCompaction, type CompactionRecord } from "./context-manager.js";
+import { pickSegmentBoundary } from "./context-ledger-ops.js";
 
 export interface CompactResult {
   changed: boolean;
@@ -203,10 +204,11 @@ export class Compactor {
   }
 
   async compact(sessionId: string, mode: "toolcalls" | "overview", options: { forced?: boolean; promptOverrides?: { overview?: string; toolcalls?: string }; protectFromMessageId?: string } = {}): Promise<CompactResult> {
-    const session = await this.sessions.get(sessionId);
-    if (!session) throw new Error("Session not found");
     const context = new ContextManager(this.sessions.contextRoot(sessionId));
     const ledger = await context.load();
+    // 活动段加载：/clear 或压缩锚点之后的后缀段（段首即边界）——整表在大会话上是 180MB 级瞬时/驻留
+    const session = await this.sessions.getActive(sessionId, pickSegmentBoundary(ledger));
+    if (!session) throw new Error("Session not found");
     // 区段边界一律按活动路径计算：ContextManager.buildView 也是把 uptoIndex 应用到
     // activePathMessages 的结果上；用 messages.jsonl 全量（含分叉/编辑重发的废弃分支）
     // 会在有分支时索引错位——摘要混入废弃分支，keepTail 保护的最近消息被裁掉。
@@ -216,9 +218,11 @@ export class Compactor {
     // 旧记录无 id 时回退 uptoIndex 下标语义；存量账本里可能存着按全量长度算的旧 uptoIndex
     //（>= 活动路径长度），方向保守（少压缩、不丢上下文），不做迁移。
     const activeMessages = activePathMessages(session.messages, session.activeLeafId);
+    // 段模式（getActive 返回段）：段首即既有边界消息，previousUpto 恒为 1（段空间下标）；
+    // 整表模式按既有双空间 id 锚定计算
     const compactedUpto = ledger.compacted ? compactionIndexIn(activeMessages, ledger.compacted) : 0;
     const clearedUpto = Math.min(ledger.cleared?.uptoIndex ?? 0, activeMessages.length);
-    const previousUpto = Math.max(compactedUpto, clearedUpto);
+    const previousUpto = session.segmentBoundary ? 1 : Math.max(compactedUpto, clearedUpto);
     let uptoIndex = Math.max(previousUpto, activeMessages.length - this.keepTail);
     // 本轮触发消息保护（agent 主循环强制压缩）：触发消息及其之后的内容绝不进压缩区段——
     // 触发消息是本轮工作的出发点，被压缩掉会让模型失去当前任务目标。
