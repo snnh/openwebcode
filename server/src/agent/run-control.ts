@@ -4,6 +4,8 @@ import type { HookPayload } from "../hooks.js";
 import { activePathMessages, isInjectionMessageId } from "../sessions/session-tree.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { MessageQueue, type QueueItem } from "./message-queue.js";
+import { ContextManager } from "../context/context-manager.js";
+import { pickSegmentBoundary } from "../context/context-ledger-ops.js";
 import { InteractionCoordinator, type InteractionKind, type InteractionRequest } from "./interaction-coordinator.js";
 
 export class SteeringError extends Error {
@@ -233,7 +235,8 @@ export class RunControl {
    * 消息落盘即持久化，重启后计数自然恢复。GOAL_COMPLETE 或无标记不续跑。
    */
   async maybeScheduleGoalContinuation(sessionId: string): Promise<void> {
-    const session = await this.deps.sessions.get(sessionId);
+    // 末条 assistant 与 goal 计数都只看活动段；边界取 ledger 锚点
+    const session = await this.deps.sessions.getActive(sessionId, pickSegmentBoundary(await new ContextManager(this.deps.sessions.contextRoot(sessionId)).load()));
     if (!session || session.agentMode !== "goal") return;
     // 队列中已有（用户手动排队的）follow_up 时不追加，避免插队
     if ((await this.messageQueue.list(sessionId, "follow_up")).some((item) => item.status === "queued")) return;

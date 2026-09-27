@@ -9,6 +9,7 @@ import { fetchMedia } from "../media-fetch.js";
 import { MAX_IMAGE_BASE64_CHARS, MAX_VIDEO_BYTES } from "../media-limits.js";
 import { sniffMedia } from "../media-sniff.js";
 import { ContextManager, selectCacheBreakpoints, type TurnLedger } from "../context/context-manager.js";
+import { pickSegmentBoundary } from "../context/context-ledger-ops.js";
 import type { ContextLedger } from "../context/context-types.js";
 import { evictContext } from "../extensions/context-saver/index.js";
 import type { Compactor, CompactResult } from "../context/compactor.js";
@@ -1147,7 +1148,7 @@ export class AgentRunner {
    * 为父，随后写入的触发消息以最后一条注入为父）。失败只降级不阻断（节奏机制会在后续轮次自愈）。
    * UI 面向服务端过滤（inj: 前缀），消息流不可见。
    */
-  private async injectAtRunStart(sessionId: string, session: { messages: ChatMessage[]; activeLeafId?: string | null; provider: string; model: string; agentMode?: string }): Promise<void> {
+  private async injectAtRunStart(sessionId: string, session: { messages: ChatMessage[]; activeLeafId?: string | null; provider: string; model: string; agentMode?: string; segmentBoundary?: { uptoMessageId: string; kind: "cleared" | "compacted" } }): Promise<void> {
     // 注入文本分「模型支持工具」两态；profile 解析失败按支持工具处理（full 只读分支）
     let toolsEnabled = true;
     try {
@@ -1187,7 +1188,7 @@ export class AgentRunner {
   /** 统一的注入决策与落盘：并发 append 各自以当前活动叶子为父——须按序 await（前一注入成为后一注入的父）。 */
   private async writeInjectionsForSession(
     sessionId: string,
-    session: { messages: ChatMessage[]; activeLeafId?: string | null },
+    session: { messages: ChatMessage[]; activeLeafId?: string | null; segmentBoundary?: { uptoMessageId: string; kind: "cleared" | "compacted" } },
     flags: { planFull?: boolean; planExit?: boolean; goalFull?: boolean; dateRefresh?: boolean },
     toolsEnabled: boolean,
     limit?: { dateOnly?: boolean },
@@ -1216,6 +1217,10 @@ export class AgentRunner {
         // 跨日后首轮自动获得锚点）。稳定前缀无日期行，跨日仅追加一条新消息，缓存不受影响。
         const lastDate = lastInjectionIndex(path, "date");
         if (lastDate >= 0 && dateVariantFromId(path[lastDate]!.id) !== today) {
+          queue.push({ kind: "date", variant: today, text: `Current date: ${today} (UTC).` });
+        } else if (lastDate < 0 && session.segmentBoundary?.kind === "cleared") {
+          // 段内无任何日期注入（/clear 清空了旧锚点）：补一次作新基线——否则 lastDate 恒为 -1，
+          // 「跨日后首轮自动获得锚点」在该会话上永久失效。真实新会话无 clear 边界，A2 语义不受影响。
           queue.push({ kind: "date", variant: today, text: `Current date: ${today} (UTC).` });
         }
       }
@@ -1259,7 +1264,10 @@ export class AgentRunner {
     // 本轮的轮级共享账本句柄（声明在 try 外层，finally 兜底提交可访问）
     let activeTurn: { context: ContextManager; ledger: TurnLedger } | undefined;
     try {
-      const configuredSession = await this.sessions.get(sessionId);
+      // run 入口取活动段（/clear、压缩锚点之后若干条）而非整表：大会话（60MB ≈ 180MB 堆）
+      // 在 run 启动时不再整表解析；总条数（快照计数）走字节索引，不解析消息。
+      const startLedger = await new ContextManager(this.sessions.contextRoot(sessionId)).load();
+      const configuredSession = await this.sessions.getActive(sessionId, pickSegmentBoundary(startLedger));
       if (!configuredSession) throw new Error("Session not found");
       const appendUserMessage = async (message: string) => {
         const images = options?.images ?? [];
@@ -1295,7 +1303,7 @@ export class AgentRunner {
       // 若入口预留独占 lease 后才发现后台任务，或配置在 run 期间切换为手动模式，
       // 不等待本轮结束，立即降级为 shared lease，避免无谓阻塞文件浏览和命令执行。
       if (!automaticSnapshot) options?.managedWorkspace?.downgradeAfterAutomaticSnapshot?.();
-      const snapshotMessageCount = configuredSession.messages.length;
+      const snapshotMessageCount = await this.sessions.countMessages(sessionId);
       // 在用户消息写入前读取 ledger；实际镜像创建放到写入后，以保证任何快照/权限错误
       // 都不会吞掉已接受的消息。用户写入不改变 ledger 或工作区，因此仍是本轮前状态。
       const snapshotLedger = automaticSnapshot
@@ -1381,7 +1389,22 @@ export class AgentRunner {
       for (let turnIndex = 0; turnIndex < maxTurns; turnIndex++) {
         controller.signal.throwIfAborted();
         this.setTurnIndex(sessionId, turnIndex);
-        const session = await this.sessions.get(sessionId);
+        const context = new ContextManager(this.sessions.contextRoot(sessionId));
+        // 轮级共享句柄：一轮 load 一次（克隆 1 次），本轮 budgetStatus/buildView/记账/驱逐共用，
+        // 出口处 commitTurn 统一落盘（有变更才写）——替代过去每轮 ~6 次全量克隆 + 2 次落盘。
+        const turnLedger = await context.beginTurn();
+        activeTurn = { context, ledger: turnLedger };
+        const budget = await context.budgetStatus(turnLedger);
+        if (budget.paused) {
+          await this.state(sessionId, "budget_paused");
+          this.events.publish({ source: "agent", type: "agent.budget_paused", sessionId, payload: budget });
+          activeTurn = undefined;
+          return;
+        }
+        // 活动段加载：/clear 或压缩锚点之后的后缀段即 agent 可见的全部——大会话 run 期间
+        // 只驻留段（通常几 MB）而非整表（60MB ≈ 180MB 堆）。边界前移（新 clear/compact）时
+        // 段缓存按 boundaryId 自动重读；分叉回边界之下时 getActive 内部回退整表。
+        const session = await this.sessions.getActive(sessionId, pickSegmentBoundary(turnLedger.working));
         if (!session) throw new Error("Session not found");
         // 运行中用户改了模型/思考档（config 路由热切并打标）：本轮丢弃 fallback 覆盖，
         // 用新的会话模型作为主模型；已试候选一并清空，使新主模型的备选链可完整重走。
@@ -1396,18 +1419,6 @@ export class AgentRunner {
         let toolsEnabledEarly = true;
         try { toolsEnabledEarly = this.getProfile(effectiveModel, effectiveProvider).capabilities.tools; } catch { /* 降级：按支持工具处理 */ }
         await this.refreshInjectionsMidLoop(sessionId, session, toolsEnabledEarly);
-        const context = new ContextManager(this.sessions.contextRoot(sessionId));
-        // 轮级共享句柄：一轮 load 一次（克隆 1 次），本轮 budgetStatus/buildView/记账/驱逐共用，
-        // 出口处 commitTurn 统一落盘（有变更才写）——替代过去每轮 ~6 次全量克隆 + 2 次落盘。
-        const turnLedger = await context.beginTurn();
-        activeTurn = { context, ledger: turnLedger };
-        const budget = await context.budgetStatus(turnLedger);
-        if (budget.paused) {
-          await this.state(sessionId, "budget_paused");
-          this.events.publish({ source: "agent", type: "agent.budget_paused", sessionId, payload: budget });
-          activeTurn = undefined;
-          return;
-        }
         // 选择性上下文（§4.4）：pin 不被驱逐、排除不进组装；配置持久化在会话 meta。
         // 选择性上下文是 context-saver 扩展能力：扩展关闭时 pins/excludes 不生效（传空）。
         const saverOn = !this.extensions || this.extensions.isEnabled("context-saver");
@@ -1416,7 +1427,12 @@ export class AgentRunner {
           : { pins: [] as string[], excludes: [] as string[] };
         const ctxBuildStart = performance.now();
         // 消息树：上下文只组装活动路径（根→活动叶子），checkout/retry 出的旧分支不进 provider 历史。
-        const view = await context.buildView(activePathMessages(session.messages, session.activeLeafId), { selection: contextSelection }, turnLedger);
+        // 段模式：getActive 返回段时把 segmentBoundary 透传给 buildView（段首即边界，uptoIndex ≡ 1）。
+        const view = await context.buildView(
+          activePathMessages(session.messages, session.activeLeafId),
+          { selection: contextSelection, ...(session.segmentBoundary ? { segmentBoundary: session.segmentBoundary } : {}) },
+          turnLedger,
+        );
         // 首轮判定的用户消息计数在 hook 变换（transformContext/beforeSend）之前采样：
         // 扩展注入/改写的 user 消息不影响首轮形态判定；/clear 与压缩的视图裁剪仍生效
         //（clear 后重新计为首回合）。压缩摘要头（id 以 compaction: 开头的 user 角色占位
@@ -2095,7 +2111,7 @@ export class AgentRunner {
         perfTurnCount++;
         await this.state(sessionId, "advancing_turn", true);
         await context.advanceRound(turnLedger);
-        const afterTools = await this.sessions.get(sessionId);
+        const afterTools = await this.sessions.getActive(sessionId, pickSegmentBoundary(turnLedger.working));
         if (afterTools && saverOn) {
           // evict 经句柄延迟到 commitTurn 统一判定/落盘（期间的外部落盘会触发重放，两侧变更都不丢）；
           // 与 buildView 一致只按活动路径记账，避免旧分支消息污染 ledger。
@@ -2168,6 +2184,9 @@ export class AgentRunner {
       this.settling.delete(sessionId);
       this.running.delete(sessionId);
       this.sessions.unpinMessages(sessionId);
+      // run 结束（段缓存已释放）后把 full GC 排到事件循环末尾：V8 空闲页及时归还 OS，
+      // 大会话 run 的堆峰值不再驻留成长期 RSS。排到末尾避免阻塞本 finally 的状态发布。
+      setImmediate(() => global.gc?.());
       this.repeatedCalls.delete(sessionId);
       this.toolAliases.discard(sessionId);
       // abort 与正常结束都保留未消费队列；queue.json 是用户可恢复状态。
@@ -4570,7 +4589,8 @@ export class AgentRunner {
    */
   private async backfillAbortedToolResults(sessionId: string): Promise<void> {
     try {
-      const session = await this.sessions.get(sessionId);
+      // 活动段足够：中断补写只关心活动路径上的 tool_call/tool_result 配对
+      const session = await this.sessions.getActive(sessionId, pickSegmentBoundary(await new ContextManager(this.sessions.contextRoot(sessionId)).load()));
       if (!session) return;
       const active = activePathMessages(session.messages, session.activeLeafId);
       const results = new Set(

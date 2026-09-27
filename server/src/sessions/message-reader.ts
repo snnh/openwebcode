@@ -71,6 +71,48 @@ export async function readMessagesBefore<T>(filePath: string, beforeId: string, 
 }
 
 /**
+ * 活动段读取：从 boundaryId 所在行（**含边界行**）读到文件尾。
+ * 用途：agent run 热路径只驻留「/clear 或压缩锚点之后」的活动段而非整表。
+ * 段首即边界消息——buildView 的 clearIndexIn/compactionIndexIn 按 id 命中返回 index+1
+ * 正好裁掉它，边界语义与整表空间自动一致（调用方零适配）。
+ * 回退义务在调用方：boundaryFound=false（边界 id 已被截断/改写抹掉）或
+ * leafInSegment=false（requireId=activeLeafId 在边界之下——用户分叉回历史）时回退整表读。
+ * 索引复用分页路径的同一字节索引（只解码行首 id，不整表 JSON.parse）。
+ */
+export async function readMessagesAfter<T>(filePath: string, boundaryId: string, opts?: { requireId?: string }): Promise<{
+  messages: T[];
+  boundaryFound: boolean;
+  leafInSegment: boolean;
+  /** 段覆盖的文件字节数（含边界行；缓存驻留权重估算用） */
+  segmentBytes: number;
+  totalLines: number;
+  recovery?: MessagePage<T>["recovery"];
+}> {
+  try {
+    const index = await getIndex(filePath);
+    const boundaryLine = index.byId.get(boundaryId);
+    if (boundaryLine === undefined) {
+      return { messages: [], boundaryFound: false, leafInSegment: false, segmentBytes: 0, totalLines: index.lines.length };
+    }
+    if (opts?.requireId !== undefined) {
+      const requireLine = index.byId.get(opts.requireId);
+      if (requireLine === undefined || requireLine < boundaryLine) {
+        return { messages: [], boundaryFound: true, leafInSegment: false, segmentBytes: 0, totalLines: index.lines.length };
+      }
+    }
+    const refs = index.lines.slice(boundaryLine);
+    const lines = await readLines(filePath, refs);
+    const { messages, recovery } = parsePage<T>(lines, true);
+    let segmentBytes = 0;
+    for (const ref of refs) segmentBytes += ref.length;
+    return { messages, boundaryFound: true, leafInSegment: true, segmentBytes, totalLines: index.lines.length, ...(recovery ? { recovery } : {}) };
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+    return { messages: [], boundaryFound: false, leafInSegment: false, segmentBytes: 0, totalLines: 0, recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
+  }
+}
+
+/**
  * 头部有界读取：只解析文件前 limit 条非空记录后立刻停止（不做整表解析）。
  * 用于「只取决于首条用户消息」的派生标题等场景：大历史不必整表解析，也不建索引。
  */

@@ -500,3 +500,30 @@ export function applyUsage(
     if (cost.exchangeRate) ledger.cost.lastExchangeRate = { ...cost.exchangeRate };
   }
 }
+
+/** 活动段加载的边界描述：/clear 与压缩锚点中较新者（按操作时间比较）。
+ *  段读取从该边界消息（含）开始；buildView 段模式下 uptoIndex ≡ 1（段首即边界，裁掉它）。 */
+export interface SegmentBoundary {
+  uptoMessageId: string;
+  kind: "cleared" | "compacted";
+}
+
+/**
+ * 取 /clear 与压缩记录中较新的边界作为活动段下界（两者都有 uptoMessageId 才参与）。
+ * 时间序与文件行号序在「checkout 到旧节点后压缩」等场景可能不一致：此时取 at 较新者
+ * 会把段下界放在较早的行号上——段变长但不会错（段内仍按 id 命中裁剪），方向保守。
+ * 旧 ledger 无 uptoMessageId 的记录不参与（无锚点无法段化，回退整表）。
+ */
+export function pickSegmentBoundary(ledger: ContextLedger): SegmentBoundary | undefined {
+  const cleared = ledger.cleared?.uptoMessageId
+    ? { uptoMessageId: ledger.cleared.uptoMessageId, kind: "cleared" as const, at: ledger.cleared.at }
+    : undefined;
+  const compacted = ledger.compacted?.uptoMessageId
+    ? { uptoMessageId: ledger.compacted.uptoMessageId, kind: "compacted" as const, at: ledger.compacted.createdAt }
+    : undefined;
+  if (!cleared) return compacted ? { uptoMessageId: compacted.uptoMessageId, kind: compacted.kind } : undefined;
+  if (!compacted) return { uptoMessageId: cleared.uptoMessageId, kind: cleared.kind };
+  return cleared.at >= compacted.at
+    ? { uptoMessageId: cleared.uptoMessageId, kind: cleared.kind }
+    : { uptoMessageId: compacted.uptoMessageId, kind: compacted.kind };
+}

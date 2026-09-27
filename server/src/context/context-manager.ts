@@ -145,16 +145,26 @@ export class ContextManager {
     const selection: ContextSelection = { pins: options?.selection?.pins ?? [], excludes: options?.selection?.excludes ?? [] };
     const pinnedIds = new Set(selection.pins);
     const compacted = ledger.compacted;
+    // 活动段模式：段首即边界消息（加载层 getActive 已按边界裁剪），uptoIndex ≡ 1 裁掉段首；
+    // 段外更旧的边界记录不参与定位（其 uptoIndex 在段空间无意义，id 也必然不命中）。
+    // 防御：段首 id 与声明边界不符（回退整表后忘摘标记等误用）时忽略段模式，按整表语义计算。
+    const segment = options?.segmentBoundary && messages[0]?.id === options.segmentBoundary.uptoMessageId
+      ? options.segmentBoundary
+      : undefined;
     // 压缩边界优先按消息 id 锚定（同清空边界的双空间定位）；边界消息离活动路径
     // （用户在边界之下分叉）时不裁剪任何消息——按 uptoIndex 下标会把新分支内容错误地藏起来；
     // 旧记录无 uptoMessageId 时回退 uptoIndex 下标语义（compactionIndexIn 内部处理）。
-    const compactedIndex = compacted ? compactionIndexIn(messages, compacted) : 0;
+    const compactedIndex = segment
+      ? (segment.kind === "compacted" ? 1 : 0)
+      : compacted ? compactionIndexIn(messages, compacted) : 0;
     // 清空边界优先按消息 id 锚定：buildView 的输入数组既可能是活动路径（agent 主循环）
     // 也可能是全量 JSONL（REST context 视图），id 定位自动适配两个空间；边界消息不在
     // 数组中（罕见：消息被外部截断）或旧 ledger 无 id 时回退 uptoIndex 下标语义。
-    const clearedIndex = ledger.cleared ? clearIndexIn(messages, ledger.cleared) : 0;
+    const clearedIndex = segment
+      ? (segment.kind === "cleared" ? 1 : 0)
+      : ledger.cleared ? clearIndexIn(messages, ledger.cleared) : 0;
     // 压缩和清空都裁剪消息前缀；较新的边界获胜。clear 覆盖压缩时不得重新注入旧摘要。
-    const uptoIndex = Math.max(compactedIndex, clearedIndex);
+    const uptoIndex = segment ? 1 : Math.max(compactedIndex, clearedIndex);
 
     // 增量复用（§4.4）：结构键覆盖压缩/清空/驱逐模式，选择键覆盖 pin/排除配置，
     // 前缀校验挡会话恢复截断；驱逐条目走片段级失效（entrySignatures 逐片段比对），
