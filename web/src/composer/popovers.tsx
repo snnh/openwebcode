@@ -32,20 +32,25 @@ function Popover({ open, onClose, children }: { open: boolean; onClose(): void; 
       const margin = 8;
       const menuWidth = menu.offsetWidth || 320;
       const menuHeight = menu.offsetHeight || 240;
+      // 纵向空间以 visualViewport 为准：iOS 键盘弹出时 innerHeight 不缩，
+      // 翻转到下方的菜单会落在键盘遮挡区内
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
       const left = Math.min(Math.max(rect.left, margin), Math.max(margin, window.innerWidth - menuWidth - margin));
-      // 默认弹在按钮上方；上方放不下时翻到下方，仍放不下则贴视口底
+      // 默认弹在按钮上方；上方放不下时翻到下方，仍放不下则贴可视区底
       const above = rect.top - 6 - menuHeight;
-      const top = above >= margin ? above : Math.min(rect.bottom + 6, Math.max(margin, window.innerHeight - menuHeight - margin));
+      const top = above >= margin ? above : Math.min(rect.bottom + 6, Math.max(margin, viewportHeight - menuHeight - margin));
       setPosition({ left, top });
     };
     // 双帧测量：懒加载内容第二帧再校正一次
     update();
     const raf = requestAnimationFrame(update);
     window.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("resize", update);
     return () => {
       document.removeEventListener("keydown", onKey);
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("resize", update);
     };
   }, [open, onClose]);
 

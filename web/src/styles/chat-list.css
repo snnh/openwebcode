@@ -4,6 +4,8 @@
 .chat-track-wrap { position: relative; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; }
 .chat-track {
   overflow-y: auto;
+  /* 滚动链截断：消息流滚到顶/底不再传给外壳（Android 下拉刷新会重载 SPA 丢草稿，iOS 橡皮筋露底） */
+  overscroll-behavior-y: contain;
   padding: 26px var(--gutter) 72px;
   position: relative;
 }

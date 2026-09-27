@@ -322,7 +322,8 @@
   .eval-panel { grid-template-columns: 1fr; }
   .eval-panel > .panel-head { grid-column: 1; }
   .bottom-panel { flex: 0 0 auto; }
-  /* 底部面板全屏 sheet（盖住底部导航，z-index 高于弹层菜单 --z-menu 一档） */
+  /* 底部面板全屏 sheet（盖住底部导航，z-index 高于弹层菜单 --z-menu 一档）；
+     全屏 fixed 顶/底让开安全区（刘海/Home 指示条） */
   .bottom-panel.open {
     position: fixed;
     top: 0;
@@ -330,6 +331,8 @@
     right: 0;
     bottom: 0;
     z-index: var(--z-sheet);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
   }
   .bottom-panel.open .panel-content { flex: 1; height: auto !important; }
   /* ================= 底部面板内容手机适配：禁止横向滚动，内容换行/堆叠/收缩 ================= */
@@ -366,6 +369,11 @@
   .panel-status { gap: 6px; padding-left: 6px; min-width: 0; }
   .panel-status > span { flex: 0 1 auto; overflow: hidden; }
   .panel-status .status-live { flex: none; }
+}
+
+/* 触屏：拖拽柄只有 onMouseDown，触屏不可用且占位（移动端 sheet 全屏也不可拖） */
+@media (hover: none) {
+  .panel-resize { display: none; }
 }
 
 /* 上下文面板驱逐读数：分段归因下的弱化说明行 */
