@@ -42,7 +42,7 @@ openwebcode/
 │   │   ├── lib/             # api.ts REST 客户端、contracts/ 按域拆分的类型契约（barrel 在 contracts.ts）
 │   │   ├── i18n.tsx         # 中英双语
 │   │   └── styles/          # 十二份样式表（tokens/base/layout/chat-list/chat-cards/chat-mode/composer/sidebar/panels/editor/dialogs/settings）
-│   └── src/test/            # vitest + jsdom + Testing Library + axe
+│   └── src/test/            # vitest + jsdom + Testing Library
 ├── packaging/         # 分发布局、安装脚本、WiX 打包
 ├── scripts/           # bench/（Node + Playwright 性能基准，回归 >15% 标红）、fetch-dsh-web.mjs（抓取 dsh UI vendor）
 ├── examples/          # 示例资产（examples/extensions/demo/ 是完整第三方扩展示例）
@@ -53,7 +53,7 @@ openwebcode/
 
 ## 环境要求
 
-- Node.js ≥ 20
+- Node.js ≥ 20.3
 - CMake ≥ 3.19、C11 编译器（Windows MSVC / Linux gcc 或 clang）
 - Python 3（跑 core 协议测试）
 
@@ -87,7 +87,7 @@ tsconfig 严格档：`strict` + `noUncheckedIndexedAccess` + `exactOptionalPrope
 ```sh
 cd web
 npm ci
-npm run build     # tsc -b && vite build && scripts/check-bundle-size.mjs
+npm run build     # tsc -b && vite build && node scripts/precompress.mjs && node scripts/check-bundle-size.mjs
 npm test          # vitest + jsdom
 npm run dev       # vite dev server，5173，/api proxy 到 server 3210
 ```
@@ -116,7 +116,7 @@ cd web && npm run dev
 
 ### 数据目录
 
-显式 `OWC_DATA_DIR` 优先；其次是启动器注入的平台默认值（Windows `%USERPROFILE%\openwebcode`，Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；绕过启动器直接跑 `node server/dist/index.js` 时兜底为 `server` 旁边的 `.openwebcode`。设置文件固定在 `<启动目录>/server-settings.json`，生效值按 env > 用户覆盖 > 安装默认（`server/src/config/defaults.json`）> 代码兜底组合，`server/test/settings.test.ts` 强制两处默认一致。源码联调想隔离数据就显式设 `OWC_DATA_DIR`，用绝对路径。
+显式 `OWC_DATA_DIR` 优先；其次是启动器注入的平台默认值（Windows `%USERPROFILE%\openwebcode`，Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；绕过启动器直接跑 `node server/dist/index.js` 时兜底为 `server` 旁边的 `.openwebcode`。设置文件固定在 `<启动目录>/server-settings.json`，生效值按 env > 用户覆盖 > 安装默认（`server/src/config/defaults.json`）> 代码兜底组合。源码联调想隔离数据就显式设 `OWC_DATA_DIR`，用绝对路径。
 
 ## 测试约定
 
@@ -132,9 +132,9 @@ server（vitest，`testTimeout`/`hookTimeout` 均为 30s，Windows CI 资源紧�
 - **非极度必要不写新测试文件**：新测试追加到既有按域就近的文件；同主题断言合并进一个 `it`，只测新增行为与受影响路径，集成级验证一次即可。
 - **pty 用例哨兵**：`waitFor` 轮询驱动的 pty 用例里，陈旧 sentinel rand 可能先于新 init rand 出现——需在用例内标记陈旧 rand 作废，否则确定性挂起。
 
-web（vitest + jsdom）：`@testing-library/react` + `axe-core` 做 a11y，`asyncUtilTimeout` 放宽到 3s。没有真实 WebSocket，测事件处理走 mock event dispatch。
+web（vitest + jsdom）：`@testing-library/react`（`asyncUtilTimeout` 放宽到 3s）。没有真实 WebSocket，测事件处理走 mock event dispatch。
 
-core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `test_pty.py` / `test_bindlink.py` / `test_bwrap.py` / `test_filtered.py` 是 Python 脚本喂 JSON-RPC 给编译出的 owc-exec 断言回包；`test_path_policy.c` / `test_sandbox.c` 是纯 C 单测。`repro_grep.py` / `stress_init.py` 是手动复现和压测脚本，不在 CTest 注册。
+core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `test_pty.py` / `test_bindlink.py` / `test_bwrap.py` / `test_filtered.py` / `test_deny_ace.py` 是 Python 脚本喂 JSON-RPC 给编译出的 owc-exec 断言回包；`test_path_policy.c` / `test_sandbox.c` / `test_fs_internals.c` / `test_json.c` 是纯 C 单测。`repro_grep.py` / `stress_init.py` 是手动复现和压测脚本，不在 CTest 注册。
 
 ## 二次开发切入点
 
@@ -145,7 +145,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 3. 想自动放行（只读类）：加到 `permission-coordinator.ts` `needsApproval()` 首行的名单，并考虑 `tool-schemas.ts` 的 `READ_ONLY_TOOL_NAMES`。
 4. 想给子代理用：只读工具进 `sub-agent.ts` 的 `SUB_AGENT_TOOL_NAMES`（explore 类型），可写通用集进 `GENERAL_AGENT_TOOL_NAMES`（general 类型，走会话权限链）。
 5. 想在 plan 模式可用：加进 `agent-runner.ts` 的 `PLAN_READONLY`。
-6. web 端要专门渲染的话改 `components/MessageCard.tsx` 的 `ContentBlock`。
+6. web 端要专门渲染的话改 `chat/MessageCard.tsx` 的 `ContentBlock`。
 7. 测试用 stub provider 回放工具调用 + 真实 `executeTool`，断言 tool_result。
 
 ### 加一个 LLM provider

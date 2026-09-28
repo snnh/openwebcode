@@ -486,7 +486,6 @@ const FIELD_MAP = new Map(FIELDS.map((field) => [field.key, field]));
  * 安装目录默认配置（config/defaults.json，随构建发布、跟随更新）。
  * 数据目录的 server-settings.json 只存用户覆盖；effectiveValue 按
  * env > 用户覆盖 > 安装默认 > 代码兜底（FIELDS.defaultValue）组合。
- * defaults.json 与 FIELDS.defaultValue 由测试强制保持一致。
  */
 const INSTALL_DEFAULTS = new Map<string, SettingValue>(
   Object.entries(installDefaultsDocument as Record<string, unknown>)
