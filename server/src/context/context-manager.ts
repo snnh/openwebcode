@@ -7,6 +7,7 @@ import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { isMissing } from "../fs-utils.js";
+import { isCacheEntryIdle } from "../cache-policy.js";
 import type { ChatMessage } from "../sessions/types.js";
 import { type Currency } from "./model-profile.js";
 import type {
@@ -44,10 +45,44 @@ import {
 const MAX_CACHED_LEDGERS = 32;
 const MAX_CACHED_VIEWS = 32;
 
+/**
+ * 视图缓存累计堆字节上限：每条缓存持有一份活动路径整段消息的主克隆（value.view），
+ * 过去只按条数 32 LRU，多会话长跑时是唯一完全不受字节预算约束的常驻结构。
+ * 128MB ≈ 单个视图 1600 万 token 原文，正常会话远低于此；上限只用来兜住「多个大会话
+ * 同时被打开过」的失控累积。超限逐出最旧（至少保留最新一条，避免下轮立刻全量重建抖动）。
+ */
+const MAX_CACHED_VIEW_BYTES = 128 * 1024 * 1024;
+/** 账本缓存累计堆字节上限：64MB ≈ 21MB ledger.json（JSON 解析后常驻 ≈ 文件 3×）。 */
+const MAX_CACHED_LEDGER_BYTES = 64 * 1024 * 1024;
+/** 文件字节 → 堆字节换算系数（与 session-store 的 HEAP_BYTES_PER_FILE_BYTE 同口径，实测 3.11×）。 */
+const LEDGER_HEAP_BYTES_PER_FILE_BYTE = 3;
+
+/**
+ * 视图缓存条目 weight（堆字节估算）：token ≈ 4 字符原文 × 2 字节 = 8 字节/token，
+ * 加每个 sourceId 的固定结构开销 512 字节（数组槽 + 消息 id 字符串对象 + 片段索引）。
+ * 口径只需在多个会话之间可比，不追求精确；totalTokens 构建时已有，零额外遍历。
+ */
+function estimateViewCacheWeight(totalTokens: number, sourceIdCount: number): number {
+  return totalTokens * 8 + sourceIdCount * 512;
+}
+
+/**
+ * 账本缓存条目 weight（堆字节估算）：size 是已有的文件指纹字段，JSON.parse 后常驻 ≈ 文件 3×
+ * （同 session-store 口径），加每条 LedgerEntry 的 256 字节结构开销（对象头 + 若干短字符串）。
+ * 不做精确遍历——weight 只用于相对比较与上限兜底。
+ */
+function estimateLedgerCacheWeight(entry: LedgerCacheEntry): number {
+  // size < 0 表示「文件不存在」的负缓存条目（见 loadLedger），不产生堆字节
+  return Math.max(0, entry.size) * LEDGER_HEAP_BYTES_PER_FILE_BYTE + entry.ledger.entries.length * 256;
+}
+
 export class ContextManager {
   private static readonly operations = new Map<string, Promise<void>>();
   private static readonly viewCaches = new Map<string, ViewBuildCache>();
   private static readonly ledgerCaches = new Map<string, LedgerCacheEntry>();
+  /** 两个静态缓存的累计权重：与逐出/丢弃严格同步维护（同 session-store 纪律）。 */
+  private static viewCacheBytes = 0;
+  private static ledgerCacheBytes = 0;
 
   constructor(private readonly sessionRoot: string) {}
 
@@ -87,7 +122,7 @@ export class ContextManager {
       if (!isMissing(error)) throw error;
     }
     const ledger = normalizeLedger(value);
-    const entry: LedgerCacheEntry = { ledger, ...fingerprint, ledgerKey: computeStructuralKey(ledger) };
+    const entry: LedgerCacheEntry = { ledger, ...fingerprint, ledgerKey: computeStructuralKey(ledger), lastAccess: Date.now() };
     ContextManager.touchLedgerCache(this.sessionRoot, entry);
     return { ledger, ledgerKey: entry.ledgerKey };
   }
@@ -112,23 +147,81 @@ export class ContextManager {
       mtimeMs: info.mtimeMs,
       ctimeMs: info.ctimeMs,
       ledgerKey: computeStructuralKey(ledger),
+      lastAccess: Date.now(),
     });
   }
 
+  /** LRU 接触（账本缓存）：刷新活跃时间 → 移到最新位 → 先按条数、再按累计堆字节逐出最旧。
+   *  权重由已有字段派生（size/entries.length），不在条目上冗余存一份。 */
   private static touchLedgerCache(sessionRoot: string, entry: LedgerCacheEntry): void {
-    ContextManager.ledgerCaches.delete(sessionRoot);
+    entry.lastAccess = Date.now();
+    // drop 内部同步扣减权重记账（先删后插，避免同一 key 的旧条目权重被漏扣）
+    ContextManager.dropLedgerCache(sessionRoot);
     ContextManager.ledgerCaches.set(sessionRoot, entry);
-    while (ContextManager.ledgerCaches.size > MAX_CACHED_LEDGERS) {
-      ContextManager.ledgerCaches.delete(ContextManager.ledgerCaches.keys().next().value!);
+    ContextManager.ledgerCacheBytes += estimateLedgerCacheWeight(entry);
+    ContextManager.evictLedgerOverflow();
+  }
+
+  /** LRU 接触（视图缓存）：纪律同 touchLedgerCache（字节上限兜住主克隆累积）。 */
+  private static touchViewCache(sessionRoot: string, cache: ViewBuildCache): void {
+    cache.lastAccess = Date.now();
+    ContextManager.dropViewCache(sessionRoot);
+    ContextManager.viewCaches.set(sessionRoot, cache);
+    ContextManager.viewCacheBytes += cache.weight;
+    ContextManager.evictViewOverflow();
+  }
+
+  /** 条数/字节双重上限逐出最旧；字节上限下至少保留最新一条（正在用的会话优先，
+   *  否则单个超限视图会被反复逐出→全量重建）。 */
+  private static evictLedgerOverflow(): void {
+    while (ContextManager.ledgerCaches.size > MAX_CACHED_LEDGERS
+      || (ContextManager.ledgerCacheBytes > MAX_CACHED_LEDGER_BYTES && ContextManager.ledgerCaches.size > 1)) {
+      ContextManager.dropLedgerCache(ContextManager.ledgerCaches.keys().next().value!);
     }
   }
 
-  private static touchViewCache(sessionRoot: string, cache: ViewBuildCache): void {
-    ContextManager.viewCaches.delete(sessionRoot);
-    ContextManager.viewCaches.set(sessionRoot, cache);
-    while (ContextManager.viewCaches.size > MAX_CACHED_VIEWS) {
-      ContextManager.viewCaches.delete(ContextManager.viewCaches.keys().next().value!);
+  private static evictViewOverflow(): void {
+    while (ContextManager.viewCaches.size > MAX_CACHED_VIEWS
+      || (ContextManager.viewCacheBytes > MAX_CACHED_VIEW_BYTES && ContextManager.viewCaches.size > 1)) {
+      ContextManager.dropViewCache(ContextManager.viewCaches.keys().next().value!);
     }
+  }
+
+  /** 丢弃单个账本缓存条目；权重记账必须与 Map 同步，故统一走这里。 */
+  private static dropLedgerCache(sessionRoot: string): void {
+    const entry = ContextManager.ledgerCaches.get(sessionRoot);
+    if (!entry) return;
+    ContextManager.ledgerCacheBytes -= estimateLedgerCacheWeight(entry);
+    ContextManager.ledgerCaches.delete(sessionRoot);
+  }
+
+  private static dropViewCache(sessionRoot: string): void {
+    const cache = ContextManager.viewCaches.get(sessionRoot);
+    if (!cache) return;
+    ContextManager.viewCacheBytes -= cache.weight;
+    ContextManager.viewCaches.delete(sessionRoot);
+  }
+
+  /** 空闲清扫：按 cache-policy 的统一 TTL 释放长时间未访问的视图/账本缓存，返回逐出条数。 */
+  static sweepIdleCaches(now: number = Date.now()): number {
+    let evicted = 0;
+    for (const [sessionRoot, cache] of ContextManager.viewCaches) {
+      if (!isCacheEntryIdle(cache.lastAccess, now)) continue;
+      ContextManager.dropViewCache(sessionRoot);
+      evicted += 1;
+    }
+    for (const [sessionRoot, entry] of ContextManager.ledgerCaches) {
+      if (!isCacheEntryIdle(entry.lastAccess, now)) continue;
+      ContextManager.dropLedgerCache(sessionRoot);
+      evicted += 1;
+    }
+    return evicted;
+  }
+
+  /** 会话删除/归档时释放该 sessionRoot 的视图与账本缓存（operations 串行链已自清，不用管）。 */
+  static discardSession(sessionRoot: string): void {
+    ContextManager.dropViewCache(sessionRoot);
+    ContextManager.dropLedgerCache(sessionRoot);
   }
 
   async buildView(messages: ChatMessage[], options?: BuildViewOptions, turn?: TurnLedger): Promise<ContextView> {
@@ -304,6 +397,9 @@ export class ContextManager {
       sourceIds: sourceIds!, ledgerKey, selectionKey, header, fragments,
       entrySignatures: entrySignatures!,
       totalTokens: total, segments: { ...segments! }, pinnedTokens, view: master!,
+      // weight/lastAccess 在写入处给出（口径见 estimateViewCacheWeight）；touch 会刷新 lastAccess
+      lastAccess: Date.now(),
+      weight: estimateViewCacheWeight(total, sourceIds!.length),
     });
     // 返回按消息/内容数组浅拷：调用方（扩展 transform 等）可替换消息或内容数组而不污染
     // 缓存主本；内容块按不可变数据共享（现有调用方均为整体替换或 IPC 序列化，无原地改写）。

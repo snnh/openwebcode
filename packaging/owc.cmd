@@ -26,6 +26,10 @@ if exist "%OWC_HOME%\node\node.exe" (set "OWC_NODE=%OWC_HOME%\node\node.exe") el
     set "OWC_NODE=node"
 )
 rem "owc run ..." goes to the headless CLI; anything else starts the server.
+rem Node runtime defaults, mirroring the POSIX launcher: a preset NODE_OPTIONS wins
+rem (the heap limit is the user's own tuning), while --expose-gc is appended only when
+rem missing -- it just exposes global.gc and changes no GC policy, so adding it is safe.
+if "%NODE_OPTIONS%"=="" (set "NODE_OPTIONS=--expose-gc --max-old-space-size=2048") else (echo %NODE_OPTIONS% | find "--expose-gc" >nul || set "NODE_OPTIONS=%NODE_OPTIONS% --expose-gc")
 if /i "%~1"=="run" (set "OWC_TARGET=cli.js") else (set "OWC_TARGET=index.js")
 "%OWC_NODE%" "%OWC_HOME%\server\dist\%OWC_TARGET%" %*
 rem Keep the console visible on server failure (e.g. port already in use);

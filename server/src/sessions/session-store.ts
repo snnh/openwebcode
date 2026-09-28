@@ -25,6 +25,13 @@ const HEAP_BYTES_PER_FILE_BYTE = 3;
 const MAX_CACHED_MESSAGES_TOTAL_BYTES = 192 * 1024 * 1024;
 /** readMessages 整表缓存条数上限（与 message-reader 的索引缓存同一 LRU 纪律）。 */
 const MAX_CACHED_MESSAGE_LISTS = 32;
+/**
+ * pinned（活跃 run 钉住）条目的累计兜底上限（堆字节）。活跃 run 优先的原则不变——pinned 条目
+ * 正常不受单会话/累计上限与 LRU 约束；但多个大会话并发 run 时，这些条目累计驻留无上限，
+ * 进程可能直接走向 OOM。越过这条线时宁可以「该 run 下一轮重新解析段」为代价逐出最旧 pinned，
+ * 也不让进程崩掉（抛 OOM 会丢掉所有并发 run 的上下文，代价远大于一次重解析）。
+ */
+const MAX_CACHED_MESSAGES_PINNED_TOTAL_BYTES = 768 * 1024 * 1024;
 
 /** readMeta 缓存条数上限。agent loop 每轮多次 readMeta（get/appendMessage 等），
  * meta.json 小而稳定；写入侧不主动失效——指纹（size+mtime+ctime）自动失配。 */
@@ -980,7 +987,12 @@ export class SessionStore {
     this.evictOverflow();
   }
 
-  /** 条数/总量超限逐出：pinned（活跃 run）条目跳过——它们正被每 turn 复用，逐出只会让下轮重新整表解析。 */
+  /**
+   * 条数/总量超限逐出：pinned（活跃 run）条目正常跳过——它们正被每 turn 复用，逐出只会让下轮
+   * 重新整表解析。兜底：找不到可逐出的非 pinned 条目、且 pinned 累计已越过
+   * MAX_CACHED_MESSAGES_PINNED_TOTAL_BYTES 时，仍逐出 Map 最旧条目（即使它 pinned），
+   * 并 warn 一条（每次逐出最多一条）——多大会话并发 run 时这是防 OOM 的最后一道闸。
+   */
   private evictOverflow(): void {
     while (
       this.messagesCache.size > MAX_CACHED_MESSAGE_LISTS
@@ -993,7 +1005,16 @@ export class SessionStore {
           break;
         }
       }
-      if (!evictable) break; // 剩下的全是 pinned：活跃 run 优先，放弃逐出
+      if (!evictable) {
+        // 剩下的全是 pinned：未越过兜底上限就放弃逐出（活跃 run 优先）
+        if (this.messagesCacheBytes <= MAX_CACHED_MESSAGES_PINNED_TOTAL_BYTES) break;
+        evictable = this.messagesCache.keys().next().value!;
+        console.warn(
+          `[session-store] pinned 消息缓存累计 ${Math.round(this.messagesCacheBytes / (1024 * 1024))}MB`
+          + ` 超过兜底上限 ${MAX_CACHED_MESSAGES_PINNED_TOTAL_BYTES / (1024 * 1024)}MB：逐出最旧 pinned 缓存`
+          + `（该会话本轮 run 的下一轮重新解析，进程不走向 OOM）`,
+        );
+      }
       this.dropMessagesCache(evictable);
     }
   }

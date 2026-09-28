@@ -1072,7 +1072,10 @@ export class ExtensionManager {
     // dist 运行直接 fork 编译后的 JS；tsx 开发/测试运行显式安装 loader，确保 NodeNext 的 .js specifier 可解析到 .ts 源文件。
     // env 白名单（与 MCP 子进程同款纪律）：不透传宿主完整 process.env——扩展是可信代码，
     // 但架构边界声明「扩展不得获得全局环境变量」（含 OWC_ACCESS_TOKEN、代理凭据等）。
-    const execArgv = extension === "ts" ? ["--import", "tsx"] : [];
+    // 扩展宿主是独立 Node 进程：既不继承父进程的 --expose-gc，也没有任何堆上限（默认按物理内存
+    // 敞开）。显式给 512MB 老生代上限防失控——宿主只跑扩展 IPC 与少量状态，512MB 足够；
+    // 不带 --expose-gc：子进程不需要手动触发 GC，父进程的 GC 策略也不该被继承面放大。
+    const execArgv = [...(extension === "ts" ? ["--import", "tsx"] : []), "--max-old-space-size=512"];
     this.child = fork(worker, [], { stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv, env: minimalChildEnv() });
     const child = this.child;
     child.stderr?.on("data", (chunk: Buffer) => process.stderr.write(chunk));

@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { activePathMessages } from "../src/sessions/session-tree.js";
 import type { ChatMessage } from "../src/sessions/types.js";
@@ -387,5 +387,119 @@ describe("活跃 run 的消息缓存钉住（pinMessages/unpinMessages）", () =
     expect(after.pinned).toBe(1);
     // pinned 内容仍是正确的（没有被挤掉后重读盘的迹象：数据与全新实例一致）
     expect(await store.get(pinned)).toEqual(await freshRead(root, pinned));
+  });
+});
+
+/** 运行时可达的私有缓存字段（private 只在类型层面隐藏）。 */
+interface MessagesCacheProbe {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  lastAccess: number;
+  weight: number;
+  messages: ChatMessage[];
+}
+
+interface MessagesCacheInternals {
+  messagesCache: Map<string, MessagesCacheProbe>;
+  messagesCacheBytes: number;
+  touchMessagesCache(id: string, entry: MessagesCacheProbe): void;
+}
+
+/** 源码里的兜底上限（768MB 堆）：断言越线/未越线的前置条件，而非只硬编码期望值。 */
+const PINNED_TOTAL_CAP = 768 * 1024 * 1024;
+
+describe("pinned 消息缓存的累计兜底上限（多大会话并发 run 防 OOM）", () => {
+  /**
+   * 两个真实 pinned 大会话，但权重按合成值记账：真要越线就得往磁盘写 >256MB 的
+   * messages.jsonl（≈768MB 堆），测试进程自己会先 OOM，故直接在缓存路径上驱动记账。
+   */
+  async function twoHeavyPinned(weightPerEntry: number): Promise<{
+    root: string; store: SessionStore; oldest: string; newest: string; internals: MessagesCacheInternals;
+  }> {
+    const root = await tempRoot("owc-msgpin-cap-");
+    const store = await storeAt(root);
+    const oldest = await newSession(store, root);
+    const newest = await newSession(store, root);
+    for (const id of [oldest, newest]) {
+      await seedMessages(store, id, 2);
+      store.pinMessages(id);
+      await store.get(id); // 真实建立 pinned 缓存条目（内容与磁盘一致）
+    }
+    const internals = store as unknown as MessagesCacheInternals;
+    for (const id of [oldest, newest]) {
+      const entry = internals.messagesCache.get(id)!;
+      internals.messagesCacheBytes += weightPerEntry - entry.weight;
+      entry.weight = weightPerEntry;
+    }
+    return { root, store, oldest, newest, internals };
+  }
+
+  it("累计未越过兜底上限时仍不逐出 pinned（活跃 run 优先）", async () => {
+    const each = 300 * 1024 * 1024;
+    expect(each * 2).toBeLessThanOrEqual(PINNED_TOTAL_CAP); // 前置条件：未越线
+    const { store, newest, internals } = await twoHeavyPinned(each);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      // 触发一次逐出裁决（touchMessagesCache 末尾即 evictOverflow）
+      internals.touchMessagesCache(newest, internals.messagesCache.get(newest)!);
+      expect(store.messagesCacheStats()).toMatchObject({ entries: 2, pinned: 2, bytes: 600 * 1024 * 1024 });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("多个大会话并发 run 越过兜底上限：逐出最旧 pinned 并 warn，不放弃逐出走向 OOM", async () => {
+    const each = 400 * 1024 * 1024;
+    expect(each * 2).toBeGreaterThan(PINNED_TOTAL_CAP); // 前置条件：两个 pinned 大会话累计 800MB 已越线
+    const { root, store, oldest, newest, internals } = await twoHeavyPinned(each);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      internals.touchMessagesCache(newest, internals.messagesCache.get(newest)!);
+      // 只逐出最旧的一个（Map 迭代序）：总量回落到上限内即停手，新 pinned 条目保留
+      expect(store.messagesCacheStats()).toMatchObject({ entries: 1, pinned: 1, bytes: 400 * 1024 * 1024 });
+      expect(internals.messagesCache.has(oldest)).toBe(false);
+      expect(internals.messagesCache.has(newest)).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1); // 每次逐出最多 warn 一条
+      expect(warn.mock.calls.map((call) => call.map((part) => String(part)).join(" ")).join("\n")).toContain("768MB");
+      // 被逐出的 pinned 会话内容仍可正确重读（代价只是下一轮重新解析，不丢数据）
+      expect(await store.get(oldest)).toEqual(await freshRead(root, oldest));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("逐出到上限内即停手：三个 pinned 大会话只逐出必要的那些", async () => {
+    const root = await tempRoot("owc-msgpin-cap3-");
+    const store = await storeAt(root);
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const id = await newSession(store, root);
+      await seedMessages(store, id, 2);
+      store.pinMessages(id);
+      await store.get(id);
+      ids.push(id);
+    }
+    const internals = store as unknown as MessagesCacheInternals;
+    const weightPerEntry = 300 * 1024 * 1024; // 3 × 300MB = 900MB
+    expect(weightPerEntry * 3).toBeGreaterThan(PINNED_TOTAL_CAP); // 前置条件：已越线
+    for (const id of ids) {
+      const entry = internals.messagesCache.get(id)!;
+      internals.messagesCacheBytes += weightPerEntry - entry.weight;
+      entry.weight = weightPerEntry;
+    }
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      internals.touchMessagesCache(ids[2]!, internals.messagesCache.get(ids[2]!)!);
+      // 逐出最旧一个后 600MB ≤ 768MB：不再继续逐出（活跃 run 优先只在越线时让位）
+      expect(store.messagesCacheStats()).toMatchObject({ entries: 2, pinned: 2, bytes: 600 * 1024 * 1024 });
+      expect(internals.messagesCache.has(ids[0]!)).toBe(false);
+      expect(internals.messagesCache.has(ids[1]!)).toBe(true);
+      expect(internals.messagesCache.has(ids[2]!)).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
