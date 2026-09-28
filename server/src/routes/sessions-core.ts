@@ -367,6 +367,12 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     } catch {
       // 纯缓存释放失败不阻断归档
     }
+    try {
+      // 顺带释放 ContextManager 的静态 view/ledger 缓存（按 contextRoot 键控，归档后不再活跃）
+      ContextManager.discardSession(sessions.contextRoot(session.id));
+    } catch {
+      // 纯缓存释放失败不阻断归档
+    }
     void dependencies.indexManager?.release(session.cwd).catch(() => undefined);
   }
   /**

@@ -103,6 +103,7 @@ import { RunControl } from "./run-control.js";
 import { MemorySectionBuilder } from "./memory-section.js";
 export { SteeringError } from "./run-control.js";
 import { ModelRoleResolver, MODEL_ROLES, isModelRole, type ModelRole } from "../model-roles.js";
+import { maybeGc } from "../gc-utils.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -2186,7 +2187,8 @@ export class AgentRunner {
       this.sessions.unpinMessages(sessionId);
       // run 结束（段缓存已释放）后把 full GC 排到事件循环末尾：V8 空闲页及时归还 OS，
       // 大会话 run 的堆峰值不再驻留成长期 RSS。排到末尾避免阻塞本 finally 的状态发布。
-      setImmediate(() => global.gc?.());
+      // GC 经 gc-utils 解析：--expose-gc 缺失时运行时兜底（Windows launcher 未注入）。
+      setImmediate(() => { maybeGc(); });
       this.repeatedCalls.delete(sessionId);
       this.toolAliases.discard(sessionId);
       // abort 与正常结束都保留未消费队列；queue.json 是用户可恢复状态。

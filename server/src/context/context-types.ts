@@ -204,6 +204,10 @@ export interface ViewBuildCache {
   pinnedTokens: number;
   /** 最终注入形态的主克隆（cache 私有，不外出）；每次返回按消息/内容数组浅拷。 */
   view: ChatMessage[];
+  /** 最近一次写入/命中时间（毫秒）：空闲清扫依据（cache-policy 的统一 TTL），命中即活跃。 */
+  lastAccess: number;
+  /** 驻留权重（堆字节估算）：totalTokens * 8 + sourceIds.length * 512，口径见 context-manager 的常量注释。 */
+  weight: number;
 }
 
 /** ledger.json 内存缓存：size+mtimeMs+ctimeMs 指纹校验（同 session-store 消息缓存纪律），
@@ -216,6 +220,8 @@ export interface LedgerCacheEntry {
   mtimeMs: number;
   ctimeMs: number;
   ledgerKey: string;
+  /** 最近一次写入/命中时间（毫秒）：空闲清扫依据（cache-policy 的统一 TTL），命中即活跃。 */
+  lastAccess: number;
 }
 
 /** 轮级句柄的待落盘变更：fast path 跳过已即时应用的，rebase path 全部重放。 */

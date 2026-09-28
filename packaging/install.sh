@@ -686,6 +686,20 @@ case " ${NODE_OPTIONS:-} " in
     *" --expose-gc "*) ;;
     *) export NODE_OPTIONS="${NODE_OPTIONS:-} --expose-gc" ;;
 esac
+# --max-old-space-size=2048：老生代给显式 2GB 上限。无上限时 V8 按可用物理内存推导，1GB 级负载下
+# 堆可以涨得很大才回收（RSS 峰值驻留高）；显式上限让它积极 GC，大会话峰值仍留富余。
+# 同样只补不覆盖：已带该参数（含 --max-old-space-size 4096 的空格写法）时不重复追加。
+case " ${NODE_OPTIONS:-} " in
+    *" --max-old-space-size"*) ;;
+    *) export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=2048" ;;
+esac
+# MALLOC_ARENA_MAX=2：glibc 默认按 CPU 核数建 malloc arena，长跑进程的空闲页滞留在各个 arena 里
+# 不归还给 OS，RSS 迟迟降不下来；限 2 个 arena 显著改善 RSS 回落（Node 服务端部署常规做法）。
+# 该变量是 glibc 专有（仅 Linux 有意义），且用户已自行设置时不覆盖。
+if [ "$(uname -s)" = "Linux" ] && [ -z "${MALLOC_ARENA_MAX:-}" ]; then
+    MALLOC_ARENA_MAX=2
+    export MALLOC_ARENA_MAX
+fi
 # owc run ... 走 headless CLI；不带 run 则启动 server。
 if [ "${1:-}" = "run" ]; then
     exec "$OWC_NODE" "$OWC_HOME/server/dist/cli.js" "$@"

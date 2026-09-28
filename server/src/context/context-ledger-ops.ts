@@ -369,6 +369,40 @@ export function enforceImageBudget(view: ChatMessage[]): void {
   }
 }
 
+/**
+ * 带摘录的驱逐条目只保留最近 N 条的 excerpt：read_file 的摘录 ≤8000 字符，
+ * context-saver 每驱逐一条就 push 一条条目，长会话线性累积到数十 MB。
+ * 摘录只被 buildFragment 用于视图展示（restore 路径不读 excerpt），
+ * 更早的条目本体与统计字段全部保留、只把正文降级为占位符，配对不变量不破。
+ */
+const LEDGER_EXCERPT_KEEP = 2000;
+
+/**
+ * 裁剪旧条目摘录：entries 按驱逐时间序追加，「最近 N 条带摘录条目」即在尾部（保留最近的）。
+ * 输入是 JSON.parse 产物（无共享、本函数持有所有权），故原地 delete 安全，也不改条目顺序。
+ * 热路径零分配：带摘录条目数不超上限时直接返回原数组。
+ * entrySignature 会因摘录消失而变化，代价只是对应片段缓存失效重建一次；被裁条目在长会话里
+ * 大概率早已离开活动段（摘录与占位符都不进视图时无任何可见差异）。
+ */
+function trimOldExcerpts(entries: LedgerEntry[]): LedgerEntry[] {
+  let withExcerpt = 0;
+  for (const entry of entries) {
+    if (entry.excerpt !== undefined) withExcerpt += 1;
+  }
+  if (withExcerpt <= LEDGER_EXCERPT_KEEP) return entries;
+  let kept = 0;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.excerpt === undefined) continue;
+    if (kept < LEDGER_EXCERPT_KEEP) {
+      kept += 1;
+      continue;
+    }
+    delete entry.excerpt;
+  }
+  return entries;
+}
+
 export function normalizeLedger(value: Partial<ContextLedger>): ContextLedger {
   const usage = value.usage;
   const cost = value.cost;
@@ -376,7 +410,7 @@ export function normalizeLedger(value: Partial<ContextLedger>): ContextLedger {
     version: 1,
     round: Number.isSafeInteger(value.round) && (value.round ?? -1) >= 0 ? value.round! : 0,
     policy: normalizePolicy(value.policy),
-    entries: Array.isArray(value.entries) ? value.entries : [],
+    entries: trimOldExcerpts(Array.isArray(value.entries) ? value.entries : []),
     usage: {
       inputTokens: safeTokenCount(usage?.inputTokens),
       outputTokens: safeTokenCount(usage?.outputTokens),

@@ -283,6 +283,13 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
       // 清理 agent/诊断侧按会话键控的无界小 Map（perf 环形缓冲、MCP 告警签名、提示词覆盖缓存、失败签名）；
       // 测试里注入的部分 agent 可能未实现该方法
       agent.discardSession?.(request.params.id, detail.cwd);
+      // 同步丢弃 ContextManager 的静态 view/ledger 缓存（按 contextRoot 键控）：会话已删，
+      // 缓存条目再无人命中，不释放即长期驻留。失败不阻断删除流程（与 agent.discardSession 同纪律）。
+      try {
+        ContextManager.discardSession(sessions.contextRoot(request.params.id));
+      } catch {
+        // 纯缓存释放失败不阻断删除
+      }
       dependencies.diagnostics?.discardSession(request.params.id);
       // 删除后广播（dsh 兼容模式据此发 `api-session/removed`，侧边栏条目才会立刻消失；
       // owc 主工作台同样受益：多标签页/多客户端不再残留已删会话）

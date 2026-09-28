@@ -36,6 +36,8 @@ import { ManagedWorkspaceManager } from "./snapshots/managed-disk.js";
 import { FastModelClient } from "./fast-model.js";
 import { ModelRoleResolver } from "./model-roles.js";
 import { Compactor } from "./context/compactor.js";
+import { ContextManager } from "./context/context-manager.js";
+import { maybeGc } from "./gc-utils.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
 import { setCustomUserAgent } from "./user-agent.js";
@@ -229,7 +231,7 @@ const updateApplier = new UpdateApplier({
   getReleaseUrl: () => settings.effective().updateCheck.url ?? GITHUB_RELEASES_URL,
   getCurrentVersion: getServerVersion,
 });
-settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker, sandboxProxy: filteredProxy, usageLog, sweepCaches: () => { sessions.sweepIdleCachesAndIndexes(); chatSessions.sweepIdleCachesAndIndexes(); } });
+settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker, sandboxProxy: filteredProxy, usageLog, sweepCaches: () => { sessions.sweepIdleCachesAndIndexes(); chatSessions.sweepIdleCachesAndIndexes(); ContextManager.sweepIdleCaches(); } });
 providerProfilesRuntime.start();
 
 // core stderr/diagnostic 双写：终端 + <dataDir>/logs/core.log（超 5MB 启动时轮转为 core.log.1，仅一代）
@@ -325,14 +327,54 @@ const chatPythonEnv = ChatPythonEnv.forDataDir(
 );
 const chatSessions = new ChatSessionStore(dataDir);
 // 常驻缓存的空闲清扫：60s 一次、unref（进程空转时内存也能回落）。惰性清扫在读写路径上兜底，
-// 这里保证「没有任何缓存操作」时同样会被释放。
+// 这里保证「没有任何缓存操作」时同样会被释放。除会话/索引缓存外，ContextManager 的静态
+// view/ledger 缓存也要在这里一并逐出（它没有自己的定时器，只有读写路径上的惰性清扫）。
 // 清扫后按需触发一次 full GC：V8 空闲页在默认调度下归还 OS 很慢（大会话 run 后的堆峰值
-// 驻留成 RSS 尖峰），global.gc 只在进程带 --expose-gc 时可用（未暴露时零成本跳过）。
+// 驻留成 RSS 尖峰）。GC 统一走 gc-utils（自带 --expose-gc 缺失时的运行时兜底 + 节流），
+// 不再门控在「有逐出」上——热机且缓存不空闲时 V8 同样需要归还空闲页。
+const CACHE_SWEEP_INTERVAL_MS = 60_000;
+// 无逐出时的兜底 full GC 间隔：缓存忙但空闲页已堆积，也需要周期性归还 OS
+const IDLE_GC_INTERVAL_MS = 5 * 60_000;
+// 同一时段的 GC 节流：60s 内最多一次 full GC（full GC 会停下进程，频繁触发得不偿失）
+const GC_THROTTLE_MS = 60_000;
+// RSS 看门狗阈值（MB）：默认 1536，显式设 0 关闭。超阈值立即尝试 full GC，回收后仍超标才告警
+const RSS_WATCHDOG_MB = ((): number => {
+  const raw = process.env.OWC_RSS_WATCHDOG_MB;
+  if (raw === undefined || raw.trim() === "") return 1536;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 1536;
+})();
+// 超阈值告警节流：10 分钟最多一条，避免看门狗本身刷日志
+const RSS_WARN_INTERVAL_MS = 10 * 60_000;
+let lastIdleGcAt = Date.now();
+let lastRssWarnAt = 0;
 setInterval(() => {
   const now = Date.now();
-  const evicted = sessions.sweepIdleCachesAndIndexes(now) + chatSessions.sweepIdleCachesAndIndexes(now);
-  if (evicted > 0) global.gc?.();
-}, 60_000).unref();
+  const evicted = sessions.sweepIdleCachesAndIndexes(now)
+    + chatSessions.sweepIdleCachesAndIndexes(now)
+    + ContextManager.sweepIdleCaches(now);
+  if (evicted > 0) {
+    if (maybeGc(GC_THROTTLE_MS)) lastIdleGcAt = now;
+  } else if (now - lastIdleGcAt >= IDLE_GC_INTERVAL_MS) {
+    if (maybeGc(GC_THROTTLE_MS)) lastIdleGcAt = now;
+  }
+  // RSS 看门狗：超过阈值先尝试归还（full GC 常能显著压低 RSS），回收后仍超标才告警
+  if (RSS_WATCHDOG_MB > 0) {
+    const rssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
+    if (rssMb > RSS_WATCHDOG_MB) {
+      const gced = maybeGc(GC_THROTTLE_MS);
+      const afterMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
+      if (afterMb > RSS_WATCHDOG_MB && now - lastRssWarnAt >= RSS_WARN_INTERVAL_MS) {
+        lastRssWarnAt = now;
+        console.warn(
+          `[gc] RSS 看门狗：当前 ${afterMb}MB 超过阈值 ${RSS_WATCHDOG_MB}MB（`
+          + (gced ? "已触发 full GC 但未回落" : "60s 内已触发过 full GC，本次节流跳过")
+          + "，请检查常驻缓存/大会话；可用 OWC_RSS_WATCHDOG_MB 调整阈值，0 关闭）",
+        );
+      }
+    }
+  }
+}, CACHE_SWEEP_INTERVAL_MS).unref();
 const chatAssistantStore = new ChatAssistantStore(path.join(dataDir, "chat-assistants.json"));
 await chatAssistantStore.init();
 const chatRunner = new ChatRunner(
@@ -526,8 +568,9 @@ installGracefulShutdown({ shutdown });
 await app.listen({ host: config.host, port: config.port });
 // 启动完成即归还启动期空闲页：索引扫描/会话装载/扩展宿主拉起产生数百 MB 临时分配，
 // V8 归还保守（实测启动 44s RSS 907MB → 两次 full GC 后 289MB）。排到事件循环末尾执行，
-// 不阻塞首批请求；global.gc 仅在 --expose-gc 下存在（launcher 已注入）。
-setTimeout(() => global.gc?.(), 1000).unref();
+// 不阻塞首批请求；GC 经 gc-utils 解析（--expose-gc 缺失时运行时兜底注入，Windows launcher
+// 未注入 NODE_OPTIONS 也不会退化）。
+setTimeout(() => maybeGc(), 1000).unref();
 // 非回环监听：启动后打印一次带 token 的访问链接（局域网/移动端直接打开即写入登录 Cookie）
 if (authState && !isLoopbackHost(config.host)) {
   for (const url of buildAccessUrls(config.host, config.port, lanAddresses, authState.accessToken)) {
