@@ -263,6 +263,8 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
     });
   const result: Anthropic.MessageParam[] = [];
   const emittedCallIds = new Set<string>();
+  // 已下发结果的 tool_use id：同一 id 只允许一个 tool_result 块（见 tool 分支注释）
+  const emittedResultIds = new Set<string>();
   let pendingCallIds: string[] = [];
   const pushMessage = (message: ChatMessage, mapped: Anthropic.MessageParam): void => {
     if (breakpoints.has(message.id) && Array.isArray(mapped.content) && mapped.content.length > 0) {
@@ -278,14 +280,23 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
       pendingCallIds = [];
     }
     if (message.role === "tool") {
-      const content: Anthropic.ContentBlockParam[] = message.content
-        .filter((block): block is ToolResultContent => block.type === "tool_result" && knownCallIds.has(block.toolCallId) && emittedCallIds.has(block.toolCallId))
-        .map((block) => ({
+      const content: Anthropic.ContentBlockParam[] = [];
+      for (const block of message.content) {
+        if (block.type !== "tool_result") continue;
+        const result: ToolResultContent = block;
+        // 一个 tool_use 只能有一个 tool_result：重复结果（同 id 出现在多条 tool 消息、同一消息
+        // 两块、或跨轮复用同 id 的旧历史）会被端点拒绝——
+        // 「each tool_use must have a single result. Found multiple `tool_result` blocks with id」。
+        // 按首个结果保留（与 outputs 占位映射同口径），后续重复块丢弃。
+        if (!knownCallIds.has(result.toolCallId) || !emittedCallIds.has(result.toolCallId) || emittedResultIds.has(result.toolCallId)) continue;
+        emittedResultIds.add(result.toolCallId);
+        content.push({
           type: "tool_result" as const,
-          tool_use_id: block.toolCallId,
-          content: anthropicToolResultContent(block.content, toolMedia.get(block.toolCallId)) as NonNullable<Anthropic.ToolResultBlockParam["content"]>,
-          ...(block.isError ? { is_error: true } : {}),
-        }));
+          tool_use_id: result.toolCallId,
+          content: anthropicToolResultContent(result.content, toolMedia.get(result.toolCallId)) as NonNullable<Anthropic.ToolResultBlockParam["content"]>,
+          ...(result.isError ? { is_error: true } : {}),
+        });
+      }
       // 该批次缺失结果的 tool_use 补占位（同一 assistant 批次的 tool 消息可能多条）
       const covered = new Set(content.map((block) => (block as { tool_use_id: string }).tool_use_id));
       content.push(...placeholderResults(pendingCallIds.filter((id) => !covered.has(id))));

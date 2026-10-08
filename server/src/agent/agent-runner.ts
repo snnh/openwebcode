@@ -26,6 +26,7 @@ import type { PricingCatalog } from "../cost/pricing-catalog.js";
 import type { Provider, ProviderRegistry, ProviderTool, ProviderEvent } from "../providers/provider.js";
 import { ProviderError } from "../providers/provider-error.js";
 import { collectProviderTurn } from "../providers/retry.js";
+import { recordToolCallId, type ToolCallIdRegistry } from "../providers/shared.js";
 import { PermissionCoordinator, permissionRule, matchesRule, type PermissionDecision } from "./permission-coordinator.js";
 import { buildReviewMessages, completeWithProvider, parseVerdict, type ReviewOutcome } from "./permission-review.js";
 import type { FastModelClient } from "../fast-model.js";
@@ -1881,6 +1882,8 @@ export class AgentRunner {
         this.events.publish({ source: "agent", type: "message.attempt", sessionId, payload: { attemptId: turn.attemptId } });
         perfProviderCallMs += performance.now() - providerCallStart;
         const assistantContent: MessageContent[] = [];
+        // 本轮响应的 tool_call id 去重表（上游复读同 id 会让一条 tool_use 落两份结果 → 下次请求 400）
+        const turnToolCallIds: ToolCallIdRegistry = new Set();
         let activeThinkingIndex: number | undefined;
         let activeTextIndex: number | undefined;
         let stopReason: string | undefined;
@@ -1938,13 +1941,15 @@ export class AgentRunner {
           } else if (event.type === "server_tool") {
             // 服务端工具活动：仅经 onEvent 实时展示，不落盘、不影响 stopReason
           } else if (event.type === "tool_call") {
-            assistantContent.push({
-              type: "tool_call",
-              id: event.id,
-              ...(event.itemId ? { itemId: event.itemId } : {}),
-              name: event.name,
-              input: event.input,
-            });
+            if (recordToolCallId(turnToolCallIds, event.id, event.name, "agent-runner")) {
+              assistantContent.push({
+                type: "tool_call",
+                id: event.id,
+                ...(event.itemId ? { itemId: event.itemId } : {}),
+                name: event.name,
+                input: event.input,
+              });
+            }
           } else if (event.type === "web_search_call") {
             // 服务端联网搜索完整 item：按流式到达顺序落盘为消息块（与 thinking 同构，
             // 回放时按文档原样回传，服务端自动恢复搜索结果）

@@ -55,4 +55,49 @@ describe("子代理工具循环", () => {
     expect(toolResults[0]).toMatchObject({ toolCallId: "sub-1", isError: false });
     expect(toolResults[0]!.content).toContain("file body");
   });
+
+  it("同一响应内重复 tool_call id：只执行一次、只落盘一份结果", async () => {
+    const root = await tempRoot("owc-subagent-dup-call-");
+    let turn = 0;
+    let reads = 0;
+    const provider: Provider = {
+      name: "dup",
+      async *streamChat() {
+        turn += 1;
+        if (turn === 1) {
+          yield { type: "tool_call", id: "sub-dup", name: "read_file", input: { path: "a.ts" } };
+          yield { type: "tool_call", id: "sub-dup", name: "read_file", input: { path: "b.ts" } };
+          yield { type: "done", stopReason: "tool_use" };
+          return;
+        }
+        yield { type: "text_delta", text: "结论：已读过" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+
+    const result = await runSubAgent({
+      provider,
+      model: "test-model",
+      prompt: "读一下 a.ts 并给结论",
+      toolNames: ["read_file"],
+      agentKind: "explore",
+      core: makeFakeCore({
+        async readFile() { reads += 1; return { content: "file body", totalLines: 1, encoding: "utf-8" as const, truncated: false }; },
+      }),
+      sessionId: "session-dup",
+      cwd: root,
+      contextRoot: root,
+      signal: new AbortController().signal,
+      taskId: "task-dup",
+    });
+
+    expect(reads).toBe(1);
+    expect(result.conclusion).toContain("已读过");
+    const transcript = JSON.parse(await readFile(path.join(root, "subagents", "task-dup.json"), "utf8")) as {
+      messages: Array<{ role: string; content: Array<{ type: string; id?: string; toolCallId?: string }> }>;
+    };
+    const blocks = transcript.messages.flatMap((message) => message.content);
+    expect(blocks.filter((block) => block.type === "tool_call")).toEqual([{ type: "tool_call", id: "sub-dup", name: "read_file", input: { path: "a.ts" } }]);
+    expect(blocks.filter((block) => block.type === "tool_result")).toEqual([expect.objectContaining({ toolCallId: "sub-dup" })]);
+  });
 });

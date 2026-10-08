@@ -158,6 +158,25 @@ describe("AnthropicProvider 工具配对修复", () => {
     expect(mapped[3]).toEqual({ role: "user", content: [{ type: "text", text: "继续" }] }); expect(mapped[4]).toMatchObject({ role: "assistant", content: [{ type: "tool_use", id: "call_3", name: "bash", input: { cmd: "pwd" } }] });
     expect(mapped[5]).toMatchObject({ role: "user", content: [{ type: "tool_result", tool_use_id: "call_3", content: expect.stringContaining("interrupted") }] });
   });
+
+  it("同一 tool_use 只下发一个 tool_result（重复 id 会被端点拒绝）", async () => {
+    const { provider, bodies } = mockProvider();
+    await collect(provider.streamChat(request({ messages: [
+      { id: "u1", role: "user", content: [{ type: "text", text: "跑" }], createdAt: at(0) },
+      // 重复来源：中断补写与真实结果并存 / 同一消息内两块 / 导入历史（含跨轮复用 id 的旧数据）
+      { id: "a1", role: "assistant", createdAt: at(1), content: [{ type: "tool_call", id: "call_dup", name: "bash", input: { cmd: "ls" } }] },
+      { id: "t1", role: "tool", createdAt: at(2), content: [
+        { type: "tool_result", toolCallId: "call_dup", content: "first", isError: false },
+        { type: "tool_result", toolCallId: "call_dup", content: "second", isError: false },
+      ] },
+      { id: "t2", role: "tool", createdAt: at(3), content: [{ type: "tool_result", toolCallId: "call_dup", content: "third", isError: true }] },
+    ] })));
+    const messages = bodies[0]!.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    const toolResults = messages.flatMap((message) => message.content).filter((block) => block.type === "tool_result");
+    expect(toolResults).toEqual([{ type: "tool_result", tool_use_id: "call_dup", content: "first" }]);
+    // 重复块不额外产出 user 消息：整条全重复时跳过（与全孤儿同款）
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+  });
 });
 
 describe("ConcurrencyLimitedProvider", () => {
