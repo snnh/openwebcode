@@ -6,6 +6,7 @@ import { ContextManager } from "../context/context-manager.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import type { Provider, ProviderEvent, ProviderTool } from "../providers/provider.js";
 import { collectProviderTurn } from "../providers/retry.js";
+import { recordToolCallId, type ToolCallIdRegistry } from "../providers/shared.js";
 import type { ThinkingStyle } from "../context/model-profile.js";
 import type { ChatMessage, MessageContent, MessageRole, WebSearchCallContent } from "../sessions/types.js";
 import { replaceThinkingBlockById } from "../providers/thinking-merge.js";
@@ -226,6 +227,8 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
       });
       turns += 1;
       const assistantContent: MessageContent[] = [];
+      // 本响应 tool_call id 去重表（同 id 两次调用会落两份结果 → 下轮请求 400）
+      const turnToolCallIds: ToolCallIdRegistry = new Set();
       let text = "";
       // 当前流式 thinking/text 块索引（thinking_delta/text_delta 分片合并；thinking_end/text_end 收尾成块）：
       // 与主循环一致，thinking 块带 provider 字段落盘，供 OpenAI 兼容接口的思维链回传
@@ -285,13 +288,15 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
           }
           activeThinkingIndex = undefined;
         } else if (event.type === "tool_call") {
-          assistantContent.push({
-            type: "tool_call",
-            id: event.id,
-            ...(event.itemId ? { itemId: event.itemId } : {}),
-            name: event.name,
-            input: event.input,
-          });
+          if (recordToolCallId(turnToolCallIds, event.id, event.name, "sub-agent")) {
+            assistantContent.push({
+              type: "tool_call",
+              id: event.id,
+              ...(event.itemId ? { itemId: event.itemId } : {}),
+              name: event.name,
+              input: event.input,
+            });
+          }
         } else if (event.type === "web_search_call") {
           // 服务端联网搜索完整 item：按流式到达顺序落盘为消息块（回放时原样回传）
           if (typeof event.item?.id === "string") {

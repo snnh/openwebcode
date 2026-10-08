@@ -4,6 +4,7 @@ import type { ProviderRegistry, StreamChatRequest } from "../providers/provider.
 import type { ModelProfile } from "../context/model-profile.js";
 import type { ProviderProfilesService } from "../provider-profiles.js";
 import { collectProviderTurn } from "../providers/retry.js";
+import { recordToolCallId, type ToolCallIdRegistry } from "../providers/shared.js";
 import { activePathMessages } from "../sessions/session-tree.js";
 import type { ChatMessage, MessageContent, WebSearchCallContent } from "../sessions/types.js";
 import { replaceThinkingBlockById } from "../providers/thinking-merge.js";
@@ -229,6 +230,8 @@ export class ChatRunner {
         // 依赖历史中的同源 thinking 素材（DeepSeek 思维模式强制，缺素材会 400）。
         let hasToolCall = false;
         const toolCalls: { id: string; name: string; input: Record<string, unknown>; itemId?: string }[] = [];
+        // 本响应 tool_call id 去重表（落盘与执行共用同一份 toolCalls，去重后两处天然一致）
+        const turnToolCallIds: ToolCallIdRegistry = new Set();
         const assistantMsgContent: MessageContent[] = [];
         let activeThinkingIndex: number | undefined;
         let activeTextIndex: number | undefined;
@@ -285,8 +288,11 @@ export class ChatRunner {
             activeThinkingIndex = undefined;
           } else if (event.type === "tool_call") {
             hasToolCall = true;
-            toolCalls.push({ id: event.id, name: event.name, input: event.input, ...(event.itemId ? { itemId: event.itemId } : {}) });
-            onToolCall?.({ id: event.id, name: event.name });
+            // 同一响应内重复 id 只保留首个：重复会让一条 tool_use 落两份结果，下轮请求被端点拒绝
+            if (recordToolCallId(turnToolCallIds, event.id, event.name, "chat-runner")) {
+              toolCalls.push({ id: event.id, name: event.name, input: event.input, ...(event.itemId ? { itemId: event.itemId } : {}) });
+              onToolCall?.({ id: event.id, name: event.name });
+            }
           } else if (event.type === "web_search_call") {
             // 服务端联网搜索完整 item：按流式到达顺序落盘为消息块（回放时原样回传）
             if (typeof event.item?.id === "string") {

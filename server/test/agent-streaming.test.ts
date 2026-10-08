@@ -72,6 +72,36 @@ describe("AgentRunner live streaming", () => {
     const toolCalls = (await stack.sessions.get(stack.session.id))?.messages.flatMap((message) => message.content).filter((block) => block.type === "tool_call") ?? []; expect(toolCalls).toEqual([expect.objectContaining({ id: "c1", name: "read_file" })]);
   });
 
+  it("同一响应内重复 tool_call id：只落盘/执行一次，历史保持一个 id 一份结果", async () => {
+    // 上游复读同一调用（网关重发 content_block 等）：两个同 id 调用会让一条 tool_use 落两份
+    // tool_result，下一次请求即被端点拒绝（Anthropic：each tool_use must have a single result）。
+    let attempts = 0;
+    const provider: Provider = {
+      name: "dup-call",
+      async *streamChat() {
+        attempts += 1;
+        if (attempts === 1) {
+          yield { type: "tool_call", id: "dup-1", name: "read_file", input: { path: "a.ts" } };
+          yield { type: "tool_call", id: "dup-1", name: "read_file", input: { path: "b.ts" } };
+          yield { type: "done", stopReason: "tool_use" };
+          return;
+        }
+        yield { type: "text_delta", text: "done" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const stack = await makeStack("owc-agent-dup-tool-call-", provider, { permissions: "yolo", config: { snapshotMode: "manual" } });
+    let reads = 0;
+    const core = makeFakeCore({
+      async readFile() { reads += 1; return { content: "file", totalLines: 1, encoding: "utf-8" as const, truncated: false }; },
+    });
+    await new AgentRunner(stack.sessions, stack.providers, core, stack.events, stack.pricing).run(stack.session.id, "读两个文件");
+    const blocks = (await stack.sessions.get(stack.session.id))?.messages.flatMap((message) => message.content) ?? [];
+    expect(blocks.filter((block) => block.type === "tool_call")).toEqual([expect.objectContaining({ id: "dup-1", input: { path: "a.ts" } })]);
+    expect(blocks.filter((block) => block.type === "tool_result")).toEqual([expect.objectContaining({ toolCallId: "dup-1" })]);
+    expect(reads).toBe(1);
+  });
+
   it("一轮内多个 usage chunk：WS 逐条实时转发，ledger 只记最后一条", async () => {
     const provider: Provider = {
       name: "live",
