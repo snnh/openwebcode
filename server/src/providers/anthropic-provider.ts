@@ -263,9 +263,15 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
     });
   const result: Anthropic.MessageParam[] = [];
   const emittedCallIds = new Set<string>();
-  // 已下发结果的 tool_use id：同一 id 只允许一个 tool_result 块（见 tool 分支注释）
+  // 已下发结果的 tool_use id（真结果与占位同账）：同一 id 只允许一个 tool_result 块（见 tool 分支注释）
   const emittedResultIds = new Set<string>();
   let pendingCallIds: string[] = [];
+  /** 占位结果的唯一出口：登记 id 后产出块，保证「占位先发、真结果后到」时后续真结果被去重丢弃。 */
+  const emitPlaceholders = (ids: readonly string[]): Anthropic.ContentBlockParam[] => {
+    const missing = ids.filter((id) => !emittedResultIds.has(id));
+    for (const id of missing) emittedResultIds.add(id);
+    return placeholderResults(missing);
+  };
   const pushMessage = (message: ChatMessage, mapped: Anthropic.MessageParam): void => {
     if (breakpoints.has(message.id) && Array.isArray(mapped.content) && mapped.content.length > 0) {
       const last = mapped.content.length - 1;
@@ -273,38 +279,57 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
     }
     result.push(mapped);
   };
-  for (const message of messages) {
-    // 上一条 assistant 的 tool_use 结果未随 tool 消息到达（中断未落盘）：先补占位 user 消息
-    if (message.role !== "tool" && pendingCallIds.length > 0) {
-      result.push({ role: "user", content: placeholderResults(pendingCallIds) });
-      pendingCallIds = [];
-    }
+  // 并行批次的结果逐条落盘（一个 assistant 批次的多条连续 tool 消息），合并成**一条** wire
+  // user 消息：中途给兄弟调用补占位会让后续真结果与占位撞同一 tool_use_id
+  // （400 each tool_use must have a single result. Found multiple `tool_result` blocks with id），
+  // 而逐条下发又会拆出多条连续 user 消息。批次结果全孤儿（无已知 tool_use）时整批跳过，
+  // 避免空 content user 消息触发 400。
+  let batchResults: Anthropic.ContentBlockParam[] | undefined;
+  let batchMessage: ChatMessage | undefined;
+  const flushToolBatch = (): void => {
+    const message = batchMessage;
+    if (batchResults === undefined || message === undefined) return;
+    // 批次收尾时才补占位：此时仍未到达的调用是「中断未落盘」，且与已登记结果天然去重
+    const content = [...batchResults, ...emitPlaceholders(pendingCallIds)];
+    batchResults = undefined;
+    batchMessage = undefined;
+    pendingCallIds = [];
+    if (content.length === 0) return;
+    pushMessage(message, { role: "user", content });
+  };
+  for (const [index, message] of messages.entries()) {
     if (message.role === "tool") {
-      const content: Anthropic.ContentBlockParam[] = [];
       for (const block of message.content) {
         if (block.type !== "tool_result") continue;
-        const result: ToolResultContent = block;
+        const entry: ToolResultContent = block;
         // 一个 tool_use 只能有一个 tool_result：重复结果（同 id 出现在多条 tool 消息、同一消息
-        // 两块、或跨轮复用同 id 的旧历史）会被端点拒绝——
-        // 「each tool_use must have a single result. Found multiple `tool_result` blocks with id」。
-        // 按首个结果保留（与 outputs 占位映射同口径），后续重复块丢弃。
-        if (!knownCallIds.has(result.toolCallId) || !emittedCallIds.has(result.toolCallId) || emittedResultIds.has(result.toolCallId)) continue;
-        emittedResultIds.add(result.toolCallId);
-        content.push({
+        // 两块、或跨轮复用同 id 的旧历史）会被端点拒绝（文案同上）。按首个结果保留
+        // （与 outputs 占位映射同口径），后续重复块丢弃。
+        if (!knownCallIds.has(entry.toolCallId) || !emittedCallIds.has(entry.toolCallId) || emittedResultIds.has(entry.toolCallId)) continue;
+        emittedResultIds.add(entry.toolCallId);
+        batchResults ??= [];
+        batchMessage ??= message;
+        batchResults.push({
           type: "tool_result" as const,
-          tool_use_id: result.toolCallId,
-          content: anthropicToolResultContent(result.content, toolMedia.get(result.toolCallId)) as NonNullable<Anthropic.ToolResultBlockParam["content"]>,
-          ...(result.isError ? { is_error: true } : {}),
+          tool_use_id: entry.toolCallId,
+          content: anthropicToolResultContent(entry.content, toolMedia.get(entry.toolCallId)) as NonNullable<Anthropic.ToolResultBlockParam["content"]>,
+          ...(entry.isError ? { is_error: true } : {}),
         });
       }
-      // 该批次缺失结果的 tool_use 补占位（同一 assistant 批次的 tool 消息可能多条）
-      const covered = new Set(content.map((block) => (block as { tool_use_id: string }).tool_use_id));
-      content.push(...placeholderResults(pendingCallIds.filter((id) => !covered.has(id))));
+      // 连续 tool 消息走完才收尾（下一批 tool 消息属于同一批次）
+      if (messages[index + 1]?.role !== "tool") flushToolBatch();
+      continue;
+    }
+    // 正文消息之前先收尾上一批工具结果（保持「assistant 调用 → user 结果 → 下一条」的顺序）
+    flushToolBatch();
+    // 上一条 assistant 的 tool_use 结果未随 tool 消息到达（中断未落盘，批次连一条结果都没有）：
+    // 先补占位 user 消息
+    if (pendingCallIds.length > 0) {
+      const placeholders = emitPlaceholders(pendingCallIds);
+      if (placeholders.length > 0) result.push({ role: "user", content: placeholders });
       pendingCallIds = [];
-      // 全孤儿（无已知 tool_use）时跳过整条，避免空 content user 消息触发 400
-      if (content.length === 0) continue;
-      pushMessage(message, { role: "user", content });
-    } else if (message.role === "user") {
+    }
+    if (message.role === "user") {
       // 空 text 块不下发（纯附件的历史消息/占位缺失时可能留空串，部分端点拒收空 text part）；
       // 过滤后为空则跳过整条（与上方全孤儿 tool 分支同款处理）。
       const userContent = message.content.flatMap((block): Anthropic.ContentBlockParam[] => {
@@ -349,7 +374,10 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
     }
   }
   // 历史以悬空 tool_use 结尾（中断后无后续消息）：补占位结果，保证末条为 user
-  if (pendingCallIds.length > 0) result.push({ role: "user", content: placeholderResults(pendingCallIds) });
+  if (pendingCallIds.length > 0) {
+    const placeholders = emitPlaceholders(pendingCallIds);
+    if (placeholders.length > 0) result.push({ role: "user", content: placeholders });
+  }
   return result;
 }
 
