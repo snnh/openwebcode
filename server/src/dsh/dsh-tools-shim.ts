@@ -1,7 +1,10 @@
 /**
- * dsh 兼容层 · dsh-tools 垫片（M1，已按上游 0d1f50007f 复核对齐）
+ * dsh 兼容层 · dsh-tools 垫片（M1，已按上游 0.2.0-rc.2 复核对齐）
  *
  * 对 `@deepseek-ai/dsh-tools`（上游 packages/core/tools/src/schema.ts）的 `defineTool` 子集复刻：
+ * （0.1.6 → 0.2.0 差异为纯加法：`projectContent`（渲染后、post-execute 前的内容投影）、
+ * `deferLoading`（工具列表延迟加载标记，仅透传）、ask 决策的 `displayReason`（本地化文案，
+ * 审计备注的回落来源）；钩子 waterfall 契约本身未变。）
  * - 参数 DSL（隐式开放对象根 + 每属性 `required: true` 注记）编译为 JSON Schema；作者侧
  *   约束与上游逐条一致：键白名单按节点类型收窄、object 节点必须显式声明
  *   `additionalProperties: true|false`、enum/const 必须匹配节点类型且 const ∈ enum、
@@ -149,6 +152,13 @@ export interface DefineToolOptions<S extends ParameterSchemaSpec, V = JsonValue>
   isConcurrencySafe?: (args: InferArgs<S>) => boolean;
   execute: (args: InferArgs<S>, exec: ToolRunContext) => Promise<V> | V;
   finalizeContent?: (exec: unknown, result: unknown) => ToolRenderBlock[] | undefined;
+  /**
+   * 上游 0.2.0 新增：渲染后、post-execute 前的内容投影（返回块序列即替换渲染输出，
+   * undefined 保持渲染输出）。与 finalizeContent（post-execute 后最后一棒）不同层级。
+   */
+  projectContent?: (exec: unknown, result: unknown) => ToolRenderBlock[] | undefined;
+  /** 上游 0.2.0 新增：工具列表条目的延迟加载标记（提示客户端按需取完整 schema；owc 侧仅透传记录）。 */
+  deferLoading?: boolean;
   presentCall?: (args: InferArgs<S>) => unknown;
   presentResult?: (args: InferArgs<S>, result: ToolResult) => unknown;
 }
@@ -167,6 +177,8 @@ export interface ToolDefinition {
   isConcurrencySafe?: (args: unknown) => boolean;
   execute: (args: unknown, exec: ToolRunContext) => Promise<unknown>;
   finalizeContent?: (exec: unknown, result: unknown) => ToolRenderBlock[] | undefined;
+  projectContent?: (exec: unknown, result: unknown) => ToolRenderBlock[] | undefined;
+  deferLoading?: boolean;
   presentCall?: (args: unknown) => unknown;
   presentResult?: (args: unknown, result: ToolResult) => unknown;
 }
@@ -500,7 +512,7 @@ export function defineTool<S extends ParameterSchemaSpec, V = JsonValue>(
   const {
     name, description, parameters, output,
     timeoutMs, isConcurrencySafe, execute,
-    finalizeContent, presentCall, presentResult,
+    finalizeContent, projectContent, deferLoading, presentCall, presentResult,
   } = options;
   if (typeof name !== "string" || name.length === 0) {
     throw new TypeError("[dsh-tools] defineTool: name must be a non-empty string");
@@ -540,6 +552,11 @@ export function defineTool<S extends ParameterSchemaSpec, V = JsonValue>(
 
   if (timeoutMs !== undefined) definition.timeoutMs = timeoutMs;
   if (finalizeContent) definition.finalizeContent = (exec, result) => finalizeContent(exec, result);
+  if (projectContent) {
+    // 与 present* 同一软校验策略：投影回调抛错吞掉并回退渲染输出（展示层不得影响主流程）
+    definition.projectContent = (exec, result) => safeCall(() => projectContent(exec, result) ?? undefined, undefined);
+  }
+  if (deferLoading === true) definition.deferLoading = true;
   if (isConcurrencySafe) {
     definition.isConcurrencySafe = (args: unknown) => {
       if (validate(args).length > 0) return false;

@@ -24,7 +24,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** 钉版 dsh UI 版本（唯一来源；变更需同步 docs/dsh-compat.md 的协议复核结论）。 */
-export const DSH_UI_VERSION = "0.1.6-alpha.2";
+export const DSH_UI_VERSION = "0.2.0-rc.2";
 
 /** 默认 vendor 目录（相对仓库根）。 */
 export const DSH_VENDOR_DIR = "server/assets/dsh-web";
@@ -38,7 +38,7 @@ const ROSTER_PACKAGE = "@deepseek-ai/dsh-web-app";
 const MODULES_PACKAGE = "@deepseek-ai/dsh-client-modules";
 
 function parseArgs(argv) {
-  const options = { version: DSH_UI_VERSION, out: DSH_VENDOR_DIR, registry: "https://registry.npmjs.org", only: undefined, skipFrontend: false };
+  const options = { version: DSH_UI_VERSION, out: DSH_VENDOR_DIR, registry: "https://registry.npmjs.org", only: undefined, skipFrontend: false, refresh: false };
   for (let index = 0; index < argv.length; index++) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -46,6 +46,7 @@ function parseArgs(argv) {
     if (flag === "--out" && value) { options.out = value; index++; continue; }
     if (flag === "--registry" && value) { options.registry = value.replace(/\/+$/, ""); index++; continue; }
     if (flag === "--only" && value) { options.only = new Set(value.split(",").map((entry) => entry.trim()).filter(Boolean)); index++; continue; }
+    if (flag === "--refresh") { options.refresh = true; continue; }
     if (flag === "--skip-frontend") { options.skipFrontend = true; continue; }
     if (flag === "--help" || flag === "-h") { options.help = true; continue; }
     throw new Error(`未知参数：${flag}`);
@@ -113,13 +114,15 @@ async function fetchWithRetry(url, init, attempts = 3) {
 }
 
 /** 取包的 packument（versions + dist-tags；纯 JSON，缓存到 .cache/）。 */
-async function fetchPackument(registry, name, cacheDirectory) {
+async function fetchPackument(registry, name, cacheDirectory, refresh = false) {
   const base = name.startsWith("@") ? name.slice(1) : name;
   const slash = base.indexOf("/");
   const url = `${registry}/@${base.slice(0, slash)}%2f${base.slice(slash + 1)}`;
   const cacheFile = path.join(cacheDirectory, `packument_${name.replace(/[@/]/g, "_")}.json`);
-  const cached = await readFile(cacheFile, "utf8").catch(() => undefined);
-  if (cached !== undefined) return JSON.parse(cached);
+  if (!refresh) {
+    const cached = await readFile(cacheFile, "utf8").catch(() => undefined);
+    if (cached !== undefined) return JSON.parse(cached);
+  }
   const response = await fetchWithRetry(url, { headers: { accept: "application/json" } });
   if (!response.ok) throw new Error(`读取 packument 失败 ${name}：HTTP ${response.status} ${url}`);
   const text = await response.text();
@@ -134,6 +137,16 @@ async function fetchPackument(registry, name, cacheDirectory) {
  * （先正式版、再预发布）。dsh 生态各包独立发版（如 `@deepseek-ai/schemastery@3.18.x`），
  * 不能一律按 web-app 的版本取。取不到就回落 dist-tags.latest。
  */
+/** 范围是否为「具体版本」（无 `^~>=<`、无通配）。web-app 对多数 dsh 依赖即用具体版本钉死。 */
+function isExactVersion(range) {
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(String(range ?? "").trim());
+}
+
+/** 具体版本范围的规范化（去 `v` 前缀），用于与 pickVersion 结果比较。 */
+function normalizeExact(range) {
+  return String(range).trim().replace(/^v/, "");
+}
+
 function pickVersion(packument, range) {
   const versions = Object.keys(packument.versions ?? {});
   if (versions.length === 0) return packument["dist-tags"]?.latest;
@@ -161,7 +174,7 @@ function pickVersion(packument, range) {
  * + peerDependencies），逐包用声明范围挑版本；`dsh.client.platform === "web"` 者即为插件。
  * patch.yml 作为补充来源。
  */
-async function resolveRoster(registry, rootName, rootVersion, cacheDirectory) {
+async function resolveRoster(registry, rootName, rootVersion, cacheDirectory, refresh = false) {
   const packuments = new Map();
   const versions = new Map();
   const pending = [[rootName, rootVersion]];
@@ -171,7 +184,7 @@ async function resolveRoster(registry, rootName, rootVersion, cacheDirectory) {
     let packument = packuments.get(name);
     if (packument === undefined) {
       try {
-        packument = await fetchPackument(registry, name, cacheDirectory);
+        packument = await fetchPackument(registry, name, cacheDirectory, refresh);
       } catch (error) {
         // 单个依赖取不到元数据（下架/网络抖动）不应中断整体：如实跳过并记一行
         console.warn(`  跳过 ${name}：${error instanceof Error ? error.message : String(error)}`);
@@ -179,8 +192,17 @@ async function resolveRoster(registry, rootName, rootVersion, cacheDirectory) {
       }
       packuments.set(name, packument);
     }
-    const version = name === rootName ? rootVersion : pickVersion(packument, range);
-    const manifest = version === undefined ? undefined : packument.versions?.[version];
+    let version = name === rootName ? rootVersion : pickVersion(packument, range);
+    let manifest = version === undefined ? undefined : packument.versions?.[version];
+    // 陈旧缓存检测：声明的是具体版本（如 web-app 用 `0.2.0-rc.2` 无 `^`），但缓存里没有该版本、
+    // pickVersion 静默回落到了别的版本线（实测：skill/subagent 落到远古 0.0.1-rc.1）——
+    // 绕过缓存重取一次再判。刷新后仍缺（该版本确实未发布）才如实跳过。
+    if ((refresh === false && manifest === undefined) || (manifest !== undefined && isExactVersion(range) && version !== normalizeExact(range))) {
+      packument = await fetchPackument(registry, name, cacheDirectory, true);
+      packuments.set(name, packument);
+      version = name === rootName ? rootVersion : pickVersion(packument, range);
+      manifest = version === undefined ? undefined : packument.versions?.[version];
+    }
     if (manifest === undefined) continue;
     versions.set(name, version);
     // dependencies + peerDependencies：npm 7+ 会自动安装 peer，dsh 的客户端插件正是以
@@ -219,16 +241,46 @@ function packageNameOf(entry) {
   return entry.startsWith("@") ? segments.slice(0, 2).join("/") : segments[0];
 }
 
-/** 版本区间内的 roster（cordis.patch.yml 的 `name:` 行，保持文件顺序）。 */
+/**
+ * 版本区间内的 roster（cordis.patch.yml 的 `name:` 行，保持文件顺序）。
+ *
+ * 0.2.0 起 patch.yml 出现 `disabled` 行：`disabled: true`（preset 层整体停用，通常无 name）
+ * 与 profile 门控（`disabled: !!js "ctx.get('profileContext')?.name !== 'desktop'"`）。
+ * 本层只托管 web profile：profile 门控为「非 desktop 即停用」的行**不挂载**（实测对象：
+ * `dsh-client-product-analytics`、`dsh-client-ui-sidebar-browser`）——既对齐上游 web 行为，
+ * 也避免遥测插件在用户浏览器里出站。返回 { names, skipped } 供日志如实展示。
+ */
 function parseRoster(text) {
   const names = [];
-  for (const line of text.split("\n")) {
-    const match = /^\s*(?:-\s+)?name:\s*['"]?([^'"\s]+)['"]?\s*$/.exec(line);
+  const skipped = [];
+  const lines = text.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const match = /^(\s*)(?:-\s+)?name:\s*['"]?([^'"\s]+)['"]?\s*$/.exec(lines[index] ?? "");
     if (!match) continue;
-    const name = packageNameOf(match[1]);
-    if (name.startsWith("@deepseek-ai/") && !names.includes(name)) names.push(name);
+    const baseIndent = match[1].length;
+    // 同一条目窗口：向后扫到下一个同级/更浅的 `- id:` 或 `name:` 行
+    let disabledOnWeb = false;
+    for (let look = index + 1; look < lines.length; look++) {
+      const line = lines[look];
+      if (line.trim() === "") continue;
+      const indent = /^\s*/.exec(line)[0].length;
+      if (indent <= baseIndent && /(?:-\s+id:|name:)/.test(line)) break;
+      const disabled = /^\s*disabled:\s*(.+)$/.exec(line);
+      if (disabled === null) continue;
+      const expression = disabled[1];
+      if (expression === "true") disabledOnWeb = true;
+      // profile 门控的 js 表达式不可静态求值；只识别「非 desktop 即停用」这一种形态
+      else if (/profileContext/.test(expression) && /!==\s*'desktop'/.test(expression)) disabledOnWeb = true;
+    }
+    const name = packageNameOf(match[2]);
+    if (!name.startsWith("@deepseek-ai/")) continue;
+    if (disabledOnWeb) {
+      if (!skipped.includes(name)) skipped.push(name);
+      continue;
+    }
+    if (!names.includes(name)) names.push(name);
   }
-  return names;
+  return { names, skipped };
 }
 
 function sha1Short(buffer) {
@@ -267,14 +319,17 @@ async function main() {
   console.log(`dsh UI vendor：version=${options.version} out=${display(out)}`);
 
   const cacheDirectory = path.join(out, ".cache");
-  // 重新生成前清空插件与许可目录：roster 变化（如某插件被移出挂载名单）时不留旧产物
-  for (const sub of ["plugins", "licenses"]) {
+  // 重新生成前清空插件、许可与静态目录：roster 或前端版本变化时不留旧产物
+  // （实测教训：不清 static 会残留旧版 dist 的 index-*.js，与新 manifest 导出的 hash 不一致）
+  for (const sub of ["plugins", "licenses", "static"]) {
     await rm(path.join(out, sub), { recursive: true, force: true });
   }
   const rosterEntries = await fetchTarball(options.registry, ROSTER_PACKAGE, options.version, cacheDirectory);
-  const patchRoster = parseRoster(rosterEntries.get("package/cordis.patch.yml")?.toString("utf8") ?? "");
-  const closure = await resolveRoster(options.registry, ROSTER_PACKAGE, options.version, cacheDirectory);
+  const roster = parseRoster(rosterEntries.get("package/cordis.patch.yml")?.toString("utf8") ?? "");
+  const patchRoster = roster.names;
+  const closure = await resolveRoster(options.registry, ROSTER_PACKAGE, options.version, cacheDirectory, options.refresh);
   console.log(`roster：依赖闭包 ${closure.versions.size} 个包（其中 ${closure.webPlugins.length} 个声明 dsh.client.platform=web）+ patch.yml ${patchRoster.length} 个补充候选`);
+  if (roster.skipped.length > 0) console.log(`  patch.yml 中 web profile 停用、不挂载：${roster.skipped.join(", ")}`);
 
   // 插件候选 = 闭包内声明 dsh.client.platform=web 的包（+ 模块系统本身）
   const webPluginSet = new Set(closure.webPlugins);

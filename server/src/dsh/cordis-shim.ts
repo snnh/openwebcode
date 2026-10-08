@@ -1,10 +1,11 @@
 /**
  * dsh 兼容层 · cordis 垫片（M1）
  *
- * 对 `@deepseek-ai/cordis`（上游 vendor/cordis，Koishi cordis 4.0.2 fork）的子集复刻，
+ * 对 `@deepseek-ai/cordis`（上游 vendor/cordis，Koishi cordis 4.0.4 fork）的子集复刻，
  * 供 dsh 插件经 ESM 垫片 import 使用（M2 由 module.register() 解析钩子重定向）。
  *
- * 语义对齐钉版 0d1f50007f：
+ * 语义对齐钉版 0.2.0-rc.2（4.0.2 → 4.0.4 差异：`ctx.registry.update` 不再返回 Promise、
+ * 改由 internal/update 瀑布驱动——垫片本就未实现 registry 子服务，零影响）：
  * - 插件三形态：函数 / 类 / `{ apply }` 对象（含模块级 named exports `name`/`inject`/`Config`）；
  * - `inject` 硬依赖：缺失时 fiber 保持 pending 不激活；服务 provide/remove 触发重算；
  * - 事件：`emit`（同步不等待）/ `parallel`（全并发，失败聚合为 AggregateError）/ `serial`

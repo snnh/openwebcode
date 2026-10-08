@@ -411,7 +411,7 @@ type DshPreToolDecision =
   | { kind: "allow" }
   | { kind: "deny"; reason: string }
   | { kind: "cancel" }
-  | { kind: "ask"; reason?: string };
+  | { kind: "ask"; reason?: string; displayReason?: { en?: string } };
 
 export interface DshPreToolOutcome {
   blocked: boolean;
@@ -430,7 +430,15 @@ function normalizePreDecision(value: unknown): DshPreToolDecision {
   if (kind === "cancel") return { kind: "cancel" };
   if (kind === "ask") {
     const reason = (value as { reason?: unknown }).reason;
-    return { kind: "ask", ...(typeof reason === "string" && reason ? { reason } : {}) };
+    // 上游 0.2.0 起 ask 可带 displayReason（面向用户的本地化文案，en 为基准locale）：
+    // 审计备注优先取 reason（审计语义），缺席时回落 displayReason.en
+    const display = (value as { displayReason?: unknown }).displayReason;
+    const displayEn = display && typeof display === "object" && typeof (display as { en?: unknown }).en === "string" ? (display as { en: string }).en : undefined;
+    return {
+      kind: "ask",
+      ...(typeof reason === "string" && reason ? { reason } : {}),
+      ...(displayEn !== undefined ? { displayReason: { en: displayEn } } : {}),
+    };
   }
   return { kind: "allow" };
 }
@@ -455,7 +463,8 @@ export async function runDshPreExecute(ctx: Context, exec: { tool: string; input
     case "cancel":
       return { blocked: true, reason: "Error: tool call aborted before dispatch" };
     case "ask": {
-      const note = `dsh tools/pre-execute ask 降级为放行${decision.reason ? `：${decision.reason}` : ""}（tool=${exec.tool}${exec.sessionId ? `, session=${exec.sessionId}` : ""}）`;
+      const basis = decision.reason ?? decision.displayReason?.en;
+      const note = `dsh tools/pre-execute ask 降级为放行${basis ? `：${basis}` : ""}（tool=${exec.tool}${exec.sessionId ? `, session=${exec.sessionId}` : ""}）`;
       audit?.(note);
       return { blocked: false, audit: note };
     }

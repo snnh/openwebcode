@@ -1,11 +1,12 @@
 /**
  * dsh 兼容层 · schemastery 垫片（M1）
  *
- * 对 `@deepseek-ai/schemastery`（上游 vendor/schemastery，v3.18.2 fork）的子集复刻：
+ * 对 `@deepseek-ai/schemastery`（上游 vendor/schemastery，v3.18.4 fork）的子集复刻：
  * 提供 dsh 插件 `Config` 声明所需的链式 schema DSL 与解析语义，未覆盖的特性在
  * 构造期 fail loud（抛 UnsupportedSchemaError），绝不静默偏离上游语义。
+ * （3.18.2 → 3.18.4 差异：新增 volatile 配置——垫片以 fail loud 存根处理。）
  *
- * 语义对齐钉版 0d1f50007f 的 vendor/schemastery/src/index.ts：
+ * 语义对齐钉版 0.2.0-rc.2 的 vendor/schemastery：
  * - nullable 数据 + required → 报错；否则取 meta.default（深拷贝），再否则原样透传；
  * - object 解析保留输入中的多余键（strict 模式除外）；缺席的可选键且解析值为 null 时不产出；
  * - union 依序尝试首个成功分支，全部失败时报 "expected <list> but got <json>"；
@@ -296,6 +297,12 @@ Schema.prototype.role = function (this: Schemastery, role: string, extra?: Recor
   if (extra !== undefined) meta.extra = extra;
   schema.meta = meta;
   return schema;
+};
+
+// 上游 3.18.4 新增：volatile 配置（解析时即时求值、不落盘）。垫片不实现该语义，
+// 构造期 fail loud（与懒求值/类实例等未覆盖特性同一策略），绝不静默当成普通字段。
+Schema.prototype.volatile = function volatile(): Schemastery {
+  throw new UnsupportedSchemaError("Schema.prototype.volatile()（上游 3.18.4 起，垫片未覆盖）");
 };
 
 for (const key of ["default", "link", "comment", "description", "max", "min", "step"] as const) {

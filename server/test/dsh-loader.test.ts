@@ -36,17 +36,19 @@ describe("dsh 依赖兼容探测与最小 semver", () => {
     for (const range of ["workspace:^", "link:../vendor/cordis", "latest"]) expect(matchesDshRange("4.0.2", range)).toBeUndefined();
   });
 
-  it("checkDshCompatibility：钉版预发布声明命中、越线或非垫片包如实报不兼容，非 dsh 依赖不参与判定", () => {
+  it("checkDshCompatibility：垫片包范围相交即命中、越线或非垫片包如实报不兼容，非 dsh 依赖不参与判定", () => {
     for (const deps of [
-      { "@deepseek-ai/dsh-tools": "0.1.6-alpha.2" }, { "@deepseek-ai/dsh-tools": "0.1.6-alpha.10" },
-      { "@deepseek-ai/dsh-tools": "^0.1.6" }, { "@deepseek-ai/cordis": "4.0.2", "@deepseek-ai/schemastery": "^3.18.0" },
+      { "@deepseek-ai/dsh-tools": "0.2.0-rc.2" }, { "@deepseek-ai/dsh-tools": "0.2.1-alpha.1" },
+      { "@deepseek-ai/dsh-tools": "^0.2.0" }, { "@deepseek-ai/cordis": "4.0.4", "@deepseek-ai/schemastery": "^3.18.4" },
       { "@deepseek-ai/cordis": "4.0.0 - 5.0.0" }, { zod: "^4.0.0" },
     ]) expect(checkDshCompatibility(deps), JSON.stringify(deps)).toEqual({ compatible: true });
-    expect(checkDshCompatibility({ "@deepseek-ai/dsh-tools": "^0.2.0" }).compatible).toBe(false);
+    // 基线推进到 0.2.0：旧 0.1.6 线的插件依赖不再命中兼容面
+    expect(checkDshCompatibility({ "@deepseek-ai/dsh-tools": "0.1.6-alpha.2" }).compatible).toBe(false);
+    expect(checkDshCompatibility({ "@deepseek-ai/dsh-tools": "0.3.0" }).compatible).toBe(false);
     expect(checkDshCompatibility({ "@deepseek-ai/cordis": "^5.0.0" }).compatible).toBe(false);
     expect(checkDshCompatibility({ "@deepseek-ai/dsh-unknown-pkg": "1.0.0" }).compatible).toBe(false);
     // 只放行三个垫片包：其余 @deepseek-ai/* 一律不兼容并点名原因
-    const other = checkDshCompatibility({ "@deepseek-ai/cordis": "^4.0.2", "@deepseek-ai/dsh-session": "^0.1.6" });
+    const other = checkDshCompatibility({ "@deepseek-ai/cordis": "^4.0.4", "@deepseek-ai/dsh-session": "^0.2.0" });
     expect([other.compatible, other.reason]).toEqual([false, expect.stringContaining("@deepseek-ai/dsh-session")]);
     expect([normalizeDshPluginId("@scope/My.Plugin", "dir"), normalizeDshPluginId("", "Some_Dir"), normalizeDshPluginId("---", "plugin")])
       .toEqual(["my-plugin", "some-dir", "plugin"]);
