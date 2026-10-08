@@ -99,7 +99,7 @@ dsh 插件**只在「启用 dsh 兼容模式」打开时加载**（它们是可�
 
 ## 支持清单
 
-翻译层面向 dsh **0.1.6-alpha.2**（上游提交 `ddefc45fbc`）实现，按最小充分面裁剪：
+翻译层面向 dsh **0.2.0-rc.2** 实现，按最小充分面裁剪：
 
 | 已支持 | 说明 |
 |---|---|
@@ -206,9 +206,9 @@ dsh tools/pre-execute ask 降级为放行：<reason>（tool=<工具名>, session
 
 ## vendor 来源与许可
 
-- **前端 dist**：npm `@deepseek-ai/dsh-web-frontend@0.1.6-alpha.2`（含 `index.html` + `assets/`）。
-- **插件 bundle**：从 `@deepseek-ai/dsh-web-app@0.1.6-alpha.2` 出发按**依赖闭包**（`dependencies` + `peerDependencies`）取得候选，再按**官方挂载规则**筛选：`cordis.patch.yml` 名单里的插件，加上被其它插件 `inject`/`external` 引用的依赖行（如提供连接服务的 `dsh-api-gateway`）；只作为依赖存在、官方并未挂载的包会被跳过（例如 `dsh-client-ui-directory-picker-{browse,native}`——强行为插件会在 dsh 启动自检里 `failed` 并让整个 SPA 落到错误页）。当前产物 **58 个插件**，外加随 owc 发布的 `owc-dsh-bridge`。
-- **版本钉死**：本兼容层按 dsh 0.1.6-alpha.2 实现，只保证对该版本的兼容；dsh 升级后需等待本兼容层同步更新（自选 UI 目录同理）。
+- **前端 dist**：npm `@deepseek-ai/dsh-web-frontend@0.2.0-rc.2`（含 `index.html` + `assets/`）。
+- **插件 bundle**：从 `@deepseek-ai/dsh-web-app@0.2.0-rc.2` 出发按**依赖闭包**（`dependencies` + `peerDependencies`）取得候选，再按**官方挂载规则**筛选：`cordis.patch.yml` 名单里的插件，加上被其它插件 `inject`/`external` 引用的依赖行（如提供连接服务的 `dsh-api-gateway`）；只作为依赖存在、官方并未挂载的包会被跳过（例如 `dsh-client-ui-directory-picker-{browse,native}`——强行为插件会在 dsh 启动自检里 `failed` 并让整个 SPA 落到错误页）；`cordis.patch.yml` 中标注为非 desktop profile 停用的行（如 `dsh-client-product-analytics`、`dsh-client-ui-sidebar-browser`）也不挂载。当前产物 **64 个插件**，外加随 owc 发布的 `owc-dsh-bridge`。
+- **版本钉死**：本兼容层按 dsh 0.2.0-rc.2 实现，只保证对该版本的兼容；dsh 升级后需等待本兼容层同步更新（自选 UI 目录同理）。
 - **许可**：dsh 为 MIT。vendor 产物随发布包带 `server/assets/dsh-web/THIRD_PARTY_NOTICES.md` 与 `licenses/<包名>.txt`（各包原始 LICENSE）。
 - **不进仓库**：`server/assets/dsh-web/` 是抓取产物（gitignored），由发布流程或你本地执行脚本生成。
 

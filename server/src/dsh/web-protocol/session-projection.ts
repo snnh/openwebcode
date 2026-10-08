@@ -109,13 +109,17 @@ function sessionSummary(deps: DshProjectionDeps, meta: SessionMeta, tail: { mess
   return {
     sessionId: meta.id,
     updatedAt: toMillis(meta.updatedAt) || toMillis(meta.createdAt),
+    // agentAvailable（0.2.0 新增，必填）：上游语义 = 该会话是否挂着活跃 agent 实例。
+    // owc 侧最接近的信号是「该会话正在跑一轮」（deps.agent.isRunning）。
+    agentAvailable: running,
     running,
     blank: isBlank(tail.messages, tail.truncated),
     ...(meta.cwd === undefined ? {} : { cwd: meta.cwd }),
     // asOfSeq：投影基线序号，口径 = 记录 seq（与 follow cursor / page cursor 一致）。
     // 只读尾部窗口时得到的水位偏小（见 projectionEntry 注释）：偏小只会被判为「较旧」，不会覆盖更新的值。
     // `running` 时末轮不收尾（append-only 稳定性，见 deriveSessionRecords 注释），水位随之少 2。
-    projections: { asOfSeq: sessionLastSeq(tail.messages, !running), values: projectionValues(deps, meta, tail) },
+    // kind（0.2.0 新增）：列表摘要取自持久化检查点（零 I/O 视图），故为上游的 `cached` 行。
+    projections: { kind: "cached", asOfSeq: sessionLastSeq(tail.messages, !running), values: projectionValues(deps, meta, tail) },
   };
 }
 
@@ -389,7 +393,15 @@ export async function projectWorkspaceBaseline(deps: DshProjectionDeps): Promise
     if (meta.updatedAt > existing.updatedAt) existing.updatedAt = meta.updatedAt;
     if (meta.createdAt < existing.createdAt) existing.createdAt = meta.createdAt;
   }
-  return { type: "baseline", value: { items: [...byCwd.values()], archivedSessionIds: [] } };
+  // archivedSessionIds / pinnedSessionIds（0.2.0 新增 pinned）：从会话 meta 派生，与 PATCH /api/sessions/:id
+  // 的 archived/pinned 一致；未设置视为非归档/非置顶。
+  const archivedSessionIds: string[] = [];
+  const pinnedSessionIds: string[] = [];
+  for (const meta of metas) {
+    if (meta.archived === true) archivedSessionIds.push(meta.id);
+    if (meta.pinned === true) pinnedSessionIds.push(meta.id);
+  }
+  return { type: "baseline", value: { items: [...byCwd.values()], archivedSessionIds, pinnedSessionIds } };
 }
 
 /**

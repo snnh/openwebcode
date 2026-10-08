@@ -308,6 +308,13 @@ class DshRuntime implements DshHostRuntime {
         signal: controller.signal,
         ...(sessionId !== undefined ? { sessionId } : {}),
       });
+      // 上游 0.2.0 的 projectContent：渲染后、post-execute 前的内容投影（仅成功路径；
+      // 工具体抛错走 catch 的错误结果，与上游「pipeline 失败跳过投影」的口径接近但不完全一致，
+      // 差异如实记录——上游对进入 post-execute 的归一化错误结果也会跑投影）。
+      if (registered.definition.projectContent) {
+        const projected = this.projectResult(registered.definition, input, value, controller.signal, sessionId);
+        if (projected !== undefined) return { content: projected };
+      }
       return { content: this.renderResult(registered.definition, input, value) };
     } catch (error) {
       // 工具体抛错（含垫片抛出的 ToolArgsError(INVALID_ARGS)）→ isError，文案与上游一致。
@@ -521,6 +528,28 @@ class DshRuntime implements DshHostRuntime {
       this.bridge.log(`工具 ${definition.name} 的 output.render 抛错：${errorMessage(error)}`);
     }
     return value === undefined ? "" : safeJson(value);
+  }
+
+  /**
+   * projectContent 投影（0.2.0）：先按 output.render 归一化结果，再交给投影回调；
+   * 回调返回块序列则以它为准（renderBlocks 序列化），返回 undefined/抛错/形状非法都回退
+   * 渲染输出（调用方此时回落 renderResult）。
+   */
+  private projectResult(definition: ToolDefinition, input: Record<string, unknown>, value: unknown, signal: AbortSignal, sessionId?: string): string | undefined {
+    try {
+      const blocks = definition.output.render(input, value);
+      if (!Array.isArray(blocks)) return undefined;
+      const replacement = definition.projectContent!(
+        { name: definition.name, arguments: input, signal, ...(sessionId !== undefined ? { sessionId } : {}) },
+        { isError: false, content: blocks },
+      );
+      if (replacement === undefined) return undefined;
+      if (Array.isArray(replacement)) return renderBlocks(replacement);
+      this.bridge.log(`工具 ${definition.name} 的 projectContent 返回非块序列，回退渲染输出`);
+    } catch (error) {
+      this.bridge.log(`工具 ${definition.name} 的 projectContent 抛错：${errorMessage(error)}`);
+    }
+    return undefined;
   }
 
   /** 同步末尾按状态发布：非 running 时 enabled=false（服务端 invokeTool 直接拒绝）。 */

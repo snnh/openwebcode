@@ -38,7 +38,8 @@ describe.skipIf(!VENDOR_READY)("dsh boot 完整性（需 vendor）", () => {
   it("roster 锁定 + 每条 entry 的 bundle 存在、自注册 id 与 entry id 一致、rev 与文件内容一致", async () => {
     const { plugins, graph } = await vendor();
     // 插件数漂移（少装/混入未挂载包）必须在这里变红，而不是等浏览器落到 dsh 错误页
-    expect(plugins.length).toBe(58);
+    // 钉版 0.2.0-rc.2：patch 名单命中 61 + 被引用补入 3（typert-registry/client-runtime/api-gateway）
+    expect(plugins.length).toBe(64);
     expect(graph.entries.length).toBe(plugins.length);
     const failures: string[] = [];
     for (const entry of graph.entries) {

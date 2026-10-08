@@ -102,6 +102,9 @@ export function projectSettingsDescribe(sources: DshSettingsSources, revision = 
     namespaces: [
       {
         ns: OWC_SETTINGS_NS,
+        // autoGenerate（0.2.0 新增，必填）：宿主是否为该命名空间自动生成表单 schema。
+        // owc 投影是只读的（writable:false）且不生成表单（schema: null），故为 false。
+        autoGenerate: false,
         schema: null,
         value,
         base: value,

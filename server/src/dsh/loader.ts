@@ -32,17 +32,15 @@ const DSH_TOOL_SOURCE_PREFIX = "dsh-";
 const MAX_PLUGIN_ID_LENGTH = 60;
 
 /**
- * 翻译层声明的 dsh API 兼容面（垫片实现对齐的上游钉版 `ddefc45fbc` = 0.1.6-alpha.2）：
- * cordis 4.0.2（vendor/cordis）、schemastery 3.18.2、dsh-tools 0.1.6-alpha.2。
- * dsh-tools 声明为 `0.1.6`（而非 alpha 串）：使 `^0.1.6`、`^0.1.6-alpha.1`、`^0.1.6-alpha.2`
- * 各类范围都命中（0.1.6 ≥ 任一 0.1.6-alpha.N 预发布）。
+ * 翻译层声明的 dsh API 兼容面（垫片实现对齐的上游钉版 0.2.0-rc.2）：
+ * cordis 4.0.4、schemastery 3.18.4、dsh-tools 0.2.0 线。
+ * dsh-tools 用**范围**表达（`>=0.2.0-rc.0 <0.3`）：0.2.0 正式发布前插件钉的是
+ * `0.2.0-rc.N` 预发布串，精确声明单点版本会把相邻 rc 判成不兼容。
  */
 const DSH_SUPPORTED_PACKAGES: Readonly<Record<string, string>> = {
-  "@deepseek-ai/cordis": "4.0.2",
-  "@deepseek-ai/schemastery": "3.18.2",
-  // 垫片实现对齐整个 0.1.6 线（含 0.1.6-alpha.N）：用**范围**表达，否则精确声明
-  // `0.1.6-alpha.2` 的插件会被单点版本 0.1.6 判成不兼容
-  "@deepseek-ai/dsh-tools": ">=0.1.6-alpha.0 <0.1.7",
+  "@deepseek-ai/cordis": ">=4.0.4 <5",
+  "@deepseek-ai/schemastery": ">=3.18.4 <4",
+  "@deepseek-ai/dsh-tools": ">=0.2.0-rc.0 <0.3",
 };
 
 /** 插件状态：running 已激活；missing-services 依赖服务缺失（未激活）；incompatible 版本不兼容。 */
