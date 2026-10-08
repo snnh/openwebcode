@@ -159,6 +159,48 @@ describe("AnthropicProvider 工具配对修复", () => {
     expect(mapped[5]).toMatchObject({ role: "user", content: [{ type: "tool_result", tool_use_id: "call_3", content: expect.stringContaining("interrupted") }] });
   });
 
+  it("并行批次的结果逐条落盘：占位不得与后续真结果撞同一 tool_use_id", async () => {
+    // 真实形态（会话 a8e4bb84 复现）：一个 assistant 批次 3 个并行调用，结果按 tool 消息逐条落盘。
+    // 若第一条 tool 消息就给「还没到的兄弟调用」补占位，后续消息里的真结果会与占位重复 →
+    // 400「each tool_use must have a single result. Found multiple `tool_result` blocks with id」。
+    const { provider, bodies } = mockProvider();
+    await collect(provider.streamChat(request({ messages: [
+      { id: "u1", role: "user", content: [{ type: "text", text: "读三个文件" }], createdAt: at(0) },
+      { id: "a1", role: "assistant", createdAt: at(1), content: [
+        { type: "tool_call", id: "call_1", name: "read_file", input: { path: "a" } },
+        { type: "tool_call", id: "call_2", name: "read_file", input: { path: "b" } },
+        { type: "tool_call", id: "call_3", name: "read_file", input: { path: "c" } },
+      ] },
+      { id: "t1", role: "tool", createdAt: at(2), content: [{ type: "tool_result", toolCallId: "call_1", content: "A", isError: false }] },
+      { id: "t2", role: "tool", createdAt: at(3), content: [{ type: "tool_result", toolCallId: "call_2", content: "B", isError: false }] },
+      { id: "t3", role: "tool", createdAt: at(4), content: [{ type: "tool_result", toolCallId: "call_3", content: "C", isError: false }] },
+      { id: "a2", role: "assistant", createdAt: at(5), content: [{ type: "text", text: "读完" }] },
+    ] })));
+    const messages = bodies[0]!.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    const toolResults = messages.flatMap((message) => message.content).filter((block) => block.type === "tool_result");
+    // 每个调用恰好一份结果：批次内结果合并成一条 user 消息，不额外补占位、不重复下发
+    expect(toolResults.map((block) => [block.tool_use_id, block.content])).toEqual([["call_1", "A"], ["call_2", "B"], ["call_3", "C"]]);
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+  });
+
+  it("批次中断（后续结果永不落盘）：仍在批次末尾补占位，且不与已落盘结果重复", async () => {
+    const { provider, bodies } = mockProvider();
+    await collect(provider.streamChat(request({ messages: [
+      { id: "u1", role: "user", content: [{ type: "text", text: "读三个文件" }], createdAt: at(0) },
+      { id: "a1", role: "assistant", createdAt: at(1), content: [
+        { type: "tool_call", id: "call_1", name: "read_file", input: { path: "a" } },
+        { type: "tool_call", id: "call_2", name: "read_file", input: { path: "b" } },
+      ] },
+      { id: "t1", role: "tool", createdAt: at(2), content: [{ type: "tool_result", toolCallId: "call_1", content: "A", isError: false }] },
+      { id: "a2", role: "assistant", createdAt: at(3), content: [{ type: "text", text: "中断后的下一轮" }] },
+    ] })));
+    const messages = bodies[0]!.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    expect(messages[2]).toEqual({ role: "user", content: [
+      { type: "tool_result", tool_use_id: "call_1", content: "A" },
+      { type: "tool_result", tool_use_id: "call_2", content: expect.stringContaining("interrupted") },
+    ] });
+  });
+
   it("同一 tool_use 只下发一个 tool_result（重复 id 会被端点拒绝）", async () => {
     const { provider, bodies } = mockProvider();
     await collect(provider.streamChat(request({ messages: [
