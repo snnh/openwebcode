@@ -530,10 +530,10 @@ describe("manifest.routes ↔ host 路由表一致性（M2a 扩充）", () => {
     expect(declared).toEqual([...createDshSyncRoutes(fake.api).keys()].sort());
   });
 
-  it("manifest 声明了新权限与 60s 同步路由超时，版本已 bump（0.2.1）", () => {
+  it("manifest 声明了新权限与 60s 同步路由超时，版本已 bump（0.3.0）", () => {
     const manifest = OFFICIAL_EXTENSIONS.find((item) => item.id === "dsh-sync");
     expect(manifest?.permissions).toEqual(expect.arrayContaining(["providers:read", "providers:mutate", "sessions:read", "sessions:mutate"]));
-    expect(manifest?.version).toBe("0.2.1");
+    expect(manifest?.version).toBe("0.3.0");
     const sync = (manifest?.routes ?? []).find((route) => route.path === "/sync/providers");
     expect(sync?.timeoutMs).toBe(60_000);
   });

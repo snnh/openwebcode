@@ -14,7 +14,8 @@
  *    （**时序配对启发式**：dsh 工具结果里的 `subagentId` 与子会话 id 的对应关系在上游源码里未证实，
  *    只能按「调用与子会话的出现顺序一致」配对；局限由调用方写进报告 notes/warnings）；
  * 3. {@link nestSubagentSessions} 逐个子会话 decode + convert → 转录对象
- *    （`{id, prompt, agent, startedAt, turns, toolsUsed, conclusion, messages}`，与 `runSubAgent` 同形状）；
+ *    （`{id, prompt, agent, startedAt, turns, toolsUsed, conclusion, messages}`，与 `runSubAgent` 同形状；
+ *    子会话里的图片经注入的附件解析器内联，未注入时退化为文本占位 + 计数）；
  * 4. {@link attachSubagentTasks} 把配对结果挂到父会话 messages 的 tool_result 块上
  *    （callId → tool_call.id → 同 id 的 tool_result；块上已有字段时按 taskId 去重合并）。
  *
@@ -26,7 +27,7 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMessage, TextContent, ToolResultContent } from "../sessions/types.js";
 import { decodeDshSessionFile, type DshSessionEntry } from "./dsh-sync-dsh.js";
-import { convertDshSession, type DshSessionConversion } from "./dsh-sync-session.js";
+import { convertDshSession, type DshConversionOptions, type DshSessionConversion } from "./dsh-sync-session.js";
 
 /** 父会话里触发子代理的工具名（dsh 侧的 subagent 调用在 owc 的约定名）。 */
 const SUBAGENT_TOOL_NAME = "subagent";
@@ -232,13 +233,19 @@ function buildSubagentTranscript(
  *
  * 逐项 try：单个子会话解码/转换失败只记 warning 并把它移入 `unpaired`（不 nested），
  * 不影响其余子会话与父会话本身的导入。
- * @param input - 父会话事件流、子会话条目（supported v3）、可注入的 taskId 生成器（测试用）。
+ * @param input - 父会话事件流、子会话条目（supported v3）、可注入的 taskId 生成器（测试用）与
+ *   附件解析器（与父会话同一个实例：子会话里的图片同样要内联成 `image{mediaType,data}`）。
  * @returns 转录列表 + 挂载计划 + 未嵌套列表 + 警告。
  */
 export async function nestSubagentSessions(input: {
   parentEvents: readonly Record<string, unknown>[];
   children: readonly DshSessionEntry[];
   newTaskId?: () => string;
+  /**
+   * 附件解析器（{@link DshConversionOptions.resolveAttachment} 同形）：缺省不内联图片（子会话里的
+   * 图片退化为文本占位 + 计数），生产路径由 host 注入 `readDshAttachment` + base64 读字节。
+   */
+  resolveAttachment?: DshConversionOptions["resolveAttachment"];
 }): Promise<DshSubagentNesting> {
   const newTaskId = input.newTaskId ?? randomUUID;
   const pairing = pairSubagentSessions(input.parentEvents, input.children);
@@ -258,7 +265,11 @@ export async function nestSubagentSessions(input: {
         generation: entry.generation,
         compressed: entry.compressed,
       });
-      const conversion = convertDshSession(header, events);
+      const conversion = convertDshSession(
+        header,
+        events,
+        input.resolveAttachment === undefined ? undefined : { resolveAttachment: input.resolveAttachment },
+      );
       const taskId = newTaskId();
       subagents.push({ taskId, data: buildSubagentTranscript(taskId, header, conversion) });
       assignments.push({ callId, taskId });

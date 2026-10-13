@@ -108,9 +108,12 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
   // 面板展开时自动展开第二行标签（移动端），收起面板时恢复紧凑标签条
   useEffect(() => { setTabsExpanded(bottomOpen); }, [bottomOpen]);
   useEffect(() => {
+    // 只在扩展清单查询成功后复位：查询未回时 enabled 为 false 属「未知」而非「未启用」，
+    // 提前复位会把持久化的 dshSync 页签在刷新首帧写回 context（页面刷新后页签丢失）。
+    if (!extensions.isSuccess) return;
     if (!evalEnabled && tab === "eval") layout.setBottomTab("context");
     if (!dshSyncEnabled && tab === "dshSync") layout.setBottomTab("context");
-  }, [evalEnabled, dshSyncEnabled, tab]);
+  }, [extensions.isSuccess, evalEnabled, dshSyncEnabled, tab]);
 
   // 顶部拖拽调高：向上拖增大高度；键盘 ArrowUp/Down 每次 40px
   const startDrag = (event: ReactMouseEvent): void => {

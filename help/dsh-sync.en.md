@@ -2,7 +2,7 @@
 
 An official owc extension that **manually syncs model configuration and sessions both ways** with the **dsh (DeepSeek Harness) data directory** (default `~/.dsh`).
 
-- What it syncs: the `llm-service-lite` model configuration inside dsh's `profiles/<profile>/cordis.patch.yml`, and dsh sessions (`session.v3.jsonl.zstd`).
+- What it syncs: the `llm-service-lite` model configuration inside dsh's `profiles/<profile>/cordis.patch.yml`, and dsh sessions (**read** v3/v4 `session.v{3,4}.jsonl.zstd`, **write** v3).
 - How: it reads and writes files in the dsh data directory directly and **does not require dsh to be running**; every write is triggered by you, after a per-item selection.
 - Who it's for: people who move between owc and dsh with the same model configuration and sessions. If you only use one harness day-to-day, you don't need it.
 
@@ -28,7 +28,7 @@ The dsh Sync extension does two things, each **bidirectional** and independent o
 | Block | Import from dsh | Export to dsh |
 |---|---|---|
 | **Model configuration** | Read provider/model entries from `cordis.patch.yml` → write into the owc model catalog | owc model providers → rewrite the `llm-service-lite` section of `cordis.patch.yml` |
-| **Sessions** | dsh `session.v3.jsonl.zstd` → owc sessions (continuable) | owc sessions → new dsh session directories |
+| **Sessions** | dsh `session.v3.jsonl.zstd` / `session.v4.jsonl.zstd` → owc sessions (continuable) | owc sessions → new dsh session directories (`session.v3.jsonl.zstd`) |
 
 Shared properties:
 
@@ -96,22 +96,24 @@ Choose a direction (`Import from dsh` / `Export to dsh`) and click **"Preview se
 
 **Import direction (dsh → owc)**:
 
-1. The preview lists dsh sessions **grouped by working directory (cwd)**, annotating each row: generation, already-synced ("Synced <time>"), subagent transcripts ("Subagent"), message/image counts.
-2. Non-importable items are disabled with a reason: **legacy generation** (v0–v2, "open it once in dsh to upgrade the format"), **corrupt format**, **zstd unavailable**.
+1. The preview lists dsh sessions **grouped by working directory (cwd)**, annotating each row: generation, already-synced ("Synced <time>"), subagent transcripts ("Subagent"); message/image counts appear in the execution report (the preview does not count per row).
+2. Non-importable items are disabled with a reason: **legacy generation** (v0–v2, "legacy vN: open it once in dsh to upgrade the format"), **newer generation** (>v4, "dsh generation vN is not supported yet: upgrade the dsh-sync extension"), **corrupt format**, **zstd unavailable**.
 3. **Sessions without a cwd**: each such row gets a "Choose a local working directory" input; enter an absolute path (e.g. `/home/me/project`) before it can be imported.
 4. By default the **importable and not-yet-synced** sessions are selected; already-synced ones are not.
 5. If the selection includes already-synced sessions, a **"Conflict handling"** choice appears:
    - **Overwrite the imported session** (`overwrite`): rewrite the owc session history the mapping table points to;
-   - **Create a copy** (`new`): create another owc session (default).
-6. Click **"Run import"**. The report includes each session's title and user/assistant/tool counts, image downgrade notes, dropped-event counts, warnings, and the mapping-table save result.
+   - **Create a copy** (`new`): create another owc session (default). Note the mapping table keeps only the newest copy per dsh session: after repeated "create a copy" imports, only the newest copy shows "Synced" in the panel; earlier copies remain in the owc session list.
+6. Click **"Run import"**. The report includes each session's title and user/assistant/tool counts, image downgrade notes, dropped-event counts, warnings, and the mapping-table save result. Execution is submitted in **batches of up to 20** (60-second timeout per batch); if a run fails midway, the completed part is shown as-is and marked "may have partially taken effect", and the preview refreshes so you can retry. When zstd is unavailable (Node ≥22.15 required) the run button is disabled with the reason shown.
 
 **Export direction (owc → dsh)**:
 
 1. The preview lists owc sessions (title, provider/model, update time, last export time "Exported <time>").
 2. Export entries are **always selectable** but **not selected by default** — selecting all could write many sessions at once, so this is left to your explicit choice ("Select all" / "Clear").
-3. Click **"Run export"**. Each applied entry reports the written **event count / attachment count**, a subagent badge (below), and downgrade warnings; skipped entries give a reason (e.g. cwd is not an absolute path).
+3. Click **"Run export"**. Each applied entry reports the written **event count / attachment count**, a subagent badge (below), and downgrade warnings; skipped entries give a reason (e.g. cwd is not an absolute path). Execution is likewise submitted in **batches of up to 20**; the run button is disabled with a reason when zstd is unavailable or the dsh data directory is missing.
 4. Export **only creates new dsh session directories**: re-exporting generates another new session on the dsh side and **never overwrites** an existing one.
 5. **Model attribution fill-in**: the current dsh generation (v4) requires every assistant message to carry non-empty `provider`/`model`, while an owc session may have picked a provider but no model yet. Export fills in from what the session has: both non-empty → kept as-is; provider but no model → the provider's default model from the current model catalog; no provider → owc's current default (adopted only when its default model matches the session's model); neither → owc's current default. If nothing can be filled, that entry is **skipped** (the reason names which half is missing and what to do), so a session that dsh would refuse to open is never written.
+6. **Only the active path is exported**: an owc session is a message tree (fork/retry/rollback only append new branches), so export takes the chain reached by walking back from the current leaf — off-path history (branches you never actually took) never reaches the dsh session; legacy sessions without a leaf record are exported as their whole linear history.
+7. **Tool-history cleanup and repair** (each recorded as a warning for that session, never silent): a tool message carrying several results is split into several; orphan results without a preceding call, duplicate results for one call, and **late** results that arrive in a later turn (the kind written back after an interrupted round) are dropped; conversely, an assistant call that never received any result gets a synthesized "tool not started" result event in the shape dsh officially accepts (dsh renders it as "the call was interrupted"). Before writing, the whole event stream is checked against dsh's structural rules — anything invalid is reported as a skipped entry with a reason instead of producing a file dsh would reject.
 
 **Subagent report note** (export direction): when a parent session exports together with its subagent transcripts, the applied row shows a **"N subagent session(s)"** badge; if individual subagent transcripts fail to export, an extra amber warning line appears (with the failing taskId and reason) — a failure **does not affect the parent session's own successful export**.
 
@@ -139,7 +141,9 @@ Import: `Resolved` / `Missing env var` (red) / `Inline key` / `No credential`; e
 
 ## Limitations and notes
 
-- **Sessions are v3-generation only**: only `session.v3.jsonl.zstd` is read and written. Legacy generations (v0–v2) must first be opened once in dsh to upgrade the format; newer generations (>v3) are rejected outright (migration chains are dsh's responsibility).
+- **Report text is Chinese**: execution reports, warnings and skip reasons are produced by the server-side extension and shown in Chinese regardless of the UI language (only the panel chrome is localised).
+
+- **Session generations: v3/v4 are readable, writes still use v3**. **Reading** (import/preview) accepts both v3 and v4 shapes (dsh's current generation is v4: `session.v4.jsonl.zstd`, where `tool/result` is a first-class tool-role message; v4-only events and unknown content blocks are dropped as unknown and counted); **writing** (export) always produces `session.v3.jsonl.zstd`, which dsh upgrades to its current generation through its migration chain on load. Lower generations (v0–v2) must first be opened once in dsh to upgrade the format; higher generations (>v4) are rejected outright (upgrade this extension; migration chains are dsh's responsibility).
 - **`compaction/prune` is not mapped**: dsh's `compaction/prune` events are always **dropped and counted** (owc's `evicted` ledger entries are tightly coupled with artifact persistence; recording without evicting would create an inconsistent "the ledger says evicted but the body is still there" view). `compaction/summary` is mapped to an owc compaction anchor (single-compacted semantics, the last one wins).
 - **Subagent pairing is a temporal heuristic**: the correspondence between a dsh subagent session and the parent's `subagent` tool call is matched by "the two sequences appear in the same order" (no authoritative link field is confirmed upstream). Unpaired subagent sessions are listed as standalone sessions, and unpaired calls carry no fields — the pairing caveat is written into the report.
 - **zstd requires Node ≥22.15**: reading/writing compressed sessions depends on `node:zlib` zstd support. When unavailable, the environment status bar warns and **session sync is unavailable** (model configuration sync still works).

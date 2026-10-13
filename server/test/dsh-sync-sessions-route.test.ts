@@ -33,7 +33,7 @@ import {
   type DshSyncSessionSkippedItem,
 } from "../src/extensions/dsh-sync-host.js";
 import { DSH_SYNC_MAP_PATH, type DshSyncMap } from "../src/extensions/dsh-sync-map.js";
-import { DSH_SYNC_SUPPORTED_GENERATION, decodeDshSessionFile } from "../src/extensions/dsh-sync-dsh.js";
+import { DSH_SYNC_WRITE_GENERATION, decodeDshSessionFile, writeDshAttachment } from "../src/extensions/dsh-sync-dsh.js";
 import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import { OFFICIAL_EXTENSIONS } from "../src/extensions/official.js";
 import type { ExtensionManifest } from "../src/extensions/types.js";
@@ -52,8 +52,16 @@ const RAW_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const MULTI_ID = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
 /** fixture 里 v1 旧代际会话。 */
 const LEGACY_ID = "cccccccc-dddd-4eee-8fff-000000000000";
+/** fixture 里 v4 zstd 会话（dsh 当前代际：读支持，可导入）。 */
+const V4_ID = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
 /** fixture 主会话头行 createdAt（毫秒）。 */
 const DEMO_CREATED_AT = 1_786_505_848_722;
+
+/** 1×1 PNG（真实字节：导入方向内联图片的断言基准）。 */
+const PNG_1X1 = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AAAwAB/AF+7GvHAAAAAElFTkSuQmCC",
+  "base64",
+);
 
 /** 毫秒 → ISO（断言用）。 */
 function iso(ms: number): string {
@@ -105,6 +113,8 @@ function makeFakeApi(options: {
   ledgers?: Record<string, Record<string, unknown>>;
   /** `models.defaultSelection` 桩：给定 provider 只回该 provider 的默认模型，缺省回 owc 当前默认选择。 */
   defaultSelection?: (provider?: string) => { provider?: string; model?: string } | undefined;
+  /** `providers.listProfiles` 的桩（脱敏 profile 列表；export 方向据此取 interfaceType）。 */
+  profiles?: Array<Record<string, unknown>>;
 } = {}): FakeApi {
   const files = new Map<string, string>(Object.entries(options.storage ?? {}));
   const sessions = new Map<string, Record<string, unknown>>(Object.entries(options.sessions ?? {}));
@@ -118,7 +128,7 @@ function makeFakeApi(options: {
     ledgers,
     selectionCalls,
     api: {
-      listProfiles: async () => [],
+      listProfiles: async () => options.profiles ?? [],
       upsertProfiles: async () => ({ profiles: [], models: [] }),
       importSession: async (input) => {
         imported.push(input);
@@ -188,7 +198,7 @@ function itemsById(body: DshSyncSessionPreview): Map<string, DshSyncSessionPrevi
 }
 
 describe("GET /preview/sessions", () => {
-  it("5 个会话条目：v3 可选、v1 不可选带升级提示、子代理项带 origin/parentSession、映射命中带 sync", async () => {
+  it("6 个会话条目：v3/v4 可选、v1 不可选带升级提示、子代理项带 origin/parentSession、映射命中带 sync", async () => {
     const home = await fixtureHome("dsh-sync-sessions-preview-");
     const fake = makeFakeApi({
       storage: {
@@ -204,7 +214,7 @@ describe("GET /preview/sessions", () => {
 
     expect(response?.status).toBe(200);
     expect(body.direction).toBe("import");
-    expect(body.items).toHaveLength(5);
+    expect(body.items).toHaveLength(6);
     expect(typeof body.zstdAvailable).toBe("boolean");
     expect(typeof body.dshRunning).toBe("boolean");
 
@@ -224,13 +234,22 @@ describe("GET /preview/sessions", () => {
     expect(byId.get(MULTI_ID)).toMatchObject({ generation: 3, cwd: "/tmp/multi", supported: true, selectable: true });
     // 子代理会话：origin/parentSession 透出，仍可导入（转录嵌套映射留 M5）
     expect(byId.get(DEMO_SUB)).toMatchObject({ origin: "subagent", parentSession: DEMO_MAIN, cwd: "/tmp/demo", selectable: true });
-    // 旧代际：不可选 + 引导去 dsh 升级
+    // v4（dsh 当前代际）：与 v3 一样可导入
+    expect(byId.get(V4_ID)).toEqual({
+      dshId: V4_ID,
+      cwd: "/tmp/v4",
+      createdAt: iso(1_786_505_870_000),
+      generation: 4,
+      supported: true,
+      selectable: true,
+    });
+    // 旧代际：不可选 + 引导去 dsh 升级（文案带上代际）
     expect(byId.get(LEGACY_ID)).toEqual({
       dshId: LEGACY_ID,
       generation: 1,
       supported: false,
       selectable: false,
-      reason: "请先在 dsh 中打开一次升级格式",
+      reason: "旧代际 v1：请先在 dsh 中打开一次升级格式",
     });
   });
 
@@ -246,10 +265,33 @@ describe("GET /preview/sessions", () => {
     const body = response?.body as DshSyncSessionPreview;
     const broken = itemsById(body).get("e0000000-0000-4000-8000-000000000000");
 
-    expect(body.items).toHaveLength(6);
+    expect(body.items).toHaveLength(7);
     expect(broken?.supported).toBe(false);
     expect(broken?.selectable).toBe(false);
     expect(broken?.reason).toMatch(/^文件损坏：/);
+  });
+
+  it("高于读支持上界的代际（v5）：不可选 + 「升级 dsh-sync 扩展」原因", async () => {
+    const home = await fixtureHome("dsh-sync-sessions-future-");
+    const dir = path.join(home, "sessions", "--tmp-future--", "f0000000-0000-4000-8000-000000000000");
+    await mkdir(dir, { recursive: true });
+    const header = JSON.stringify({ type: "session", version: 5, id: "f0000000-0000-4000-8000-000000000000", createdAt: 1, cwd: "/tmp/future" });
+    await writeFile(path.join(dir, "session.v5.jsonl"), `${header}\n`, "utf8");
+
+    const body = (await createDshSyncRoutes(makeFakeApi().api).get("GET /preview/sessions")?.(
+      { method: "GET", path: "/preview/sessions", query: {} },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncSessionPreview;
+    const future = itemsById(body).get("f0000000-0000-4000-8000-000000000000");
+
+    // 头行不解析（代际不在读支持范围内）→ cwd 也不会透出
+    expect(future).toEqual({
+      dshId: "f0000000-0000-4000-8000-000000000000",
+      generation: 5,
+      supported: false,
+      selectable: false,
+      reason: "dsh 代际 v5 暂不支持：请升级 dsh-sync 扩展",
+    });
   });
 
   it("sessions 目录缺失：空清单 + warning（不抛错）；export 方向读 owc 清单并提示缺 dshHome", async () => {
@@ -270,7 +312,7 @@ describe("GET /preview/sessions", () => {
     const failing = makeFakeApi();
     failing.api.storageRead = () => Promise.reject(new Error("storage down"));
     const degraded = (await createDshSyncRoutes(failing.api).get("GET /preview/sessions")?.({ method: "GET", path: "/preview/sessions", query: {} }, { dshHome: FIXTURES, profile: "web" }))?.body as DshSyncSessionPreview;
-    expect(degraded.items).toHaveLength(5);
+    expect(degraded.items).toHaveLength(6);
     expect(degraded.warning).toContain("映射表");
   });
 });
@@ -318,6 +360,35 @@ describe("POST /sync/sessions", () => {
     expect(byDshId.get(DEMO_MAIN)).toMatchObject({ owcId: "owc-1", cwd: "/tmp/demo", lastSyncDirection: "import" });
     expect(byDshId.get(RAW_ID)).toMatchObject({ owcId: "owc-2", cwd: "/tmp/raw", lastSyncDirection: "import" });
     expect(written.entries.every((item) => Number.isFinite(Date.parse(item.lastSyncAt)))).toBe(true);
+  });
+
+  it("导入 v4 会话（dsh 当前代际）：一等 tool 角色消息 + 附加事件计数", async () => {
+    const home = await fixtureHome("dsh-sync-sessions-v4-");
+    const fake = makeFakeApi();
+    const body = (await createDshSyncRoutes(fake.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "import", items: [{ dshId: V4_ID }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncSessionResult;
+
+    expect(body.skipped).toEqual([]);
+    expect(body.applied[0]).toMatchObject({
+      dshId: V4_ID,
+      counts: { user: 1, assistant: 2, tool: 2, images: 0, imagesMissing: 0 },
+    });
+    const imported = fake.imported[0];
+    expect(imported?.meta).toEqual({ cwd: "/tmp/v4", createdAt: iso(1_786_505_870_000) });
+    expect(imported?.messages.map((message) => (message as { id: string; role: string }).id)).toEqual(["m1", "m2", "m3", "m4", "m5"]);
+    // v4 结果块直挂（无包装）：toolCallId 取自 message.toolCallId
+    const tool = imported?.messages[2] as { content: unknown[] };
+    expect(tool.content).toEqual([{ type: "tool_result", toolCallId: "call-1", content: "file body", isError: false }]);
+    // v4 附加/未知事件进丢弃账（键序排序）
+    expect(body.report.droppedEvents).toEqual({
+      "permission/preset": 1,
+      "sandbox/mode": 1,
+      "session-log-deepseek/delivery-accepted": 1,
+      "tool/call": 2,
+    });
+    expect(body.report.warnings.some((warning) => warning.includes("未映射的内容块类型 plugin:foo"))).toBe(true);
   });
 
   it("onConflict=overwrite 且映射表已有该会话：replaceId 传映射里的 owcId；默认 new 不传", async () => {
@@ -403,12 +474,111 @@ describe("POST /sync/sessions", () => {
 
     expect(body.applied.map((item) => item.dshId)).toEqual([DEMO_MAIN]);
     expect(body.skipped.map((item) => item.dshId)).toEqual([LEGACY_ID, "gap-1", "nope-1"]);
-    expect(body.skipped[0]?.reason).toBe("请先在 dsh 中打开一次升级格式");
+    expect(body.skipped[0]?.reason).toBe("旧代际 v1：请先在 dsh 中打开一次升级格式");
     expect(body.skipped[1]?.reason).toContain("格式损坏");
     expect(body.skipped[2]?.reason).toContain("未在");
     expect(body.report).toMatchObject({ appliedCount: 1, skippedCount: 3 });
     // 仅成功项进映射表
     expect(JSON.parse(fake.files.get(DSH_SYNC_MAP_PATH) ?? "{}").entries.map((item: { dshId: string }) => item.dshId)).toEqual([DEMO_MAIN]);
+  });
+
+  it("导入图片内联：真实附件文件 → user 消息里的 image{mediaType,data}，counts.images=1（父 + 子会话都注入）", async () => {
+    const home = await fixtureHome("dsh-sync-sessions-image-");
+    const base = 1_700_000_000_000;
+    // 真实附件对象：<dshHome>/attachments/v1/objects/<sha 前 2 位>/<sha>
+    const attachmentId = writeDshAttachment(home, PNG_1X1);
+    const imageBlock = { type: "image", attachment: { attachmentId, mediaType: "image/png", bytes: PNG_1X1.byteLength, width: 1, height: 1 } };
+    await writeV3Session(home, "--tmp-img--", "img-parent", { cwd: "/tmp/img", createdAt: base }, [
+      event(0, "tool/call", { turn: 1, step: 1, callId: "call-1", name: "subagent", arguments: "{}" }, base),
+      event(1, "user/message", { id: "m0", role: "user", source: { kind: "user" }, content: [{ type: "text", text: "看图" }, imageBlock] }, base, { surfaceOp: "append" }),
+      event(2, "assistant/message", { turn: 1, step: 1, stream: [], message: { id: "m1", role: "assistant", source: { kind: "model", provider: "p", model: "m" }, content: [{ type: "tool-call", id: "call-1", name: "subagent", arguments: "{}" }] } }, base, { surfaceOp: "append" }),
+      event(3, "tool/result", { turn: 1, step: 1, message: { id: "t1", role: "user", source: { kind: "tool", callId: "call-1" }, content: [{ type: "tool-result", toolCallId: "call-1", content: [{ type: "text", text: "子代理已启动" }] }] } }, base, { surfaceOp: "append" }),
+    ]);
+    // 子会话（origin=subagent，parentSession 指回父会话）自己也带一张图
+    await writeV3Session(home, "--tmp-img--", "img-child", {
+      cwd: "/tmp/img",
+      createdAt: base + 1000,
+      origin: "subagent",
+      parentSession: "img-parent",
+      delegationDepth: 1,
+    }, [
+      event(0, "user/message", { id: "c0", role: "user", source: { kind: "user" }, content: [{ type: "text", text: "子看图" }, imageBlock] }, base, { surfaceOp: "append" }),
+    ]);
+
+    const fake = makeFakeApi();
+    const body = (await createDshSyncRoutes(fake.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "import", items: [{ dshId: "img-parent" }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncSessionResult;
+
+    expect(body.skipped).toEqual([]);
+    const applied = body.applied[0]!;
+    expect(applied.counts).toMatchObject({ images: 1, imagesMissing: 0 });
+    expect(applied.subagents).toBe(1);
+    // 父会话：图片内联为 image{mediaType,data}（不再是文本占位）
+    const parentMessages = fake.imported[0]!.messages as Array<{ content: unknown[] }>;
+    expect(parentMessages[0]!.content).toEqual([
+      { type: "text", text: "看图" },
+      { type: "image", mediaType: "image/png", data: PNG_1X1.toString("base64") },
+    ]);
+    // 子会话转录：同一解析器同样注入（否则子会话里的图仍是文本占位）
+    const subagents = fake.imported[0]!.subagents ?? [];
+    expect(subagents).toHaveLength(1);
+    const transcript = (subagents[0]!.data as { messages: Array<{ content: unknown[] }> });
+    expect(transcript.messages[0]!.content).toEqual([
+      { type: "text", text: "子看图" },
+      { type: "image", mediaType: "image/png", data: PNG_1X1.toString("base64") },
+    ]);
+    expect(body.report.warnings.filter((warning) => warning.includes("图片"))).toEqual([]);
+  });
+
+  it("附件缺失时不静默：退化为文本占位 + imagesMissing 计数", async () => {
+    const home = await fixtureHome("dsh-sync-sessions-image-miss-");
+    const base = 1_700_000_000_000;
+    const missingId = "0".repeat(64);
+    await writeV3Session(home, "--tmp-img--", "img-miss", { cwd: "/tmp/img", createdAt: base }, [
+      event(0, "user/message", {
+        id: "m0",
+        role: "user",
+        source: { kind: "user" },
+        content: [{ type: "image", attachment: { attachmentId: missingId, mediaType: "image/png", bytes: 1, width: 1, height: 1 } }],
+      }, base, { surfaceOp: "append" }),
+    ]);
+    const fake = makeFakeApi();
+    const body = (await createDshSyncRoutes(fake.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "import", items: [{ dshId: "img-miss" }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncSessionResult;
+
+    expect(body.applied[0]!.counts).toMatchObject({ images: 1, imagesMissing: 1 });
+    const messages = fake.imported[0]!.messages as Array<{ content: unknown[] }>;
+    expect(messages[0]!.content).toEqual([{ type: "text", text: `[dsh 图片附件 ${missingId}]` }]);
+    expect(body.report.warnings.some((warning) => warning.includes("未命中 resolver"))).toBe(true);
+  });
+
+  it("并发两次 POST /sync/sessions：同步串行化（不丢 map.json 更新）", async () => {
+    const home = await fixtureHome("dsh-sync-sessions-serial-");
+    const fake = makeFakeApi();
+    // 把 importSession 拖慢：没有串行化时两次执行都会读到空表，后写的把先写的整条覆盖掉
+    const original = fake.api.importSession;
+    fake.api.importSession = async (input) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return original(input);
+    };
+    const handler = createDshSyncRoutes(fake.api).get("POST /sync/sessions");
+    const [first, second] = await Promise.all([
+      handler?.({ method: "POST", path: "/sync/sessions", query: {}, body: { direction: "import", items: [{ dshId: DEMO_MAIN }] } }, { dshHome: home, profile: "web" }),
+      handler?.({ method: "POST", path: "/sync/sessions", query: {}, body: { direction: "import", items: [{ dshId: RAW_ID }] } }, { dshHome: home, profile: "web" }),
+    ]);
+    const firstBody = first?.body as DshSyncSessionResult;
+    const secondBody = second?.body as DshSyncSessionResult;
+
+    expect(firstBody.report.appliedCount + secondBody.report.appliedCount).toBe(2);
+    expect(firstBody.skipped).toEqual([]);
+    expect(secondBody.skipped).toEqual([]);
+    // 两次都完成且都写进了映射表（串行化前这里是 1 条：后写的覆盖先写的）
+    const written = JSON.parse(fake.files.get(DSH_SYNC_MAP_PATH) ?? "{}") as DshSyncMap;
+    expect(written.entries.map((entry) => entry.dshId).sort()).toEqual([DEMO_MAIN, RAW_ID].sort());
   });
 
   it("cwd 缺失且无 cwdOverride → skipped；提供 cwdOverride 后按覆盖目录导入", async () => {
@@ -475,6 +645,8 @@ function owcSession(input: {
   model?: string;
   updatedAt?: string;
   messages?: unknown[];
+  /** 活动路径叶子（消息树当前叶子）；缺省 = legacy 线性会话（导出侧回退整表）。 */
+  activeLeafId?: string;
 }): Record<string, unknown> {
   return {
     id: input.id,
@@ -484,6 +656,7 @@ function owcSession(input: {
     createdAt: iso(DEMO_CREATED_AT),
     updatedAt: input.updatedAt ?? iso(DEMO_CREATED_AT),
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+    ...(input.activeLeafId === undefined ? {} : { activeLeafId: input.activeLeafId }),
     messages: input.messages ?? [],
   };
 }
@@ -599,14 +772,14 @@ describe("POST /sync/sessions?direction=export", () => {
     expect(first.file).toBe(path.join(home, "sessions", "--tmp-demo--", first.dshId, "session.v3.jsonl.zstd"));
 
     // 自家读取器回读：头行 id 一致 + 压缩生命周期齐全
-    const decoded = await decodeDshSessionFile({ file: first.file, generation: DSH_SYNC_SUPPORTED_GENERATION, compressed: true });
+    const decoded = await decodeDshSessionFile({ file: first.file, generation: DSH_SYNC_WRITE_GENERATION, compressed: true });
     expect(decoded.header.id).toBe(first.dshId);
     const types = decoded.events.map((item) => String(item.type));
     expect(types).toEqual(expect.arrayContaining(["user/message", "assistant/message", "compaction/start", "compaction/summary", "compaction/end"]));
 
     // 无压缩的第二项：不含 compaction/*
     const second = applied[1]!;
-    const decoded2 = await decodeDshSessionFile({ file: second.file, generation: DSH_SYNC_SUPPORTED_GENERATION, compressed: true });
+    const decoded2 = await decodeDshSessionFile({ file: second.file, generation: DSH_SYNC_WRITE_GENERATION, compressed: true });
     expect(decoded2.events.some((item) => typeof item.type === "string" && item.type.startsWith("compaction/"))).toBe(false);
 
     // 映射表：以新 dshId 为键、方向 export
@@ -665,6 +838,111 @@ describe("POST /sync/sessions?direction=export", () => {
     expect(body.report).toMatchObject({ appliedCount: 1, skippedCount: 1, mapSaved: true });
   });
 
+  it("分叉会话：导出只取活动路径（activeLeafId 回溯的链），离路径消息不写进 dsh 会话", async () => {
+    const home = await fixtureHome("dsh-sync-export-active-path-");
+    const base = DEMO_CREATED_AT;
+    // 消息树：a1 之后用户「重试」留下一条离路径分支（u-off/a-off），当前活动叶子是 a2。
+    // 与仓内其它消费方同一口径：sessions.get 给全量消息表，导出必须自己按 activeLeafId 过滤。
+    const messages = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "第一问" }], createdAt: iso(base) },
+      { id: "a1", role: "assistant", parentId: "u1", content: [{ type: "text", text: "第一答" }], createdAt: iso(base + 1000) },
+      { id: "u-off", role: "user", parentId: "a1", content: [{ type: "text", text: "离路径问题" }], createdAt: iso(base + 2000) },
+      { id: "a-off", role: "assistant", parentId: "u-off", content: [{ type: "text", text: "离路径回答" }], createdAt: iso(base + 3000) },
+      { id: "u2", role: "user", parentId: "a1", content: [{ type: "text", text: "第二问" }], createdAt: iso(base + 4000) },
+      { id: "a2", role: "assistant", parentId: "u2", content: [{ type: "text", text: "第二答" }], createdAt: iso(base + 5000) },
+    ];
+    const fake = makeFakeApi({
+      sessions: { "owc-fork": owcSession({ id: "owc-fork", cwd: "/tmp/fork", messages, activeLeafId: "a2" }) },
+    });
+    const body = (await createDshSyncRoutes(fake.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "export", items: [{ owcId: "owc-fork" }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncExportResult;
+    expect(body.skipped).toEqual([]);
+    const decoded = await decodeDshSessionFile({ file: body.applied[0]!.file, generation: DSH_SYNC_WRITE_GENERATION, compressed: true });
+    const serialized = JSON.stringify(decoded.events);
+    expect(serialized).not.toContain("离路径");
+    expect(serialized).toContain("第一问");
+    expect(serialized).toContain("第二答");
+    // 活动路径 = u1/a1/u2/a2：两条用户消息、两条 assistant 消息
+    expect(decoded.events.filter((event) => event.type === "user/message")).toHaveLength(2);
+    expect(decoded.events.filter((event) => event.type === "assistant/message")).toHaveLength(2);
+
+    // 反向对照：legacy 线性会话没有 activeLeafId → activePathMessages 回退整表（旧行为，不丢历史）
+    const linear = makeFakeApi({
+      sessions: { "owc-fork": owcSession({ id: "owc-fork", cwd: "/tmp/fork-linear", messages }) },
+    });
+    const linearBody = (await createDshSyncRoutes(linear.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "export", items: [{ owcId: "owc-fork" }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncExportResult;
+    const linearDecoded = await decodeDshSessionFile({ file: linearBody.applied[0]!.file, generation: DSH_SYNC_WRITE_GENERATION, compressed: true });
+    expect(JSON.stringify(linearDecoded.events)).toContain("离路径");
+  });
+
+  it("校验器门禁：畸形输入（同一 assistant 消息重复广告同一 callId）→ 该项 skipped 带首条违规，绝不写坏文件", async () => {
+    const home = await fixtureHome("dsh-sync-export-validate-gate-");
+    const base = DEMO_CREATED_AT;
+    // dsh 关系校验拒收这种流（assistant/message repeats advertised tool call）：写盘前结构校验先拦下来
+    const messages = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "跑" }], createdAt: iso(base) },
+      {
+        id: "a1",
+        role: "assistant",
+        content: [
+          { type: "tool_call", id: "call-1", name: "bash", input: { command: "echo hi" } },
+          { type: "tool_call", id: "call-1", name: "bash", input: { command: "echo hi" } },
+        ],
+        createdAt: iso(base + 1000),
+      },
+    ];
+    const fake = makeFakeApi({ sessions: { "owc-broken": owcSession({ id: "owc-broken", cwd: "/tmp/broken", messages }) } });
+    const body = (await createDshSyncRoutes(fake.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "export", items: [{ owcId: "owc-broken" }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncExportResult;
+
+    expect(body.applied).toEqual([]);
+    expect(body.skipped).toHaveLength(1);
+    expect(body.skipped[0]!.reason).toContain("没有通过 dsh 结构校验");
+    expect(body.skipped[0]!.reason).toContain("重复广告");
+    // 不写盘：映射表也没记（该会话没有任何产物）
+    expect(fake.files.has(DSH_SYNC_MAP_PATH)).toBe(false);
+    expect(body.report).toMatchObject({ appliedCount: 0, skippedCount: 1, mapSaved: false });
+  });
+
+  it("跨回合的迟到结果（回合中断后补写）→ 丢弃迟到块 + 补修复事件，导出照常成功", async () => {
+    const home = await fixtureHome("dsh-sync-export-late-result-");
+    const base = DEMO_CREATED_AT;
+    const messages = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "跑" }], createdAt: iso(base) },
+      { id: "a1", role: "assistant", content: [{ type: "tool_call", id: "call-1", name: "bash", input: { command: "echo hi" } }], createdAt: iso(base + 1000) },
+      { id: "u2", role: "user", content: [{ type: "text", text: "算了" }], createdAt: iso(base + 2000) },
+      {
+        id: "t-late",
+        role: "tool",
+        content: [{ type: "tool_result", toolCallId: "call-1", content: "The run was interrupted before this tool finished; no result was produced.", isError: true }],
+        createdAt: iso(base + 3000),
+      },
+    ];
+    const fake = makeFakeApi({ sessions: { "owc-late": owcSession({ id: "owc-late", cwd: "/tmp/late", messages }) } });
+    const body = (await createDshSyncRoutes(fake.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "export", items: [{ owcId: "owc-late" }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncExportResult;
+
+    expect(body.skipped).toEqual([]);
+    const applied = body.applied[0]!;
+    expect(applied.warnings.some((warning) => warning.includes("迟到结果"))).toBe(true);
+    expect(applied.warnings.some((warning) => warning.includes("工具未启动"))).toBe(true);
+    const decoded = await decodeDshSessionFile({ file: applied.file, generation: DSH_SYNC_WRITE_GENERATION, compressed: true });
+    const serialized = JSON.stringify(decoded.events);
+    expect(serialized).not.toContain("no result was produced");
+    expect(serialized).toContain("TOOL_NOT_STARTED");
+    // 两个回合都在，用户消息两条
+    expect(decoded.events.filter((event) => event.type === "user/message")).toHaveLength(2);
+  });
+
   it("含工具调用的会话：assistant/message 排在 tool/call 之前（dsh 生命周期要求）", async () => {
     const home = await fixtureHome("dsh-sync-export-tools-");
     const base = DEMO_CREATED_AT;
@@ -688,7 +966,7 @@ describe("POST /sync/sessions?direction=export", () => {
       { dshHome: home, profile: "web" },
     ))?.body as DshSyncExportResult;
     expect(body.skipped).toEqual([]);
-    const decoded = await decodeDshSessionFile({ file: body.applied[0]!.file, generation: DSH_SYNC_SUPPORTED_GENERATION, compressed: true });
+    const decoded = await decodeDshSessionFile({ file: body.applied[0]!.file, generation: DSH_SYNC_WRITE_GENERATION, compressed: true });
     const types = decoded.events.map((event) => String(event.type));
     const assistantIdx = types.indexOf("assistant/message");
     const callIdx = types.indexOf("tool/call");
@@ -716,7 +994,7 @@ describe("POST /sync/sessions?direction=export", () => {
     expect(body.applied[0]!.warnings).toEqual([]);
     const decoded = await decodeDshSessionFile({
       file: body.applied[0]!.file,
-      generation: DSH_SYNC_SUPPORTED_GENERATION,
+      generation: DSH_SYNC_WRITE_GENERATION,
       compressed: true,
     });
     expect(assistantSourceOf(decoded.events)).toEqual({ kind: "model", provider: "demo", model: "demo-default" });
@@ -737,10 +1015,67 @@ describe("POST /sync/sessions?direction=export", () => {
     expect(fake.selectionCalls).toEqual([undefined]);
     const decoded = await decodeDshSessionFile({
       file: body.applied[0]!.file,
-      generation: DSH_SYNC_SUPPORTED_GENERATION,
+      generation: DSH_SYNC_WRITE_GENERATION,
       compressed: true,
     });
     expect(assistantSourceOf(decoded.events)).toEqual({ kind: "model", provider: "demo", model: "demo-default" });
+  });
+
+  it("导出回放元数据：按 listProfiles 的 interfaceType 写 replayState；无接口信息时不写并告警", async () => {
+    const home = await fixtureHome("dsh-sync-export-replay-");
+    const base = DEMO_CREATED_AT;
+    const messages = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "问" }], createdAt: iso(base) },
+      {
+        id: "a1",
+        role: "assistant",
+        content: [
+          { type: "thinking", text: "想", provider: "gateway", signature: "sig-1" },
+          { type: "text", text: "答" },
+        ],
+        createdAt: iso(base + 1000),
+      },
+    ];
+    const withInterface = makeFakeApi({
+      profiles: [{ id: "gateway", interfaceType: "anthropic-messages", hasApiKey: true }],
+      sessions: { "owc-1": owcSession({ id: "owc-1", cwd: "/tmp/demo", messages }) },
+    });
+    const body = (await createDshSyncRoutes(withInterface.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "export", items: [{ owcId: "owc-1" }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncExportResult;
+
+    expect(body.skipped).toEqual([]);
+    expect(body.applied[0]!.warnings).toEqual([]);
+    const decoded = await decodeDshSessionFile({ file: body.applied[0]!.file, generation: DSH_SYNC_WRITE_GENERATION, compressed: true });
+    expect(assistantSourceOf(decoded.events)).toEqual({
+      kind: "model",
+      provider: "gateway",
+      model: "deepseek-v4-pro",
+      replayState: {
+        response: { kind: "llm-service-lite-anthropic", version: 1 },
+        blocks: [{ type: "reasoning", signature: "sig-1" }, { type: "text" }],
+      },
+    });
+
+    // 没有接口类型信息（配置里没配/读失败）：不写 replayState，但要如实告警
+    const withoutInterface = makeFakeApi({ sessions: { "owc-1": owcSession({ id: "owc-1", cwd: "/tmp/demo", messages }) } });
+    const plain = (await createDshSyncRoutes(withoutInterface.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "export", items: [{ owcId: "owc-1" }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncExportResult;
+    expect(plain.applied[0]!.warnings.some((warning) => warning.includes("signature") && warning.includes("未知"))).toBe(true);
+    const plainDecoded = await decodeDshSessionFile({ file: plain.applied[0]!.file, generation: DSH_SYNC_WRITE_GENERATION, compressed: true });
+    expect(assistantSourceOf(plainDecoded.events).replayState).toBeUndefined();
+
+    const failing = makeFakeApi({ sessions: { "owc-1": owcSession({ id: "owc-1", cwd: "/tmp/demo", messages }) } });
+    failing.api.listProfiles = () => Promise.reject(new Error("profiles down"));
+    const degraded = (await createDshSyncRoutes(failing.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "export", items: [{ owcId: "owc-1" }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncExportResult;
+    expect(degraded.applied).toHaveLength(1);
+    expect(degraded.report.warnings.some((warning) => warning.includes("profiles down"))).toBe(true);
   });
 
   it("model 空 + defaultSelection 给不出该 provider 的模型 → skipped（原因含「模型信息」）且不写盘", async () => {
@@ -792,7 +1127,7 @@ describe("POST /sync/sessions?direction=export", () => {
     expect(applied.skipped).toEqual([]);
     const decoded = await decodeDshSessionFile({
       file: applied.applied[0]!.file,
-      generation: DSH_SYNC_SUPPORTED_GENERATION,
+      generation: DSH_SYNC_WRITE_GENERATION,
       compressed: true,
     });
     expect(assistantSourceOf(decoded.events)).toEqual({ kind: "model", provider: "demo", model: "demo-default" });
@@ -850,7 +1185,7 @@ describe("端到端往返：fixture zstd 会话 import → export", () => {
     const item = exportBody.applied[0]!;
     expect(item.owcId).toBe(owcId);
     expect(item.attachments).toBe(0);
-    const decoded = await decodeDshSessionFile({ file: item.file, generation: DSH_SYNC_SUPPORTED_GENERATION, compressed: true });
+    const decoded = await decodeDshSessionFile({ file: item.file, generation: DSH_SYNC_WRITE_GENERATION, compressed: true });
     expect(decoded.header.id).toBe(item.dshId);
     expect(decoded.header.cwd).toBe("/tmp/demo");
     const types = decoded.events.map((event) => String(event.type));
@@ -867,7 +1202,7 @@ describe("端到端往返：fixture zstd 会话 import → export", () => {
 });
 
 describe("manifest.routes ↔ host 路由表一致性（M3b 扩充）", () => {
-  it("会话路由已声明且键集合与工厂一致；版本 bump 到 0.2.1", () => {
+  it("会话路由已声明且键集合与工厂一致；版本 bump 到 0.3.0", () => {
     const manifest = OFFICIAL_EXTENSIONS.find((item) => item.id === "dsh-sync");
     const declared = (manifest?.routes ?? []).map((route) => `${route.method} ${route.path}`).sort();
     expect(declared).toEqual([
@@ -878,7 +1213,7 @@ describe("manifest.routes ↔ host 路由表一致性（M3b 扩充）", () => {
       "POST /sync/sessions",
     ]);
     expect(declared).toEqual([...createDshSyncRoutes(makeFakeApi().api).keys()].sort());
-    expect(manifest?.version).toBe("0.2.1");
+    expect(manifest?.version).toBe("0.3.0");
     for (const routePath of ["/preview/sessions", "/sync/sessions"]) {
       const route = (manifest?.routes ?? []).find((item) => item.path === routePath);
       expect(route?.timeoutMs).toBe(60_000);
@@ -995,6 +1330,33 @@ describe("server API：sessions.import 结构化入参（经 ExtensionManager �
       .rejects.toThrow(/requires messages to be an array/);
     await expect(dispatch({ id: "7", api: "sessions.import", extensionId: "dsh-sync", params: {} }))
       .rejects.toThrow(/requires non-empty text/);
+  });
+
+  it("sessions.get 的白名单带上 activeLeafId（P1-3：导出方向据此过滤活动路径）", async () => {
+    const { dispatch, store, sessionId } = await buildManager();
+    // 活动叶子 = 最后一条消息（appendMessage 会更新 meta.activeLeafId）
+    const leafId = (await store.get(sessionId))!.messages.at(-1)!.id;
+    const projected = await dispatch({
+      id: "10",
+      api: "sessions.get",
+      extensionId: "dsh-sync",
+      params: { id: sessionId },
+    }) as Record<string, unknown>;
+    expect(projected.activeLeafId).toBe(leafId);
+    // 白名单仍然只放元信息 + messages：内部配置（沙盒/权限/扩展状态）不落出
+    expect(projected.sandbox).toBeUndefined();
+    expect(projected.permissionRules).toBeUndefined();
+    expect(projected.extensionState).toBeUndefined();
+
+    // legacy 线性会话（meta 里没有 activeLeafId）不带该字段：导出侧按「回退整表」处理
+    await store.truncateMessages(sessionId, 0);
+    const legacy = await dispatch({
+      id: "11",
+      api: "sessions.get",
+      extensionId: "dsh-sync",
+      params: { id: sessionId },
+    }) as Record<string, unknown>;
+    expect("activeLeafId" in legacy).toBe(false);
   });
 
   it("text 分支优先：同时给出 text 与 meta 时按现成文本导入（M3a 行为保持）", async () => {

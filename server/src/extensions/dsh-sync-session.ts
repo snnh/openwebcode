@@ -1,5 +1,13 @@
 /**
- * dsh-sync 扩展 M3a/M4a：dsh v3 会话 → owc 会话的纯转换模块（无 IO、无 IPC）。
+ * dsh-sync 扩展 M3a/M4a：dsh v3/v4 会话 → owc 会话的纯转换模块（无 IO、无 IPC）。
+ *
+ * 读形态覆盖两代（读支持 v3/v4；写出仍 v3，见 `dsh-sync-dsh.ts`）：
+ * - v3：`tool/result` 是 `user` 角色 + `source:{kind:'tool',callId}` + 单元素
+ *   `content:[{type:'tool-result',toolCallId,content:[...],isError?}]` 包装；
+ * - v4：`tool/result` 是**一等 tool 角色**消息（`role:'tool'` + `message.toolCallId` +
+ *   `content:[块...]` 直挂 + `message.isError`，无包装）；未知内容块类型被加 `plugin:` 前缀；
+ *   另有 `permission/preset`、`sandbox/mode`、`subagent/descriptor`、`request/context`、
+ *   与 `session-log-<name>/delivery-accepted` 等附加事件 —— 一律按未知事件丢弃 + 计数。
  *
  * M4a 增量：图片块可经注入的 attachment 解析器内联为 `image{mediaType,data}`（含 tool_result 内的
  * 图片进 `media[]`）；不注入解析器时行为与 M3a 完全一致（一律文本占位 + 计数）。
@@ -16,7 +24,8 @@
  * - 压缩：`compaction/summary{summary,shadowedSeqs,shadowedRange}` 与 `compaction/prune{…}`；
  * - `request/header{header:{config:{provider,model,…}}}`、`session/title{title,messageSeqs,source}`；
  * - `reasoning` 的 `signature`/`redacted` **不在块上**，而在 assistant message 的
- *   `source.replayState.blocks[index]`（llm-service-lite 的 Anthropic 回放元数据）——两者都读，
+ *   `source.replayState.blocks[index]`（llm-service-lite 的回放元数据：anthropic-messages 写
+ *   `signature`/`redacted`，openai-responses 把完整 reasoning item JSON 写 `item`）——三者都读，
  *   块上自带时优先用块上的。
  */
 import type { CompactionRecord } from "../context/context-types.js";
@@ -30,7 +39,7 @@ import type {
   ToolResultContent,
 } from "../sessions/types.js";
 
-/** dsh v3 的 surface 事件类型集合（决定"可见历史"的四类事件）。 */
+/** dsh 的 surface 事件类型集合（决定"可见历史"的四类事件；v3/v4 同词表）。 */
 const SURFACE_TYPES: readonly string[] = ["system/message", "user/message", "assistant/message", "tool/result"];
 
 /**
@@ -53,11 +62,11 @@ const NO_SEQ = -1;
 
 /** 转换统计（面板展示用）。 */
 export interface ConversionCounts {
-  /** 转换出的 user 消息数。 */
+  /** 转换出的 user 消息数（含由孤儿 tool_result 降级来的 user 消息）。 */
   user: number;
   /** 转换出的 assistant 消息数。 */
   assistant: number;
-  /** 转换出的 tool 消息数。 */
+  /** 转换出的 tool 消息数（降级成 user 的孤儿结果不计在这里）。 */
   tool: number;
   /** 遇到过的 image 内容块总数（含 tool_result 内的图片）。 */
   images: number;
@@ -122,8 +131,6 @@ interface ConversionAccumulator {
   counts: ConversionCounts;
   /** 事件 time 非法、createdAt 回退会话时间的次数（收敛时聚合成一条警告）。 */
   badTimes: number;
-  /** `tool/call` 事件的 callId → 工具名（孤儿 tool_result 的占位文本用）。 */
-  toolCallNames: Map<string, string>;
   /** 会话 createdAt（事件 time 非法时的兜底，保证确定性）。 */
   fallbackCreatedAt: string;
   /** 是否注入了附件解析器（决定图片降级警告的措辞，也决定 image 块是否可能内联）。 */
@@ -272,7 +279,9 @@ function filePlaceholder(block: Record<string, unknown>): TextContent {
 /** reasoning 块 → thinking 块（signature/redacted 从块上或 replay 元数据取）。 */
 function thinkingOf(block: Record<string, unknown>, ctx: BlockContext): ThinkingContent {
   const replay = asRecord(asArray(ctx.replayBlocks)[ctx.index]);
-  const signature = str(block.signature) ?? str(replay?.signature);
+  // replay 元数据两种协议各有落点：anthropic-messages 写 signature/redacted，
+  // openai-responses 把完整 reasoning item JSON 写在 `item`（owc 侧存 signature，见 types.ts）。
+  const signature = str(block.signature) ?? str(replay?.signature) ?? str(replay?.item);
   const redacted = str(block.redacted) ?? str(replay?.redacted);
   return {
     type: "thinking",
@@ -456,9 +465,10 @@ function replaceRangeOf(value: unknown): { startSeq: number; endSeq: number } | 
 
 /**
  * surface 重建：按事件顺序维护 surface 列表。
- * `surfaceOp === 'append'`（或缺省）追加；`{op:'replace',startSeq,endSeq}` 先移除 seq 落在
- * `[startSeq,endSeq]` 内的已有项，再插入本事件（与上游 payload.ts 的校验语义一致：被替换事件
- * 的 seq 必然早于替换者）。
+ * `surfaceOp === 'append'`（或缺省）追加；`{op:'replace',startSeq,endSeq}` **原位替换** ——
+ * 先移除 seq 落在 `[startSeq,endSeq]` 内的已有项，再把这些项在列表里的**首个下标**处插回本事件
+ * （与上游会话投影的 splice(first, removed.length, seq) 语义一致：被替换的事件必然早于替换者，
+ * 且替换后仍停留在原位置，而不是被挪到末尾）。区间内没有任何项时退化为追加。
  * @returns 最终 surface 项（顺序即转换顺序）。
  */
 function rebuildSurface(events: readonly Record<string, unknown>[], acc: ConversionAccumulator): SurfaceItem[] {
@@ -472,9 +482,18 @@ function rebuildSurface(events: readonly Record<string, unknown>[], acc: Convers
       warn(acc, `seq ${seq} 的 ${type} surfaceOp 不是合法的 replace（需 op/startSeq/endSeq），按追加处理`);
     }
     if (range !== undefined) {
+      // 倒序删除：删完 first 即区间内最小下标（原位插入点）
+      let first: number | undefined;
       for (let index = items.length - 1; index >= 0; index -= 1) {
         const item = items[index]!;
-        if (item.seq >= range.startSeq && item.seq <= range.endSeq) items.splice(index, 1);
+        if (item.seq >= range.startSeq && item.seq <= range.endSeq) {
+          items.splice(index, 1);
+          first = index;
+        }
+      }
+      if (first !== undefined) {
+        items.splice(first, 0, { seq, type, event });
+        continue;
       }
     }
     items.push({ seq, type, event });
@@ -512,30 +531,44 @@ function messageIdOf(payload: Record<string, unknown>, seq: number): string {
   return id !== undefined && id.length > 0 ? id : `${GENERATED_ID_PREFIX}${seq}`;
 }
 
-/** tool/result 消息的 toolCallId：块上优先，其次 message.toolCallId / source.callId。 */
-function toolCallIdOf(message: Record<string, unknown>): string {
-  const direct = str(message.toolCallId) ?? str(asRecord(message.source)?.callId);
-  return direct ?? "";
+/**
+ * tool/result 消息的 toolCallId：`message.toolCallId`（v4 一等 tool 消息）优先，
+ * 其次 `source.callId`（v3 的 `source:{kind:'tool',callId}`），最后 v3 包装块上的 `toolCallId`。
+ */
+function toolCallIdOf(message: Record<string, unknown>, wrapper?: Record<string, unknown>): string {
+  return str(message.toolCallId) ?? str(asRecord(message.source)?.callId) ?? str(wrapper?.toolCallId) ?? "";
+}
+
+/** tool/result 的 isError：message 级（v4）优先，其次 v3 包装块上的 isError。 */
+function isErrorOf(message: Record<string, unknown>, wrapper?: Record<string, unknown>): boolean {
+  if (typeof message.isError === "boolean") return message.isError;
+  return wrapper?.isError === true;
 }
 
 /**
- * `tool/result` 消息 → owc `tool_result` 块。
- * v3 规范形态是 `message.content = [{type:'tool-result', toolCallId, content:[...], isError}]`；
- * 结果块直挂（`content` 即结果内容）时用 message 级 toolCallId/isError 兜底。
+ * `tool/result` 消息 → owc `tool_result` 块（两代形态都吃）：
+ * - v3 包装形态：`message.content = [{type:'tool-result', toolCallId, content:[...], isError}]`；
+ * - v4 一等形态：`role:'tool'` + `message.toolCallId` + `content` 即结果块数组（无包装）+ `message.isError`。
+ * toolCallId / isError 一律按 {@link toolCallIdOf} / {@link isErrorOf} 的优先级取值，
+ * 结果内容按 {@link flattenResultBlocks} 拍平成文本（可读图片进 `media[]`）。
  */
 function convertToolResult(message: Record<string, unknown>, ctx: BlockContext): MessageContent[] {
   const content = asArray(message.content);
   const only = content.length === 1 ? asRecord(content[0]) : undefined;
   if (only !== undefined && str(only.type) === "tool-result") {
     const block = toolResultOf(only, ctx);
-    return [{ ...block, toolCallId: block.toolCallId.length > 0 ? block.toolCallId : toolCallIdOf(message) }];
+    return [{
+      ...block,
+      toolCallId: toolCallIdOf(message, only),
+      isError: isErrorOf(message, only),
+    }];
   }
   const flattened = flattenResultBlocks(content, ctx);
   const result: ToolResultContent = {
     type: "tool_result",
     toolCallId: toolCallIdOf(message),
     content: flattened.text,
-    isError: message.isError === true,
+    isError: isErrorOf(message),
     ...(flattened.media.length === 0 ? {} : { media: flattened.media }),
   };
   return [result];
@@ -576,8 +609,14 @@ function convertSurfaceItem(
 }
 
 /**
- * 工具配对校验：孤儿 tool_result（无对应 tool_call）降级为文本块 + 警告；
+ * 工具配对校验：孤儿 tool_result（无对应 tool_call）**整条消息降级为 user 角色的文本消息** + 警告；
  * 孤儿 tool_call 保留不动（继续对话时模型可感知中断）。
+ *
+ * 为什么角色也要改：owc 的 provider 适配层按角色投递内容——`role:'tool'` 的正文只有在
+ * tool_result 块里才随工具结果通道下发，把 `tool_result` 换成一个 text 块后，该角色在
+ * Anthropic/OpenAI 系端点上会被整条吞掉（模型看不到「这里曾有个工具结果」）。
+ * 降级为 user 文本消息（前缀 `[工具结果 <toolCallId>]`）才能让模型真正看到它。
+ * 计数同步挪位：该消息的 `counts.tool` 减一、`counts.user` 加一（如实反映产物形态）。
  * @returns 处理过的孤儿数。
  */
 function repairToolPairing(messages: ChatMessage[], acc: ConversionAccumulator): number {
@@ -588,27 +627,23 @@ function repairToolPairing(messages: ChatMessage[], acc: ConversionAccumulator):
     }
   }
   let orphans = 0;
-  for (const message of messages) {
-    message.content = message.content.map((block): MessageContent => {
+  for (const [index, message] of messages.entries()) {
+    let messageOrphans = 0;
+    const content = message.content.map((block): MessageContent => {
       if (block.type !== "tool_result" || callIds.has(block.toolCallId)) return block;
-      orphans += 1;
-      const name = acc.toolCallNames.get(block.toolCallId);
-      return { type: "text", text: `[工具结果${name === undefined ? "" : ` ${name}`}] ${block.content}` };
+      messageOrphans += 1;
+      return { type: "text", text: `[工具结果 ${block.toolCallId}] ${block.content}` };
     });
+    if (messageOrphans === 0) continue;
+    orphans += messageOrphans;
+    messages[index] = { ...message, role: "user", content };
+    acc.counts.tool -= 1;
+    acc.counts.user += 1;
   }
-  if (orphans > 0) warn(acc, `${orphans} 个孤儿 tool_result（无对应 tool_call）已降级为文本块`);
+  if (orphans > 0) {
+    warn(acc, `${orphans} 个孤儿 tool_result（无对应 tool_call）已降级为 user 角色的文本消息（前缀 [工具结果 <toolCallId>]），模型可见`);
+  }
   return orphans;
-}
-
-/** 从 `tool/call` 事件收集 callId → 工具名（孤儿 tool_result 占位文本用）。 */
-function collectToolCallNames(events: readonly Record<string, unknown>[], acc: ConversionAccumulator): void {
-  for (const event of events) {
-    if (str(event.type) !== "tool/call") continue;
-    const data = dataOf(event);
-    const callId = str(data.callId);
-    const name = str(data.name);
-    if (callId !== undefined && name !== undefined) acc.toolCallNames.set(callId, name);
-  }
 }
 
 /** 消息里首个非空文本块（`session/title` 的 messageSeqs 解析用）。 */
@@ -650,19 +685,26 @@ function shadowedSeqsOf(data: Record<string, unknown>): number[] {
   return rangeSeqsOf(data);
 }
 
+/** `shadowedRange` 的闭区间（`{start,end}`；非法返回 undefined）。 */
+function shadowedRangeOf(data: Record<string, unknown>): { start: number; end: number } | undefined {
+  const range = asRecord(data.shadowedRange);
+  const start = range?.start;
+  const end = range?.end;
+  if (typeof start !== "number" || typeof end !== "number" || !Number.isInteger(start) || !Number.isInteger(end) || end < start) {
+    return undefined;
+  }
+  return { start, end };
+}
+
 /**
  * `shadowedRange` 展开为闭区间 seq 列表。
  * 闭区间口径与 surface replace（`[startSeq,endSeq]` 含两端）一致：压缩遮蔽的正是这段可见历史。
  */
 function rangeSeqsOf(data: Record<string, unknown>): number[] {
-  const range = asRecord(data.shadowedRange);
-  const start = range?.start;
-  const end = range?.end;
-  if (typeof start !== "number" || typeof end !== "number" || !Number.isInteger(start) || !Number.isInteger(end) || end < start) {
-    return [];
-  }
+  const range = shadowedRangeOf(data);
+  if (range === undefined) return [];
   const seqs: number[] = [];
-  for (let seq = start; seq <= end; seq += 1) seqs.push(seq);
+  for (let seq = range.start; seq <= range.end; seq += 1) seqs.push(seq);
   return seqs;
 }
 
@@ -696,9 +738,60 @@ function warnPrunes(acc: ConversionAccumulator): void {
 }
 
 /**
- * 压缩映射（修正点 1、2 之外的正路）：取**最后一条** `compaction/summary`，
- * 用其 `shadowedSeqs`（空则 `shadowedRange`）里 seq 最大的、已转换为消息的 surface 事件作锚点，
- * 产出 `CompactionRecord{mode:'overview'}`。锚点找不到 → 放弃映射 + 警告。
+ * 该 surface 事件是不是压缩 checkpoint 消息：`user/message` 且 `source` 打的是压缩标记。
+ * 两种形态都吃：v4/当前代际 `{kind:'compact-checkpoint', compactionId}`（dsh 的
+ * `compactCheckpointSource`）与旧代际 `{kind:'plugin', plugin:'compact', compactionId}`。
+ */
+function isCompactCheckpointSource(source: Record<string, unknown> | undefined): boolean {
+  if (source === undefined) return false;
+  if (source.kind === "compact-checkpoint") return true;
+  return source.kind === "plugin" && source.plugin === "compact";
+}
+
+/**
+ * 找某条 `compaction/summary` 对应的 checkpoint 消息（= dsh 压缩落地后顶替被遮蔽历史的那条
+ * `user/message`）。命中条件（全部满足）：
+ * 1. 事件的 `source` 是压缩 checkpoint（{@link isCompactCheckpointSource}；`user/message` 的 source
+ *    直接挂在 `data` 上，`data.message.source` 由 {@link payloadOf} 统一取）；
+ * 2. 有 compactionId 时，checkpoint 的 compactionId 必须与 summary 的一致；
+ * 3. `surfaceOp` 是 replace，且 `[startSeq,endSeq]` 覆盖 summary 的 `shadowedRange`；
+ * 4. 该事件确实转换成了消息（在最终 surface 里）。
+ * 命中多条时取最后一条（与 summary「取最后一条」的口径一致）。
+ * @returns 该 checkpoint 转换出的消息定位（id + 下标）；没有命中返回 undefined。
+ */
+function checkpointMessageOf(
+  events: readonly Record<string, unknown>[],
+  data: Record<string, unknown>,
+  seqToMessage: Map<number, { id: string; index: number }>,
+): { id: string; index: number } | undefined {
+  const compactionId = str(data.compactionId);
+  const shadowed = shadowedRangeOf(data);
+  let found: { id: string; index: number } | undefined;
+  for (const event of events) {
+    if (str(event.type) !== "user/message") continue;
+    const source = asRecord(payloadOf(dataOf(event)).source);
+    if (!isCompactCheckpointSource(source)) continue;
+    const checkpointId = str(source?.compactionId);
+    if (compactionId !== undefined && checkpointId !== undefined && checkpointId !== compactionId) continue;
+    const range = replaceRangeOf(event.surfaceOp);
+    if (range === undefined) continue;
+    if (shadowed !== undefined && !(range.startSeq <= shadowed.start && range.endSeq >= shadowed.end)) continue;
+    const mapped = seqToMessage.get(seqOf(event));
+    if (mapped !== undefined) found = mapped;
+  }
+  return found;
+}
+
+/**
+ * 压缩映射（修正点 1、2 之外的正路）：取**最后一条** `compaction/summary`，锚点按两级取：
+ * 1. 首选该 summary 对应的 **checkpoint 消息**（{@link checkpointMessageOf}）——dsh 压缩完成后会在
+ *    summary 之后追加一条 `user/message` checkpoint（`source:{kind:'compact-checkpoint'|plugin/compact}`，
+ *    `surfaceOp.replace` 恰好覆盖 shadowed span），并把被遮蔽的 surface 事件移出最终 surface：
+ *    因此「在 shadowedSeqs 里找已转换消息」必然落空，只有锚到 checkpoint 才能让 owc 视图用摘要
+ *    替换「含 checkpoint 在内」的前缀；
+ * 2. 回退：用 `shadowedSeqs`（空则 `shadowedRange`）里 seq 最大、且已转换为消息的 surface 事件
+ *    （兼容没有 checkpoint 的合成/历史文件）。
+ * 两级都找不到 → 放弃映射 + 警告。summary 文本始终取 `data.summary`。
  */
 function buildLedger(
   events: readonly Record<string, unknown>[],
@@ -712,9 +805,11 @@ function buildLedger(
     warn(acc, `存在 ${summaries.length} 条 compaction/summary：按 owc 单 compacted 语义只采用 seq ${seqOf(last)} 的一条`);
   }
   const data = dataOf(last);
-  const anchor = lastMappedMessage(shadowedSeqsOf(data), seqToMessage) ?? lastMappedMessage(rangeSeqsOf(data), seqToMessage);
+  const anchor = checkpointMessageOf(events, data, seqToMessage)
+    ?? lastMappedMessage(shadowedSeqsOf(data), seqToMessage)
+    ?? lastMappedMessage(rangeSeqsOf(data), seqToMessage);
   if (anchor === undefined) {
-    warn(acc, `compaction/summary（seq ${seqOf(last)}）的 shadowed 区间没有命中任何已转换的 surface 消息，放弃压缩映射`);
+    warn(acc, `compaction/summary（seq ${seqOf(last)}）既找不到对应的 checkpoint 消息，其 shadowed 区间也没有命中任何已转换的 surface 消息，放弃压缩映射`);
     return undefined;
   }
   const summary = flattenBlocks(asArray(data.summary), {
@@ -800,12 +895,13 @@ function toReport(acc: ConversionAccumulator): ConversionReport {
 }
 
 /**
- * dsh v3 会话（`{header, events}`）→ owc 会话片段（meta 片段 + 消息 + 可选账本 + 报告）。
+ * dsh 会话（`{header, events}`；读支持 v3/v4，见 `dsh-sync-dsh.ts`）→ owc 会话片段
+ * （meta 片段 + 消息 + 可选账本 + 报告）。
  *
  * 纯函数：不改写入参，不做任何 IO；同一输入必得同一输出（消息 id 用 `dsh-<seq>` 兜底保证确定性）。
  * 图片字节经 {@link DshConversionOptions.resolveAttachment} 注入（host 侧读附件 + base64），
  * 因此本模块自身保持同步纯变换：不注入解析器时行为与 M3a 完全一致（一律文本占位）。
- * @param header - 会话头行（v3：createdAt 毫秒、cwd 等）。
+ * @param header - 会话头行（v3/v4：createdAt 毫秒、cwd 等）。
  * @param events - 事件行数组（seq 稠密，由 M1 解码层保证）。
  * @param options - 可选注入点（附件解析器）。
  * @returns 转换产物（`meta` 只含会话级字段；`messages` 可直接进 `serializeSession`）。
@@ -815,20 +911,24 @@ export function convertDshSession(
   events: Array<Record<string, unknown>>,
   options?: DshConversionOptions,
 ): DshSessionConversion {
-  const fallbackCreatedAt = isoOfTime(header.createdAt) ?? isoOfTime(events[0]?.time) ?? new Date(0).toISOString();
+  const createdAtOfSession = isoOfTime(header.createdAt) ?? isoOfTime(events[0]?.time);
+  const fallbackCreatedAt = createdAtOfSession ?? new Date(0).toISOString();
   const acc: ConversionAccumulator = {
     dropped: {},
     warnings: [],
     unmapped: {},
     counts: { user: 0, assistant: 0, tool: 0, images: 0, imagesMissing: 0 },
     badTimes: 0,
-    toolCallNames: new Map(),
     fallbackCreatedAt,
     hasResolver: options?.resolveAttachment !== undefined,
     resolveAttachment: options?.resolveAttachment,
   };
+  // 头行与首个事件都没有合法时间时才用 1970-01-01 兜底（时间戳 0 会让会话排在列表最末）；
+  // 这种会话通常意味着文件被截断/外部拼接，必须让用户看见（过去是静默兜底）。
+  if (createdAtOfSession === undefined) {
+    warn(acc, `会话头行（createdAt=${String(header.createdAt)}）与首个事件的 time 都不是合法毫秒时间戳，会话时间回退为 ${fallbackCreatedAt}`);
+  }
 
-  collectToolCallNames(events, acc);
   const surface = rebuildSurface(events, acc);
   classifyEvents(events, new Set(surface.map((item) => item.seq)), acc);
   warnPrunes(acc);

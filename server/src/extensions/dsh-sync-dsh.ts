@@ -34,8 +34,27 @@ export const DSH_SYNC_DEFAULT_DSH_HOME = "~/.dsh";
 /** 默认 profile 名（与 openwebcode 侧 web 会话对齐）。 */
 export const DSH_SYNC_DEFAULT_PROFILE = "web";
 
-/** 支持的会话格式代际（M1a 只解析 v3 会话文件）。 */
-export const DSH_SYNC_SUPPORTED_GENERATION = 3;
+/**
+ * 写出（导出）会话文件所用代际：owc → dsh 仍写 v3。
+ * dsh 打开旧代际文件时按迁移链自动升级到当前代际，因此写 v3 是稳妥的「最大兼容」选择。
+ */
+export const DSH_SYNC_WRITE_GENERATION = 3;
+
+/**
+ * 读（导入/扫描）支持的会话格式代际：v3（dsh 旧代际）与 v4（dsh 当前代际）。
+ * 比读支持更低的代际不能直接解（内容形态/校验规则不同），需先在 dsh 里打开一次升级；
+ * 更高的代际含义未知，明确拒绝（由 dsh 负责迁移链，owc 只保证已核对过的形态）。
+ */
+export const DSH_SYNC_READ_GENERATIONS: readonly number[] = [3, 4];
+
+/**
+ * 该代际是否在「读」支持范围内（{@link DSH_SYNC_READ_GENERATIONS}）。
+ * @param generation - 会话文件代际（0=v0 无 v 段 … 4=v4）。
+ * @returns 支持读即 true。
+ */
+export function isSupportedReadGeneration(generation: number): boolean {
+  return DSH_SYNC_READ_GENERATIONS.includes(generation);
+}
 
 /** 默认 dsh HTTP 端口（{@link probeDshRunning} 的缺省探测目标）。 */
 const DSH_SYNC_DEFAULT_PORT = 3080;
@@ -45,6 +64,9 @@ const LLM_ENTRY_ID = "llm-service-lite";
 
 /** patch.yml 相对 profile 目录的文件名。 */
 const PATCH_FILE_NAME = "cordis.patch.yml";
+
+/** profile 目录名（patch.yml 固定落在 `<dshHome>/profiles/<profile>/` 下）。 */
+const PROFILES_DIR_NAME = "profiles";
 
 /** 会话目录内的规范文件名（无 v 段 = v0）。 */
 const GENERATION_FILE_RE = /^session(?:\.v([1-9][0-9]*))?\.jsonl(\.zstd)?$/;
@@ -94,13 +116,29 @@ export function resolveDshHome(config?: DshSyncConfig): string {
 }
 
 /**
- * 解析 profile 名。
- * @param config - 可选配置（`profile` 缺省 "web"，空串同样回落到缺省）。
- * @returns profile 名。
+ * profile 名白名单：1–64 位的字母/数字/`.`/`_`/`-`。
+ *
+ * 配置来自扩展设置与面板输入（用户可写任意字符串），而 profile 会被拼进路径
+ * （`<dshHome>/profiles/<profile>/cordis.patch.yml`）：限定字符集 + 长度即可排除
+ * 路径分隔符、`..`、绝对路径、通配符等一切逃逸形态。
+ */
+const PROFILE_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * 解析 profile 名（白名单校验，非法值**静默回落**默认 profile）。
+ *
+ * 回落而不抛错：profile 只决定「读哪个 patch.yml」，非法值最合理的处理是按默认 profile 继续
+ * （状态面板仍可用、用户能在设置里改回来）；抛错会让 /status 与预览整页失败，反而更难自愈。
+ * 非法值不额外告警：这是纯函数（无告警通道），且 {@link dshPatchFile} 另有 containment 断言兜底。
+ * `.` / `..` 即使匹配白名单字符集也拒绝（路径穿越形态）。
+ * @param config - 可选配置（`profile` 缺省 "web"，空串/非法值同样回落到缺省）。
+ * @returns 合法 profile 名（恒满足 {@link PROFILE_RE}）。
  */
 export function resolveDshProfile(config?: DshSyncConfig): string {
   const raw = config?.profile;
-  return raw === undefined || raw.length === 0 ? DSH_SYNC_DEFAULT_PROFILE : raw;
+  if (raw === undefined || raw.length === 0) return DSH_SYNC_DEFAULT_PROFILE;
+  if (raw === "." || raw === ".." || !PROFILE_RE.test(raw)) return DSH_SYNC_DEFAULT_PROFILE;
+  return raw;
 }
 
 /**
@@ -136,12 +174,23 @@ export function probeDshRunning(port: number = DSH_SYNC_DEFAULT_PORT, host = "12
 
 /**
  * patch.yml 的绝对路径（不保证存在）。
+ *
+ * containment 断言：解析结果必须落在 `<dshHome>/profiles` 之内，否则抛错。profile 经
+ * {@link resolveDshProfile} 白名单化后不可能逃逸，这里是对「别的调用方直接传 profile」的兜底
+ * （路径拼接 + `..` 是典型的越权写入口，宁可在拼路径时炸掉，也不去写 patch.yml 目录外的文件）。
  * @param dshHome - dsh 数据目录绝对路径。
  * @param profile - profile 名。
  * @returns `<dshHome>/profiles/<profile>/cordis.patch.yml`。
+ * @throws {Error} profile 解析后逃出 `<dshHome>/profiles` 时（路径穿越）。
  */
 export function dshPatchFile(dshHome: string, profile: string): string {
-  return path.join(dshHome, "profiles", profile, PATCH_FILE_NAME);
+  const profilesDir = path.resolve(dshHome, PROFILES_DIR_NAME);
+  const file = path.resolve(profilesDir, profile, PATCH_FILE_NAME);
+  const relative = path.relative(profilesDir, file);
+  if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`dsh profile 非法（解析后逃出 ${profilesDir}）：${profile}`);
+  }
+  return file;
 }
 
 /**
@@ -609,11 +658,11 @@ export interface DshSessionEntry {
   dir: string;
   /** 选中的最高代际文件绝对路径；无任何规范文件时 undefined。 */
   file?: string;
-  /** 0=v0(session.jsonl) … 3=v3。 */
+  /** 0=v0(session.jsonl) … 3=v3、4=v4（dsh 当前代际）。 */
   generation?: number;
   /** 是否为 zstd 容器（`.jsonl.zstd`）。 */
   compressed?: boolean;
-  /** 头行 JSON（v3 才解析；旧代际不解析）。 */
+  /** 头行 JSON（读支持的代际才解析；更低/更高代际不解析）。 */
   header?: SessionLine;
   /** 头行 origin（如 subagent）。 */
   origin?: string;
@@ -674,7 +723,7 @@ async function decodeFirstFrame(file: string, head: Buffer): Promise<Buffer> {
   return zlib.zstdDecompressSync(whole.subarray(head0.start, head0.end));
 }
 
-/** 解析头行（只读文件头，不整份解析；v3 会话扫描用）。 */
+/** 解析头行（只读文件头，不整份解析；读支持的代际扫描用）。 */
 async function readSessionHeader(file: string, compressed: boolean): Promise<SessionLine | undefined> {
   const head = await readHead(file, HEADER_PROBE_BYTES);
   const plain = compressed ? await decodeFirstFrame(file, head) : head;
@@ -721,7 +770,7 @@ export async function scanDshSessions(dshHome: string): Promise<DshSessionEntry[
   return entries;
 }
 
-/** 扫描单个会话目录：选规范文件、v3 补头行；错误记入 `error`（不抛出）。 */
+/** 扫描单个会话目录：选规范文件、读支持的代际补头行；错误记入 `error`（不抛出）。 */
 async function scanSessionDir(projectDir: string, sessionName: string): Promise<DshSessionEntry> {
   const dir = path.join(projectDir, sessionName);
   const entry: DshSessionEntry = { sessionId: decodeSegment(sessionName) ?? sessionName, dir };
@@ -741,9 +790,9 @@ async function scanSessionDir(projectDir: string, sessionName: string): Promise<
   return entry;
 }
 
-/** 支持的代际才解析头行，并把 cwd / origin / parentSession 提到条目上（解析失败记 error）。 */
+/** 读支持的代际才解析头行，并把 cwd / origin / parentSession 提到条目上（解析失败记 error）。 */
 async function fillHeader(entry: DshSessionEntry, picked: PickedFile): Promise<void> {
-  if (picked.generation !== DSH_SYNC_SUPPORTED_GENERATION) return;
+  if (!isSupportedReadGeneration(picked.generation)) return;
   try {
     const header = await readSessionHeader(picked.file, picked.compressed);
     if (header === undefined) return;
@@ -765,16 +814,16 @@ function messageOf(error: unknown): string {
  * 解码选中的会话文件：zstd 逐帧解压拼接或 raw 直读，再按行 JSON.parse。
  *
  * 校验：头行 `type === "session"` 且 `version === generation`；事件 `seq` 从 0 稠密
- * （断档报「格式损坏」）。仅支持 {@link DSH_SYNC_SUPPORTED_GENERATION} 代际。
+ * （断档报「格式损坏」）。读支持 {@link DSH_SYNC_READ_GENERATIONS}（v3/v4）两代形态。
  * @param entry - 扫描结果中的选中文件信息。
  * @returns 头行对象与事件行数组。
  */
 export async function decodeDshSessionFile(
   entry: { file: string; generation: number; compressed: boolean },
 ): Promise<{ header: SessionLine; events: SessionLine[] }> {
-  if (entry.generation !== DSH_SYNC_SUPPORTED_GENERATION) {
+  if (!isSupportedReadGeneration(entry.generation)) {
     throw new Error(
-      `不支持的代际：v${entry.generation}（会话文件 ${entry.file}，仅支持 v${DSH_SYNC_SUPPORTED_GENERATION}）`,
+      `不支持的代际：v${entry.generation}（会话文件 ${entry.file}，读支持 v${DSH_SYNC_READ_GENERATIONS.join("/v")}）`,
     );
   }
   const raw = await readFile(entry.file);

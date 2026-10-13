@@ -235,7 +235,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
   {
     id: "dsh-sync",
     name: "dsh 同步",
-    version: "0.2.1",
+    version: "0.3.0",
     description: "与 dsh（DeepSeek Harness）数据目录双向同步模型配置与会话（手动触发、差异预览、逐项勾选）。",
     apiVersion: "1",
     permissions: ["http:route", "ui:panel", "sessions:read", "sessions:mutate", "providers:read", "providers:mutate"],

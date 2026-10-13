@@ -12,22 +12,26 @@
 import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { activePathMessages } from "../sessions/session-tree.js";
 import type { ChatMessage } from "../sessions/types.js";
 import {
+  DSH_SYNC_READ_GENERATIONS,
   backupFile,
   decodeDshSessionFile,
   dshPatchFile,
+  isSupportedReadGeneration,
   probeDshRunning,
+  readDshAttachment,
   readDshProviders,
   replaceDshProviders,
   resolveDshHome,
   resolveDshProfile,
   scanDshSessions,
   zstdAvailable,
-  DSH_SYNC_SUPPORTED_GENERATION,
   type DshSessionEntry,
   type DshSyncConfig,
 } from "./dsh-sync-dsh.js";
+import { imageMediaType } from "./dsh-sync-image-size.js";
 import {
   DSH_SYNC_MAP_PATH,
   emptySyncMap,
@@ -49,6 +53,7 @@ import {
 import {
   writeDshSession,
   type DshExportLedgerCompacted,
+  type DshProviderInterfaceType,
 } from "./dsh-sync-export.js";
 import {
   diffProviderItems,
@@ -542,11 +547,46 @@ async function syncProviders(
 
 // ── 会话导入（M3b）：清单预览 + 逐项执行 ──────────────────────────────────────
 
-/** 非 v3 会话的不可选原因（与 docs/dsh-sync-plan.md §三 的口径一致）。 */
-const NOT_V3_REASON = "请先在 dsh 中打开一次升级格式";
+/** 读支持代际的下界/上界（由 `DSH_SYNC_READ_GENERATIONS` 推导，避免两处口径漂移）。 */
+const MIN_READ_GENERATION = Math.min(...DSH_SYNC_READ_GENERATIONS);
+const MAX_READ_GENERATION = Math.max(...DSH_SYNC_READ_GENERATIONS);
+
+/**
+ * 读支持范围之外的代际的不可选原因（按代际分文案，与 docs/dsh-sync-plan.md §三 的口径一致）：
+ * 更低代际（v0–v2）请先在 dsh 里打开一次升级格式；更高代际（>v4）含义未知，需升级本扩展。
+ */
+function generationReason(generation: number): string {
+  if (generation < MIN_READ_GENERATION) return `旧代际 v${generation}：请先在 dsh 中打开一次升级格式`;
+  if (generation > MAX_READ_GENERATION) return `dsh 代际 v${generation} 暂不支持：请升级 dsh-sync 扩展`;
+  // 读支持区间内但不在名单里（名单若非连续）：同样按「升级扩展」提示，绝不静默放行
+  return `代际 v${generation} 不在读支持的 v${DSH_SYNC_READ_GENERATIONS.join("/v")} 内：请升级 dsh-sync 扩展`;
+}
 
 /** zstd 能力缺失（旧版 Node）时压缩会话的不可选原因。 */
 const ZSTD_REASON = "需要 Node ≥22.15";
+
+/** 子代理嵌套导出的层级上限（超过只告警不递归，防畸形数据的自引用/超深嵌套）。 */
+const SUBAGENT_MAX_DEPTH = 5;
+
+/**
+ * dsh 会话里的附件解析器（导入方向的图片内联点，M4a）。
+ *
+ * 生产路径必须注入：`convertDshSession` 是纯函数（不碰文件系统），图片字节只能由 host 读出来
+ * 再 base64 内联；不注入时每张图都退化为文本占位（模型看不到图，且用户拿不到任何提示之外的补偿）。
+ * 读不到字节或字节不是已知图片格式（PNG/JPEG/WebP/GIF）时返回 undefined——由转换层按未命中处理
+ * （文本占位 + 计数 + 警告），不在这里编造 mediaType。
+ * @param dshHome - dsh 数据目录绝对路径（附件在 `<dshHome>/attachments/v1/objects/<前2位>/<sha256>`）。
+ * @returns 同步解析器（`convertDshSession` 是同步变换，注入方必须同步返回）。
+ */
+function dshAttachmentResolver(dshHome: string): (attachmentId: string) => { mediaType: string; data: string } | undefined {
+  return (attachmentId) => {
+    const bytes = readDshAttachment(dshHome, attachmentId);
+    if (bytes === undefined) return undefined;
+    const mediaType = imageMediaType(bytes);
+    if (mediaType === undefined) return undefined;
+    return { mediaType, data: bytes.toString("base64") };
+  };
+}
 
 /**
  * 会话同步方向：import = dsh → owc（M3b）；export = owc → dsh（M4c）。
@@ -561,9 +601,9 @@ export interface DshSyncSessionPreviewItem {
   cwd?: string;
   /** 头行 createdAt（毫秒 → ISO）。 */
   createdAt?: string;
-  /** 代际（0=v0 … 3=v3）。 */
+  /** 代际（0=v0 … 3=v3、4=v4）。 */
   generation?: number;
-  /** 格式是否可用（v3 + 未损坏 + zstd 能力足够）。 */
+  /** 格式是否可用（代际在读支持范围内 + 未损坏 + zstd 能力足够）。 */
   supported: boolean;
   /** 子代理会话的 origin（如 `subagent`）。 */
   origin?: string;
@@ -729,7 +769,8 @@ function isoOfMs(value: unknown): string | undefined {
 /**
  * 判断一个扫描条目的可用性（不可用时给出面板文案）。
  *
- * 判定顺序：没有规范会话文件 → 非 v3（引导去 dsh 升级）→ 压缩会话但缺 zstd 能力 →
+ * 判定顺序：没有规范会话文件 → 代际不在读支持范围（低代际引导去 dsh 升级 / 高代际提示升级本扩展）
+ * → 压缩会话但缺 zstd 能力 →
  * 头行/目录读取报错（文件损坏）。zstd 判定放在 error 之前：旧版 Node 下压缩会话的头行探测
  * 必然失败，`error` 是「缺能力」的后果而非文件问题，报「升级 Node」才可行动。
  */
@@ -737,7 +778,7 @@ function sessionSelectability(entry: DshSessionEntry): { supported: boolean; rea
   if (entry.file === undefined || entry.generation === undefined) {
     return { supported: false, reason: "会话目录内没有可识别的会话文件（session*.jsonl[.zstd]）" };
   }
-  if (entry.generation !== DSH_SYNC_SUPPORTED_GENERATION) return { supported: false, reason: NOT_V3_REASON };
+  if (!isSupportedReadGeneration(entry.generation)) return { supported: false, reason: generationReason(entry.generation) };
   if (entry.compressed === true && !zstdAvailable()) return { supported: false, reason: ZSTD_REASON };
   if (entry.error !== undefined) return { supported: false, reason: `文件损坏：${entry.error}` };
   return { supported: true };
@@ -896,6 +937,26 @@ function exportCompacted(ledger: Record<string, unknown>): DshExportLedgerCompac
 }
 
 /**
+ * owc 脱敏 profile 列表（`providers.listProfiles`）→ `provider id → interfaceType` 索引。
+ *
+ * 导出方向用它判断「会话 provider 的端点协议承载哪种 replay 元数据」（见 `dsh-sync-export.ts` 的
+ * `replayStateFor`）。缺 id / 接口类型不在已知枚举里的条目跳过（未知协议按「不承载」处理）。
+ * @param profiles - 脱敏 profile 列表。
+ * @returns 索引（可能为空对象：没有配置或都没给 interfaceType）。
+ */
+function providerInterfaceIndex(profiles: Array<Record<string, unknown>>): Record<string, DshProviderInterfaceType> {
+  const index: Record<string, DshProviderInterfaceType> = {};
+  for (const profile of profiles) {
+    const id = typeof profile.id === "string" ? profile.id : "";
+    const interfaceType = profile.interfaceType;
+    if (id.length === 0) continue;
+    if (interfaceType !== "anthropic-messages" && interfaceType !== "openai-responses" && interfaceType !== "openai-chat-completions") continue;
+    index[id] = interfaceType;
+  }
+  return index;
+}
+
+/**
  * 导出前的模型归属补全（fill-or-skip）。
  *
  * dsh v4 的 core session 校验要求 `assistant/message.data.message.source` 的 provider/model
@@ -937,13 +998,19 @@ async function resolveExportAttribution(
 }
 
 /**
- * 导出方向：把父会话里的子代理转录逐个写成 dsh 子会话目录（M5a）。
+ * 导出方向：把父会话里的子代理转录逐层写成 dsh 子会话目录（M5a + 嵌套子代理）。
  *
- * 转录 id 来自父会话消息里所有 tool_result 块的 `subagentTaskIds`（去重、保持顺序）；
+ * 转录 id 来自消息里所有 tool_result 块的 `subagentTaskIds`（去重、保持顺序）；
  * 每个 id 经 `sessions.getSubagent` 读 `<sessionDir>/subagents/<taskId>.json`：
  * 读到就 `writeDshSession` 写一个 `origin:'subagent'` 的子会话（cwd 与父会话相同、
  * createdAt 取转录 startedAt、provider/model 沿用父会话**补全后**的归属），读不到/写失败只记 `failed` + warning，
  * 绝不影响父会话本身的导出。
+ *
+ * 递归：子代理自己也可以再起子代理（子转录的 tool_result 同样带 `subagentTaskIds`），
+ * 因此把刚写出的子会话 dsh id 当作下一层的 `parentSession` 继续导出，`delegationDepth` 逐层 +1；
+ * 层级上限 {@link SUBAGENT_MAX_DEPTH}（超过时只记一条 warning 列出未导出的层级，不递归下去——
+ * 畸形数据里的自引用/深层嵌套不该把导出拖成无限循环）。所有层级共用同一个 `failed` 列表（都带 taskId），
+ * 单层失败只影响该层。
  * @returns 成功的 `{taskId, dshId}` 列表与失败原因列表（都由调用方写进 applied 项与报告）。
  */
 async function exportSubagentSessions(input: {
@@ -952,10 +1019,15 @@ async function exportSubagentSessions(input: {
   cwd: string;
   owcId: string;
   parentDshId: string;
-  messages: ChatMessage[];
+  messages: readonly ChatMessage[];
   warnings: string[];
   meta: Record<string, unknown>;
+  /** 当前层级（1 = 直接子会话）。 */
+  depth?: number;
+  /** 会话 provider 的接口类型映射（逐层传给 writeDshSession，子会话的 replay 元数据同样按协议写回）。 */
+  providerInterfaces?: Record<string, DshProviderInterfaceType>;
 }): Promise<{ subagents: Array<{ taskId: string; dshId: string }>; failed: Array<{ taskId: string; reason: string }> }> {
+  const depth = input.depth ?? 1;
   const subagents: Array<{ taskId: string; dshId: string }> = [];
   const failed: Array<{ taskId: string; reason: string }> = [];
   for (const taskId of transcriptTaskIdsOf(input.messages)) {
@@ -972,13 +1044,30 @@ async function exportSubagentSessions(input: {
           ...(transcript.startedAt === undefined ? {} : { createdAt: transcript.startedAt }),
         },
         messages: transcript.messages,
+        ...(input.providerInterfaces === undefined ? {} : { providerInterfaces: input.providerInterfaces }),
         subagent: {
           parentSession: input.parentDshId,
+          delegationDepth: depth,
           ...(transcript.agentPreset === undefined ? {} : { agentPreset: transcript.agentPreset }),
         },
       });
       for (const warning of child.warnings) input.warnings.push(`${input.owcId} 的子代理 ${taskId}：${warning}`);
       subagents.push({ taskId, dshId: child.sessionId });
+      // 递归下一层：子转录里的转录挂到刚写出的子会话下（delegationDepth 递增）
+      const nestedTaskIds = transcriptTaskIdsOf(transcript.messages);
+      if (nestedTaskIds.length === 0) continue;
+      if (depth >= SUBAGENT_MAX_DEPTH) {
+        input.warnings.push(`${input.owcId}：子代理嵌套超过 ${SUBAGENT_MAX_DEPTH} 层，第 ${depth + 1} 层的转录未导出（${nestedTaskIds.join("、")}）`);
+        continue;
+      }
+      const nested = await exportSubagentSessions({
+        ...input,
+        parentDshId: child.sessionId,
+        messages: transcript.messages,
+        depth: depth + 1,
+      });
+      subagents.push(...nested.subagents);
+      failed.push(...nested.failed);
     } catch (error: unknown) {
       const reason = error instanceof Error ? error.message : String(error);
       failed.push({ taskId, reason });
@@ -996,6 +1085,8 @@ async function exportSubagentSessions(input: {
  * 写盘只**新增**目录（`writeDshSession` 拒绝已存在目录），因此重复导出 = dsh 侧再生成一份新会话。
  * 会话的 provider/model 在写盘前经 {@link resolveExportAttribution} 补全（dsh v4 的 core session
  * 校验要求 assistant 消息的模型归属非空）：补不出来即该项 skipped，绝不写出空归属的坏会话。
+ * 导出的消息历史只取**活动路径**（{@link activePathMessages}）：`sessions.get` 给的是全量消息表，
+ * 分叉/重试留下的离路径消息不导出（否则 dsh 会话里会混入「用户没发生过的对话」）。
  * body：`{direction:"export", items:[{owcId}]}`。
  */
 async function syncSessionsExport(
@@ -1013,8 +1104,10 @@ async function syncSessionsExport(
     `映射表写在扩展私有 storage 的 ${DSH_SYNC_MAP_PATH}（上限 1000 条，按最近同步时间 LRU 裁剪）。`,
     "会话里 tool_result 的 subagentTaskIds 指向的子代理转录会一并导出为 dsh 子会话（origin:'subagent'、parentSession 指回本次导出的父会话）；转录缺失只记警告，不影响父会话。",
     "dsh 当前代际要求 assistant 消息的模型归属非空：导出前按会话 provider/model 补全（缺 model 取该服务商目录默认模型、缺 provider 取 owc 当前默认），补不出来的会话带原因跳过。",
+    "导出只取会话的**活动路径**（消息树当前叶子回溯的链）：分叉/重试留下的离路径消息不会写进 dsh 会话。",
   ];
   if (dshRunning) notes.push("检测到 dsh 正在运行：导出只新增会话目录，dsh 刷新会话列表后即可见。");
+  notes.push("assistant 消息的 thinking 签名按该会话 provider 的接口协议写回 dsh 的 source.replayState（仅 anthropic-messages / openai-responses 承载；其余协议不写并逐条告警）；tool 结果里 read_media 之类的图片一并导出为附件。");
 
   /** 组装报告（放在各处 return 之前，避免漏字段）。 */
   const finish = (mapSaved: boolean): DshSyncExportResult => ({
@@ -1043,6 +1136,12 @@ async function syncSessionsExport(
     for (const raw of rawItems) skipped.push({ owcId: exportItemOf(raw)?.owcId ?? "", reason: "未检测到 dsh 数据目录" });
     return finish(false);
   }
+
+  // 会话 provider 的接口类型索引（replay 元数据能否写回的判据）：读一次脱敏配置即可。
+  // 读失败只降级为「没有接口信息」（不写 replayState + 逐条告警），不阻断导出。
+  const profiles = await tryServerCall(() => api.listProfiles());
+  if (profiles.error !== undefined) warnings.push(`读取 owc 模型服务商配置失败（thinking 回放元数据不导出）：${profiles.error}`);
+  const providerInterfaces = providerInterfaceIndex(profiles.value ?? []);
 
   for (const raw of rawItems) {
     const item = exportItemOf(raw);
@@ -1073,7 +1172,13 @@ async function syncSessionsExport(
       const exportMeta: Record<string, unknown> = { ...meta, provider: attribution.provider, model: attribution.model };
       const ledger = await api.getLedger(owcId);
       const compacted = exportCompacted(ledger);
-      const messages = Array.isArray(meta.messages) ? meta.messages as ChatMessage[] : [];
+      // owc 会话是**消息树**：`sessions.get` 返回全量消息表，分叉/重试/checkout 会在里面留下
+      // 离路径消息（真实会话里很常见）。导出必须只取活动路径——与仓内其它消费方同一口径
+      // （activePathMessages），否则 dsh 会话会混入「用户没发生过的对话」。
+      // activeLeafId 缺失（legacy 线性会话）或悬挂时 activePathMessages 回退整表（保持旧行为）。
+      const rawMessages = Array.isArray(meta.messages) ? meta.messages as ChatMessage[] : [];
+      const activeLeafId = typeof meta.activeLeafId === "string" && meta.activeLeafId.length > 0 ? meta.activeLeafId : undefined;
+      const messages = activePathMessages(rawMessages, activeLeafId);
       const result = await writeDshSession({
         dshHome,
         cwd,
@@ -1084,13 +1189,25 @@ async function syncSessionsExport(
           model: attribution.model,
         },
         messages,
+        providerInterfaces,
         ...(compacted === undefined ? {} : { ledger: { compacted } }),
       });
       for (const warning of result.warnings) warnings.push(`${owcId}：${warning}`);
       const title = typeof meta.title === "string" && meta.title.length > 0 ? meta.title : "导出的会话";
       // M5a：父会话里的每个转录（tool_result 的 subagentTaskIds）写成一个 dsh 子会话目录
-      //（origin:'subagent' + parentSession = 本次父会话的新 dsh id + delegationDepth:1）。
-      const subagents = await exportSubagentSessions({ api, dshHome, cwd, owcId, parentDshId: result.sessionId, messages, warnings, meta: exportMeta });
+      //（origin:'subagent' + parentSession = 本次父会话的新 dsh id + delegationDepth:1），
+      // 子代理自己再起子代理时递归导出（逐层 +1，上限 SUBAGENT_MAX_DEPTH）。
+      const subagents = await exportSubagentSessions({
+        api,
+        dshHome,
+        cwd,
+        owcId,
+        parentDshId: result.sessionId,
+        messages,
+        warnings,
+        meta: exportMeta,
+        providerInterfaces,
+      });
       map = recordSync(map, {
         dshId: result.sessionId,
         owcId,
@@ -1134,7 +1251,7 @@ async function syncSessionsExport(
  * - export：逐项「getSession → getLedger → 写出 dsh v3 文件 → 记录映射」（见 {@link syncSessionsExport}）。
  *
  * import 逐项 try/catch：单项失败只进 `skipped`（带原因），不影响同批其它项——一批里可能既有能导入的
- * v3 会话，也有旧代际/损坏/缺 cwd 的项。执行完统一落一次映射表（单次写盘；写失败只告警，导入本身已成功）。
+ * v3/v4 会话，也有旧代际/损坏/缺 cwd 的项。执行完统一落一次映射表（单次写盘；写失败只告警，导入本身已成功）。
  * body：import `{direction:"import", items:[{dshId, cwdOverride?}], onConflict?:"overwrite"|"new"}`；
  * export `{direction:"export", items:[{owcId}]}`。
  */
@@ -1191,8 +1308,9 @@ async function syncSessions(
 
   const [entries, mapState] = await Promise.all([scanDshSessions(dshHome), loadMapLenient(api)]);
   if (mapState.error !== undefined) warnings.push(`读取会话映射表失败（按未同步处理）：${mapState.error}`);
+  const resolveAttachment = dshAttachmentResolver(dshHome);
   const bySessionId = new Map(entries.map((entry) => [entry.sessionId, entry]));
-  // M5a：子代理会话索引（parentSession → 子会话条目），只收 supported 的 v3
+  // M5a：子代理会话索引（parentSession → 子会话条目），只收 supported 的读支持代际（v3/v4）
   // （旧代际/损坏/缺 zstd 能力的子会话不可解码，进不了嵌套映射，仍可按独立会话清单导入）。
   const childrenByParent = new Map<string, DshSessionEntry[]>();
   for (const entry of entries) {
@@ -1227,7 +1345,8 @@ async function syncSessions(
         generation: entry.generation,
         compressed: entry.compressed,
       });
-      const conversion = convertDshSession(header, events);
+      // 图片内联：注入附件解析器（父会话与子会话共用同一个实例）
+      const conversion = convertDshSession(header, events, { resolveAttachment });
       const cwd = item.cwdOverride ?? conversion.meta.cwd;
       if (cwd === undefined || cwd.length === 0) {
         skipped.push({ dshId, reason: "会话没有 cwd 且未提供 cwdOverride：请先为该会话选择目标目录" });
@@ -1238,6 +1357,7 @@ async function syncSessions(
       const nesting = await nestSubagentSessions({
         parentEvents: events,
         children: childrenByParent.get(dshId) ?? [],
+        resolveAttachment,
       });
       const itemWarnings = [...conversion.report.warnings, ...nesting.warnings];
       for (const warning of nesting.warnings) warnings.push(`${dshId}：${warning}`);
@@ -1325,13 +1445,38 @@ async function syncSessions(
 }
 
 /**
+ * 执行型同步的串行化队列（模块级 promise 链）。
+ *
+ * 动机：两个执行路由都是典型的**读-改-写**——`POST /sync/providers` 读 patch.yml → 合并勾选项 →
+ * 覆盖写回；`POST /sync/sessions` 读 map.json → 逐项追写映射 → 覆盖写回。面板允许连点（或两个方向
+ * 各点一次），并发进入时两次执行的「读」会拿到同一份旧内容，后写的把先写的整段覆盖掉（丢更新）。
+ * 串行化让它们排队（前一个失败不阻断后续：错误由各自调用方处理，链上只消化结果），
+ * 代价是第二次执行要等前一次落盘完成——手动同步场景下这正是期望行为。
+ * 只包执行路由：`GET /status`、`GET /preview/*` 是纯读，不参与排队。
+ */
+let syncChain: Promise<unknown> = Promise.resolve();
+
+/**
+ * 把任务排到同步队列尾部（前一个失败不阻断后续）。
+ * @param task - 待执行的同步任务（真正的工作体）。
+ * @returns 该任务自身的执行结果（错误照常抛给调用方）。
+ */
+function runExclusive<T>(task: () => Promise<T>): Promise<T> {
+  const run = syncChain.then(() => task());
+  // 链上只保留「已消化失败」的引用：某个任务失败不该让队列卡死或让后续任务拿到 rejection。
+  syncChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/**
  * dsh-sync 的私有路由表（键为 `METHOD /path`，与 manifest.routes 一一对应）。
  *
  * - `GET /status`：环境探测，10s 超时（含 750ms 端口探测余量）；
  * - `GET /preview/providers`：模型配置差异预览（direction=import|export，30s）；
- * - `POST /sync/providers`：执行勾选集合（含备份与 patch.yml 改写，60s）；
+ * - `POST /sync/providers`：执行勾选集合（含备份与 patch.yml 改写，60s；经 {@link runExclusive} 排队）；
  * - `GET /preview/sessions`：会话清单 + 映射表 join（import 扫描 dsh 目录 / export 读 owc 清单，60s）；
- * - `POST /sync/sessions`：逐会话导入（import）或导出（export；含大会话解码/编码，60s）。
+ * - `POST /sync/sessions`：逐会话导入（import）或导出（export；含大会话解码/编码，60s；同样经
+ *   {@link runExclusive} 排队）。
  * @param api - server 侧能力（生产由 extension-host-process 经 callApi 注入）。
  * @returns 路由表。
  */
@@ -1339,9 +1484,9 @@ export function createDshSyncRoutes(api: DshSyncServerApi): Map<string, DshSyncR
   return new Map<string, DshSyncRouteHandler>([
     ["GET /status", async (_request, config) => ({ status: 200, body: await getDshSyncStatus(config) })],
     ["GET /preview/providers", async (request, config) => ({ status: 200, body: await previewProviders(request, config, api) })],
-    ["POST /sync/providers", async (request, config) => ({ status: 200, body: await syncProviders(request, config, api) })],
+    ["POST /sync/providers", async (request, config) => ({ status: 200, body: await runExclusive(() => syncProviders(request, config, api)) })],
     ["GET /preview/sessions", async (request, config) => ({ status: 200, body: await previewSessions(request, config, api) })],
-    ["POST /sync/sessions", async (request, config) => ({ status: 200, body: await syncSessions(request, config, api) })],
+    ["POST /sync/sessions", async (request, config) => ({ status: 200, body: await runExclusive(() => syncSessions(request, config, api)) })],
   ]);
 }
 

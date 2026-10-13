@@ -14,14 +14,14 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  DSH_SYNC_SUPPORTED_GENERATION,
+  DSH_SYNC_WRITE_GENERATION,
   decodeDshSessionFile,
   dshAttachmentObjectPath,
   dshSessionDir,
   readDshAttachment,
   writeDshAttachment,
 } from "../src/extensions/dsh-sync-dsh.js";
-import { buildDshSessionEvents, writeDshSession, type DshExportBuild, type DshExportInput } from "../src/extensions/dsh-sync-export.js";
+import { buildDshSessionEvents, validateDshEvents, writeDshSession, type DshExportBuild, type DshExportInput } from "../src/extensions/dsh-sync-export.js";
 import { imageMediaType, imageSize } from "../src/extensions/dsh-sync-image-size.js";
 import { convertDshSession } from "../src/extensions/dsh-sync-session.js";
 import type { ChatMessage } from "../src/sessions/types.js";
@@ -224,7 +224,7 @@ describe("buildDshSessionEvents：事件序列与 surfaceOp", () => {
     const build = buildDshSessionEvents(exportInput(await tempRoot("owc-m4a-"), "/tmp/owc-m4a-cwd"), "session-fixed");
     expect(build.header).toEqual({
       type: "session",
-      version: DSH_SYNC_SUPPORTED_GENERATION,
+      version: DSH_SYNC_WRITE_GENERATION,
       id: "session-fixed",
       createdAt: Date.parse("2026-10-11T00:00:00.000Z"),
       isSeeded: false,
@@ -386,32 +386,179 @@ describe("buildDshSessionEvents：图片附件化", () => {
     expect(build.warnings.some((warning) => warning.includes("字节无法解析"))).toBe(true);
   });
 
-  it("tool_result.media[] 里的图片在既有 wire 投影里不产生 image 块（如实记录该缺口）", async () => {
-    // 既有投影 `session-events.ts::toDshBlocks` 的 tool_result 分支只取 `content` 文本，
-    // 不投影 `ToolResultContent.media`，因此导出侧没有 image 块可附件化。
+  /** 一条工具链（assistant 广告 + tool 结果带 media[]），用于 media 导出用例。 */
+  function mediaMessages(media: unknown[], where = "见图"): ChatMessage[] {
+    return [
+      { id: "u1", role: "user", createdAt: "2026-10-10T23:59:59.000Z", content: [{ type: "text", text: "看这张图" }] },
+      {
+        id: "a1",
+        role: "assistant",
+        createdAt: "2026-10-11T00:00:00.000Z",
+        content: [{ type: "tool_call", id: "c1", name: "read_media", input: {} }],
+      },
+      {
+        id: "t1",
+        role: "tool",
+        createdAt: "2026-10-11T00:00:01.000Z",
+        content: [{ type: "tool_result", toolCallId: "c1", content: where, isError: false, media }],
+      },
+    ] as ChatMessage[];
+  }
+
+  it("tool_result.media[] 的图片 → 补进包装块 content 的 image{attachment}（既有投影不产出该块）", async () => {
+    // 既有投影 `session-events.ts::toDshBlocks` 的 tool_result 分支只取 `content` 文本、不投影 media，
+    // 因此导出侧自己在包装块的 content 尾部补 image 块（dsh v3 的 tool-result 子块允许 image）。
+    // （工具结果必须有先行广告的 tool_call，否则会被导出前的孤儿结果清洗丢掉——见下方「正确性门」用例。）
     const input = exportInput(await tempRoot("owc-m4a-"), "/tmp/owc-m4a-cwd", {
-      messages: [
+      messages: mediaMessages([{ type: "image", mediaType: "image/png", data: PNG_1X1.toString("base64") }]),
+    });
+    const build = buildDshSessionEvents(input, "s");
+    expect(build.attachmentWrites).toHaveLength(1);
+    const expectedId = createHash("sha256").update(PNG_1X1).digest("hex");
+    expect(build.attachmentWrites[0]!.bytes.equals(PNG_1X1)).toBe(true);
+    const toolEvent = build.events.find((event) => event.type === "tool/result");
+    const content = (toolEvent!.data as { message: { content: Array<Record<string, unknown>> } }).message.content;
+    expect(content[0]).toEqual({
+      type: "tool-result",
+      toolCallId: "c1",
+      content: [
+        { type: "text", text: "见图" },
         {
-          id: "t1",
-          role: "tool",
-          createdAt: "2026-10-11T00:00:00.000Z",
-          content: [
-            {
-              type: "tool_result",
-              toolCallId: "c1",
-              content: "见图",
-              isError: false,
-              media: [{ type: "image", mediaType: "image/png", data: PNG_1X1.toString("base64") }],
-            },
-          ],
+          type: "image",
+          attachment: { attachmentId: expectedId, mediaType: "image/png", bytes: PNG_1X1.byteLength, width: 1, height: 1 },
         },
       ],
     });
+    expect(build.warnings).toEqual([]);
+  });
+
+  it("tool_result.media[] 不可读（ref 未内联 / 非图片）与视频：记警告且不补块", async () => {
+    const refOnly = buildDshSessionEvents(exportInput(await tempRoot("owc-m4a-"), "/tmp/owc-m4a-cwd", {
+      messages: mediaMessages([{ type: "image", mediaType: "image/png", ref: "uploads/a.png" }]),
+    }), "s");
+    expect(refOnly.attachmentWrites).toEqual([]);
+    expect(refOnly.warnings.some((warning) => warning.includes("tool_result.media[]") && warning.includes("仅有落盘引用"))).toBe(true);
+
+    const withVideo = buildDshSessionEvents(exportInput(await tempRoot("owc-m4a-"), "/tmp/owc-m4a-cwd", {
+      messages: mediaMessages([
+        { type: "video", mediaType: "video/mp4", data: "AAAA" },
+        { type: "image", mediaType: "image/png", data: PNG_1X1.toString("base64") },
+      ]),
+    }), "s");
+    // 视频只告警跳过，图片照常补入（顺序按 media 原序过滤掉视频）
+    expect(withVideo.warnings.some((warning) => warning.includes("是视频（video/mp4）"))).toBe(true);
+    const toolEvent = withVideo.events.find((event) => event.type === "tool/result");
+    const content = (toolEvent!.data as { message: { content: Array<{ content: Array<Record<string, unknown>> }> } }).message.content;
+    expect(content[0]!.content.map((block) => block.type)).toEqual(["text", "image"]);
+  });
+});
+
+describe("buildDshSessionEvents：assistant 回放元数据（thinking signature/redacted → source.replayState）", () => {
+  /** 一条 assistant 消息（thinking + text + tool_call）+ 其工具结果，构成可导出的完整工具链。 */
+  function replayMessages(thinking: { text: string; provider: string; signature?: string; redacted?: string }, textExtra: Record<string, unknown> = {}): ChatMessage[] {
+    return [
+      { id: "u1", role: "user", createdAt: "2026-10-11T00:00:00.000Z", content: [{ type: "text", text: "问" }] },
+      {
+        id: "a1",
+        role: "assistant",
+        createdAt: "2026-10-11T00:00:01.000Z",
+        content: [
+          { type: "thinking", ...thinking },
+          { type: "text", text: "答", ...textExtra },
+          { type: "tool_call", id: "c1", name: "bash", input: { cmd: "ls" }, itemId: "fc_1" },
+        ],
+      },
+      { id: "t1", role: "tool", createdAt: "2026-10-11T00:00:02.000Z", content: [{ type: "tool_result", toolCallId: "c1", content: "ok", isError: false }] },
+    ] as ChatMessage[];
+  }
+
+  /** 取导出流里第一条 assistant/message 的 source（replayState 落点）。 */
+  function sourceOf(build: DshExportBuild): Record<string, unknown> {
+    const event = build.events.find((item) => item.type === "assistant/message");
+    return (event!.data as { message: { source: Record<string, unknown> } }).message.source;
+  }
+
+  it("anthropic-messages：按位写 replayState（text/reasoning+signature/reasoning+redacted/tool-call），零警告", async () => {
+    const input = exportInput(await tempRoot("owc-m4a-"), "/tmp/owc-m4a-cwd", {
+      providerInterfaces: { "deepseek-official": "anthropic-messages" },
+      messages: replayMessages({ text: "想", provider: "deepseek-official", signature: "sig-1" }),
+    });
     const build = buildDshSessionEvents(input, "s");
-    expect(build.attachmentWrites).toEqual([]);
-    const toolEvent = build.events.find((event) => event.type === "tool/result");
-    const content = (toolEvent!.data as { message: { content: Array<Record<string, unknown>> } }).message.content;
-    expect(content[0]).toEqual({ type: "tool-result", toolCallId: "c1", content: [{ type: "text", text: "见图" }] });
+    expect(sourceOf(build).replayState).toEqual({
+      response: { kind: "llm-service-lite-anthropic", version: 1 },
+      blocks: [{ type: "reasoning", signature: "sig-1" }, { type: "text" }, { type: "tool-call" }],
+    });
+    expect(build.warnings).toEqual([]);
+
+    // redacted（无 text 的密文块）同样按位写回
+    const redacted = buildDshSessionEvents(exportInput(await tempRoot("owc-m4a-"), "/tmp/owc-m4a-cwd", {
+      providerInterfaces: { "deepseek-official": "anthropic-messages" },
+      messages: replayMessages({ text: "", provider: "deepseek-official", redacted: "cipher-1" }),
+    }), "s");
+    expect((sourceOf(redacted).replayState as { blocks: unknown[] }).blocks[0]).toEqual({ type: "reasoning", redacted: "cipher-1" });
+  });
+
+  it("openai-responses：reasoning item 取 thinking.signature；text/tool-call 带 itemId", async () => {
+    const input = exportInput(await tempRoot("owc-m4a-"), "/tmp/owc-m4a-cwd", {
+      providerInterfaces: { "deepseek-official": "openai-responses" },
+      messages: replayMessages(
+        { text: "想", provider: "deepseek-official", signature: JSON.stringify({ type: "reasoning", id: "rs_1", encrypted_content: "xx" }) },
+        { textSignature: JSON.stringify({ v: 1, id: "msg_1", phase: "final" }) },
+      ),
+    });
+    const build = buildDshSessionEvents(input, "s");
+    expect(sourceOf(build).replayState).toEqual({
+      response: { kind: "llm-service-lite-responses", version: 1 },
+      blocks: [
+        { type: "reasoning", item: JSON.stringify({ type: "reasoning", id: "rs_1", encrypted_content: "xx" }) },
+        { type: "text", itemId: "msg_1" },
+        { type: "tool-call", itemId: "fc_1" },
+      ],
+    });
+    expect(build.warnings).toEqual([]);
+  });
+
+  it("openai-chat-completions / 无接口信息：不写 replayState 且逐条告警（不静默丢签名）", async () => {
+    const chat = buildDshSessionEvents(exportInput(await tempRoot("owc-m4a-"), "/tmp/owc-m4a-cwd", {
+      providerInterfaces: { "deepseek-official": "openai-chat-completions" },
+      messages: replayMessages({ text: "想", provider: "deepseek-official", signature: "sig-1", redacted: "cipher-1" }),
+    }), "s");
+    expect(sourceOf(chat).replayState).toBeUndefined();
+    expect(chat.warnings.some((warning) => warning.includes("signature、redacted") && warning.includes("openai-chat-completions"))).toBe(true);
+
+    const unknown = buildDshSessionEvents(exportInput(await tempRoot("owc-m4a-"), "/tmp/owc-m4a-cwd", {
+      messages: replayMessages({ text: "想", provider: "deepseek-official", signature: "sig-1" }),
+    }), "s");
+    expect(sourceOf(unknown).replayState).toBeUndefined();
+    expect(unknown.warnings.some((warning) => warning.includes("signature") && warning.includes("未知"))).toBe(true);
+  });
+
+  it("消息里含 image 块（replay 词表没有对应项）→ 放弃回放并告警；无签名时不写也不告警", async () => {
+    const messages: ChatMessage[] = [
+      { id: "u1", role: "user", createdAt: "2026-10-11T00:00:00.000Z", content: [{ type: "text", text: "问" }] },
+      {
+        id: "a1",
+        role: "assistant",
+        createdAt: "2026-10-11T00:00:01.000Z",
+        content: [
+          { type: "thinking", text: "想", provider: "p", signature: "sig-1" },
+          { type: "image", mediaType: "image/png", data: PNG_1X1.toString("base64") },
+        ],
+      },
+    ];
+    const build = buildDshSessionEvents(exportInput(await tempRoot("owc-m4a-"), "/tmp/owc-m4a-cwd", {
+      providerInterfaces: { "deepseek-official": "anthropic-messages" },
+      messages,
+    }), "s");
+    expect(sourceOf(build).replayState).toBeUndefined();
+    expect(build.warnings.some((warning) => warning.includes("无法按位对齐"))).toBe(true);
+
+    const plain = buildDshSessionEvents(exportInput(await tempRoot("owc-m4a-"), "/tmp/owc-m4a-cwd", {
+      providerInterfaces: { "deepseek-official": "anthropic-messages" },
+      messages: replayMessages({ text: "想", provider: "p" }),
+    }), "s");
+    expect(sourceOf(plain).replayState).toBeUndefined();
+    expect(plain.warnings).toEqual([]);
   });
 });
 
@@ -527,18 +674,18 @@ describe("writeDshSession：落盘 + 回读自检 + 只新增", () => {
     expect(segments[0]).toBe("sessions");
     expect(segments[1]!.startsWith("--") && segments[1]!.endsWith("--")).toBe(true);
     expect(segments[2]).toBe(result.sessionId);
-    expect(path.basename(result.file)).toBe(`session.v${DSH_SYNC_SUPPORTED_GENERATION}.jsonl.zstd`);
+    expect(path.basename(result.file)).toBe(`session.v${DSH_SYNC_WRITE_GENERATION}.jsonl.zstd`);
     expect(result.eventCount).toBe(15);
     expect(result.attachments).toBe(1);
     expect(result.warnings).toEqual([]);
 
     const decoded = await decodeDshSessionFile({
       file: result.file,
-      generation: DSH_SYNC_SUPPORTED_GENERATION,
+      generation: DSH_SYNC_WRITE_GENERATION,
       compressed: true,
     });
     expect(decoded.header.id).toBe(result.sessionId);
-    expect(decoded.header.version).toBe(DSH_SYNC_SUPPORTED_GENERATION);
+    expect(decoded.header.version).toBe(DSH_SYNC_WRITE_GENERATION);
     expect(decoded.header.cwd).toBe(cwd);
     expect(decoded.header.createdAt).toBe(Date.parse("2026-10-11T00:00:00.000Z"));
     expect(decoded.header.isSeeded).toBe(false);
@@ -550,7 +697,7 @@ describe("writeDshSession：落盘 + 回读自检 + 只新增", () => {
     expect((await stat(path.join(dshHome, "attachments", "v1", "objects", attachmentId.slice(0, 2), attachmentId))).size).toBe(PNG_1X1.byteLength);
     expect((await readDshAttachment(dshHome, attachmentId))?.equals(PNG_1X1)).toBe(true);
     // 目录里只有会话文件（没有半成品 tmp）
-    expect(await readdir(result.dir)).toEqual([`session.v${DSH_SYNC_SUPPORTED_GENERATION}.jsonl.zstd`]);
+    expect(await readdir(result.dir)).toEqual([`session.v${DSH_SYNC_WRITE_GENERATION}.jsonl.zstd`]);
   });
 
   it("同一 sessionId 二次调用 → 抛「会话目录已存在」（不覆盖已有会话）", async () => {
@@ -584,7 +731,7 @@ describe("writeDshSession：落盘 + 回读自检 + 只新增", () => {
     const result = await writeDshSession(input, "session-compacted");
     const decoded = await decodeDshSessionFile({
       file: result.file,
-      generation: DSH_SYNC_SUPPORTED_GENERATION,
+      generation: DSH_SYNC_WRITE_GENERATION,
       compressed: true,
     });
     expect(decoded.events).toHaveLength(result.eventCount);
@@ -749,5 +896,382 @@ describe("convertDshSession：resolver 注入后的图片内联（M4a）", () =>
       type: "tool_result",
       media: [{ type: "image", mediaType: "image/png", data: PNG_1X1.toString("base64") }],
     });
+  });
+});
+
+/**
+ * 导出方向的正确性门（代码审查 P1-4）：消息层清洗（{@link preprocessExportMessages} 的行为）、
+ * 事件层修复（首条非 user 补 start、未结算工具调用补 dsh 官方 TOOL_NOT_STARTED 修复事件）、
+ * 写盘前结构校验（{@link validateDshEvents}）。
+ *
+ * 复现的坏输入（都会让 dsh 拒收整份会话）：孤儿 tool_result、一条 tool 消息多结果、
+ * assistant 广告了 tool_call 却没有结果、消息列表首条不是 user。
+ */
+describe("导出方向的正确性门（P1-4：消息清洗 + 事件修复 + 写盘前校验）", () => {
+  /** 构造导出输入（不落盘，dshHome/cwd 只是路径字符串）。 */
+  function inputWith(messages: ChatMessage[], extra: Partial<DshExportInput> = {}): DshExportInput {
+    return {
+      dshHome: "/tmp/owc-p14-home",
+      cwd: "/tmp/owc-p14-cwd",
+      meta: { provider: "demo", model: "demo-model" },
+      messages,
+      ...extra,
+    };
+  }
+
+  /** 事件时间（ISO → 毫秒，与投影口径一致）。 */
+  function timeOfIso(iso: string): number {
+    return Date.parse(iso);
+  }
+
+  it("孤儿 tool_result（无先行广告，如 !cmd 直写路径）→ 丢块；块丢光则整条消息丢弃并告警", () => {
+    const base = "2026-10-11T00:00:00.000Z";
+    const build = buildDshSessionEvents(inputWith([
+      { id: "u1", role: "user", createdAt: base, content: [{ type: "text", text: "!ls" }] },
+      { id: "t-orphan", role: "tool", createdAt: "2026-10-11T00:00:01.000Z", content: [{ type: "tool_result", toolCallId: "nope", content: "x", isError: false }] },
+      { id: "a1", role: "assistant", createdAt: "2026-10-11T00:00:02.000Z", content: [{ type: "tool_call", id: "c1", name: "bash", input: { cmd: "ls" } }] },
+      { id: "t1", role: "tool", createdAt: "2026-10-11T00:00:03.000Z", content: [{ type: "tool_result", toolCallId: "c1", content: "ok", isError: false }] },
+    ]), "p14-orphan");
+
+    expect(validateDshEvents(build.events)).toEqual([]);
+    expect(build.warnings.some((warning) => warning.includes("t-orphan") && warning.includes("孤儿结果"))).toBe(true);
+    expect(build.warnings.some((warning) => warning.includes("t-orphan") && warning.includes("整条消息不再导出"))).toBe(true);
+    const results = build.events.filter((event) => event.type === "tool/result");
+    expect(results).toHaveLength(1);
+    expect((results[0]!.data as { message: { source: { callId: string } } }).message.source.callId).toBe("c1");
+    // 孤儿消息整条没了：没有任何事件引用 nope
+    expect(JSON.stringify(build.events)).not.toContain("nope");
+  });
+
+  it("同一条 tool 消息里孤儿与合法结果并存 → 只丢孤儿块，保留原消息 id", () => {
+    const base = "2026-10-11T00:00:00.000Z";
+    const build = buildDshSessionEvents(inputWith([
+      { id: "u1", role: "user", createdAt: base, content: [{ type: "text", text: "跑一下" }] },
+      { id: "a1", role: "assistant", createdAt: "2026-10-11T00:00:01.000Z", content: [{ type: "tool_call", id: "c1", name: "bash", input: { cmd: "ls" } }] },
+      {
+        id: "t-mixed",
+        role: "tool",
+        createdAt: "2026-10-11T00:00:02.000Z",
+        content: [
+          { type: "tool_result", toolCallId: "c1", content: "ok", isError: false },
+          { type: "tool_result", toolCallId: "ghost", content: "x", isError: false },
+        ],
+      },
+    ]), "p14-mixed");
+
+    expect(validateDshEvents(build.events)).toEqual([]);
+    expect(build.warnings.filter((warning) => warning.includes("孤儿结果"))).toHaveLength(1);
+    const results = build.events.filter((event) => event.type === "tool/result");
+    expect(results).toHaveLength(1);
+    expect((results[0]!.data as { message: { id: string } }).message.id).toBe("t-mixed");
+  });
+
+  it("一条 tool 消息含 2 个 tool_result 块 → 拆成 2 条单块消息（id 派生 <原id>-<i>）", () => {
+    const base = "2026-10-11T00:00:00.000Z";
+    const build = buildDshSessionEvents(inputWith([
+      { id: "u1", role: "user", createdAt: base, content: [{ type: "text", text: "并行两个" }] },
+      {
+        id: "a1",
+        role: "assistant",
+        createdAt: "2026-10-11T00:00:01.000Z",
+        content: [
+          { type: "tool_call", id: "c1", name: "bash", input: { cmd: "a" } },
+          { type: "tool_call", id: "c2", name: "bash", input: { cmd: "b" } },
+        ],
+      },
+      {
+        id: "t-both",
+        role: "tool",
+        createdAt: "2026-10-11T00:00:02.000Z",
+        content: [
+          { type: "tool_result", toolCallId: "c1", content: "a-ok", isError: false },
+          { type: "tool_result", toolCallId: "c2", content: "b-ok", isError: false },
+        ],
+      },
+    ]), "p14-split");
+
+    expect(validateDshEvents(build.events)).toEqual([]);
+    expect(build.warnings.some((warning) => warning.includes("t-both") && warning.includes("已拆成 2 条单块消息"))).toBe(true);
+    const results = build.events.filter((event) => event.type === "tool/result");
+    expect(results).toHaveLength(2);
+    // 相对顺序保持；id 各派生 <原id>-<i>，每条都恰好一个包装块
+    expect(results.map((event) => {
+      const data = event.data as { message: { id: string; source: { callId: string }; content: Array<{ type: string; toolCallId: string }> } };
+      return [data.message.id, data.message.source.callId, data.message.content.length, data.message.content[0]!.toolCallId];
+    })).toEqual([["t-both-0", "c1", 1, "c1"], ["t-both-1", "c2", 1, "c2"]]);
+  });
+
+  it("assistant 有 tool_call 但无 tool_result（回合中断）→ 补官方 TOOL_NOT_STARTED 修复事件（逐字段 + id 后缀 = 最终 seq）", () => {
+    const base = "2026-10-11T00:00:00.000Z";
+    const assistantTime = "2026-10-11T00:00:01.000Z";
+    const build = buildDshSessionEvents(inputWith([
+      { id: "u1", role: "user", createdAt: base, content: [{ type: "text", text: "两个工具都中断了" }] },
+      {
+        id: "a1",
+        role: "assistant",
+        createdAt: assistantTime,
+        content: [
+          { type: "text", text: "开始" },
+          { type: "tool_call", id: "c1", name: "bash", input: { cmd: "a" } },
+          { type: "tool_call", id: "c2", name: "read_file", input: { path: "b" } },
+        ],
+      },
+    ]), "p14-interrupted");
+
+    expect(validateDshEvents(build.events)).toEqual([]);
+    expect(typesOf(build)).toEqual([
+      "turn/start", "step/start", "user/message",
+      "assistant/message", "tool/call", "tool/call",
+      "tool/result", "tool/result",
+      "step/end", "turn/end",
+    ]);
+    // 修复事件逐字段（与上游 isExactToolNotStartedRepair / isRepairIdentity 精确对齐）
+    expect(build.events[6]).toEqual({
+      type: "tool/result",
+      seq: 6,
+      time: timeOfIso(assistantTime),
+      surfaceOp: "append",
+      data: {
+        turn: 1,
+        step: 1,
+        message: {
+          id: "interrupted-tool-result-c1-6",
+          role: "user",
+          source: { kind: "tool", callId: "c1" },
+          content: [{
+            type: "tool-result",
+            toolCallId: "c1",
+            isError: true,
+            content: [{ type: "text", text: "The tool call was interrupted before the Harness recorded it as started. Retry it if it is still needed." }],
+          }],
+        },
+        error: { name: "ToolNotStartedError", code: "TOOL_NOT_STARTED" },
+      },
+    });
+    // 第二条修复的 id 必须用**自己的**最终 seq（先插入占位、重编号后回填）
+    expect((build.events[7]!.data as { message: { id: string } }).message.id).toBe("interrupted-tool-result-c2-7");
+    expect(build.warnings.filter((warning) => warning.includes("工具未启动")).length).toBe(2);
+  });
+
+  it("首条不是 user（外部导入的任意 JSONL）→ 补 turn/start{turn:1} + step/start{turn:1,step:1}", () => {
+    const base = "2026-10-11T00:00:00.000Z";
+    const build = buildDshSessionEvents(inputWith([
+      { id: "a1", role: "assistant", createdAt: base, content: [{ type: "text", text: "历史被截断" }] },
+      { id: "u1", role: "user", createdAt: "2026-10-11T00:00:01.000Z", content: [{ type: "text", text: "继续" }] },
+    ]), "p14-head");
+
+    expect(typesOf(build)).toEqual([
+      "turn/start", "step/start", "assistant/message",
+      "step/end", "turn/end",
+      "turn/start", "step/start", "user/message",
+      "step/end", "turn/end",
+    ]);
+    expect(build.events[0]!.data).toEqual({ turn: 1 });
+    expect(build.events[1]!.data).toEqual({ turn: 1, step: 1 });
+    // 补的编号与投影的隐式 turn/step（首条 assistant 得到 turn 1 step 1）一致
+    expect((build.events[2]!.data as { turn: number; step: number })).toMatchObject({ turn: 1, step: 1 });
+    expect(validateDshEvents(build.events)).toEqual([]);
+    expect(build.warnings.some((warning) => warning.includes("首条消息不是用户消息"))).toBe(true);
+  });
+
+  it("合规流（含压缩导出）零违规：校验器不是空架子", async () => {
+    const build = buildDshSessionEvents(exportInput("/tmp/owc-p14-ok", "/tmp/owc-p14-ok-cwd", {
+      ledger: { compacted: { uptoIndex: 3, uptoMessageId: "t1", summary: "摘要" } },
+    }), "p14-ok");
+    expect(validateDshEvents(build.events)).toEqual([]);
+  });
+
+  it("validateDshEvents 拦截构造的坏流（逐类）", () => {
+    const base = "2026-10-11T00:00:00.000Z";
+    /** 手工事件（seq 由下标给出）。 */
+    const manual = (index: number, type: string, data: unknown, surfaceOp?: string): Record<string, unknown> => ({
+      type, seq: index, time: timeOfIso(base) + index, data, ...(surfaceOp === undefined ? {} : { surfaceOp }),
+    });
+    /** 一条合法的手工流（turn 1：user → assistant 广告 + tool/call + tool/result）。 */
+    const good = (): Array<Record<string, unknown>> => [
+      manual(0, "turn/start", { turn: 1 }),
+      manual(1, "step/start", { turn: 1, step: 1 }),
+      manual(2, "user/message", { id: "u1", role: "user", content: [{ type: "text", text: "hi" }], source: { kind: "user" } }, "append"),
+      manual(3, "assistant/message", {
+        turn: 1, step: 1, stream: [],
+        message: { id: "a1", role: "assistant", content: [{ type: "tool-call", id: "c1", name: "bash", arguments: "{}" }], source: { kind: "model", provider: "p", model: "m" } },
+      }, "append"),
+      manual(4, "tool/call", { turn: 1, step: 1, callId: "c1", name: "bash", arguments: "{}" }),
+      manual(5, "tool/result", {
+        turn: 1, step: 1,
+        message: { id: "t1", role: "user", source: { kind: "tool", callId: "c1" }, content: [{ type: "tool-result", toolCallId: "c1", content: [{ type: "text", text: "ok" }] }] },
+      }, "append"),
+      manual(6, "step/end", { turn: 1, step: 1 }),
+      manual(7, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+    ];
+    expect(validateDshEvents(good())).toEqual([]);
+
+    const clone = (): Array<Record<string, unknown>> => structuredClone(good());
+    /** 改一处后的违规全集（拼成一段文本便于断言）。 */
+    const violationsOf = (mutate: (events: Array<Record<string, unknown>>) => void): string => {
+      const events = clone();
+      mutate(events);
+      return validateDshEvents(events).join(" | ");
+    };
+
+    // 1) seq 不稠密 / time 非法
+    expect(violationsOf((events) => { events[1]!.seq = 5; })).toContain("与下标");
+    expect(violationsOf((events) => { events[1]!.time = -1; })).toContain("time 不是非负安全整数");
+    // 2) turn/step 配对
+    expect(violationsOf((events) => { (events[0]!.data as { turn: number }).turn = 2; })).toContain("不是期望的");
+    expect(violationsOf((events) => { (events[4]!.data as { step: number }).step = 9; })).toContain("不在 open step 内");
+    expect(violationsOf((events) => {
+      // 去掉 tool/result：广告了 c1、也启动了，但 step/end 之前没有结算
+      events.splice(5, 1);
+      events.forEach((event, index) => { event.seq = index; });
+    })).toContain("仍未结算");
+    // 3) surface 标记与 replace 语义
+    expect(violationsOf((events) => { delete events[2]!.surfaceOp; })).toContain("缺少 surfaceOp");
+    expect(violationsOf((events) => {
+      events.push(manual(8, "user/message", { id: "u2", role: "user", content: [], source: { kind: "user" } }, "append"));
+      events[8]!.surfaceOp = { op: "replace", startSeq: 99, endSeq: 100 };
+    })).toContain("不在当前 surface 上");
+    expect(violationsOf((events) => {
+      delete events[5]!.surfaceOp;
+      events[5]!.surfaceOp = { op: "replace", startSeq: 2, endSeq: 3 };
+      events[5]!.sourceEventSeqs = [2];
+    })).toContain("sourceEventSeqs 没有覆盖");
+    // 4/5) 广告与 tool/call 匹配
+    expect(violationsOf((events) => { (events[4]!.data as { name: string }).name = "other"; })).toContain("没有匹配的已广告工具调用");
+    expect(violationsOf((events) => {
+      const content = (events[3]!.data as { message: { content: Array<{ id: string }> } }).message.content;
+      content[0]!.id = "c9";
+    })).toContain("没有已广告的工具生命周期");
+    // 6) 未启动且不是修复形态；包装块必须唯一且与 source.callId 一致
+    expect(violationsOf((events) => { events.splice(4, 1); events.forEach((event, index) => { event.seq = index; }); })).toContain("尚未启动");
+    expect(violationsOf((events) => {
+      const message = (events[5]!.data as { message: { content: Array<{ toolCallId: string }> } }).message;
+      message.content[0]!.toolCallId = "other";
+    })).toContain("必须恰好一个 tool-result 包装块");
+    // 7) 修复形态的精确性：错误名/码/文案/无 sourceEventSeqs
+    const repairStream = (): Array<Record<string, unknown>> => {
+      const events = clone();
+      events.splice(4, 1); // 去掉 tool/call，直接让 tool/result 走修复分支
+      events.forEach((event, index) => { event.seq = index; });
+      const data = events[4]!.data as { error?: Record<string, unknown>; message: { id: string } };
+      data.error = { name: "ToolNotStartedError", code: "TOOL_NOT_STARTED" };
+      data.message.id = "interrupted-tool-result-c1-4";
+      (data.message as unknown as { content: Array<{ isError?: boolean; content: Array<{ text: string }> }> }).content[0]!.isError = true;
+      const inner = (data.message as unknown as { content: Array<{ content: Array<{ text: string }> }> }).content[0]!;
+      inner.content[0]!.text = "The tool call was interrupted before the Harness recorded it as started. Retry it if it is still needed.";
+      return events;
+    };
+    expect(validateDshEvents(repairStream())).toEqual([]);
+    expect(validateDshEvents(repairStream().map((event, index) => (index === 4 ? { ...event, sourceEventSeqs: [2] } : event))).join(" | ")).toContain("不是精确的 TOOL_NOT_STARTED 修复形态");
+    expect(validateDshEvents(repairStream().map((event, index) => (index === 4 ? { ...event, data: { ...(event.data as object), error: { name: "Other", code: "TOOL_NOT_STARTED" } } } : event))).join(" | ")).toContain("不是精确的 TOOL_NOT_STARTED 修复形态");
+  });
+
+  it("跨回合的迟到结果（回合中断后补写）→ 丢弃迟到块 + 补官方修复事件，导出照常成功", () => {
+    const base = "2026-10-11T00:00:00.000Z";
+    // 真实会话里的形态：a1 广告 c1 → 用户开了新回合 u2 → 结果的补写落在新回合里。
+    // dsh 的 tool/result 必须与广告同 step，所以这一块无法结算 → 丢弃，由「工具未启动」修复事件如实表达。
+    const build = buildDshSessionEvents(inputWith([
+      { id: "u1", role: "user", createdAt: base, content: [{ type: "text", text: "跑" }] },
+      { id: "a1", role: "assistant", createdAt: "2026-10-11T00:00:01.000Z", content: [{ type: "tool_call", id: "c1", name: "bash", input: {} }] },
+      { id: "u2", role: "user", createdAt: "2026-10-11T00:00:02.000Z", content: [{ type: "text", text: "算了" }] },
+      {
+        id: "t-late",
+        role: "tool",
+        createdAt: "2026-10-11T00:00:03.000Z",
+        content: [{ type: "tool_result", toolCallId: "c1", content: "The run was interrupted before this tool finished; no result was produced.", isError: true }],
+      },
+    ]), "p14-late");
+
+    expect(validateDshEvents(build.events)).toEqual([]);
+    expect(build.warnings.some((warning) => warning.includes("迟到结果") && warning.includes("无法结算"))).toBe(true);
+    expect(build.warnings.some((warning) => warning.includes("工具未启动"))).toBe(true);
+    // 迟到结果的内容不再出现在产物里；它被同一 step 的修复事件取代（回合 1 的 step 内结算）
+    expect(JSON.stringify(build.events)).not.toContain("no result was produced");
+    const results = build.events.filter((event) => event.type === "tool/result");
+    expect(results).toHaveLength(1);
+    const data = results[0]!.data as { turn: number; message: { id: string }; error: { code: string } };
+    expect([data.turn, data.error.code]).toEqual([1, "TOOL_NOT_STARTED"]);
+    expect(data.message.id).toBe(`interrupted-tool-result-c1-${String(results[0]!.seq)}`);
+    expect(typesOf(build)).toEqual([
+      "turn/start", "step/start", "user/message", "assistant/message", "tool/call", "tool/result",
+      "step/end", "turn/end",
+      "turn/start", "step/start", "user/message",
+      "step/end", "turn/end",
+    ]);
+  });
+
+  it("同回合重复结算（同一 callId 两条 tool_result）→ 只保留第一条，第二条丢弃", () => {
+    const base = "2026-10-11T00:00:00.000Z";
+    const build = buildDshSessionEvents(inputWith([
+      { id: "u1", role: "user", createdAt: base, content: [{ type: "text", text: "跑" }] },
+      { id: "a1", role: "assistant", createdAt: "2026-10-11T00:00:01.000Z", content: [{ type: "tool_call", id: "c1", name: "bash", input: {} }] },
+      { id: "t1", role: "tool", createdAt: "2026-10-11T00:00:02.000Z", content: [{ type: "tool_result", toolCallId: "c1", content: "第一次", isError: false }] },
+      { id: "t2", role: "tool", createdAt: "2026-10-11T00:00:03.000Z", content: [{ type: "tool_result", toolCallId: "c1", content: "第二次", isError: false }] },
+    ]), "p14-duplicate");
+
+    expect(validateDshEvents(build.events)).toEqual([]);
+    expect(build.warnings.some((warning) => warning.includes("重复结果"))).toBe(true);
+    expect(JSON.stringify(build.events)).toContain("第一次");
+    expect(JSON.stringify(build.events)).not.toContain("第二次");
+  });
+
+  it("同回合里同一 callId 被重新广告（结算后再次调用）→ 后一次广告也补修复事件，不误报未结算", () => {
+    const base = "2026-10-11T00:00:00.000Z";
+    const build = buildDshSessionEvents(inputWith([
+      { id: "u1", role: "user", createdAt: base, content: [{ type: "text", text: "跑两次" }] },
+      { id: "a1", role: "assistant", createdAt: "2026-10-11T00:00:01.000Z", content: [{ type: "tool_call", id: "c1", name: "bash", input: { cmd: "a" } }] },
+      { id: "t1", role: "tool", createdAt: "2026-10-11T00:00:02.000Z", content: [{ type: "tool_result", toolCallId: "c1", content: "第一次", isError: false }] },
+      { id: "a2", role: "assistant", createdAt: "2026-10-11T00:00:03.000Z", content: [{ type: "tool_call", id: "c1", name: "bash", input: { cmd: "a" } }] },
+    ]), "p14-readvertised");
+
+    expect(validateDshEvents(build.events)).toEqual([]);
+    // 结算 → 重新广告 → 无结果：第二条广告也要按「未结算」补修复（顺序感知的生命周期扫描）
+    expect(build.warnings.filter((warning) => warning.includes("工具未启动"))).toHaveLength(1);
+    expect(build.events.filter((event) => event.type === "tool/result")).toHaveLength(2);
+  });
+
+  it("同回合「结算 → 重新广告 → 再结算」：两条结果都保留（生命周期按顺序抵消）", () => {
+    const base = "2026-10-11T00:00:00.000Z";
+    const build = buildDshSessionEvents(inputWith([
+      { id: "u1", role: "user", createdAt: base, content: [{ type: "text", text: "跑两次" }] },
+      { id: "a1", role: "assistant", createdAt: "2026-10-11T00:00:01.000Z", content: [{ type: "tool_call", id: "c1", name: "bash", input: { cmd: "a" } }] },
+      { id: "t1", role: "tool", createdAt: "2026-10-11T00:00:02.000Z", content: [{ type: "tool_result", toolCallId: "c1", content: "第一次", isError: false }] },
+      { id: "a2", role: "assistant", createdAt: "2026-10-11T00:00:03.000Z", content: [{ type: "tool_call", id: "c1", name: "bash", input: { cmd: "a" } }] },
+      { id: "t2", role: "tool", createdAt: "2026-10-11T00:00:04.000Z", content: [{ type: "tool_result", toolCallId: "c1", content: "第二次", isError: false }] },
+    ]), "p14-resettle");
+
+    expect(validateDshEvents(build.events)).toEqual([]);
+    expect(build.warnings.some((warning) => warning.includes("重复结果") || warning.includes("孤儿结果"))).toBe(false);
+    expect(JSON.stringify(build.events)).toContain("第一次");
+    expect(JSON.stringify(build.events)).toContain("第二次");
+    expect(build.events.filter((event) => event.type === "tool/result")).toHaveLength(2);
+  });
+
+  it("同一 assistant 消息重复广告同一 callId（畸形输入）→ 结构校验拒绝，写盘门禁拦住", async () => {
+    const dshHome = path.join(await tempRoot("owc-p14-gate-"), "dsh-home");
+    const base = "2026-10-11T00:00:00.000Z";
+    const input: DshExportInput = {
+      dshHome,
+      cwd: "/tmp/owc-p14-gate-cwd",
+      meta: { provider: "demo", model: "demo-model" },
+      messages: [
+        { id: "u1", role: "user", createdAt: base, content: [{ type: "text", text: "跑" }] },
+        {
+          id: "a1",
+          role: "assistant",
+          createdAt: "2026-10-11T00:00:01.000Z",
+          content: [
+            { type: "tool_call", id: "c1", name: "bash", input: {} },
+            { type: "tool_call", id: "c1", name: "bash", input: {} },
+          ],
+        },
+      ],
+    };
+    // 纯函数仍然返回事件（畸形只在结构校验层被判定）
+    const build = buildDshSessionEvents(input, "p14-gate");
+    expect(validateDshEvents(build.events).some((violation) => violation.includes("重复广告"))).toBe(true);
+    // 落盘门禁：拒绝写出，且连会话目录都不建（校验在任何文件系统改动之前）
+    await expect(writeDshSession(input, "p14-gate")).rejects.toThrow(/没有通过 dsh 结构校验/);
+    await expect(stat(dshHome)).rejects.toThrow();
   });
 });

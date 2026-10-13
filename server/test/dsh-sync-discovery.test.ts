@@ -35,7 +35,11 @@ const DEMO_SUB = "dddddddd-eeee-4fff-8000-111111111111";
 const RAW_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const MULTI_ID = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
 const LEGACY_ID = "cccccccc-dddd-4eee-8fff-000000000000";
-
+/**
+ * fixture 里 v4 zstd 会话（dsh 当前代际：一等 tool 角色消息 + plugin: 前缀块 + 附加事件）。
+ * 文件用 node `zlib.zstdCompressSync` 生成，帧布局仿真实 dsh：首帧恰好一行头行，事件按批分帧。
+ */
+const V4_ID = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
 /** 临时目录登记（afterAll 统一清理）。 */
 const tempDirs: string[] = [];
 
@@ -86,6 +90,23 @@ describe("resolveDshHome / resolveDshProfile / dshPatchFile", () => {
 
   it("patch 路径 = <dshHome>/profiles/<profile>/cordis.patch.yml", () => {
     expect(dshPatchFile("/tmp/dsh-home", "web")).toBe(path.join("/tmp/dsh-home", "profiles", "web", "cordis.patch.yml"));
+  });
+
+  it("profile 白名单：目录穿越/绝对路径/超长/非法字符一律回落 web", () => {
+    for (const profile of ["../etc", "..", ".", "a/b", "a\\b", "/etc", "web ", "wéb", "a".repeat(65), "\u0000evil"]) {
+      expect(resolveDshProfile({ profile })).toBe(DSH_SYNC_DEFAULT_PROFILE);
+    }
+    // 白名单内的合法值原样保留（含点/下划线/连字符）
+    expect(resolveDshProfile({ profile: "web-2_x.dev" })).toBe("web-2_x.dev");
+  });
+
+  it("dshPatchFile 的 containment 断言：解析后逃出 profiles 目录即抛错", () => {
+    expect(() => dshPatchFile("/tmp/dsh-home", "../../etc")).toThrow(/逃出/);
+    expect(() => dshPatchFile("/tmp/dsh-home", "../profiles-other")).toThrow(/逃出/);
+    // 正常 profile（含点号）不触发断言
+    expect(dshPatchFile("/tmp/dsh-home", "web-2_x.dev")).toBe(
+      path.join("/tmp/dsh-home", "profiles", "web-2_x.dev", "cordis.patch.yml"),
+    );
   });
 });
 
@@ -325,10 +346,10 @@ describe("dshProjectKey / dshEncodeSegment / dshSessionDir", () => {
 });
 
 describe("scanDshSessions", () => {
-  it("扫出 5 个会话目录、每目录选最高代际规范文件", async () => {
+  it("扫出 6 个会话目录、每目录选最高代际规范文件", async () => {
     const entries = await scanDshSessions(FIXTURES);
-    expect(entries).toHaveLength(5);
-    expect(entries.map((entry) => entry.sessionId).sort()).toEqual([DEMO_MAIN, DEMO_SUB, RAW_ID, MULTI_ID, LEGACY_ID].sort());
+    expect(entries).toHaveLength(6);
+    expect(entries.map((entry) => entry.sessionId).sort()).toEqual([DEMO_MAIN, DEMO_SUB, RAW_ID, MULTI_ID, LEGACY_ID, V4_ID].sort());
     for (const entry of entries) expect(path.isAbsolute(entry.dir)).toBe(true);
   });
 
@@ -350,6 +371,16 @@ describe("scanDshSessions", () => {
     expect(demo?.file?.endsWith("session.v3.jsonl.zstd")).toBe(true);
     expect(demo?.header).toMatchObject({ type: "session", version: 3, cwd: "/tmp/demo" });
     expect(demo?.error).toBeUndefined();
+  });
+
+  it("v4 会话同样解析头行（读支持 v3/v4）", async () => {
+    const v4 = (await sessionsById()).get(V4_ID);
+    expect(v4?.generation).toBe(4);
+    expect(v4?.compressed).toBe(true);
+    expect(v4?.file?.endsWith("session.v4.jsonl.zstd")).toBe(true);
+    expect(v4?.header).toMatchObject({ type: "session", version: 4, id: V4_ID, cwd: "/tmp/v4" });
+    expect(v4?.cwd).toBe("/tmp/v4");
+    expect(v4?.error).toBeUndefined();
   });
 
   it("legacy 目录（仅 v1）不解析头行，仅报代际", async () => {
@@ -395,6 +426,29 @@ describe("decodeDshSessionFile", () => {
     expect(events[0]?.type).toBe("user/message");
   });
 
+  it("zstd v4 容器：解出头行 + 全部事件（一等 tool 角色消息 + plugin: 前缀块 + 附加事件）", async () => {
+    const entry = picked((await sessionsById()).get(V4_ID));
+    expect(entry.generation).toBe(4);
+    const { header, events } = await decodeDshSessionFile(entry);
+    expect(header).toMatchObject({ type: "session", version: 4, id: V4_ID, cwd: "/tmp/v4", delegationDepth: 0 });
+    expect(events.map((event) => event.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(events.map((event) => event.type)).toEqual([
+      "permission/preset",
+      "user/message",
+      "assistant/message",
+      "tool/call",
+      "tool/result",
+      "session-log-deepseek/delivery-accepted",
+      "assistant/message",
+      "tool/call",
+      "tool/result",
+      "sandbox/mode",
+    ]);
+    const toolResult = events[4]?.data as { message: Record<string, unknown> };
+    expect(toolResult.message).toMatchObject({ role: "tool", toolCallId: "call-1", isError: false });
+    expect(toolResult.message.content).toEqual([{ type: "text", text: "file body" }]);
+  });
+
   it("v1 代际抛「不支持的代际」", async () => {
     const legacy = (await sessionsById()).get(LEGACY_ID);
     const entry = picked(legacy);
@@ -411,12 +465,26 @@ describe("decodeDshSessionFile", () => {
     await expect(decodeDshSessionFile({ file, generation: 3, compressed: false })).rejects.toThrow(/格式损坏/);
   });
 
+  it("高于读支持上界的代际（v5）抛「不支持的代际」", async () => {
+    const dir = await tempDir("dsh-sync-future-");
+    const file = path.join(dir, "session.v5.jsonl");
+    const header = JSON.stringify({ type: "session", version: 5, id: "future", createdAt: 1 });
+    await writeFile(file, `${header}\n`, "utf8");
+    await expect(decodeDshSessionFile({ file, generation: 5, compressed: false })).rejects.toThrow(/不支持的代际/);
+  });
+
   it("头行代际不符 / 非 JSON 抛「格式损坏」", async () => {
     const dir = await tempDir("dsh-sync-broken-");
     const badHeader = path.join(dir, "session.v3.jsonl");
     const header = JSON.stringify({ type: "session", version: 1, id: "x", createdAt: 1, isSeeded: false, delegationDepth: 0 });
     await writeFile(badHeader, `${header}\n`, "utf8");
     await expect(decodeDshSessionFile({ file: badHeader, generation: 3, compressed: false })).rejects.toThrow(/格式损坏/);
+
+    // v4 文件的头行 version 必须与实测代际一致（generation 取错也算损坏）
+    const wrongGen = path.join(dir, "session.v4.jsonl");
+    const v3Header = JSON.stringify({ type: "session", version: 3, id: "x", createdAt: 1, isSeeded: false, delegationDepth: 0 });
+    await writeFile(wrongGen, `${v3Header}\n`, "utf8");
+    await expect(decodeDshSessionFile({ file: wrongGen, generation: 4, compressed: false })).rejects.toThrow(/格式损坏/);
 
     const notJson = path.join(dir, "session.v3.jsonl");
     await writeFile(notJson, "not json\n", "utf8");
