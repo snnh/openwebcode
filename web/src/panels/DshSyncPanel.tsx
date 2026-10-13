@@ -926,7 +926,7 @@ export function DshSyncPanel(): ReactElement {
 
   const [direction, setDirection] = useState<DshSyncDirection>("import");
   // 请求只在用户点「预览差异」后发出；已预览过同方向时按钮改为刷新
-  const [previewedDirection, setPreviewedDirection] = useState<DshSyncDirection>();
+  const [providerPreviewed, setProviderPreviewed] = useState<Record<DshSyncDirection, boolean>>({ import: false, export: false });
   const [selection, setSelection] = useState<Record<string, boolean>>({});
   const [result, setResult] = useState<DshProviderSyncResult>();
   const [running, setRunning] = useState(false);
@@ -953,13 +953,25 @@ export function DshSyncPanel(): ReactElement {
     retry: false,
   });
 
-  const previewQuery = useQuery({
-    queryKey: ["dsh-sync", "preview", direction],
-    queryFn: () => api.extRoute<DshProviderPreview>(DSH_SYNC_EXTENSION_ID, "/preview/providers", { query: { direction } }),
-    enabled: enabled && previewedDirection === direction,
+  // 模型配置预览：两个方向各自独立的查询与缓存（与会话区块同模式）。预览过即保持挂载，
+  // 切到别的方向再切回来时直接复用缓存、不重发请求（此前单查询按方向关停，切回会重拉并重置勾选）。
+  const providerPreviewImport = useQuery({
+    queryKey: ["dsh-sync", "preview", "import"],
+    queryFn: () => api.extRoute<DshProviderPreview>(DSH_SYNC_EXTENSION_ID, "/preview/providers", { query: { direction: "import" } }),
+    enabled: enabled && providerPreviewed.import,
     staleTime: 0,
     retry: false,
   });
+
+  const providerPreviewExport = useQuery({
+    queryKey: ["dsh-sync", "preview", "export"],
+    queryFn: () => api.extRoute<DshProviderPreview>(DSH_SYNC_EXTENSION_ID, "/preview/providers", { query: { direction: "export" } }),
+    enabled: enabled && providerPreviewed.export,
+    staleTime: 0,
+    retry: false,
+  });
+
+  const previewQuery = direction === "import" ? providerPreviewImport : providerPreviewExport;
 
   // 会话清单：两个方向各自独立的查询与缓存（queryKey 含方向）。预览过即保持挂载（enabled 不再随方向切换），
   // 因此切到别的方向再切回来时直接复用缓存、不重发请求；切方向只切换展示。
@@ -979,8 +991,8 @@ export function DshSyncPanel(): ReactElement {
     retry: false,
   });
 
-  // 切方向后旧方向的结果不显示（缓存仍在，切回后无需重新请求即可复用）
-  const preview = previewedDirection === direction ? previewQuery.data : undefined;
+  // 切方向后展示对应方向的缓存结果（两个方向的查询都保持挂载，切回免重拉）
+  const preview = previewQuery.data;
   const items = preview?.items;
 
   // 预览落地（含执行后的失效重拉）即重置勾选：new 默认勾、changed 默认不勾、same 不可勾
@@ -990,7 +1002,7 @@ export function DshSyncPanel(): ReactElement {
 
   const keys = selectedKeys(items ?? [], selection);
   const previewError = previewQuery.isError ? errorText(previewQuery.error) : undefined;
-  const previewing = previewedDirection === direction && previewQuery.isFetching;
+  const previewing = previewQuery.isFetching;
 
   const switchDirection = (next: DshSyncDirection): void => {
     if (next === direction) return;
@@ -999,8 +1011,8 @@ export function DshSyncPanel(): ReactElement {
   };
 
   const runPreview = (): void => {
-    if (previewedDirection === direction) void previewQuery.refetch();
-    else setPreviewedDirection(direction);
+    if (providerPreviewed[direction]) void previewQuery.refetch();
+    else setProviderPreviewed((current) => ({ ...current, [direction]: true }));
   };
 
   const execute = async (): Promise<void> => {

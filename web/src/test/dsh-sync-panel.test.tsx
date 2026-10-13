@@ -708,6 +708,38 @@ describe("DshSyncPanel 执行门禁与分批", () => {
     expect(bodies[1]!.items[4]!.dshId).toBe("00000024-1111-4111-8111-111111111111");
   });
 
+  it("模型配置方向切换：切回已预览过的方向不重发请求（与会话区块一致）", async () => {
+    const handler = stubDshFetch(
+      [{ id: "dsh-sync", enabled: true }],
+      statusPayloadReady,
+      { direction: "import", items: previewItems, unmappedFields: [], warnings: [] },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    );
+    renderWithClient(<DshSyncPanel />);
+    await screen.findByText("/home/u/.dsh");
+    const count = (): number => handler.mock.calls.filter(([url]) => String(url).includes("/preview/providers")).length;
+    const dirGroup = screen.getByRole("group", { name: "同步方向" });
+
+    // 导入方向预览一次
+    fireEvent.click(screen.getByRole("button", { name: "预览差异" }));
+    await screen.findByText("alpha");
+    expect(count()).toBe(1);
+
+    // 切到导出方向：此前未预览，不发请求；点预览后才发
+    fireEvent.click(within(dirGroup).getByRole("button", { name: "导出到 dsh" }));
+    expect(count()).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "预览差异" }));
+    await waitFor(() => expect(count()).toBe(2));
+
+    // 切回导入方向：直接复用缓存，不重发
+    fireEvent.click(within(dirGroup).getByRole("button", { name: "从 dsh 导入" }));
+    await screen.findByText("alpha");
+    expect(count()).toBe(2);
+  });
+
   it("模型配置执行只刷新模型配置区块：不重拉会话清单", async () => {
     const handler = stubDshFetch(
       [{ id: "dsh-sync", enabled: true }],

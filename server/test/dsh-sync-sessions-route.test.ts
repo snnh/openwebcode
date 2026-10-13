@@ -54,6 +54,8 @@ const MULTI_ID = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
 const LEGACY_ID = "cccccccc-dddd-4eee-8fff-000000000000";
 /** fixture 里 v4 zstd 会话（dsh 当前代际：读支持，可导入）。 */
 const V4_ID = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
+/** 相对 cwd 的 fixture 会话（导入应 skipped 报「不是绝对路径」）。 */
+const RELCWD_ID = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
 /** fixture 主会话头行 createdAt（毫秒）。 */
 const DEMO_CREATED_AT = 1_786_505_848_722;
 
@@ -214,7 +216,7 @@ describe("GET /preview/sessions", () => {
 
     expect(response?.status).toBe(200);
     expect(body.direction).toBe("import");
-    expect(body.items).toHaveLength(6);
+    expect(body.items).toHaveLength(7);
     expect(typeof body.zstdAvailable).toBe("boolean");
     expect(typeof body.dshRunning).toBe("boolean");
 
@@ -265,7 +267,7 @@ describe("GET /preview/sessions", () => {
     const body = response?.body as DshSyncSessionPreview;
     const broken = itemsById(body).get("e0000000-0000-4000-8000-000000000000");
 
-    expect(body.items).toHaveLength(7);
+    expect(body.items).toHaveLength(8);
     expect(broken?.supported).toBe(false);
     expect(broken?.selectable).toBe(false);
     expect(broken?.reason).toMatch(/^文件损坏：/);
@@ -312,7 +314,7 @@ describe("GET /preview/sessions", () => {
     const failing = makeFakeApi();
     failing.api.storageRead = () => Promise.reject(new Error("storage down"));
     const degraded = (await createDshSyncRoutes(failing.api).get("GET /preview/sessions")?.({ method: "GET", path: "/preview/sessions", query: {} }, { dshHome: FIXTURES, profile: "web" }))?.body as DshSyncSessionPreview;
-    expect(degraded.items).toHaveLength(6);
+    expect(degraded.items).toHaveLength(7);
     expect(degraded.warning).toContain("映射表");
   });
 });
@@ -480,6 +482,20 @@ describe("POST /sync/sessions", () => {
     expect(body.report).toMatchObject({ appliedCount: 1, skippedCount: 3 });
     // 仅成功项进映射表
     expect(JSON.parse(fake.files.get(DSH_SYNC_MAP_PATH) ?? "{}").entries.map((item: { dshId: string }) => item.dshId)).toEqual([DEMO_MAIN]);
+  });
+
+  it("相对 cwd 的会话：skipped 并给出「不是绝对路径」原因（与导出侧对称）", async () => {
+    const home = await fixtureHome("dsh-sync-sessions-relcwd-");
+    const fake = makeFakeApi();
+    const body = (await createDshSyncRoutes(fake.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "import", items: [{ dshId: RELCWD_ID }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncSessionResult;
+
+    expect(body.applied).toEqual([]);
+    expect(body.skipped).toHaveLength(1);
+    expect(body.skipped[0]?.reason).toContain("不是绝对路径");
+    expect(body.skipped[0]?.reason).toContain("relative/path");
   });
 
   it("导入图片内联：真实附件文件 → user 消息里的 image{mediaType,data}，counts.images=1（父 + 子会话都注入）", async () => {
