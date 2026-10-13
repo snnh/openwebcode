@@ -1,4 +1,4 @@
-export type ExtensionPermission = "context:read" | "context:mutate" | "tools:register" | "sessions:read" | "ui:panel" | "ui:messageAttachment" | "network:fetch" | "http:route" | "model:fast" | "prompt:shape" | "tools:shaping";
+export type ExtensionPermission = "context:read" | "context:mutate" | "tools:register" | "sessions:read" | "sessions:mutate" | "ui:panel" | "ui:messageAttachment" | "network:fetch" | "http:route" | "model:fast" | "prompt:shape" | "tools:shaping" | "providers:read" | "providers:mutate";
 
 export interface ExtensionInfo {
   id: string;

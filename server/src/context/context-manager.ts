@@ -92,6 +92,16 @@ export class ContextManager {
   }
 
   /**
+   * 只读**快照**：账本的深克隆（结构化克隆），供跨进程/扩展分发使用。
+   *
+   * 与 {@link load} 的区别：`load()` 命中缓存时返回规范副本**本身**（调用方须只读、不得序列化后原地改），
+   * 而本方法保证调用方拿到的是独立副本，可安全地经 IPC 送出或就地改写（如 `sessions.getLedger`）。
+   */
+  async getLedger(): Promise<ContextLedger> {
+    return structuredClone((await this.loadLedger()).ledger);
+  }
+
+  /**
    * 读取 ledger + 预算好的 buildView 缓存键。磁盘事实只在指纹（size/mtime/ctime）
    * 变化时重读；命中返回缓存持有的规范副本本身（只读约定，不再逐次克隆），
    * save 仍是唯一提交点。

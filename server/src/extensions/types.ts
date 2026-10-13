@@ -13,7 +13,13 @@ export type ExtensionPermission =
   | "http:route"
   | "model:fast"
   | "prompt:shape"
-  | "tools:shaping";
+  | "tools:shaping"
+  /** 读取模型服务商配置（脱敏视图，见 providers.listProfiles）。 */
+  | "providers:read"
+  /** 新增/更新模型服务商配置与模型目录 manual 层（见 providers.upsertProfiles）。 */
+  | "providers:mutate"
+  /** 写入会话历史（见 sessions.import：新建导入与被导入覆盖目标会话的 messages.jsonl）。 */
+  | "sessions:mutate";
 
 export type ExtensionHook = "context.beforeBuild" | "tool.beforeExecute" | "tool.afterExecute" | "message.beforeSend" | "prompt.beforeBuild";
 
@@ -38,6 +44,30 @@ export interface ExtensionRoute {
   method: "GET" | "POST" | "DELETE";
   /** 以 / 开头，不允许 .. 段；与请求路径精确匹配。 */
   path: string;
+  /** 路由处理超时毫秒，缺省 5000，下限 1000、上限 120000，钳制生效（见 clampExtensionRouteTimeout）。 */
+  timeoutMs?: number;
+}
+
+/** 扩展路由处理超时缺省值（毫秒）。 */
+const ROUTE_TIMEOUT_DEFAULT_MS = 5000;
+
+/** 扩展路由处理超时下限（毫秒）：过短会让正常 IO 路由必然超时。 */
+const ROUTE_TIMEOUT_MIN_MS = 1000;
+
+/** 扩展路由处理超时上限（毫秒）：与 context 钩子超时同档，防止扩展长期占用转发链。 */
+const ROUTE_TIMEOUT_MAX_MS = 120_000;
+
+/**
+ * 归一扩展路由处理超时：非安全整数（缺省、字符串、NaN、小数等）回落 5000，
+ * 合法值钳制在 1000–120000。
+ *
+ * server（IPC 转发）与 Extension Host（本进程 withTimeout）共用同一函数，避免两侧口径漂移。
+ * @param timeoutMs - manifest.routes[].timeoutMs 原值（未知类型）。
+ * @returns 可直接使用的超时毫秒数。
+ */
+export function clampExtensionRouteTimeout(timeoutMs: unknown): number {
+  if (typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs)) return ROUTE_TIMEOUT_DEFAULT_MS;
+  return Math.min(ROUTE_TIMEOUT_MAX_MS, Math.max(ROUTE_TIMEOUT_MIN_MS, timeoutMs));
 }
 
 export interface ExtensionManifest {
@@ -149,6 +179,8 @@ export interface HostResponse {
 export type ExtensionApiMethod =
   | "sessions.list"
   | "sessions.get"
+  | "sessions.getLedger"
+  | "sessions.getSubagent"
   | "context.getView"
   | "context.readArtifact"
   | "context.readVaultFile"
@@ -160,7 +192,11 @@ export type ExtensionApiMethod =
   | "storage.list"
   | "model.complete"
   | "model.vision"
-  | "models.getCapabilities";
+  | "models.getCapabilities"
+  | "models.defaultSelection"
+  | "providers.listProfiles"
+  | "providers.upsertProfiles"
+  | "sessions.import";
 
 /** host→server：扩展调用 server 能力。与 HostResponse 以 api+extensionId 字段区分。 */
 export interface ApiRequest {

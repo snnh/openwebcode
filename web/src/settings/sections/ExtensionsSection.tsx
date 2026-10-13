@@ -13,6 +13,7 @@ const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string 
   "pdf-to-image": { name: "PDF to Image", description: "Converts PDF pages into image attachments for models that support image input." },
   "env-sim": { name: "Environment Simulation", description: "Mimic another coding agent's system-prompt style and default tool shapes via a selectable preset." },
   "session-format-upgrade": { name: "Session Format Upgrade", description: "Offline upgrade of legacy sessions to the latest message format (OpenAI Responses thinking replay fields). Manual trigger, session locked while upgrading, backup before write." },
+  "dsh-sync": { name: "dsh Sync", description: "Two-way sync of model configuration and sessions with the dsh (DeepSeek Harness) data directory — manual trigger, diff preview, per-item selection." },
 };
 
 /** 官方扩展配置字段的英文文案（schema 内嵌中文 title/description，英文界面按字段路径覆盖） */
@@ -39,6 +40,10 @@ const OFFICIAL_FIELD_EN: Record<string, Record<string, { title: string; descript
   },
   "env-sim": {
     persona: { title: "Preset", description: "The coding-agent preset to mimic; empty means no simulation." },
+  },
+  "dsh-sync": {
+    dshHome: { title: "dsh data directory", description: "The dsh data directory (defaults to ~/.dsh)." },
+    profile: { title: "dsh profile", description: "Model configuration is read from profiles/<profile>/cordis.patch.yml (defaults to web)." },
   },
 };
 

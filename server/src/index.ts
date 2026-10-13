@@ -57,6 +57,10 @@ import { EvalEvaluator } from "./eval/evaluator.js";
 import { ChatAssistantStore, ChatConfigService, ChatPythonEnv, ChatRunner, ChatSessionStore } from "./chat/index.js";
 import { DEFAULT_DSH_PORT, DshCompatRuntime } from "./dsh/web-protocol/runtime.js";
 import { applySessionDefaultsFor } from "./routes/sessions-core.js";
+// 默认模型解析（导入会话补 provider/model）：与 `POST /api/sessions` 共用同一套 helper，
+// 避免第二份口径。route-context 只依赖 providers/settings/context 层（不反向 import 本文件），
+// 因此这里是单向依赖，不成环。
+import { resolveDefaultModel, resolveDefaultProvider, resolveDefaultSelection } from "./routes/route-context.js";
 import { createDshModelBridge } from "./dsh/model-bridge.js";
 import { homedir } from "node:os";
 
@@ -145,7 +149,22 @@ const vaultService: CompactVaultService = new CompactVaultService(sessions, fast
   // 扩展配置延迟读取（ExtensionManager 在其后创建）：maxTokens 等由用户在扩展设置里配置
   getConfig: () => extensions.list().find((item) => item.id === "compact-vault")?.config ?? {},
 });
-const extensions: ExtensionManager = new ExtensionManager(dataDir, events, { sessions, fastModel, vaultService, providers, core, models });
+const extensions: ExtensionManager = new ExtensionManager(dataDir, events, {
+  sessions, fastModel, vaultService, providers, core, models, providerProfiles,
+  // sessions.import 的结构化入参（dsh-sync M3b）缺 provider/model 时按「settings.defaultModel →
+  // 首个已配置服务商 / 目录首模型」补默认，语义与 sessions-core.ts 的隐式会话创建逐字一致；
+  // 调用时现读（settings 热更新、provider 热注册都能立刻生效）。
+  // 给定 provider 时（dsh-sync 导出补全 model 用，见 models.defaultSelection）只解析该 provider
+  // 的目录默认模型，provider 原样回传（解析不到即空串，由调用方按「补不出来」跳过该项）。
+  resolveModelSelection: (explicitProvider) => {
+    if (explicitProvider !== undefined) return { provider: explicitProvider, model: resolveDefaultModel(explicitProvider, models) };
+    const selection = resolveDefaultSelection(settings, providers, models);
+    if (selection !== undefined) return selection;
+    const provider = resolveDefaultProvider(settings, providers);
+    if (provider === undefined) return undefined;
+    return { provider, model: resolveDefaultModel(provider, models) };
+  },
+});
 await extensions.initialize();
 const contentLens = new ContentLensService(sessions, fastModel);
 // Production evaluations share the normal Core boundary, so workspace access

@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","createdAt":1786505848722,"cwd":"/tmp/raw","isSeeded":false,"delegationDepth":0}
+{"type":"user/message","seq":0,"time":1786505849000,"data":{"id":"m1","role":"user","content":[{"type":"text","text":"你好"}],"source":{"kind":"user"}},"surfaceOp":"append"}
