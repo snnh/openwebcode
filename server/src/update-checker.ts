@@ -47,7 +47,7 @@ function parseSemver(version: string): [number, number, number] {
 }
 
 /** Strip a leading `v` from a release tag name (e.g. `v0.5.2` -> `0.5.2`). */
-export function stripVersionPrefix(tag: string): string {
+function stripVersionPrefix(tag: string): string {
   return tag.startsWith("v") ? tag.slice(1) : tag;
 }
 
