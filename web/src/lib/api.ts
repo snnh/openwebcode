@@ -300,8 +300,13 @@ export const api = {
     path: string,
     init?: { method?: "GET" | "POST" | "DELETE"; query?: Record<string, string>; body?: unknown },
   ): Promise<T> => {
-    const search = new URLSearchParams(init?.query ?? {}).toString();
     const base = `/api/ext/${encodeURIComponent(id)}${path.startsWith("/") ? path : `/${path}`}`;
+    // path 目前全部来自调用方字面量，但作为通用封装拒绝可疑形态（`..` 段、空段、查询/片段符），
+    // 防止未来误用把请求引到 `/api/ext/<id>` 前缀之外（URL 解析器会吞掉这些字符）。
+    if (/\/\.\.?(\/|$)/.test(base) || base.includes("//") || base.includes("?") || base.includes("#")) {
+      return Promise.reject(new Error(`extRoute path is invalid: ${path}`));
+    }
+    const search = new URLSearchParams(init?.query ?? {}).toString();
     return request<T>(search ? `${base}?${search}` : base, {
       method: init?.method ?? "GET",
       ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),

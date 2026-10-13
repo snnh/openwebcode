@@ -7,10 +7,10 @@
 ### 新功能
 
 - **dsh 同步扩展：与 dsh（DeepSeek Harness）数据目录双向手动同步模型配置与会话**（官方扩展，默认关闭，设置 → 扩展启用）。新增底部面板「dsh 同步」页签：环境状态条（数据目录/profile/zstd 能力/dsh 运行态）+ 模型配置区块 + 会话区块，均为「先预览差异、再逐项勾选、后执行」，两个区块各有独立方向开关，执行后给出结构化报告（已应用/未执行/警告/未映射字段/丢弃事件计数）。
-  - **模型配置双向**：读写 dsh `profiles/<profile>/cordis.patch.yml` 的 `llm-service-lite` 段（CST 保注释改写，写前自动备份为 `*.owc-sync-backup-<时间戳>`）；导入时解析 `apiKeyEnv` 环境变量值内联进 owc，导出时生成 `OWC_SYNC_*_API_KEY` 环境变量引用、**不写明文**（owc 侧只回脱敏视图，扩展全程拿不到真实 Key）；dsh `models[]` 导入为 owc 模型目录 manual 层条目，两侧对不上的字段统一计入「未映射字段」。
-  - **会话双向**：dsh `session.v3.jsonl.zstd` ↔ owc 会话，保真映射、导入后可继续对话；只支持 v3 代际（旧代际提示先在 dsh 中打开一次升级格式）；`compaction/summary` 映射为 owc 压缩锚点、`compaction/prune` 丢弃并计数；图片附件按 sha256 内容寻址读写；导出产物通过 dsh 官方 `restoreReleasedV3Artifact` 与 `session-format-catalog` 的完整加载路径（v3→v4 迁移 + v4 校验）校验，且**只新建 dsh 会话目录、永不覆盖**已有会话；导出前按会话 provider/model 做补全（缺 model 取该服务商目录默认模型、缺 provider 取 owc 当前默认），补不出来的会话带原因跳过——dsh 当前代际要求 assistant 消息的模型归属非空，写出空归属的文件 dsh 会拒绝加载。导入按工作目录分组、缺 cwd 的会话需先选本机目录；重复导入可选「覆盖更新 / 新建副本」（映射表持久化）。
+  - **模型配置双向**：读写 dsh `profiles/<profile>/cordis.patch.yml` 的 `llm-service-lite` 段（CST 保注释改写，写前自动备份为 `*.owc-sync-backup-<时间戳>`）；导入时解析 `apiKeyEnv` 环境变量值内联进 owc，导出时生成 `OWC_SYNC_*_API_KEY` 环境变量引用、**不写明文**（owc 侧只回脱敏视图，扩展全程拿不到真实 Key）；dsh `models[]` 导入为 owc 模型目录 manual 层条目（provider 配置两侧已一致但模型目录缺条目时，该条目仍可单独勾选补模型），两侧对不上的字段统一计入「未映射字段」。
+  - **会话双向**：dsh `session.v3.jsonl.zstd` ↔ owc 会话，保真映射、导入后可继续对话；读支持 v3/v4 代际（dsh 当前代际为 v4）、写仍为 v3（dsh 加载时自动迁移；更低代际提示先在 dsh 中打开一次升级格式，更高代际提示升级扩展）；`compaction/summary` 映射为 owc 压缩锚点、`compaction/prune` 丢弃并计数；图片附件按 sha256 内容寻址读写；导出产物通过 dsh 官方 `restoreReleasedV3Artifact` 与 `session-format-catalog` 的完整加载路径（v3→v4 迁移 + v4 校验）校验，且**只新建 dsh 会话目录、永不覆盖**已有会话；导出前按会话 provider/model 做补全（缺 model 取该服务商目录默认模型、缺 provider 取 owc 当前默认），补不出来的会话带原因跳过——dsh 当前代际要求 assistant 消息的模型归属非空，写出空归属的文件 dsh 会拒绝加载。导入按工作目录分组、缺 cwd 的会话需先选本机目录；重复导入可选「覆盖更新 / 新建副本」（映射表持久化）。**导出只取会话的活动路径**（owc 是消息树，分叉/重试留下的离路径历史不会混进 dsh 会话），工具历史按 dsh 的事件形态清洗与修复（多结果拆分、孤儿/重复/跨回合迟到的结果丢弃并计入警告；中断回合里没有结果的工具调用补 dsh 官方认的「工具未启动」修复事件），写盘前整份跑一遍 dsh 结构校验，不合格按 skipped 报原因而不是写出 dsh 拒收的文件。
   - **子代理会话**：父子会话转录双向嵌套映射（导入按「子代理调用与子会话的出现顺序一致」做时序配对启发式）；导出报告 applied 项含「子会话 N 个」徽标，个别子代理转录导出失败时追加黄色警示行（不影响父会话导出）。
-  - **凭据与安全**：默认关闭，仅在你点「预览/执行」时才读写 dsh 目录文件，直读直写、不依赖 dsh 在线；改写 patch.yml 前自动备份，探测到 dsh 运行中给出警告（写回需重启 dsh 生效）；会话压缩读写依赖 Node ≥22.15 的 zstd 能力，不可用时明确降级（模型配置同步不受影响）。
+  - **凭据与安全**：默认关闭，仅在你点「预览/执行」时才读写 dsh 目录文件，直读直写、不依赖 dsh 在线；改写 patch.yml 前自动备份，探测到 dsh 运行中给出警告（写回需重启 dsh 生效）；会话压缩读写依赖 Node ≥22.15 的 zstd 能力，不可用时执行按钮禁用并说明原因（模型配置同步不受影响）；会话同步按每批 ≤20 条分批提交，中途失败时已完成部分如实展示并标记「可能部分生效」、预览自动刷新，避免大批量单次请求超时后状态不明。
   - 使用说明见 [`help/dsh-sync.md`](./help/dsh-sync.md)（英文 [`help/dsh-sync.en.md`](./help/dsh-sync.en.md)）。
 
 ## [1.12.4]

@@ -9,6 +9,7 @@ import {
   defaultSessionSelection,
   DshSyncPanel,
   droppedEventsLine,
+  isFutureGeneration,
   exportCountsBadge,
   exportSubagentsBadge,
   exportSubagentsFailedLine,
@@ -73,6 +74,17 @@ describe("api.extRoute 私有路由封装", () => {
     await api.extRoute("dsh-sync", "/sync/providers", { method: "DELETE" });
     expect(calls(mock)[1]![1].method).toBe("DELETE");
   });
+
+  it("拒绝可疑 path（.. 段/空段/查询与片段符）：不发出请求", async () => {
+    const mock = stubJson({});
+    for (const bad of ["/../extensions", "/preview//providers", "/status?a=b", "/status#frag", "/.."]) {
+      await expect(api.extRoute("dsh-sync", bad)).rejects.toThrow(/extRoute path is invalid/);
+    }
+    expect(mock).not.toHaveBeenCalled();
+    // 合法的 `..` 子串（文件名而非路径段）不算穿越
+    stubJson({ ok: true });
+    await expect(api.extRoute("dsh-sync", "/preview/a..b")).resolves.toEqual({ ok: true });
+  });
 });
 
 const previewItems: DshProviderPreviewItem[] = [
@@ -91,6 +103,16 @@ describe("DshSyncPanel 纯逻辑", () => {
     expect(selectedKeys(previewItems, { alpha: true, beta: true, gamma: true })).toEqual(["alpha", "beta"]);
     // 顺序跟随预览列表（输出稳定）
     expect(selectedKeys(previewItems, { beta: true, gamma: true })).toEqual(["beta"]);
+  });
+
+  it("same 条目带模型目录条目（models > 0）时可勾选：只补模型、不重写 provider", () => {
+    const sameWithModels: DshProviderPreviewItem = { key: "same-models", status: "same", models: 3 };
+    expect(isSelectable(sameWithModels)).toBe(true);
+    expect(isSelectable({ key: "same-empty", status: "same", models: 0 })).toBe(false);
+    expect(isSelectable({ key: "same-none", status: "same" })).toBe(false);
+    // 默认仍不勾（same 不进默认集合），但可被显式勾选并进入执行 keys
+    expect(defaultSelection([sameWithModels])).toEqual({});
+    expect(selectedKeys([sameWithModels], { "same-models": true })).toEqual(["same-models"]);
   });
 
   it("徽标映射：新增=绿、变更=黄、相同=灰；凭据缺失=红、其余弱化、未提供不渲染", () => {
@@ -156,6 +178,13 @@ const statusPayload: DshSyncStatus = {
   nodeVersion: "v22.15.0",
 };
 
+/** dsh 数据目录/profile 就绪的状态（导出方向的执行门禁要求 dshHomeExists）。 */
+const statusPayloadReady: DshSyncStatus = {
+  ...statusPayload,
+  dshHomeExists: true,
+  profileExists: true,
+};
+
 describe("DshSyncPanel 渲染", () => {
   it("启用后展示环境状态条：路径/profile 缺失警示 + dsh 运行中提示 + 会话区块待预览提示", async () => {
     stubDshFetch([{ id: "dsh-sync", enabled: true }], statusPayload);
@@ -205,8 +234,12 @@ const SESSION_ALPHA = "11111111-2222-4333-8444-555566667777";
 const SESSION_SUB = "dddddddd-eeee-4fff-8000-111111111111";
 /** 头行缺 cwd 的会话（需用户填 cwdOverride）。 */
 const SESSION_NO_CWD = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-/** v1 旧代际（不可导入）。 */
+/** v1 旧代际（不可导入：需先在 dsh 里升级格式）。 */
 const SESSION_LEGACY = "cccccccc-dddd-4eee-8fff-000000000000";
+/** v4（dsh 当前代际，可导入）。 */
+const SESSION_V4 = "eeeeeeee-ffff-4000-8111-222222222222";
+/** v5 高代际（不可导入：需升级 dsh-sync 扩展）。 */
+const SESSION_FUTURE = "ffffffff-0000-4111-8222-333333333333";
 
 const sessionItems: DshSessionPreviewItem[] = [
   { dshId: SESSION_ALPHA, cwd: "/work/alpha", createdAt: "2026-08-13T02:30:00.000Z", generation: 3, supported: true, selectable: true },
@@ -222,10 +255,20 @@ const sessionItems: DshSessionPreviewItem[] = [
     selectable: true,
   },
   { dshId: SESSION_NO_CWD, generation: 3, supported: true, selectable: true },
-  { dshId: SESSION_LEGACY, generation: 1, supported: false, selectable: false, reason: "请先在 dsh 中打开一次升级格式" },
+  { dshId: SESSION_LEGACY, generation: 1, supported: false, selectable: false, reason: "旧代际 v1：请先在 dsh 中打开一次升级格式" },
 ];
 
 const sessionPreviewPayload = { direction: "import", items: sessionItems, zstdAvailable: true, dshRunning: false };
+
+/** 代际提示用例：v3/v4（读支持区间内，无提示）与 v1/v5（各给一条提示）。 */
+const generationItems: DshSessionPreviewItem[] = [
+  { dshId: SESSION_ALPHA, cwd: "/work/alpha", generation: 3, supported: true, selectable: true },
+  { dshId: SESSION_V4, cwd: "/work/alpha", generation: 4, supported: true, selectable: true },
+  { dshId: SESSION_LEGACY, generation: 1, supported: false, selectable: false, reason: "旧代际 v1：请先在 dsh 中打开一次升级格式" },
+  { dshId: SESSION_FUTURE, generation: 5, supported: false, selectable: false, reason: "dsh 代际 v5 暂不支持：请升级 dsh-sync 扩展" },
+];
+
+const generationPreviewPayload = { direction: "import", items: generationItems, zstdAvailable: true, dshRunning: false };
 
 const sessionSyncPayloadResult = {
   direction: "import",
@@ -236,7 +279,7 @@ const sessionSyncPayloadResult = {
     counts: { user: 2, assistant: 1, tool: 3, images: 2, imagesMissing: 1 },
     warnings: [],
   }],
-  skipped: [{ dshId: SESSION_LEGACY, reason: "请先在 dsh 中打开一次升级格式" }],
+  skipped: [{ dshId: SESSION_LEGACY, reason: "旧代际 v1：请先在 dsh 中打开一次升级格式" }],
   report: {
     dshHome: "/home/u/.dsh",
     dshRunning: false,
@@ -365,6 +408,8 @@ describe("DshSyncPanel 会话纯逻辑", () => {
       .toEqual([SESSION_ALPHA, SESSION_SUB]);
     // 顺序跟随清单（输出稳定）
     expect(selectedSessionIds(sessionItems, { [SESSION_SUB]: true })).toEqual([SESSION_SUB]);
+    // v4（dsh 当前代际）同样可选；v1/v5 不进可选项
+    expect(selectableSessionSelection(generationItems)).toEqual({ [SESSION_ALPHA]: true, [SESSION_V4]: true });
   });
 
   it("冲突单选可见性只看「已勾选且已同步」；短 id/旧代际/丢弃汇总各自收敛", () => {
@@ -377,6 +422,11 @@ describe("DshSyncPanel 会话纯逻辑", () => {
     expect(isLegacyGeneration(undefined)).toBe(false);
     expect(isLegacyGeneration(3)).toBe(false);
     expect(isLegacyGeneration(2)).toBe(true);
+    // 读支持 v3/v4：两个上界内的代际都不给提示，>v4 走「升级扩展」提示
+    expect(isLegacyGeneration(4)).toBe(false);
+    expect(isFutureGeneration(undefined)).toBe(false);
+    expect(isFutureGeneration(4)).toBe(false);
+    expect(isFutureGeneration(5)).toBe(true);
     expect(droppedEventsLine({})).toBeUndefined();
     expect(droppedEventsLine({ "compaction/prune": 2, "message/delta": 1 })).toBe("compaction/prune×2；message/delta×1");
   });
@@ -418,7 +468,7 @@ describe("DshSyncPanel 会话区块渲染", () => {
     expect(screen.getByText("子代理")).toBeInTheDocument();
     expect(screen.getByText(/^已同步 \d{2}:\d{2}$/)).toBeInTheDocument();
     expect(screen.getByText(/^旧代际 v1：需先在 dsh 中打开一次升级格式$/)).toBeInTheDocument();
-    expect(screen.getByText("请先在 dsh 中打开一次升级格式")).toBeInTheDocument();
+    expect(screen.getByText("旧代际 v1：请先在 dsh 中打开一次升级格式")).toBeInTheDocument();
     // 分组头按 cwd 升序，缺 cwd 的组在最后
     const headers = [...container.querySelectorAll(".dsh-sync-session-group > summary code")].map((node) => node.textContent);
     expect(headers).toEqual(["/work/alpha", "无工作目录"]);
@@ -426,6 +476,24 @@ describe("DshSyncPanel 会话区块渲染", () => {
     const checkboxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
     expect(checkboxes.map((box) => box.disabled)).toEqual([false, false, false, true]);
     expect((screen.getByRole("checkbox", { name: SESSION_ALPHA }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("代际提示按区间收敛：v3/v4 无提示、v1 提示升级格式、v5 提示升级扩展", async () => {
+    stubDshFetch([{ id: "dsh-sync", enabled: true }], statusPayload, undefined, generationPreviewPayload);
+    const { container } = renderWithClient(<DshSyncPanel />);
+    await screen.findByText("未检测到 dsh 数据目录");
+    fireEvent.click(screen.getByRole("button", { name: "预览会话" }));
+    expect(await screen.findByText("11111111")).toBeInTheDocument();
+    expect(screen.getByText("eeeeeeee")).toBeInTheDocument();
+    // 只有 v1 / v5 两行给代际提示（v3/v4 在读支持区间内，不渲染提示块）
+    const notices = [...container.querySelectorAll(".dsh-sync-session-gen")].map((node) => node.textContent);
+    expect(notices).toEqual([
+      "旧代际 v1：需先在 dsh 中打开一次升级格式",
+      "dsh 代际 v5 暂不支持：请升级 dsh-sync 扩展",
+    ]);
+    // 不可导入的仍是 v1/v5 两行
+    const checkboxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(checkboxes.map((box) => box.disabled)).toEqual([false, false, true, true]);
   });
 
   it("勾选默认（未同步的勾、已同步的不勾）与冲突单选：仅在勾选含已同步会话时出现，全选/清空只作用于可导入项", async () => {
@@ -492,9 +560,9 @@ describe("DshSyncPanel 会话区块渲染", () => {
   });
 
   it("导出预览：标题/provider-model/更新时间/已导出徽标/cwd；默认不勾、执行 POST body 只带勾选的 owcId", async () => {
-    const handler = stubDshFetch([{ id: "dsh-sync", enabled: true }], statusPayload, undefined, sessionPreviewPayload, undefined, exportPreviewPayload, exportSyncPayloadResult);
+    const handler = stubDshFetch([{ id: "dsh-sync", enabled: true }], statusPayloadReady, undefined, sessionPreviewPayload, undefined, exportPreviewPayload, exportSyncPayloadResult);
     renderWithClient(<DshSyncPanel />);
-    await screen.findByText("未检测到 dsh 数据目录");
+    await screen.findByText("/home/u/.dsh");
     const sessionDir = screen.getByRole("group", { name: "会话同步方向" });
 
     // 切到导出方向：未点「预览会话」前不发任何会话请求
@@ -532,9 +600,9 @@ describe("DshSyncPanel 会话区块渲染", () => {
   });
 
   it("导出报告卡：标题 + dsh 短 id + 事件/附件数 + skipped 原因 + mapSaved=false 警告", async () => {
-    stubDshFetch([{ id: "dsh-sync", enabled: true }], statusPayload, undefined, sessionPreviewPayload, undefined, exportPreviewPayload, exportSyncPayloadResult);
+    stubDshFetch([{ id: "dsh-sync", enabled: true }], statusPayloadReady, undefined, sessionPreviewPayload, undefined, exportPreviewPayload, exportSyncPayloadResult);
     const { container } = renderWithClient(<DshSyncPanel />);
-    await screen.findByText("未检测到 dsh 数据目录");
+    await screen.findByText("/home/u/.dsh");
     fireEvent.click(within(screen.getByRole("group", { name: "会话同步方向" })).getByRole("button", { name: "导出到 dsh" }));
     fireEvent.click(screen.getByRole("button", { name: "预览会话" }));
     await screen.findByText("导出的会话 A");
@@ -583,5 +651,86 @@ describe("DshSyncPanel 会话区块渲染", () => {
     fireEvent.click(within(sessionDir).getByRole("button", { name: "导出到 dsh" }));
     expect(await screen.findByText("导出的会话 A")).toBeInTheDocument();
     expect(exportFetches()).toBe(1);
+  });
+});
+
+describe("DshSyncPanel 执行门禁与分批", () => {
+  it("导出方向：dsh 数据目录缺失时禁用执行按钮并给出原因", async () => {
+    stubDshFetch([{ id: "dsh-sync", enabled: true }], statusPayload, undefined, sessionPreviewPayload, undefined, exportPreviewPayload, undefined);
+    renderWithClient(<DshSyncPanel />);
+    await screen.findByText("未检测到 dsh 数据目录");
+    fireEvent.click(within(screen.getByRole("group", { name: "会话同步方向" })).getByRole("button", { name: "导出到 dsh" }));
+    fireEvent.click(screen.getByRole("button", { name: "预览会话" }));
+    await screen.findByText("导出的会话 A");
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    expect(screen.getByRole("button", { name: "执行导出" })).toBeDisabled();
+    expect(screen.getByText("未检测到 dsh 数据目录，无法导出")).toBeInTheDocument();
+  });
+
+  it("zstd 不可用时：导入方向同样禁用执行按钮", async () => {
+    const noZstd: DshSyncStatus = { ...statusPayloadReady, zstdAvailable: false };
+    stubDshFetch([{ id: "dsh-sync", enabled: true }], noZstd, undefined, sessionPreviewPayload, undefined, undefined, undefined);
+    renderWithClient(<DshSyncPanel />);
+    await screen.findByText("/home/u/.dsh");
+    fireEvent.click(screen.getByRole("button", { name: "预览会话" }));
+    await screen.findByText("11111111");
+    expect(screen.getByRole("button", { name: "执行导入" })).toBeDisabled();
+    expect(screen.getAllByText(/zstd 不可用/).length).toBeGreaterThan(0);
+  });
+
+  it("分批执行：25 条勾选拆成 20+5 两次 POST", async () => {
+    const many: DshSessionPreviewItem[] = Array.from({ length: 25 }, (_, index) => ({
+      dshId: `${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`,
+      cwd: "/work/alpha",
+      generation: 4,
+      supported: true,
+      selectable: true,
+    }));
+    const handler = stubDshFetch(
+      [{ id: "dsh-sync", enabled: true }],
+      statusPayloadReady,
+      undefined,
+      { direction: "import", items: many, zstdAvailable: true, dshRunning: false },
+      sessionSyncPayloadResult,
+    );
+    renderWithClient(<DshSyncPanel />);
+    await screen.findByText("/home/u/.dsh");
+    fireEvent.click(screen.getByRole("button", { name: "预览会话" }));
+    await screen.findByText("00000000");
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    fireEvent.click(screen.getByRole("button", { name: "执行导入" }));
+    await waitFor(() => expect(handler.mock.calls.filter(([url]) => String(url).endsWith("/api/ext/dsh-sync/sync/sessions")).length).toBe(2));
+    const posts = handler.mock.calls.filter(([url]) => String(url).endsWith("/api/ext/dsh-sync/sync/sessions"));
+    const bodies = posts.map(([, init]) => JSON.parse(String(init?.body)) as { direction: string; items: Array<{ dshId: string }>; onConflict: string });
+    expect(bodies[0]!.items).toHaveLength(20);
+    expect(bodies[1]!.items).toHaveLength(5);
+    expect(bodies[0]!.items[0]!.dshId).toBe("00000000-1111-4111-8111-111111111111");
+    expect(bodies[1]!.items[4]!.dshId).toBe("00000024-1111-4111-8111-111111111111");
+  });
+
+  it("模型配置执行只刷新模型配置区块：不重拉会话清单", async () => {
+    const handler = stubDshFetch(
+      [{ id: "dsh-sync", enabled: true }],
+      statusPayloadReady,
+      { direction: "import", items: previewItems, unmappedFields: [], warnings: [] },
+      sessionPreviewPayload,
+      sessionSyncPayloadResult,
+      undefined,
+      undefined,
+    );
+    renderWithClient(<DshSyncPanel />);
+    await screen.findByText("/home/u/.dsh");
+    // 先预览会话（1 次会话请求），再预览模型配置并执行
+    fireEvent.click(screen.getByRole("button", { name: "预览会话" }));
+    await screen.findByText("11111111");
+    fireEvent.click(screen.getByRole("button", { name: "预览差异" }));
+    await screen.findByText("alpha");
+    // new 条目默认勾选，直接执行
+    // 执行按钮名为「执行同步」
+    fireEvent.click(screen.getByRole("button", { name: "执行同步" }));
+    await waitFor(() => expect(handler.mock.calls.some(([url]) => String(url).endsWith("/api/ext/dsh-sync/sync/providers"))).toBe(true));
+    // 会话清单没有被 invalidate 误刷（仍是一次 preview 请求）
+    const sessionFetches = handler.mock.calls.filter(([url]) => String(url).includes("preview/sessions?direction=import")).length;
+    expect(sessionFetches).toBe(1);
   });
 });

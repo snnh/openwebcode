@@ -26,7 +26,7 @@ import {
   type DshSyncSessionPreview,
   type DshSyncSessionResult,
 } from "../src/extensions/dsh-sync-host.js";
-import { dshSessionDir, DSH_SYNC_SUPPORTED_GENERATION, decodeDshSessionFile } from "../src/extensions/dsh-sync-dsh.js";
+import { dshSessionDir, DSH_SYNC_WRITE_GENERATION, decodeDshSessionFile } from "../src/extensions/dsh-sync-dsh.js";
 import { DSH_SYNC_MAP_PATH } from "../src/extensions/dsh-sync-map.js";
 import {
   attachSubagentTasks,
@@ -80,10 +80,43 @@ async function writeV3Session(
   const dir = path.join(home, "sessions", project, id);
   await mkdir(dir, { recursive: true });
   const lines = [
-    JSON.stringify({ type: "session", version: DSH_SYNC_SUPPORTED_GENERATION, id, isSeeded: false, delegationDepth: 0, ...header }),
+    JSON.stringify({ type: "session", version: DSH_SYNC_WRITE_GENERATION, id, isSeeded: false, delegationDepth: 0, ...header }),
     ...events.map((event) => JSON.stringify(event)),
   ];
-  await writeFile(path.join(dir, `session.v${DSH_SYNC_SUPPORTED_GENERATION}.jsonl`), `${lines.join("\n")}\n`, "utf8");
+  await writeFile(path.join(dir, `session.v${DSH_SYNC_WRITE_GENERATION}.jsonl`), `${lines.join("\n")}\n`, "utf8");
+}
+
+/** 造一个 v4 raw 会话（同目录并存 v3/v4 时扫描会选更高代际的 v4）。 */
+async function writeV4Session(
+  home: string,
+  project: string,
+  id: string,
+  header: Record<string, unknown>,
+  events: Array<Record<string, unknown>>,
+): Promise<void> {
+  const dir = path.join(home, "sessions", project, id);
+  await mkdir(dir, { recursive: true });
+  const lines = [
+    JSON.stringify({ type: "session", version: 4, id, isSeeded: false, delegationDepth: 0, ...header }),
+    ...events.map((event) => JSON.stringify(event)),
+  ];
+  await writeFile(path.join(dir, "session.v4.jsonl"), `${lines.join("\n")}\n`, "utf8");
+}
+
+/** v4 一等 tool 角色消息的 `tool/result` 事件（结果块直挂，无 tool-result 包装）。 */
+function v4ToolResultEvent(seq: number, id: string, toolCallId: string, text: string): Record<string, unknown> {
+  return event(seq, "tool/result", {
+    turn: 1,
+    step: 1,
+    message: {
+      id,
+      role: "tool",
+      toolCallId,
+      content: [{ type: "text", text }],
+      isError: false,
+      source: { kind: "tool", callId: toolCallId },
+    },
+  }, { surfaceOp: "append" });
 }
 
 /** 事件信封。 */
@@ -555,12 +588,45 @@ describe("POST /sync/sessions（import）：子代理会话嵌套映射", () => 
     expect(body.report.notes.join("\n")).not.toContain("时序配对启发式");
   });
 
+  it("v4 子会话（一等 tool 角色消息）同样可嵌套：同目录并存时选最高代际 v4", async () => {
+    const home = await subagentHome("dsh-sync-m5a-v4-child-");
+    // CHILD_EARLY 目录里并存 session.v3.jsonl（subagentHome 写的）与 session.v4.jsonl → 扫描选 v4
+    await writeV4Session(home, "--tmp-sub--", CHILD_EARLY, {
+      createdAt: T0 + 1000,
+      cwd: "/tmp/sub",
+      delegationDepth: 1,
+      parentSession: PARENT,
+      origin: "subagent",
+      agentPreset: "explore",
+    }, [
+      userEvent(0, "cu1", "任务 A"),
+      assistantEvent(1, "ca1", "A 的结论", [{ id: "cc1", name: "read_file", args: JSON.stringify({ path: "a.txt" }) }]),
+      toolCallEvent(2, "cc1", "read_file", JSON.stringify({ path: "a.txt" })),
+      v4ToolResultEvent(3, "ct1", "cc1", "file body"),
+    ]);
+    const fake = makeFakeApi();
+    const body = (await createDshSyncRoutes(fake.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "import", items: [{ dshId: PARENT }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncSessionResult;
+
+    expect(body.skipped).toEqual([]);
+    expect(body.applied[0]).toMatchObject({ dshId: PARENT, subagents: 2 });
+    const early = fake.imported[0]!.subagents!.find((item) => item.data.prompt === "任务 A")!;
+    expect(early.data).toMatchObject({ agent: "explore", turns: 1, toolsUsed: ["read_file"] });
+    // v4 结果块直挂 → 转录里的 tool 消息仍是 owc 的 tool_result（含 toolsUsed 之外的正文）
+    const toolMessage = early.data.messages.find((message) => message.role === "tool")!;
+    expect(toolMessage.content).toEqual([
+      { type: "tool_result", toolCallId: "cc1", content: "file body", isError: false },
+    ]);
+  });
+
   it("子会话头行可读但事件断档（完整解码失败）：不 nested，其后的配对顺延，父会话照常导入", async () => {
     const home = await subagentHome("dsh-sync-m5a-broken-child-");
     // CHILD_EARLY 头行合法（扫描期 supported），但事件 seq 断档 → 完整解码抛「格式损坏」
-    const header = { type: "session", version: DSH_SYNC_SUPPORTED_GENERATION, id: CHILD_EARLY, createdAt: T0 + 1000, isSeeded: false, delegationDepth: 1, parentSession: PARENT, origin: "subagent", cwd: "/tmp/sub" };
+    const header = { type: "session", version: DSH_SYNC_WRITE_GENERATION, id: CHILD_EARLY, createdAt: T0 + 1000, isSeeded: false, delegationDepth: 1, parentSession: PARENT, origin: "subagent", cwd: "/tmp/sub" };
     const broken = `${JSON.stringify(header)}\n${JSON.stringify(event(3, "user/message", { id: "cu1", role: "user", content: [{ type: "text", text: "任务 A" }] }, { surfaceOp: "append" }))}\n`;
-    await writeFile(path.join(home, "sessions", "--tmp-sub--", CHILD_EARLY, `session.v${DSH_SYNC_SUPPORTED_GENERATION}.jsonl`), broken, "utf8");
+    await writeFile(path.join(home, "sessions", "--tmp-sub--", CHILD_EARLY, `session.v${DSH_SYNC_WRITE_GENERATION}.jsonl`), broken, "utf8");
     const fake = makeFakeApi();
     const body = (await createDshSyncRoutes(fake.api).get("POST /sync/sessions")?.(
       { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "import", items: [{ dshId: PARENT }] } },
@@ -675,7 +741,7 @@ describe("POST /sync/sessions（export）：子代理转录写出 dsh 子会话"
     const names = await readdir(dir);
     const decoded = await decodeDshSessionFile({
       file: path.join(dir, names[0]!),
-      generation: DSH_SYNC_SUPPORTED_GENERATION,
+      generation: DSH_SYNC_WRITE_GENERATION,
       compressed: true,
     });
     expect(decoded.header).toMatchObject({
@@ -692,6 +758,86 @@ describe("POST /sync/sessions（export）：子代理转录写出 dsh 子会话"
     ]);
     // 父会话与子会话是两个目录（子会话不会覆盖父会话）
     expect(dshSessionDir(home, "/tmp/exp", item.dshId)).not.toBe(dir);
+  });
+
+  it("嵌套子代理：子转录里的 subagentTaskIds 递归导出（parentSession 逐层指向、delegationDepth 递增）", async () => {
+    const home = path.join(await tempDir("dsh-sync-m5a-nested-"), "dsh-home");
+    await mkdir(home, { recursive: true });
+    /**
+     * 造一条「带下一次子代理调用」的转录：user + assistant(广告 tool_call) + tool(结果带 taskId)。
+     * 结果必须有先行广告，否则会被导出前的孤儿结果清洗丢掉（delegationDepth 的递归就断在这里）。
+     */
+    const chain = (taskId: string, nextTaskId: string | undefined): Record<string, unknown> => ({
+      id: taskId,
+      prompt: `任务 ${taskId}`,
+      startedAt: iso(T0 + 500),
+      turns: 1,
+      toolsUsed: ["subagent"],
+      conclusion: "完成",
+      messages: [
+        { id: `${taskId}-u`, role: "user", content: [{ type: "text", text: `任务 ${taskId}` }], createdAt: iso(T0 + 500) },
+        { id: `${taskId}-a`, role: "assistant", content: [{ type: "tool_call", id: `${taskId}-call`, name: "subagent", input: {} }], createdAt: iso(T0 + 600) },
+        {
+          id: `${taskId}-t`,
+          role: "tool",
+          content: [{
+            type: "tool_result",
+            toolCallId: `${taskId}-call`,
+            content: "子任务完成",
+            isError: false,
+            ...(nextTaskId === undefined ? {} : { subagentTaskIds: [nextTaskId] }),
+          }],
+          createdAt: iso(T0 + 700),
+        },
+      ],
+    });
+    // 6 层链：T1 → T2 → T3 → T4 → T5 → T6（上限 5 层，T6 不导出）
+    const tasks = ["T1", "T2", "T3", "T4", "T5", "T6"];
+    const transcripts: Record<string, Record<string, unknown>> = {};
+    tasks.forEach((taskId, index) => {
+      transcripts[`owc-1/${taskId}`] = chain(taskId, tasks[index + 1]);
+    });
+    // 父会话只引用 T1（链的第 1 层）
+    const parent: ChatMessage[] = [
+      { id: "pu1", role: "user", content: [{ type: "text", text: "跑链" }], createdAt: iso(T0) },
+      { id: "pa1", role: "assistant", content: [{ type: "tool_call", id: "call-1", name: "subagent", input: {} }], createdAt: iso(T0 + 1000) },
+      {
+        id: "pt1",
+        role: "tool",
+        content: [{ type: "tool_result", toolCallId: "call-1", content: "完成", isError: false, subagentTaskIds: ["T1"] }],
+        createdAt: iso(T0 + 2000),
+      },
+    ] as ChatMessage[];
+    const fake = makeFakeApi({
+      sessions: {
+        "owc-1": { id: "owc-1", title: "父会话", cwd: "/tmp/nest", provider: "gateway", model: "deepseek-v4-pro", createdAt: iso(T0), updatedAt: iso(T0), messages: parent },
+      },
+      transcripts,
+    });
+    const body = (await createDshSyncRoutes(fake.api).get("POST /sync/sessions")?.(
+      { method: "POST", path: "/sync/sessions", query: {}, body: { direction: "export", items: [{ owcId: "owc-1" }] } },
+      { dshHome: home, profile: "web" },
+    ))?.body as DshSyncExportResult;
+
+    expect(body.skipped).toEqual([]);
+    const item = body.applied[0]!;
+    // 父会话的两个 taskId 是既有用例的（EXISTING_TASK 转录缺失 → failed），这里只关心链上的 5 层
+    const exported = (item.subagents ?? []).filter((child) => tasks.includes(child.taskId));
+    expect(exported.map((child) => child.taskId)).toEqual(["T1", "T2", "T3", "T4", "T5"]);
+    // 逐层头部：parentSession 指回上一层刚写出的 dshId，delegationDepth 递增
+    const headers = await Promise.all(exported.map(async (child) => {
+      const dir = dshSessionDir(home, "/tmp/nest", child.dshId);
+      const names = await readdir(dir);
+      const decoded = await decodeDshSessionFile({ file: path.join(dir, names[0]!), generation: DSH_SYNC_WRITE_GENERATION, compressed: true });
+      return decoded.header;
+    }));
+    expect(headers.map((header) => header.delegationDepth)).toEqual([1, 2, 3, 4, 5]);
+    expect(headers[0]!.parentSession).toBe(item.dshId);
+    expect(headers[1]!.parentSession).toBe(exported[0]!.dshId);
+    expect(headers[4]!.parentSession).toBe(exported[3]!.dshId);
+    // 超限如实告警并列出未导出的层级（T6），且不写盘
+    expect(body.report.warnings.some((warning) => warning.includes("嵌套超过 5 层") && warning.includes("T6"))).toBe(true);
+    expect((item.subagents ?? []).some((child) => child.taskId === "T6")).toBe(false);
   });
 
   it("getSubagent 抛错（服务端读失败）同样只进 subagentsFailed，不影响父会话导出", async () => {

@@ -1,18 +1,21 @@
 /**
- * dsh-sync M3a（dsh v3 会话 → owc 会话：纯转换模块 + sessions.import + SessionStore.replaceJsonl）单测。
+ * dsh-sync M3a（dsh v3/v4 会话 → owc 会话：纯转换模块 + sessions.import + SessionStore.replaceJsonl）单测。
  *
  * 覆盖四层：
- * 1. {@link convertDshSession} 的映射表（三人称转换、内容块降级、surface replace、压缩锚点、孤儿配对校验、元信息）；
+ * 1. {@link convertDshSession} 的映射表（三人称转换、内容块降级、surface replace 就地替换、
+ *    压缩锚点（含 checkpoint）、孤儿配对校验、元信息、v4 fixture 端到端）；
  * 2. {@link SessionStore.replaceJsonl} 的落盘语义（备份、ledger 删除、原安全字段保留、净化、不存在时报错）；
  * 3. `sessions.import` 经 {@link ExtensionManager} 白盒分发（权限门 + 可选 ledger 落盘 + 覆盖/新建两种语义）；
  * 4. manifest 的权限/版本声明。
  *
- * 事件数组直接手工构造（不依赖 fixture 文件）：本模块是纯函数，输入即事件信封。
+ * 事件数组以手工构造为主（本模块是纯函数，输入即事件信封）；v4 形态用 fixture 文件核对。
  */
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { decodeDshSessionFile, scanDshSessions } from "../src/extensions/dsh-sync-dsh.js";
 import { convertDshSession, type ConversionCounts, type ConversionReport } from "../src/extensions/dsh-sync-session.js";
 import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import { OFFICIAL_EXTENSIONS } from "../src/extensions/official.js";
@@ -20,6 +23,11 @@ import type { ExtensionManifest } from "../src/extensions/types.js";
 import { ContextManager } from "../src/context/context-manager.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { tempRoot } from "./helpers/temp-roots.js";
+
+/** dsh-sync fixture 根（只读）。 */
+const FIXTURES = fileURLToPath(new URL("./fixtures/dsh-sync", import.meta.url));
+/** fixture 里的 v4 zstd 会话（dsh 当前代际）。 */
+const V4_ID = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
 
 /** 头行 createdAt（毫秒）与事件 time 基准。 */
 const T0 = 1_700_000_000_000;
@@ -155,6 +163,26 @@ describe("convertDshSession：surface 重建（surfaceOp replace）", () => {
     expect(conversion.report.warnings.some((warning) => warning.includes("被 surfaceOp replace 遮蔽"))).toBe(true);
   });
 
+  it("中段 replace 就地替换：替换者留在被替换区间的位置（不挪到末尾）", () => {
+    const events: Array<Record<string, unknown>> = [
+      surface(0, "user/message", userData("u1", [{ type: "text", text: "问题一" }])),
+      surface(1, "assistant/message", assistantData("a1", [{ type: "text", text: "回答一" }], { provider: "p", model: "m" })),
+      surface(2, "user/message", userData("u2", [{ type: "text", text: "问题二" }])),
+      surface(3, "assistant/message", assistantData("a2", [{ type: "text", text: "回答二" }], { provider: "p", model: "m" })),
+      surface(4, "user/message", userData("u3", [{ type: "text", text: "问题三" }])),
+      // 压缩 checkpoint 原位替换 u2/a2 这一段（dsh 语义：splice(first, removed.length, seq)）
+      surface(5, "user/message", {
+        ...userData("ckpt", [{ type: "text", text: "摘要" }]),
+        source: { kind: "plugin", plugin: "compact", compactionId: "c1" },
+      }, { op: "replace", startSeq: 2, endSeq: 3 }),
+      surface(6, "assistant/message", assistantData("a3", [{ type: "text", text: "回答三" }], { provider: "p", model: "m" })),
+    ];
+    const conversion = convertDshSession(dshHeader(), events);
+    // 替换者落在 u2 的位置（u1,a1 之前、u3 之后），而不是被挪到末尾
+    expect(conversion.messages.map((message) => message.id)).toEqual(["u1", "a1", "ckpt", "u3", "a3"]);
+    expect(conversion.report.droppedEvents).toEqual({ "assistant/message": 1, "user/message": 1 });
+  });
+
   it("system/message 永不转换（含 replace 掉 system head）+ 非法 surfaceOp 按追加处理", () => {
     const events: Array<Record<string, unknown>> = [
       surface(0, "system/message", { turn: 1, step: 1, message: { id: "sys-1", role: "system", content: [{ type: "text", text: "旧提示词" }], source: { kind: "system-prompt" } } }),
@@ -166,6 +194,58 @@ describe("convertDshSession：surface 重建（surfaceOp replace）", () => {
     expect(conversion.messages.map((message) => message.id)).toEqual(["u-1", "a-1"]);
     expect(conversion.report.droppedEvents["system/message"]).toBe(2);
     expect(conversion.report.warnings.some((warning) => warning.includes("surfaceOp 不是合法的 replace"))).toBe(true);
+  });
+});
+
+describe("convertDshSession：v4 形态（读支持 v3/v4）", () => {
+  /** 扫描 + 解码 fixture 里的 v4 会话（走真实 扫描/解码 路径，不手工造事件）。 */
+  async function decodeV4(): Promise<{ header: Record<string, unknown>; events: Array<Record<string, unknown>> }> {
+    const entries = await scanDshSessions(FIXTURES);
+    const entry = entries.find((item) => item.sessionId === V4_ID);
+    expect(entry?.generation).toBe(4);
+    expect(entry?.file).toBeDefined();
+    const { header, events } = await decodeDshSessionFile({
+      file: entry!.file!,
+      generation: entry!.generation!,
+      compressed: entry!.compressed!,
+    });
+    return { header, events };
+  }
+
+  it("v4 fixture：一等 tool 角色消息 → tool_result（toolCallId/isError 取 message 级）", async () => {
+    const { header, events } = await decodeV4();
+    const conversion = convertDshSession(header, events);
+    expect(conversion.messages.map((message) => [message.id, message.role])).toEqual([
+      ["m1", "user"],
+      ["m2", "assistant"],
+      ["m3", "tool"],
+      ["m4", "assistant"],
+      ["m5", "tool"],
+    ]);
+    expect(conversion.meta).toMatchObject({ cwd: "/tmp/v4", createdAt: iso(1_786_505_870_000) });
+    // 内容块：v4 的 plugin: 前缀块（未知类型）记账丢弃，tool-call 照常映射
+    expect(conversion.messages[1]!.content).toEqual([
+      { type: "text", text: "我先读文件" },
+      { type: "tool_call", id: "call-1", name: "read_file", input: { path: "a.txt" } },
+    ]);
+    // 结果块直挂（无 tool-result 包装）：toolCallId 取 message.toolCallId，isError 取 message.isError
+    expect(conversion.messages[2]!.content).toEqual([
+      { type: "tool_result", toolCallId: "call-1", content: "file body", isError: false },
+    ]);
+    expect(conversion.messages[4]!.content).toEqual([
+      { type: "tool_result", toolCallId: "call-2", content: "exit 1 [exit code: 1]", isError: true },
+    ]);
+    expect(conversion.report.counts).toMatchObject({ user: 1, assistant: 2, tool: 2, images: 0, imagesMissing: 0 });
+    // v4 附加事件 / 工具生命周期事件一律丢弃 + 计数（含 plugin: 前缀块聚合为警告）
+    expect(conversion.report.droppedEvents).toEqual({
+      "permission/preset": 1,
+      "sandbox/mode": 1,
+      "session-log-deepseek/delivery-accepted": 1,
+      "tool/call": 2,
+    });
+    expect(conversion.report.warnings.some((warning) => warning.includes("未映射的内容块类型 plugin:foo"))).toBe(true);
+    expect(conversion.report.warnings).toHaveLength(1);
+    expect(conversion.ledger).toBeUndefined();
   });
 });
 
@@ -210,6 +290,97 @@ describe("convertDshSession：压缩映射", () => {
     // 压缩事件有 owc 产物（账本），不进丢弃账
     expect(conversion.report.droppedEvents["compaction/summary"]).toBeUndefined();
     expect(conversion.report.droppedEvents).toEqual({ "compaction/end": 1, "compaction/start": 1 });
+  });
+
+  it("真实形态：锚到 checkpoint 消息（shadowed 事件已被移出 surface）", () => {
+    const events = [
+      surface(0, "user/message", userData("u1", [{ type: "text", text: "问题一" }])),
+      surface(1, "assistant/message", assistantData("a1", [{ type: "text", text: "回答一" }], { provider: "p", model: "m" })),
+      event(2, "compaction/start", { compactionId: "c1", turn: 2 }),
+      event(3, "compaction/summary", {
+        compactionId: "c1",
+        summary: [{ type: "text", text: "摘要正文" }],
+        shadowedRange: { start: 0, end: 1 },
+        shadowedSeqs: [0, 1],
+        shadowedTokenCount: 10,
+        provider: "p",
+        model: "m",
+      }),
+      // checkpoint：替换掉 [0,1] 这段可见历史，并留在 surface 里（被遮蔽的事件不再出现在后续 surface）
+      surface(4, "user/message", {
+        ...userData("ckpt-1", [{ type: "text", text: "摘要正文" }]),
+        source: { kind: "plugin", plugin: "compact", compactionId: "c1" },
+      }, { op: "replace", startSeq: 0, endSeq: 1 }),
+      event(5, "compaction/end", { compactionId: "c1", turn: 2 }),
+      surface(6, "assistant/message", assistantData("a2", [{ type: "text", text: "压缩后续答" }], { provider: "p", model: "m" })),
+    ];
+    const conversion = convertDshSession(dshHeader(), events);
+    // shadowed 的 u1/a1 已被移出 surface（丢弃计数），只剩 checkpoint 与后续消息
+    expect(conversion.messages.map((message) => message.id)).toEqual(["ckpt-1", "a2"]);
+    expect(conversion.ledger).toEqual({
+      compacted: {
+        uptoIndex: 1,
+        uptoMessageId: "ckpt-1",
+        mode: "overview",
+        summary: "摘要正文",
+        instructions: [],
+        createdAt: iso(T0 + 3),
+      },
+    });
+    expect(conversion.report.warnings.some((warning) => warning.includes("放弃压缩映射"))).toBe(false);
+  });
+
+  it("中段压缩：checkpoint 原位替换 [2,3]，锚点下标按替换后的位置算", () => {
+    const events = [
+      ...history(),
+      event(4, "compaction/summary", {
+        compactionId: "c1",
+        summary: [{ type: "text", text: "后段摘要" }],
+        shadowedRange: { start: 2, end: 3 },
+        shadowedSeqs: [2, 3],
+        provider: "p",
+        model: "m",
+      }),
+      surface(5, "user/message", {
+        ...userData("ckpt-2", [{ type: "text", text: "后段摘要" }]),
+        source: { kind: "compact-checkpoint", compactionId: "c1" },
+      }, { op: "replace", startSeq: 2, endSeq: 3 }),
+    ];
+    const conversion = convertDshSession(dshHeader(), events);
+    // u1,a1 保留；u2,a2 被 checkpoint 原位顶掉；消息下标 = 替换后的位置
+    expect(conversion.messages.map((message) => message.id)).toEqual(["u1", "a1", "ckpt-2"]);
+    expect(conversion.ledger?.compacted).toMatchObject({ uptoIndex: 3, uptoMessageId: "ckpt-2", summary: "后段摘要" });
+  });
+
+  it("v4 形态 checkpoint（kind=compact-checkpoint）同样可锚；compactionId 不匹配则回退失败", () => {
+    /** 与上一用例同构，只换 checkpoint 的 source 形态 / compactionId。 */
+    function events(checkpointSource: Record<string, unknown>): Array<Record<string, unknown>> {
+      return [
+        surface(0, "user/message", userData("u1", [{ type: "text", text: "问题一" }])),
+        surface(1, "assistant/message", assistantData("a1", [{ type: "text", text: "回答一" }], { provider: "p", model: "m" })),
+        event(2, "compaction/summary", {
+          compactionId: "c1",
+          summary: [{ type: "text", text: "摘要正文" }],
+          shadowedRange: { start: 0, end: 1 },
+          shadowedSeqs: [0, 1],
+          provider: "p",
+          model: "m",
+        }),
+        surface(3, "user/message", {
+          id: "ckpt-1",
+          role: "user",
+          content: [{ type: "text", text: "摘要正文" }],
+          source: checkpointSource,
+        }, { op: "replace", startSeq: 0, endSeq: 1 }),
+      ];
+    }
+    const matched = convertDshSession(dshHeader(), events({ kind: "compact-checkpoint", compactionId: "c1" }));
+    expect(matched.ledger?.compacted).toMatchObject({ uptoIndex: 1, uptoMessageId: "ckpt-1", summary: "摘要正文" });
+
+    // compactionId 对不上：既不是本 summary 的 checkpoint，shadowed seqs 又已被移出 surface → 放弃映射
+    const mismatched = convertDshSession(dshHeader(), events({ kind: "compact-checkpoint", compactionId: "other" }));
+    expect(mismatched.ledger).toBeUndefined();
+    expect(mismatched.report.warnings.some((warning) => warning.includes("放弃压缩映射"))).toBe(true);
   });
 
   it("只有 shadowedRange 时按闭区间兜底锚点；多条 summary 只取最后一条", () => {
@@ -261,22 +432,67 @@ describe("convertDshSession：内容块与配对校验降级", () => {
     expect(conversion.messages[0]!.content).toHaveLength(2);
   });
 
-  it("孤儿 tool_result 降级为文本块（工具名取自 tool/call 事件）", () => {
+  it("replayState 的 responses 形态（reasoning 的 item）也读入 thinking.signature；块上自带时优先", () => {
+    const events: Array<Record<string, unknown>> = [
+      surface(0, "assistant/message", assistantData("a1", [
+        { type: "reasoning", text: "想一下" },
+        { type: "text", text: "答" },
+      ], {
+        provider: "p",
+        model: "m",
+        // openai-responses 的 replay 落点：reasoning 用 item 承载完整 item JSON（owc 侧存 signature）
+        replayState: { response: { kind: "llm-service-lite-responses", version: 1 }, blocks: [{ type: "reasoning", item: "{\"type\":\"reasoning\",\"id\":\"rs_1\"}" }, { type: "text", itemId: "msg_1" }] },
+      })),
+    ];
+    const conversion = convertDshSession(dshHeader(), events);
+    expect(conversion.messages[0]!.content[0]).toEqual({
+      type: "thinking",
+      text: "想一下",
+      provider: "p",
+      signature: "{\"type\":\"reasoning\",\"id\":\"rs_1\"}",
+    });
+
+    // 块上自带 signature 时优先（anthropic 形态回放元数据里同时有 signature 也不覆盖块上的值）
+    const onBlock = convertDshSession(dshHeader(), [
+      surface(0, "assistant/message", assistantData("a1", [{ type: "reasoning", text: "x", signature: "block-sig" }], {
+        provider: "p",
+        model: "m",
+        replayState: { response: { kind: "llm-service-lite-anthropic", version: 1 }, blocks: [{ type: "reasoning", signature: "replay-sig" }] },
+      })),
+    ]);
+    expect((onBlock.messages[0]!.content[0] as { signature?: string }).signature).toBe("block-sig");
+  });
+
+  it("头行与首个事件都没有合法时间 → createdAt 回退 1970 并告警（不再静默）", () => {
+    const conversion = convertDshSession({ cwd: "/tmp/x", createdAt: "not-a-number" }, [
+      event(0, "user/message", { id: "m0", role: "user", content: [{ type: "text", text: "hi" }], source: { kind: "user" } }, { surfaceOp: "append", time: Number.NaN }),
+    ]);
+    expect(conversion.meta.createdAt).toBe(new Date(0).toISOString());
+    expect(conversion.report.warnings.some((warning) => warning.includes("回退为 1970-01-01T00:00:00.000Z"))).toBe(true);
+  });
+
+  it("孤儿 tool_result 降级为 user 角色的文本消息（前缀 [工具结果 <toolCallId>]，模型可见）", () => {
     const events: Array<Record<string, unknown>> = [
       event(0, "tool/call", { turn: 1, step: 1, callId: "gone", name: "bash", arguments: "{}" }),
       surface(1, "tool/result", toolResultData("t1", "gone", [{ type: "text", text: "exit 1" }], true)),
       surface(2, "tool/result", toolResultData("t2", "unknown-call", [{ type: "text", text: "结果正文" }])),
     ];
     const conversion = convertDshSession(dshHeader(), events);
-    expect(conversion.messages[0]!.content).toEqual([{ type: "text", text: "[工具结果 bash] exit 1" }]);
-    expect(conversion.messages[1]!.content).toEqual([{ type: "text", text: "[工具结果] 结果正文" }]);
-    expect(conversion.report.warnings.some((warning) => warning.includes("2 个孤儿 tool_result"))).toBe(true);
+    // 角色也改：留在 role:'tool' 的纯文本块会被 provider 适配层吞掉（模型看不到），降级为 user 才可见
+    expect(conversion.messages.map((message) => message.role)).toEqual(["user", "user"]);
+    expect(conversion.messages[0]!.content).toEqual([{ type: "text", text: "[工具结果 gone] exit 1" }]);
+    expect(conversion.messages[1]!.content).toEqual([{ type: "text", text: "[工具结果 unknown-call] 结果正文" }]);
+    expect(conversion.report.warnings.some((warning) => warning.includes("2 个孤儿 tool_result")
+      && warning.includes("user 角色"))).toBe(true);
+    // 计数如实挪位：两条结果消息不再计成 tool，改计 user
+    expect(conversion.report.counts).toMatchObject({ user: 2, tool: 0 });
     // 配对成功的 tool_result 不受影响
     const paired = convertDshSession(dshHeader(), [
       surface(0, "assistant/message", assistantData("a1", [{ type: "tool-call", id: "c1", name: "read_file", arguments: "{}" }], { provider: "p", model: "m" })),
       surface(1, "tool/result", toolResultData("t1", "c1", [{ type: "text", text: "ok" }])),
     ]);
     expect(paired.messages[1]!.content).toEqual([{ type: "tool_result", toolCallId: "c1", content: "ok", isError: false }]);
+    expect(paired.messages[1]!.role).toBe("tool");
     expect(paired.report.warnings).toEqual([]);
   });
 
@@ -528,9 +744,9 @@ describe("server API：sessions.import（经 ExtensionManager 分发）", () => 
 });
 
 describe("dsh-sync manifest：权限与版本声明", () => {
-  it("声明 sessions:read / sessions:mutate 且版本推进到 0.2.1（dsh v4 模型归属补全）", () => {
+  it("声明 sessions:read / sessions:mutate 且版本推进到 0.3.0（回放元数据 / 媒体导出 / 嵌套子代理）", () => {
     const manifest = OFFICIAL_EXTENSIONS.find((item) => item.id === "dsh-sync");
-    expect(manifest?.version).toBe("0.2.1");
+    expect(manifest?.version).toBe("0.3.0");
     expect(manifest?.permissions).toEqual(expect.arrayContaining(["sessions:read", "sessions:mutate"]));
   });
 });

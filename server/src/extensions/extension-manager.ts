@@ -24,6 +24,7 @@ import { BUILTIN_PERSONAS, getPersona, listPersonas, resolvePersona, personasDir
 import type { CompactVaultService } from "./compact-vault.js";
 import type { ProviderProfilesService } from "../provider-profiles.js";
 import { MAX_IMAGE_BASE64_CHARS } from "../media-limits.js";
+import { sanitizeImportLedger } from "./import-ledger.js";
 
 /** activeToolShaping 聚合结果：hideBuiltIns 按内置名隐藏，aliases 以新名（as）为键。 */
 export interface ActiveToolShaping {
@@ -93,6 +94,9 @@ function publicSessionMeta(meta: SessionMeta): Record<string, unknown> {
     model: meta.model,
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
+    // 活动路径叶子（消息树的当前叶子）。导出方向（dsh-sync）必须按它过滤出活动路径：
+    // 分叉/重试会在消息表里留下离路径消息，只看全量 messages 会导出「用户没发生过的对话」。
+    ...(meta.activeLeafId ? { activeLeafId: meta.activeLeafId } : {}),
     ...(meta.thinking ? { thinking: meta.thinking } : {}),
     ...(meta.effort ? { effort: meta.effort } : {}),
     ...(meta.agentMode ? { agentMode: meta.agentMode } : {}),
@@ -788,8 +792,11 @@ export class ExtensionManager {
           : await sessions.replaceJsonl(replaceId, text);
         // 可选账本：导入方（扩展宿主的会话转换器）把 dsh compaction/summary 映射出的 compacted
         // 一起落盘，省掉一次往返；缺省时账本懒建为空（round:0 最小账本由 normalizer 兜底）。
-        if (params.ledger !== null && typeof params.ledger === "object") {
-          await new ContextManager(sessions.contextRoot(meta.id)).replaceLedger(params.ledger);
+        // ledger 来自扩展（可能直接把外部文件的 JSON 塞进来）：落盘前先限形 + 限量（summary 截断、
+        // compactionHistory/entries 封顶、条目字段白名单），不合账本形状就整个不落（宁缺勿脏）。
+        const ledger = sanitizeImportLedger(params.ledger);
+        if (ledger !== undefined) {
+          await new ContextManager(sessions.contextRoot(meta.id)).replaceLedger(ledger);
         }
         // M5a：子代理转录落盘（<sessionDir>/subagents/<taskId>.json）。逐项 try：单项坏数据
         // （非法 taskId、缺字段、写盘失败）只记 subagentsFailed，不中断本次导入。

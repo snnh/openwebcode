@@ -18,7 +18,7 @@ import { formatDateTime, formatTime } from "../lib/format";
  * 勾选语义：
  * - 模型配置：new 默认勾选、changed 默认不勾（冲突不隐式覆盖）、same 不可勾；
  * - 会话导入：可导入且未同步过的会话默认勾选，已同步过的默认不勾（overwrite 需用户显式选择
- *   「覆盖更新已导入的会话」）；不可导入项（旧代际/损坏/缺 zstd）禁用并显示原因；
+ *   「覆盖更新已导入的会话」）；不可导入项（代际不在读支持范围/损坏/缺 zstd）禁用并显示原因；
  * - 会话导出：默认不勾（导出会在 dsh 侧新建目录，批量全选可能一次写出大量会话，故交由用户显式选择）。
  *
  * 两个区块各有独立的方向开关（数据流互不相干）；请求只在用户点击「预览…」后发出。
@@ -105,8 +105,12 @@ export interface DshProviderSyncResult {
 /** 会话同步方向（与模型配置同词表；M3c 落地 import，M4d 落地 export）。 */
 export type DshSessionConflict = "overwrite" | "new";
 
-/** dsh 会话代际里可导入的那一版（v3）；其余代际只能先在 dsh 内升级格式。 */
-export const DSH_SYNC_SUPPORTED_GENERATION = 3;
+/**
+ * 读支持的会话代际区间（与 server 的 `DSH_SYNC_READ_GENERATIONS` 对齐：v3/v4 均可导入）。
+ * 更低代际（v0–v2）需先在 dsh 内打开一次升级格式；更高代际（>v4）需升级 dsh-sync 扩展。
+ */
+export const DSH_SYNC_MIN_READ_GENERATION = 3;
+export const DSH_SYNC_MAX_READ_GENERATION = 4;
 
 /** 会话清单条目（GET /preview/sessions）。 */
 export interface DshSessionPreviewItem {
@@ -116,9 +120,9 @@ export interface DshSessionPreviewItem {
   cwd?: string;
   /** 头行 createdAt（ISO）。 */
   createdAt?: string;
-  /** 代际（0=v0 … 3=v3）。 */
+  /** 代际（0=v0 … 3=v3、4=v4）。 */
   generation?: number;
-  /** 格式是否可用（v3 + 未损坏 + zstd 能力足够）。 */
+  /** 格式是否可用（代际在读支持范围内 + 未损坏 + zstd 能力足够）。 */
   supported: boolean;
   /** 子代理会话的 origin（如 `subagent`）。 */
   origin?: string;
@@ -312,9 +316,14 @@ export function credentialBadge(credential: DshCredentialState | undefined): Dsh
   }
 }
 
-/** 条目是否可勾选：两侧已一致的条目无需执行。 */
+/**
+ * 条目是否可勾选：new/changed 可勾选；import 方向 status==="same" 但带模型目录条目
+ * （`models > 0`）时同样可勾选——此时只补模型条目、不重写 provider 配置。
+ * 导出方向的 same 条目（无 models 计数）保持不可勾选。
+ */
 export function isSelectable(item: DshProviderPreviewItem): boolean {
-  return item.status !== "same";
+  if (item.status !== "same") return true;
+  return typeof item.models === "number" && item.models > 0;
 }
 
 /** 预览条目 → 默认勾选集合：仅 new 默认勾选（changed 需用户显式确认覆盖，same 不可勾）。 */
@@ -346,9 +355,14 @@ export function shortDshId(dshId: string): string {
   return dshId.slice(0, 8);
 }
 
-/** 代际是否非 v3（非 v3 一律不可导入，行内给出「需先在 dsh 中升级」提示）。 */
+/** 代际是否低于读支持下界（v0–v2 一律不可导入，行内给出「需先在 dsh 中升级格式」提示）。 */
 export function isLegacyGeneration(generation: number | undefined): boolean {
-  return generation !== undefined && generation !== DSH_SYNC_SUPPORTED_GENERATION;
+  return generation !== undefined && generation < DSH_SYNC_MIN_READ_GENERATION;
+}
+
+/** 代际是否高于读支持上界（>v4 含义未知，行内给出「请升级 dsh-sync 扩展」提示）。 */
+export function isFutureGeneration(generation: number | undefined): boolean {
+  return generation !== undefined && generation > DSH_SYNC_MAX_READ_GENERATION;
 }
 
 /** 丢弃事件汇总行：`type×n；type×n`（无丢弃返回 undefined，面板不渲染空块）。 */
@@ -462,6 +476,56 @@ export function sessionExportPayload(
   selection: Record<string, boolean>,
 ): { direction: "export"; items: Array<{ owcId: string }> } {
   return { direction: "export", items: selectedExportIds(items, selection).map((owcId) => ({ owcId })) };
+}
+
+/** 单次 POST /sync/sessions 的最大条数：路由超时 60s 不中断底层写入，分批可把「超时后部分已生效但映射表未落盘」的窗口压到最小。 */
+export const DSH_SYNC_SESSION_BATCH_SIZE = 20;
+
+/** 把条目数组切成每批 ≤{@link DSH_SYNC_SESSION_BATCH_SIZE} 条（数量为 0 时返回空数组）。 */
+export function sessionSyncBatches<T>(items: readonly T[]): T[][] {
+  const batches: T[][] = [];
+  for (let start = 0; start < items.length; start += DSH_SYNC_SESSION_BATCH_SIZE) {
+    batches.push(items.slice(start, start + DSH_SYNC_SESSION_BATCH_SIZE));
+  }
+  return batches;
+}
+
+/**
+ * 逐批结果合并：applied/skipped 顺次拼接、计数改为累计、warnings 拼接、notes 保留最后一批（各批重复的语义说明只显示一份）。
+ * mapSaved 取与（任一批落盘失败即提示）、backupPath/envNeeded 取首个非空。返回同一累加对象（就地更新，便于逐批 setState）。
+ */
+export function mergeSessionSyncResult<T>(acc: T, chunk: T): T {
+  const target = acc as unknown as {
+    applied: unknown[];
+    skipped: unknown[];
+    report: Record<string, unknown>;
+    backupPath?: string;
+    envNeeded?: Record<string, string>;
+  };
+  const source = chunk as unknown as typeof target;
+  const accReport = target.report;
+  const chunkReport = source.report;
+  target.applied.push(...source.applied);
+  target.skipped.push(...source.skipped);
+  accReport["appliedCount"] = (Number(accReport["appliedCount"]) || 0) + (Number(chunkReport["appliedCount"]) || 0);
+  accReport["skippedCount"] = (Number(accReport["skippedCount"]) || 0) + (Number(chunkReport["skippedCount"]) || 0);
+  accReport["warnings"] = [...(accReport["warnings"] as string[]), ...(chunkReport["warnings"] as string[])];
+  const notes = chunkReport["notes"] as string[] | undefined;
+  if (notes !== undefined) accReport["notes"] = notes;
+  accReport["dshHome"] = chunkReport["dshHome"] ?? accReport["dshHome"];
+  accReport["dshRunning"] = chunkReport["dshRunning"] ?? accReport["dshRunning"];
+  if (chunkReport["onConflict"] !== undefined) accReport["onConflict"] = chunkReport["onConflict"];
+  accReport["mapSaved"] = accReport["mapSaved"] === true && chunkReport["mapSaved"] === true;
+  if (typeof chunkReport["mapPath"] === "string") accReport["mapPath"] = chunkReport["mapPath"];
+  // droppedEvents：按键名累加
+  const accDropped = (accReport["droppedEvents"] ?? {}) as Record<string, number>;
+  for (const [type, count] of Object.entries((chunkReport["droppedEvents"] ?? {}) as Record<string, number>)) {
+    accDropped[type] = (accDropped[type] ?? 0) + count;
+  }
+  if (chunkReport["droppedEvents"] !== undefined) accReport["droppedEvents"] = accDropped;
+  if (target.backupPath === undefined && source.backupPath !== undefined) target.backupPath = source.backupPath;
+  if (source.envNeeded !== undefined) target.envNeeded = { ...(target.envNeeded ?? {}), ...source.envNeeded };
+  return acc;
 }
 
 /**
@@ -643,6 +707,12 @@ function SessionRow({ item, checked, cwdInput, cwdOverride, onToggle, onCwdChang
           <small className="dsh-sync-session-gen">
             {t(`旧代际 v${item.generation}`, `Legacy generation v${item.generation}`)}
             {t("：需先在 dsh 中打开一次升级格式", ": open it once in dsh to upgrade the format")}
+          </small>
+        )}
+        {isFutureGeneration(item.generation) && (
+          <small className="dsh-sync-session-gen">
+            {t(`dsh 代际 v${item.generation} 暂不支持`, `dsh generation v${item.generation} is not supported yet`)}
+            {t("：请升级 dsh-sync 扩展", ": upgrade the dsh-sync extension")}
           </small>
         )}
         {cwdInput && (
@@ -872,6 +942,8 @@ export function DshSyncPanel(): ReactElement {
   const [exportSelection, setExportSelection] = useState<Record<string, boolean>>({});
   const [exportResult, setExportResult] = useState<DshSessionExportResult>();
   const [sessionRunning, setSessionRunning] = useState(false);
+  const [sessionProgress, setSessionProgress] = useState<{ done: number; total: number }>();
+  const [sessionPartial, setSessionPartial] = useState(false);
 
   const statusQuery = useQuery({
     queryKey: ["dsh-sync", "status"],
@@ -940,7 +1012,8 @@ export function DshSyncPanel(): ReactElement {
         body: { direction, keys },
       });
       setResult(next);
-      await queryClient.invalidateQueries({ queryKey: ["dsh-sync"] });
+      // 只刷新模型配置区块的预览：不触碰会话区块两个方向的缓存（此前用 ["dsh-sync"] 前缀会连带刷掉会话清单）
+      await queryClient.invalidateQueries({ queryKey: ["dsh-sync", "preview", direction] });
       ui.notify(`${t("同步完成", "Sync finished")}: ${next.applied.length} ${t("项已应用", "applied")}`);
     } catch (error) {
       ui.notify(errorText(error), "error");
@@ -950,6 +1023,14 @@ export function DshSyncPanel(): ReactElement {
   };
 
   // ── 会话同步：导入方向（dsh → owc） ──────────────────────────────────────
+  // 执行门禁：zstd 不可用（写/读 zstd 容器的前提）或导出方向缺 dsh 数据目录时，禁用执行按钮并说明原因
+  const sessionGateReason: string | undefined = (() => {
+    const status = statusQuery.data;
+    if (status === undefined) return undefined;
+    if (!status.zstdAvailable) return t("zstd 不可用（需要 Node ≥22.15），会话同步不可用", "zstd unavailable (requires Node ≥22.15); session sync is unavailable");
+    if (sessionDirection === "export" && !status.dshHomeExists) return t("未检测到 dsh 数据目录，无法导出", "dsh data directory not found; exporting is unavailable");
+    return undefined;
+  })();
   const sessionPreview = sessionPreviewed.import ? importSessionsQuery.data : undefined;
   const sessionItems = sessionPreview?.items;
   const sessionGroups = groupSessions(sessionItems ?? []);
@@ -998,40 +1079,80 @@ export function DshSyncPanel(): ReactElement {
   };
 
   const runSessionImport = async (): Promise<void> => {
-    if (sessionIds.length === 0 || sessionRunning) return;
+    if (sessionIds.length === 0 || sessionRunning || sessionGateReason !== undefined) return;
+    const payload = sessionSyncPayload(sessionItems ?? [], sessionSelection, cwdOverrides, effectiveConflict);
+    if (payload.items.length === 0) return;
     setSessionRunning(true);
+    setSessionPartial(false);
+    setSessionProgress({ done: 0, total: payload.items.length });
+    // 逐批累加：每批完成即刷新报告，任一环节失败时已完成的部分仍如实展示（并标记「可能部分生效」）
+    const acc: DshSessionSyncResult = {
+      direction: "import",
+      applied: [],
+      skipped: [],
+      report: { dshHome: "", dshRunning: false, onConflict: effectiveConflict, appliedCount: 0, skippedCount: 0, droppedEvents: {}, warnings: [], notes: [], mapSaved: true, mapPath: "" },
+    };
+    let done = 0;
     try {
-      const next = await api.extRoute<DshSessionSyncResult>(DSH_SYNC_EXTENSION_ID, "/sync/sessions", {
-        method: "POST",
-        body: sessionSyncPayload(sessionItems ?? [], sessionSelection, cwdOverrides, effectiveConflict),
-      });
-      setSessionResult(next);
+      for (const batch of sessionSyncBatches(payload.items)) {
+        const chunk = await api.extRoute<DshSessionSyncResult>(DSH_SYNC_EXTENSION_ID, "/sync/sessions", {
+          method: "POST",
+          body: { ...payload, items: batch },
+        });
+        mergeSessionSyncResult(acc, chunk);
+        done += batch.length;
+        setSessionResult({ ...acc, applied: [...acc.applied], skipped: [...acc.skipped], report: { ...acc.report, warnings: [...acc.report.warnings], notes: [...acc.report.notes] } });
+        setSessionProgress({ done, total: payload.items.length });
+      }
       // 只刷新导入方向的预览：让「已同步」徽标更新，不影响导出方向的缓存
       await queryClient.invalidateQueries({ queryKey: ["dsh-sync", "preview-sessions", "import"] });
-      ui.notify(`${t("导入完成", "Import finished")}: ${next.report.appliedCount} ${t("个会话已导入", "session(s) imported")}`);
+      ui.notify(`${t("导入完成", "Import finished")}: ${acc.report.appliedCount} ${t("个会话已导入", "session(s) imported")}`);
     } catch (error) {
+      // 超时/网络失败可能发生在部分批次已生效之后：标记并刷新预览，让「已同步」徽标如实更新
+      setSessionPartial(true);
+      void queryClient.invalidateQueries({ queryKey: ["dsh-sync", "preview-sessions", "import"] });
       ui.notify(errorText(error), "error");
     } finally {
       setSessionRunning(false);
+      setSessionProgress(undefined);
     }
   };
 
   const runSessionExport = async (): Promise<void> => {
-    if (exportIds.length === 0 || sessionRunning) return;
+    if (exportIds.length === 0 || sessionRunning || sessionGateReason !== undefined) return;
+    const payload = sessionExportPayload(exportItems ?? [], exportSelection);
+    if (payload.items.length === 0) return;
     setSessionRunning(true);
+    setSessionPartial(false);
+    setSessionProgress({ done: 0, total: payload.items.length });
+    const acc: DshSessionExportResult = {
+      direction: "export",
+      applied: [],
+      skipped: [],
+      report: { dshHome: "", dshRunning: false, appliedCount: 0, skippedCount: 0, warnings: [], notes: [], mapSaved: true, mapPath: "" },
+    };
+    let done = 0;
     try {
-      const next = await api.extRoute<DshSessionExportResult>(DSH_SYNC_EXTENSION_ID, "/sync/sessions", {
-        method: "POST",
-        body: sessionExportPayload(exportItems ?? [], exportSelection),
-      });
-      setExportResult(next);
+      for (const batch of sessionSyncBatches(payload.items)) {
+        const chunk = await api.extRoute<DshSessionExportResult>(DSH_SYNC_EXTENSION_ID, "/sync/sessions", {
+          method: "POST",
+          body: { ...payload, items: batch },
+        });
+        mergeSessionSyncResult(acc, chunk);
+        done += batch.length;
+        setExportResult({ ...acc, applied: [...acc.applied], skipped: [...acc.skipped], report: { ...acc.report, warnings: [...acc.report.warnings], notes: [...acc.report.notes] } });
+        setSessionProgress({ done, total: payload.items.length });
+      }
       // 只刷新导出方向的预览：让「已导出」徽标更新，不影响导入方向的缓存
       await queryClient.invalidateQueries({ queryKey: ["dsh-sync", "preview-sessions", "export"] });
-      ui.notify(`${t("导出完成", "Export finished")}: ${next.report.appliedCount} ${t("个会话已导出", "session(s) exported")}`);
+      ui.notify(`${t("导出完成", "Export finished")}: ${acc.report.appliedCount} ${t("个会话已导出", "session(s) exported")}`);
     } catch (error) {
+      setSessionPartial(true);
+      void queryClient.invalidateQueries({ queryKey: ["dsh-sync", "preview-sessions", "export"] });
       ui.notify(errorText(error), "error");
     } finally {
       setSessionRunning(false);
+      setSessionProgress(undefined);
     }
   };
 
@@ -1240,13 +1361,21 @@ export function DshSyncPanel(): ReactElement {
 
                 <div className="dsh-sync-footer">
                   <span className="muted-empty">{t("导入会新建 owc 会话（默认勾选未同步过的会话）", "Importing creates owc sessions (unsynced sessions are selected by default)")}</span>
-                  <button className="btn primary small" disabled={sessionIds.length === 0 || sessionRunning} onClick={() => void runSessionImport()}>
-                    {sessionRunning ? t("导入中…", "Importing…") : t("执行导入", "Run import")}
+                  <button className="btn primary small" disabled={sessionIds.length === 0 || sessionRunning || sessionGateReason !== undefined} onClick={() => void runSessionImport()}>
+                    {sessionRunning && sessionProgress !== undefined
+                      ? t(`导入中… ${sessionProgress.done}/${sessionProgress.total}`, `Importing… ${sessionProgress.done}/${sessionProgress.total}`)
+                      : t("执行导入", "Run import")}
                   </button>
                 </div>
+                {sessionGateReason !== undefined && <p className="muted-empty">{sessionGateReason}</p>}
               </>
             )}
 
+            {sessionPartial && (
+              <p className="dsh-sync-report-warn" role="alert">
+                {t("执行中途失败：以上为已完成部分，可能已部分生效；预览已刷新，请核对后再重试。", "The run failed midway: the result above covers the completed part and may have taken effect; the preview has been refreshed — review before retrying.")}
+              </p>
+            )}
             {sessionResult && <SessionSyncReport result={sessionResult} />}
           </>
         )}
@@ -1288,13 +1417,21 @@ export function DshSyncPanel(): ReactElement {
 
                 <div className="dsh-sync-footer">
                   <span className="muted-empty">{t("导出会在 dsh 数据目录新建会话（重复导出 = 新副本，不影响已有会话）", "Exporting creates sessions in the dsh data directory (re-exporting makes a copy; existing sessions are untouched)")}</span>
-                  <button className="btn primary small" disabled={exportIds.length === 0 || sessionRunning} onClick={() => void runSessionExport()}>
-                    {sessionRunning ? t("导出中…", "Exporting…") : t("执行导出", "Run export")}
+                  <button className="btn primary small" disabled={exportIds.length === 0 || sessionRunning || sessionGateReason !== undefined} onClick={() => void runSessionExport()}>
+                    {sessionRunning && sessionProgress !== undefined
+                      ? t(`导出中… ${sessionProgress.done}/${sessionProgress.total}`, `Exporting… ${sessionProgress.done}/${sessionProgress.total}`)
+                      : t("执行导出", "Run export")}
                   </button>
                 </div>
+                {sessionGateReason !== undefined && <p className="muted-empty">{sessionGateReason}</p>}
               </>
             )}
 
+            {sessionPartial && (
+              <p className="dsh-sync-report-warn" role="alert">
+                {t("执行中途失败：以上为已完成部分，可能已部分生效；预览已刷新，请核对后再重试。", "The run failed midway: the result above covers the completed part and may have taken effect; the preview has been refreshed — review before retrying.")}
+              </p>
+            )}
             {exportResult && <ExportSyncReport result={exportResult} titleOf={(owcId) => exportTitleById.get(owcId)} />}
           </>
         )}
