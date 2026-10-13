@@ -451,7 +451,7 @@ OWC_BROWSE_ROOTS=/home/me/projects:/home/me/repos
 
 ### Extension Host 与官方扩展
 
-设置 → **扩展** 可管理官方及第三方扩展。内置九项：
+设置 → **扩展** 可管理官方及第三方扩展。内置十项：
 
 - `context-saver`（上下文节省，Context Saver）：默认启用，由 context-manager 扩展改名而来（version 0.3.0；持久化状态自动迁移，旧键配置原样继承）。负责上下文节省策略：滚动驱逐（自动/手动逐出工具结果，lag/interval/off 策略与默认节省/超级节省驱逐模式热调）、上下文条目管理（恢复/固定/再逐出/查看 artifact 原文）与选择性上下文（pin 消息或文件不逐出、排除路径不进入上下文组装/repo map/索引）。停用后 agent 循环不再自动驱逐、read_artifact 的驱逐联动与 pin/排除选择均不生效，上下文面板中驱逐策略/选择性上下文/上下文条目三段隐藏，相关 REST 端点返回 409。压缩（水位强制自动压缩 + `/compact` 手动压缩）、预算与 cache 断点是核心功能，不随扩展开关；自动压缩水位（默认 85%）可在设置「上下文」页签调整
 - `attention-optimizer`：默认关闭，把关键约束/目标复制到上下文首尾锚区；`bottomOnly` 缓存影响较小，`full` 会增加输入 token
@@ -462,6 +462,7 @@ OWC_BROWSE_ROOTS=/home/me/projects:/home/me/repos
 - `env-sim`（环境模拟）：默认关闭；启用并选择预设后，系统提示词切换为该产品风格（身份行 + 工作方式），内置工具以该产品的命名/描述呈现（如 `Read`/`Bash`/`Edit`），底层仍走原工具实现与权限链。内置 `claude-code`/`kimi-code`/`zcode`/`codex`/`dsh-minimal` 五档预设。`dsh-minimal`（DSH 极简模式，1.7.8 起）复刻 DeepSeek Harness 极简模式：persona 提示词与 `bash`/`str_replace_editor` 双工具的描述和参数形态照搬 DSH 原文；首轮形态覆盖整个第一条用户消息——系统提示词为极简形态（只保留 persona 基础提示词与工具表，跳过安全边界、项目上下文、技能段、自定义指令、尾注、后台通知），同一回合内的多轮工具调用循环也保持双工具，用户发出第二条消息才恢复保留形态；第二轮起仅保留 web 搜索（`web_search`/`web_fetch`）与子代理（`subagent`）等少数工具，`read_artifact` 随驱逐联动注入。把自制预设 JSON（必填 `id`/`name`/`identity`/`basePrompt`，可选 `productSections`/`hideBuiltIns`/`aliases`/`firstTurnOnlyTools`）放入 `<业务数据目录>/env-sim/personas/` 即可添加并与他人分享，一个文件一个预设。**内置预设也可自定义**：`id` 与内置相同时即覆盖该内置（只覆盖填写的字段，工具形态、命令拟态等其余部分自动继承内置；UI 中显示「已自定义」标记），删除覆盖文件（UI「还原内置预设」）即恢复官方内置
 - `compact-vault`（上下文档案库）：默认关闭；启用且已配置快速模型后，`/compact` 从默认概览压缩切换为档案库压缩——完整上下文归档到会话目录 `compact/segments/`（真实内容全保留），主模型上下文只注入目录式索引（不保留任何工具调用细节）；快速模型两遍整理（分块提取条目 + 合并去重/删除过时内容）后生成索引。主模型可按索引里的 `key` 调用 `recall_memory` 工具，经快速模型按需提炼召回对应归档片段；`keepTail`/`chunkSize`/`recallMaxTokens` 可在扩展设置中调整。水位强制自动压缩（默认 85%）同样走档案库路径；若档案库压缩未启用时被默认压缩覆盖了索引，目录索引会自动回注，`recall_memory` 始终可用
 - `vision-tools`（视觉工具）：默认关闭；主模型不支持视觉时，把图片交给配置的视觉模型处理——`describe` 模式自动生成图片描述并注入上下文；`toolCall` 模式以 `[图片 #N]` 占位符注入并注册 `describe_image` 工具，主模型按需向视觉模型提问（省主模型 token，图片内容按需获取）。支持视觉的主模型不受影响
+- `dsh-sync`（dsh 同步）：默认关闭；与 dsh（DeepSeek Harness）数据目录**双向手动**同步模型配置与会话——模型配置读写 dsh `profiles/<profile>/cordis.patch.yml` 的 `llm-service-lite` 段（保注释改写、写前自动备份），会话读写 `session.v3.jsonl.zstd`（读支持 v3/v4、写 v3）；面板均走「先预览差异、再逐项勾选、后执行」。会话压缩依赖 Node ≥22.15 的 zstd 能力（不可用时禁用并说明原因，模型配置不受影响）；导出**只在 dsh 侧新建会话目录、永不覆盖**，生成 `OWC_SYNC_*_API_KEY` 环境变量引用、**不写明文 Key**。详见 [dsh 同步扩展](./dsh-sync.md)
 
 此外还有内置工具 `read_media`（媒体读取，1.10.1 起）：当前模型声明图片/视频输入模态时自动注入；`read_file` 只读文本，看图/看视频请用 `read_media`——支持工作区相对/绝对路径与公共 http(s) URL，媒体类型按文件魔数识别（扩展名仅作裸流视频兜底），URL 走与 `web_fetch` 相同的 SSRF 防护链；图片 ≤5 MB、视频 ≤20 MiB，超限会报错并指引压缩/裁剪后重试；视频仅在 OpenAI 兼容 provider（如 kimi/qwen/ernie 系）且模型声明 `video` 模态时可用
 
