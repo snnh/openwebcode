@@ -50,6 +50,7 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 - **移动端与远程访问**：响应式适配手机/平板；非回环监听强制访问令牌（自动生成或 `OWC_ACCESS_TOKEN`），可选 TOTP 全局登录。
 - **`owc run` CLI**：Headless NDJSON 事件流，支持 CI 集成。
 - **dsh 兼容模式（实验，默认关闭）**：独立端口托管 dsh 官方 SPA，并加载 dsh 生态插件（Host 工具/钩子与 client UI 插件）。
+- **dsh 同步（默认关闭）**：官方扩展 `dsh-sync` 与 dsh 数据目录**双向手动**同步模型配置与会话（先预览差异、再逐项勾选；不写明文 Key、只在 dsh 侧新建会话不覆盖）。
 
 具体详见 [使用帮助](./help/usage.md) 和 [常见问题](./help/faq.md)。
 

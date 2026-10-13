@@ -53,6 +53,7 @@ Browser (React 19 + Vite 6) ── HTTP/WebSocket ──► Node service (agent 
 - **Mobile and remote access**: responsive adaptation for phones/tablets; off-loopback listening enforces an access token (auto-generated or `OWC_ACCESS_TOKEN`), with optional TOTP global login.
 - **The `owc run` CLI**: headless NDJSON event stream for CI integration.
 - **dsh compatibility mode (experimental, off by default)**: hosts the official dsh SPA on its own port and loads dsh-ecosystem plugins (Host tools/hooks and client UI plugins).
+- **dsh Sync (off by default)**: the official `dsh-sync` extension syncs model configuration and sessions **both ways** with the dsh data directory (preview the diff, tick items, then run; no plaintext keys are written and existing dsh sessions are never overwritten).
 
 See the [user guide](./help/usage.md) and [FAQ](./help/faq.md) (both in Chinese) for details.
 
