@@ -30,6 +30,7 @@ import {
 
 const FIXTURES = fileURLToPath(new URL("./fixtures/dsh-sync", import.meta.url));
 const PATCH_FILE = path.join(FIXTURES, "profiles", "web", "cordis.patch.yml");
+const RELCWD_ID = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
 const DEMO_MAIN = "11111111-2222-4333-8444-555566667777";
 const DEMO_SUB = "dddddddd-eeee-4fff-8000-111111111111";
 const RAW_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -346,10 +347,10 @@ describe("dshProjectKey / dshEncodeSegment / dshSessionDir", () => {
 });
 
 describe("scanDshSessions", () => {
-  it("扫出 6 个会话目录、每目录选最高代际规范文件", async () => {
+  it("扫出 7 个会话目录、每目录选最高代际规范文件", async () => {
     const entries = await scanDshSessions(FIXTURES);
-    expect(entries).toHaveLength(6);
-    expect(entries.map((entry) => entry.sessionId).sort()).toEqual([DEMO_MAIN, DEMO_SUB, RAW_ID, MULTI_ID, LEGACY_ID, V4_ID].sort());
+    expect(entries).toHaveLength(7);
+    expect(entries.map((entry) => entry.sessionId).sort()).toEqual([DEMO_MAIN, DEMO_SUB, RAW_ID, MULTI_ID, LEGACY_ID, V4_ID, RELCWD_ID].sort());
     for (const entry of entries) expect(path.isAbsolute(entry.dir)).toBe(true);
   });
 

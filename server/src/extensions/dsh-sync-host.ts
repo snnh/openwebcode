@@ -1352,6 +1352,12 @@ async function syncSessions(
         skipped.push({ dshId, reason: "会话没有 cwd 且未提供 cwdOverride：请先为该会话选择目标目录" });
         continue;
       }
+      // 与导出侧对称：只接受绝对路径（dsh 的规范头行 cwd 必然绝对，手工/变造文件可能带相对路径，
+      // 放进来会让沙盒根与文件工具以服务进程 cwd 解析——直接跳过并如实报原因）。
+      if (!path.isAbsolute(cwd)) {
+        skipped.push({ dshId, reason: `会话 cwd 不是绝对路径（${cwd}）：请在 dsh 中修正该会话的工作目录，或等待扩展提供目录重选` });
+        continue;
+      }
       // M5a：子代理嵌套映射——先把该父会话的子会话转成转录（逐项 try），
       // 再把配对结果挂到 conversion.messages 的 tool_result 块上，最后连同转录一起交给 server。
       const nesting = await nestSubagentSessions({
