@@ -69,6 +69,9 @@ afterAll(async () => {
 });
 
 describe("resolveDshHome / resolveDshProfile / dshPatchFile", () => {
+  // 绝对路径按 path.resolve 归一：Windows 上会带盘符前缀（如 D:\tmp\dsh-home），
+  // 断言一律用 path.resolve 生成的同源值，勿写死 POSIX 形态。
+  const ABS_HOME = path.resolve("/tmp/dsh-home");
   it("缺省 ~/.dsh 展开为 homedir 下的 .dsh", () => {
     expect(resolveDshHome()).toBe(path.join(os.homedir(), ".dsh"));
     expect(resolveDshHome({})).toBe(path.join(os.homedir(), ".dsh"));
@@ -77,7 +80,8 @@ describe("resolveDshHome / resolveDshProfile / dshPatchFile", () => {
   it("~ 前缀展开、其它路径 resolve 为绝对路径", () => {
     expect(resolveDshHome({ dshHome: "~/.dsh" })).toBe(path.join(os.homedir(), ".dsh"));
     expect(resolveDshHome({ dshHome: "~/.dsh-custom" })).toBe(path.join(os.homedir(), ".dsh-custom"));
-    expect(resolveDshHome({ dshHome: "/tmp/dsh-home" })).toBe("/tmp/dsh-home");
+    expect(resolveDshHome({ dshHome: ABS_HOME })).toBe(ABS_HOME);
+    expect(resolveDshHome({ dshHome: "/tmp/dsh-home" })).toBe(path.resolve("/tmp/dsh-home"));
     expect(resolveDshHome({ dshHome: "./relative-dsh-home" })).toBe(path.resolve("./relative-dsh-home"));
     expect(path.isAbsolute(resolveDshHome({ dshHome: "./relative-dsh-home" }))).toBe(true);
   });
@@ -90,7 +94,7 @@ describe("resolveDshHome / resolveDshProfile / dshPatchFile", () => {
   });
 
   it("patch 路径 = <dshHome>/profiles/<profile>/cordis.patch.yml", () => {
-    expect(dshPatchFile("/tmp/dsh-home", "web")).toBe(path.join("/tmp/dsh-home", "profiles", "web", "cordis.patch.yml"));
+    expect(dshPatchFile(ABS_HOME, "web")).toBe(path.join(ABS_HOME, "profiles", "web", "cordis.patch.yml"));
   });
 
   it("profile 白名单：目录穿越/绝对路径/超长/非法字符一律回落 web", () => {
@@ -102,11 +106,11 @@ describe("resolveDshHome / resolveDshProfile / dshPatchFile", () => {
   });
 
   it("dshPatchFile 的 containment 断言：解析后逃出 profiles 目录即抛错", () => {
-    expect(() => dshPatchFile("/tmp/dsh-home", "../../etc")).toThrow(/逃出/);
-    expect(() => dshPatchFile("/tmp/dsh-home", "../profiles-other")).toThrow(/逃出/);
+    expect(() => dshPatchFile(ABS_HOME, "../../etc")).toThrow(/逃出/);
+    expect(() => dshPatchFile(ABS_HOME, "../profiles-other")).toThrow(/逃出/);
     // 正常 profile（含点号）不触发断言
-    expect(dshPatchFile("/tmp/dsh-home", "web-2_x.dev")).toBe(
-      path.join("/tmp/dsh-home", "profiles", "web-2_x.dev", "cordis.patch.yml"),
+    expect(dshPatchFile(ABS_HOME, "web-2_x.dev")).toBe(
+      path.join(ABS_HOME, "profiles", "web-2_x.dev", "cordis.patch.yml"),
     );
   });
 });
