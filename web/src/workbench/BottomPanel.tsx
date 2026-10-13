@@ -19,6 +19,7 @@ const SandboxPanel = lazy(() => import("../panels/SandboxPanel").then((m) => ({ 
 const CostPanel = lazy(() => import("../panels/CostPanel").then((m) => ({ default: m.CostPanel })));
 const PerfPanel = lazy(() => import("../panels/PerfPanel").then((m) => ({ default: m.PerfPanel })));
 const EvalPanel = lazy(() => import("../panels/EvalPanel").then((m) => ({ default: m.EvalPanel })));
+const DshSyncPanel = lazy(() => import("../panels/DshSyncPanel").then((m) => ({ default: m.DshSyncPanel })));
 
 /** 移动端常驻标签（其余折叠进第二行，默认收起） */
 const PRIMARY_TABS: BottomTab[] = ["context", "timeline", "cost"];
@@ -31,6 +32,8 @@ const TAB_META: Record<BottomTab, { zh: string; en: string; icon: IconName }> = 
   sandbox: { zh: "沙盒", en: "Sandbox", icon: "shield" },
   perf: { zh: "性能", en: "Perf", icon: "clock" },
   eval: { zh: "评测", en: "Eval", icon: "chart" },
+  // 同步语义最接近的现有图标：undo 的回环箭头（Icon.tsx 无专用 sync 图标）
+  dshSync: { zh: "dsh 同步", en: "dsh Sync", icon: "undo" },
 };
 
 /** 标签条右侧的会话状态项：状态点+文案（移动端仅此项），桌面加 tokens·成本与窗口占用 %（语义沿用旧状态行） */
@@ -78,7 +81,8 @@ interface BottomPanelProps {
 }
 
 /**
- * 底部面板：context/timeline/subagents/sandbox/cost/perf/eval 页签（eval 仅 owc-eval 扩展启用时显示）
+ * 底部面板：context/timeline/subagents/sandbox/cost/perf/eval 页签（eval 仅 owc-eval 扩展启用时显示，
+ * dshSync 仅 dsh-sync 扩展启用时显示）
  * + 开合/高度拖拽（layout store，localStorage 旧键名持久化）+ 会话状态项。
  * 各面板自取数（qk/store），行为对等旧 components/BottomPanel。
  */
@@ -91,8 +95,11 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
   const [tabsExpanded, setTabsExpanded] = useState(false);
   const extensions = useExtensionsQuery();
   const evalEnabled = extensions.data?.some((extension) => extension.id === "owc-eval" && extension.enabled) === true;
+  const dshSyncEnabled = extensions.data?.some((extension) => extension.id === "dsh-sync" && extension.enabled) === true;
 
-  const allTabs = (Object.keys(TAB_META) as BottomTab[]).filter((item) => item !== "eval" || evalEnabled);
+  // 扩展未启用时对应页签不出现（allTabs 过滤 + 下方兜底复位当前页签）
+  const allTabs = (Object.keys(TAB_META) as BottomTab[]).filter((item) =>
+    (item !== "eval" || evalEnabled) && (item !== "dshSync" || dshSyncEnabled));
   const primaryTabs = mobile ? allTabs.filter((item) => PRIMARY_TABS.includes(item)) : allTabs;
   const secondaryTabs = mobile ? allTabs.filter((item) => !PRIMARY_TABS.includes(item)) : [];
   // 第二行显隐只看 tabsExpanded：当前标签在折叠区也不强制展开，保证「收起」永远可用
@@ -102,7 +109,8 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
   useEffect(() => { setTabsExpanded(bottomOpen); }, [bottomOpen]);
   useEffect(() => {
     if (!evalEnabled && tab === "eval") layout.setBottomTab("context");
-  }, [evalEnabled, tab]);
+    if (!dshSyncEnabled && tab === "dshSync") layout.setBottomTab("context");
+  }, [evalEnabled, dshSyncEnabled, tab]);
 
   // 顶部拖拽调高：向上拖增大高度；键盘 ArrowUp/Down 每次 40px
   const startDrag = (event: ReactMouseEvent): void => {
@@ -201,6 +209,7 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
           {tab === "cost" && <CostPanel />}
           {tab === "perf" && <PerfPanel sessionId={sessionId} />}
           {tab === "eval" && evalEnabled && <EvalPanel />}
+          {tab === "dshSync" && dshSyncEnabled && <DshSyncPanel />}
           </Suspense>
           </ErrorBoundary>
         </div>

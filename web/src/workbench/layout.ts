@@ -11,9 +11,9 @@ export type SidebarView = "sessions" | "files" | "scm" | "problems";
 const SIDEBAR_VIEWS: readonly SidebarView[] = ["sessions", "files", "scm", "problems"];
 
 /** 底部面板页签（Phase 2 接入 BottomPanel 时消费；此处仅负责持久化语义） */
-export type BottomTab = "context" | "timeline" | "cost" | "subagents" | "sandbox" | "perf" | "eval";
+export type BottomTab = "context" | "timeline" | "cost" | "subagents" | "sandbox" | "perf" | "eval" | "dshSync";
 
-const BOTTOM_TABS: readonly BottomTab[] = ["context", "timeline", "cost", "subagents", "sandbox", "perf", "eval"];
+const BOTTOM_TABS: readonly BottomTab[] = ["context", "timeline", "cost", "subagents", "sandbox", "perf", "eval", "dshSync"];
 
 export const RAIL_MIN_WIDTH = 200;
 export const RAIL_MAX_WIDTH = 380;

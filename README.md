@@ -152,6 +152,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 - [`help/usage.md`](./help/usage.md) — 使用帮助：启动、面板、快捷键、模型与成本、自定义扩展点模板
 - [`help/faq.md`](./help/faq.md) — 常见问题：模型接入、权限与沙盒、快照回滚、CLI 集成、故障排查
 - [`help/dsh-compat.md`](./help/dsh-compat.md) — dsh 兼容模式：开启方式、安装 dsh 插件、支持/不支持清单、可信边界与故障排查
+- [`help/dsh-sync.md`](./help/dsh-sync.md) — dsh 同步扩展：与 dsh 数据目录双向同步模型配置与会话、面板操作流、凭据处理与限制（英文 [`dsh-sync.en.md`](./help/dsh-sync.en.md)）
 - [`help/development.md`](./help/development.md) — 二次开发：仓库布局、三件套构建、测试约定、切入点、CI 与发布
 - [`packaging/README.md`](./packaging/README.md) — 打包流程、分发布局、安装脚本与发布流水线
 - [`CHANGELOG.md`](./CHANGELOG.md) — 版本更新日志

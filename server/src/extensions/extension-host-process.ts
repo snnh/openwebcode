@@ -3,7 +3,8 @@ import { pathToFileURL } from "node:url";
 import { OFFICIAL_EXTENSIONS, optimizeAttention } from "./official.js";
 import { RECALL_MEMORY_SPEC, recallMemory, reinjectVaultIndex, type VaultHostApi } from "./compact-vault-host.js";
 import { DESCRIBE_IMAGE_SPEC, bridgeVisionImages, describeImage, type VisionToolsHostApi } from "./vision-tools-host.js";
-import { isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolAfterHookPayload, type ToolHookPayload, type ToolHookResult } from "./types.js";
+import { clampExtensionRouteTimeout, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolAfterHookPayload, type ToolHookPayload, type ToolHookResult } from "./types.js";
+import { createDshSyncRoutes, type DshSyncServerApi } from "./dsh-sync-host.js";
 import type { DshHostRuntime } from "../dsh/host-runtime.js";
 import { dshToolSourceId, type DshPluginReport, type DshSyncItem } from "../dsh/loader.js";
 
@@ -38,6 +39,57 @@ function register(id: string, hook: ExtensionHook, handler: Handler): void {
 }
 
 register("attention-optimizer", "context.beforeBuild", (payload, config) => optimizeAttention(payload as ContextHookPayload, config));
+
+/**
+ * dsh-sync 官方扩展（M2a 模型配置 / M3b 会话导入）：私有路由表由 dsh-sync-host.ts 的工厂生成——
+ * server 能力经 callApi 注入，不经过 activate，因此不需要 registerRoute 的 manifest.routes 对表检查；
+ * manifest.routes 与路由键集合的一致性由单测守。
+ */
+const dshSyncApi: DshSyncServerApi = {
+  listProfiles: () =>
+    callApi("dsh-sync", "providers.listProfiles") as Promise<Array<Record<string, unknown>>>,
+  upsertProfiles: (input) =>
+    // 逐项 upsert 会写 provider-profiles.json 与 models.manual.json（原子落盘），默认 5s 不够
+    callApi("dsh-sync", "providers.upsertProfiles", { profiles: input.profiles, ...(input.models ? { models: input.models } : {}) }, 60_000),
+  importSession: (input) =>
+    // 大会话（含 zstd 逐帧解压 + 转换 + 落盘）远超默认 5s：与同步路由同档 120s，低于路由超时上限
+    callApi(
+      "dsh-sync",
+      "sessions.import",
+      {
+        meta: input.meta,
+        messages: input.messages,
+        ...(input.replaceId === undefined ? {} : { replaceId: input.replaceId }),
+        ...(input.ledger === undefined ? {} : { ledger: input.ledger }),
+        // M5a：子代理转录随会话一同落盘（逐项 try 由 server 侧兜）
+        ...(input.subagents === undefined ? {} : { subagents: input.subagents }),
+      },
+      120_000,
+    ) as Promise<Record<string, unknown>>,
+  // 会话清单（meta 白名单）：会话数为量级不大的元信息，默认 5s 足够
+  listSessions: () =>
+    callApi("dsh-sync", "sessions.list") as Promise<Array<Record<string, unknown>>>,
+  // 单会话 meta + messages：大会话（历史全量）经 IPC 返回，留 60s 余量
+  getSession: (id) =>
+    callApi("dsh-sync", "sessions.get", { id }, 60_000) as Promise<Record<string, unknown>>,
+  // 上下文账本（含 compacted/compactionHistory）：单文件读取，默认 5s 足够
+  getLedger: (id) =>
+    callApi("dsh-sync", "sessions.getLedger", { id }) as Promise<Record<string, unknown>>,
+  // 子代理转录（subagents/<taskId>.json）：大会话的转录可能到 64000 字结论 + 全量消息，留 60s
+  getSubagent: (sessionId, taskId) =>
+    callApi("dsh-sync", "sessions.getSubagent", { sessionId, taskId }, 60_000) as Promise<Record<string, unknown> | null>,
+  // 默认模型解析（导出补全缺 model 的会话用）：纯内存查询，默认 5s 足够
+  defaultSelection: (provider) =>
+    callApi("dsh-sync", "models.defaultSelection", { ...(provider === undefined ? {} : { provider }) }) as Promise<{ provider?: string; model?: string }>,
+  // 映射表（map.json）读写走扩展私有 storage：单文件远小于配额，默认 5s 足够
+  storageRead: (relativePath) =>
+    callApi("dsh-sync", "storage.read", { path: relativePath }) as Promise<{ content: string | null }>,
+  storageWrite: (relativePath, content) =>
+    callApi("dsh-sync", "storage.write", { path: relativePath, content }) as Promise<{ bytes: number }>,
+  storageDelete: (relativePath) =>
+    callApi("dsh-sync", "storage.delete", { path: relativePath }) as Promise<{ deleted: boolean }>,
+};
+routes.set("dsh-sync", createDshSyncRoutes(dshSyncApi));
 
 /** compact-vault 官方扩展：recall_memory 工具 + 索引回注钩子（host 侧自包含实现）。 */
 const vaultApi: VaultHostApi = {
@@ -419,7 +471,9 @@ async function invokeRoute(params: Record<string, unknown> | undefined): Promise
   const handler = routes.get(extensionId)?.get(`${method} ${routePath}`);
   if (!handler) throw new Error(`Route not registered: ${extensionId} ${method} ${routePath}`);
   const query = params?.query && typeof params.query === "object" ? params.query as Record<string, unknown> : {};
-  const value = await withTimeout(Promise.resolve(handler({ method, path: routePath, query, ...(params?.body !== undefined ? { body: params.body } : {}) }, states.get(extensionId)?.config ?? {})));
+  // 路由超时由 manifest.routes[].timeoutMs 决定（server 侧钳制后经 IPC 下发）；缺省 5000ms
+  const timeoutMs = clampExtensionRouteTimeout(params?.timeoutMs);
+  const value = await withTimeout(Promise.resolve(handler({ method, path: routePath, query, ...(params?.body !== undefined ? { body: params.body } : {}) }, states.get(extensionId)?.config ?? {})), timeoutMs);
   if (value && typeof value === "object") {
     const result = value as { status?: unknown; body?: unknown };
     const status = typeof result.status === "number" && Number.isSafeInteger(result.status) && result.status >= 100 && result.status <= 599 ? result.status : 200;

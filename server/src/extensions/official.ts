@@ -232,6 +232,31 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
       required: ["model"],
     },
   },
+  {
+    id: "dsh-sync",
+    name: "dsh 同步",
+    version: "0.2.1",
+    description: "与 dsh（DeepSeek Harness）数据目录双向同步模型配置与会话（手动触发、差异预览、逐项勾选）。",
+    apiVersion: "1",
+    permissions: ["http:route", "ui:panel", "sessions:read", "sessions:mutate", "providers:read", "providers:mutate"],
+    official: true,
+    defaultEnabled: false,
+    routes: [
+      { method: "GET", path: "/status", timeoutMs: 10_000 },
+      { method: "GET", path: "/preview/providers", timeoutMs: 30_000 },
+      { method: "POST", path: "/sync/providers", timeoutMs: 60_000 },
+      { method: "GET", path: "/preview/sessions", timeoutMs: 60_000 },
+      { method: "POST", path: "/sync/sessions", timeoutMs: 60_000 },
+    ],
+    configSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        dshHome: { type: "string", title: "dsh 数据目录", description: "dsh 的数据目录（默认 ~/.dsh）。", default: "~/.dsh" },
+        profile: { type: "string", title: "dsh profile", description: "读取 profiles/<profile>/cordis.patch.yml 的模型配置（默认 web）。", default: "web" },
+      },
+    },
+  },
 ];
 
 export const OFFICIAL_DEFAULT_CONFIG: Record<string, Record<string, unknown>> = {
@@ -248,6 +273,7 @@ export const OFFICIAL_DEFAULT_CONFIG: Record<string, Record<string, unknown>> = 
   "env-sim": { persona: "" },
   "compact-vault": { keepTail: 10, chunkSize: 25, recallMaxTokens: 4096 },
   "vision-tools": { model: "", prompt: "", thinking: true, cacheDescriptions: true, mode: "describe" },
+  "dsh-sync": { dshHome: "~/.dsh", profile: "web" },
 };
 
 function textOf(message: ChatMessage): string {

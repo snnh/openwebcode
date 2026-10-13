@@ -289,6 +289,24 @@ export const api = {
   deleteEnvSimPersona: (id: string) =>
     request<{ ok: boolean }>(`/api/extensions/env-sim/personas/${encodeURIComponent(id)}`, { method: "DELETE" }),
   uninstallExtension: (id: string) => request<void>(`/api/extensions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /**
+   * 扩展私有路由（`/api/ext/<id><path>`，dsh-sync 为首个调用方）：
+   * query 统一走 URLSearchParams 编码，body 统一 JSON 序列化（request 自动补 content-type），
+   * path 可带或不带前导 `/`。扩展未启用/未运行 → 503、路由未声明 → 404、host 超时 → 504，
+   * 均由 request 归一为 ApiError（含服务端 error 文案）。
+   */
+  extRoute: <T>(
+    id: string,
+    path: string,
+    init?: { method?: "GET" | "POST" | "DELETE"; query?: Record<string, string>; body?: unknown },
+  ): Promise<T> => {
+    const search = new URLSearchParams(init?.query ?? {}).toString();
+    const base = `/api/ext/${encodeURIComponent(id)}${path.startsWith("/") ? path : `/${path}`}`;
+    return request<T>(search ? `${base}?${search}` : base, {
+      method: init?.method ?? "GET",
+      ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+    });
+  },
   // 会话格式升级（官方扩展 session-format-upgrade；未启用时 503）
   formatUpgrades: () => request<{ steps: Array<{ id: string; scope: string; description: string }> }>("/api/sessions/format-upgrades"),
   upgradeSessionFormat: (id: string, stepId?: string) =>

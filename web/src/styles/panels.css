@@ -302,6 +302,152 @@
 .eval-comparison .eval-result { display: grid; grid-template-columns: minmax(120px, .5fr) minmax(150px, .5fr) minmax(280px, 1fr); gap: 8px; align-items: baseline; }
 .eval-comparison small { color: var(--text-3); font-family: var(--font-mono); }
 
+/* dsh 同步面板（dsh-sync 扩展，M4d）：状态条 + 模型配置同步（方向/预览/勾选/执行报告）+ 会话导入/导出 */
+.dsh-sync-panel { display: flex; flex-direction: column; gap: 12px; padding: 10px 12px; }
+.dsh-sync-panel > .panel-head { margin-bottom: 0; align-items: flex-start; gap: 10px; }
+.dsh-sync-panel > .panel-head h2 { font-size: 13px; }
+.dsh-sync-panel > .panel-head p { margin: 3px 0 0; }
+.dsh-sync-section { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.dsh-sync-section h3 { margin: 0; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .03em; }
+.dsh-sync-section-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; }
+.dsh-sync-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+
+/* 方向切换：分段按钮（选中项描边 + 强调色） */
+.dsh-sync-direction { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-s); overflow: hidden; }
+.dsh-sync-direction button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-right: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12px;
+}
+.dsh-sync-direction button:last-child { border-right: 0; }
+.dsh-sync-direction button:hover { background: var(--panel-2); color: var(--text); }
+.dsh-sync-direction button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+/* 状态条：每项一行（图标 + 标签 + 值 + 警示文案） */
+.dsh-sync-status { display: flex; flex-direction: column; gap: 5px; }
+.dsh-sync-status-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--ok);
+  border-radius: var(--radius-s);
+  background: var(--panel);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.dsh-sync-status-item.warn { border-left-color: var(--amber); }
+.dsh-sync-status-item.info { border-left-color: var(--accent); }
+.dsh-sync-status-item svg { color: var(--text-3); flex: none; }
+.dsh-sync-status-item.warn svg { color: var(--amber); }
+.dsh-sync-status-label { color: var(--text-2); }
+.dsh-sync-status-value { color: var(--text); overflow-wrap: anywhere; }
+.dsh-sync-warn-text { color: var(--amber); font-weight: 600; }
+
+/* 预览列表：一行一个 provider（不可勾选的 same 项降低不透明度） */
+.dsh-sync-list { display: flex; flex-direction: column; gap: 6px; }
+.dsh-sync-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-s);
+}
+.dsh-sync-item.new { border-left-color: var(--ok); }
+.dsh-sync-item.changed { border-left-color: var(--amber); }
+.dsh-sync-item.same { opacity: .72; }
+.dsh-sync-item input { margin: 2px 0 0; flex: none; cursor: pointer; }
+.dsh-sync-item input:disabled { cursor: not-allowed; }
+.dsh-sync-item-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.dsh-sync-item-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.dsh-sync-item-head strong { font-size: 13px; overflow-wrap: anywhere; }
+.dsh-sync-item-env { color: var(--text-2); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.dsh-sync-item-body small { color: var(--text-3); font-size: var(--text-xs); }
+.dsh-sync-changes { font-size: var(--text-xs); color: var(--text-2); }
+.dsh-sync-changes summary { cursor: pointer; color: var(--text-3); }
+.dsh-sync-changes ul { margin: 5px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+
+/* 会话同步（M3c 导入 / M4d 导出）：勾选工具行 + 按 cwd 分组的可折叠清单（导入）+ 冲突单选 + 缺 cwd 的行内输入 + 导出列表 */
+.dsh-sync-session-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.dsh-sync-session-tools > span { margin-left: auto; }
+.dsh-sync-session-group { border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--panel); }
+.dsh-sync-session-group > summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+.dsh-sync-session-group > summary code { color: var(--text); overflow-wrap: anywhere; }
+.dsh-sync-session-group > summary svg { color: var(--text-3); flex: none; }
+.dsh-sync-session-rows { display: flex; flex-direction: column; gap: 4px; padding: 0 8px 7px; }
+.dsh-sync-session {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--panel-2);
+}
+.dsh-sync-session.disabled { opacity: .72; }
+.dsh-sync-session input[type="checkbox"] { margin: 2px 0 0; flex: none; cursor: pointer; }
+.dsh-sync-session input[type="checkbox"]:disabled { cursor: not-allowed; }
+.dsh-sync-session-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.dsh-sync-session-id { color: var(--text-2); font-size: var(--text-xs); }
+.dsh-sync-session-time { color: var(--text-3); font-size: var(--text-xs); }
+.dsh-sync-session-reason { color: var(--text-3); font-size: var(--text-xs); }
+.dsh-sync-session-gen { color: var(--amber); font-size: var(--text-xs); }
+/* 导出方向行：标题 + provider/model 灰字 + 可截断的 cwd */
+.dsh-sync-session-title { font-size: 13px; overflow-wrap: anywhere; }
+.dsh-sync-session-model { color: var(--text-3); font-size: var(--text-xs); }
+.dsh-sync-session-cwd-text { color: var(--text-3); font-size: var(--text-xs); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-sync-session-cwd { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: var(--text-xs); color: var(--text-2); }
+.dsh-sync-session-cwd input {
+  flex: 1 1 180px;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--panel);
+  color: var(--text);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+}
+.dsh-sync-session-conflict { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; padding: 6px 8px; border: 1px solid var(--amber-border); border-radius: var(--radius-s); background: var(--amber-bg); font-size: var(--text-xs); color: var(--text-2); }
+.dsh-sync-session-conflict label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.dsh-sync-report-id { color: var(--text-3); }
+.dsh-sync-report-title { overflow-wrap: anywhere; }
+.dsh-sync-report-warn { color: var(--amber); overflow-wrap: anywhere; }
+
+/* 说明/警示行与执行报告 */
+.dsh-sync-note { margin: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--panel-2); color: var(--text-2); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.dsh-sync-note.warn { background: var(--amber-bg); border-color: var(--amber-border); color: var(--amber); }
+.dsh-sync-note.info { color: var(--text-2); }
+.dsh-sync-note strong { display: block; margin-bottom: 3px; }
+.dsh-sync-note p { margin: 0; }
+.dsh-sync-note ul { margin: 3px 0 0; padding-left: 16px; }
+.dsh-sync-notes { margin: 0; padding-left: 16px; color: var(--text-3); font-size: var(--text-xs); }
+.dsh-sync-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.dsh-sync-report { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--panel); }
+.dsh-sync-report-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: var(--text-s); }
+.dsh-sync-report-list { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; font-size: var(--text-xs); font-family: var(--font-mono); overflow-wrap: anywhere; }
+.dsh-sync-report-list li { display: flex; align-items: baseline; gap: 5px; }
+.dsh-sync-report-list li.ok { color: var(--ok); }
+.dsh-sync-report-list li.warn { color: var(--amber); }
+.dsh-sync-report-list svg { flex: none; vertical-align: -1px; }
+
 /* 底部状态合并（桌面端）：会话状态项并入面板标签条右侧 */
 .panel-status {
   margin-left: auto;
@@ -358,6 +504,15 @@
   /* 评测：回归对比行（桌面三列 minmax 最小 550px）单列堆叠，摘要行允许换行 */
   .panel-content .eval-comparison .eval-result { grid-template-columns: 1fr; }
   .panel-content .eval-result summary { flex-wrap: wrap; }
+  /* dsh 同步：方向分段按钮与操作按钮整行铺开，条目头部换行、长路径/变量名任意断行 */
+  .panel-content .dsh-sync-section-head { align-items: stretch; }
+  .panel-content .dsh-sync-actions { flex-direction: column; align-items: stretch; }
+  .panel-content .dsh-sync-direction button { flex: 1 1 auto; justify-content: center; }
+  .panel-content .dsh-sync-status-value, .panel-content .dsh-sync-item-env { overflow-wrap: anywhere; }
+  /* 会话清单：工具行的计数不再顶到最右，cwdOverride 输入独占一行 */
+  .panel-content .dsh-sync-session-tools > span { margin-left: 0; }
+  .panel-content .dsh-sync-session-cwd { align-items: stretch; }
+  .panel-content .dsh-sync-session-cwd input { flex-basis: 100%; }
   /* 子代理：swarm 组头长文允许换行 */
   .panel-content .subagents-group-header { flex-wrap: wrap; }
   /* 底部标签条：不横滚——常驻标签可收缩省略，状态项钉在最右（margin-left:auto 沿用桌面规则） */

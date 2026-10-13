@@ -1,0 +1,37 @@
+# 测试 fixture：模拟 dsh profile 的 cordis.patch.yml
+# 含注释、!!js 自定义标签与 llm-service-lite 配置，用于 CST 保注释改写测试。
+- id: connection
+  config:
+    trustedHosts: !!js ctx.lanAccess.trustedHosts
+    operatorSurface: trusted
+
+# llm-service-lite：模型服务商配置（同步目标区块）
+- id: llm-service-lite
+  name: "@deepseek-ai/dsh-llm-service-lite"
+  config:
+    providers:
+      gateway:
+        interfaceType: openai-responses
+        baseURL: https://gateway.example.com/v1
+        apiKeyEnv: GATEWAY_API_KEY
+        promptCaching: true
+        models:
+          - id: deepseek-v4-pro
+            contextWindow: 1000000
+            maxTokens: 393216
+            capabilities:
+              modalities:
+                - text
+              effort:
+                - low
+                - high
+              thinkingStyle: thinking
+              reasoningContent: true
+      legacy:
+        enabled: false
+        interfaceType: anthropic-messages
+        baseURL: https://api.anthropic.example.com
+        apiKey: sk-inline-demo-key
+        models: []
+
+# 尾部注释：改写后应保留

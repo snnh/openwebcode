@@ -6,21 +6,23 @@ import { fileURLToPath } from "node:url";
 import type { AppEvent, EventBus } from "../events/event-bus.js";
 import type { FastModelClient } from "../fast-model.js";
 import type { CoreClientLike } from "../core-client.js";
-import { getModelProfile } from "../context/model-profile.js";
-import type { ModelRegistry } from "../context/model-registry.js";
+import { getModelProfile, type ModelCapabilities } from "../context/model-profile.js";
+import type { CatalogModel, ModelRegistry } from "../context/model-registry.js";
 import { withTimeout } from "../http-utils.js";
 import { minimalChildEnv } from "../mcp/client.js";
+import { isMissing } from "../fs-utils.js";
 import type { ProviderRegistry, ProviderTool } from "../providers/provider.js";
 import type { ChatMessage, SessionDetail, SessionMeta } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { ContextManager } from "../context/context-manager.js";
-import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionRoute, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolAfterHookPayload, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
+import { EXTENSION_API_VERSION, clampExtensionRouteTimeout, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionRoute, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolAfterHookPayload, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
 import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
 import { dshPluginInfos, dshToolSourceId, scanDshPlugins, type DshPluginInfo, type DshPluginReport } from "../dsh/loader.js";
 import { DSH_SERVICE_APIS } from "../dsh/services.js";
 import { setSimulatedUserAgent } from "../user-agent.js";
 import { BUILTIN_PERSONAS, getPersona, listPersonas, resolvePersona, personasDir, saveUserPreset, deleteUserPreset, type PersonaDetail, type PersonaPreset, type PersonaSummary } from "./env-sim/index.js";
 import type { CompactVaultService } from "./compact-vault.js";
+import type { ProviderProfilesService } from "../provider-profiles.js";
 import { MAX_IMAGE_BASE64_CHARS } from "../media-limits.js";
 
 /** activeToolShaping 聚合结果：hideBuiltIns 按内置名隐藏，aliases 以新名（as）为键。 */
@@ -37,6 +39,8 @@ export class ExtensionRouteError extends Error {
 }
 
 const ALIAS_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
+/** 子代理转录的 taskId 形状（uuid；与 SessionStore/routes 的读取侧同一正则，防路径穿越）。 */
+const SUBAGENT_TASK_ID_PATTERN = /^[0-9a-f-]{36}$/;
 const BUILTIN_PERSONA_IDS = new Set(BUILTIN_PERSONAS.map((preset) => preset.id));
 /** 扩展私有存储配额：单文件 1 MiB、目录总量 50 MiB。 */
 const STORAGE_FILE_LIMIT = 1024 * 1024;
@@ -59,6 +63,8 @@ const EXTENSION_ID_MIGRATIONS: Record<string, string> = { "context-saver": "cont
 const API_PERMISSIONS: Record<ExtensionApiMethod, ExtensionPermission | null> = {
   "sessions.list": "sessions:read",
   "sessions.get": "sessions:read",
+  "sessions.getLedger": "sessions:read",
+  "sessions.getSubagent": "sessions:read",
   "context.getView": "context:read",
   "context.readArtifact": "context:read",
   "context.readVaultFile": "context:read",
@@ -71,6 +77,10 @@ const API_PERMISSIONS: Record<ExtensionApiMethod, ExtensionPermission | null> = 
   "model.complete": "model:fast",
   "model.vision": "model:fast",
   "models.getCapabilities": null,
+  "models.defaultSelection": null,
+  "providers.listProfiles": "providers:read",
+  "providers.upsertProfiles": "providers:mutate",
+  "sessions.import": "sessions:mutate",
 };
 
 /** sessions:read 只暴露元信息白名单字段；不落出沙盒路径/setupScript 等内部配置。 */
@@ -124,7 +134,7 @@ export class ExtensionManager {
   private dshSyncFromHostStart = false;
   private dshSyncInFlight: Promise<DshPluginInfo[]> | undefined;
 
-  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike; models?: ModelRegistry; events?: EventBus } = {}) {
+  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike; models?: ModelRegistry; providerProfiles?: ProviderProfilesService; events?: EventBus; resolveModelSelection?: (provider?: string) => { provider?: string; model?: string } | undefined } = {}) {
     this.root = path.join(dataDir, "extensions");
     this.configPath = path.join(this.root, "extensions.json");
     if (this.events && !this.deps.events) this.deps.events = this.events;
@@ -614,12 +624,14 @@ export class ExtensionManager {
 
   private async dispatchApi(request: ApiRequest): Promise<unknown> {
     const params = request.params ?? {};
+    // 已注册扩展优先于 dsh 伪扩展：官方扩展 id `dsh-sync` 落在伪 id 前缀 `dsh-` 里，
+    // 先按前缀分流会把它误判为 dsh 插件通道，故先查 manifests。
+    const manifest = this.manifests.find((item) => item.id === request.extensionId);
     // dsh 兼容模式（M3）：dsh 插件以伪扩展 id 调用宿主能力——不经 manifest 权限表，
     // 只放行 DSH_SERVICE_APIS 白名单（llm/sessions/storage/events.subscribe），存储按伪 id 隔离。
-    if (request.extensionId.startsWith("dsh-")) {
+    if (!manifest && request.extensionId.startsWith("dsh-")) {
       return this.dispatchDshApi(request.extensionId, request.api, params);
     }
-    const manifest = this.manifests.find((item) => item.id === request.extensionId);
     if (!manifest) throw new Error(`Unknown extension: ${request.extensionId}`);
     if (!(request.api in API_PERMISSIONS)) throw new Error(`Unsupported extension api: ${request.api}`);
     const required = API_PERMISSIONS[request.api];
@@ -635,6 +647,37 @@ export class ExtensionManager {
         const detail = await sessions.get(String(params.id ?? ""));
         if (!detail) throw new Error("Session not found");
         return this.publicSessionDetail(detail);
+      }
+      case "sessions.getLedger": {
+        if (!sessions) throw new Error("Session store is not configured");
+        const detail = await sessions.get(String(params.id ?? ""));
+        if (!detail) throw new Error("Session not found");
+        // 全量账本（含 compacted/compactionHistory）：getLedger 返回深克隆，可安全经 IPC 送出。
+        return new ContextManager(sessions.contextRoot(detail.id)).getLedger();
+      }
+      case "sessions.getSubagent": {
+        // 子代理转录（dsh-sync M5a）：<sessionDir>/subagents/<taskId>.json 原样返回；
+        // 转录不存在返回 null（面板显示「无转录」而不是报错）。
+        if (!sessions) throw new Error("Session store is not configured");
+        const sessionId = String(params.sessionId ?? "");
+        const taskId = String(params.taskId ?? "");
+        if (!(await sessions.get(sessionId))) throw new Error("Session not found");
+        // taskId 限定 uuid：转录路径由扩展入参拼出，不校验即可穿越出会话目录
+        //（与 routes/sessions-files.ts 的读取侧同一口径）。
+        if (!SUBAGENT_TASK_ID_PATTERN.test(taskId)) throw new Error("taskId must be a uuid");
+        const transcriptPath = path.join(sessions.contextRoot(sessionId), "subagents", `${taskId}.json`);
+        let raw: string;
+        try {
+          raw = await readFile(transcriptPath, "utf8");
+        } catch (error) {
+          if (isMissing(error)) return null;
+          throw error;
+        }
+        try {
+          return JSON.parse(raw) as unknown;
+        } catch {
+          throw new Error("子代理转录内容损坏");
+        }
       }
       case "context.getView": {
         if (!sessions) throw new Error("Session store is not configured");
@@ -718,7 +761,179 @@ export class ExtensionManager {
           thinking: [...capabilities.thinking],
         };
       }
+      case "models.defaultSelection": {
+        // dsh-sync 导出补全用：给了 provider 只解析该 provider 的默认模型（provider 原样回传，
+        // 不张冠李戴）；未给则走 owc 当前默认链。未接线时回空对象，由调用方按「补不出来」处理。
+        const provider = typeof params.provider === "string" && params.provider ? params.provider : undefined;
+        return this.deps.resolveModelSelection?.(provider) ?? {};
+      }
+      case "providers.listProfiles": {
+        // 只回脱敏视图（hasApiKey/maskedApiKey），扩展全程拿不到明文 Key。
+        const providerProfiles = this.deps.providerProfiles;
+        if (!providerProfiles) throw new Error("Provider profiles service is not configured");
+        return providerProfiles.view().modelProviders;
+      }
+      case "providers.upsertProfiles": {
+        return this.upsertProviderProfiles(params);
+      }
+      case "sessions.import": {
+        if (!sessions) throw new Error("Session store is not configured");
+        // 两种入参形态（M3a 的现成文本 / M3b 的结构化 meta+messages），统一收敛为 transfer 文本后走同一路径：
+        // 结构化形态让扩展不必自己拼 JSONL，也免得扩展侧漏掉 meta 必填字段的净化口径。
+        const text = this.sessionImportText(params);
+        const replaceId = typeof params.replaceId === "string" ? params.replaceId : undefined;
+        // 两种语义：无 replaceId = 新建导入（原 id 未被占用则沿用）；带 replaceId = 覆盖目标会话历史。
+        const meta = replaceId === undefined
+          ? await sessions.importJsonl(text)
+          : await sessions.replaceJsonl(replaceId, text);
+        // 可选账本：导入方（扩展宿主的会话转换器）把 dsh compaction/summary 映射出的 compacted
+        // 一起落盘，省掉一次往返；缺省时账本懒建为空（round:0 最小账本由 normalizer 兜底）。
+        if (params.ledger !== null && typeof params.ledger === "object") {
+          await new ContextManager(sessions.contextRoot(meta.id)).replaceLedger(params.ledger);
+        }
+        // M5a：子代理转录落盘（<sessionDir>/subagents/<taskId>.json）。逐项 try：单项坏数据
+        // （非法 taskId、缺字段、写盘失败）只记 subagentsFailed，不中断本次导入。
+        const subagentsFailed: Array<{ taskId: string; reason: string }> = [];
+        let subagentsWritten = 0;
+        for (const [index, raw] of (Array.isArray(params.subagents) ? params.subagents : []).entries()) {
+          const entry = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : undefined;
+          const taskId = typeof entry?.taskId === "string" ? entry.taskId : "";
+          const data = entry?.data !== null && typeof entry?.data === "object" && !Array.isArray(entry?.data)
+            ? entry.data as Record<string, unknown>
+            : undefined;
+          try {
+            if (taskId.length === 0) throw new Error("subagents 条目需要 taskId");
+            if (data === undefined) throw new Error("subagents 条目需要 data 对象");
+            subagentsWritten += await sessions.importSubagentTranscripts(meta.id, [{ taskId, data }]);
+          } catch (error: unknown) {
+            subagentsFailed.push({ taskId: taskId.length > 0 ? taskId : `#${index}`, reason: error instanceof Error ? error.message : String(error) });
+          }
+        }
+        return {
+          ...publicSessionMeta(meta),
+          subagentsWritten,
+          ...(subagentsFailed.length === 0 ? {} : { subagentsFailed }),
+        };
+      }
     }
+  }
+
+  /**
+   * `sessions.import` 入参 → 会话 transfer 文本（首行 meta + 每行一条消息，见 session-transfer.ts）。
+   *
+   * 支持两种形态：
+   * 1. `{text}`（M3a 现状）：原样返回，交给 `parseSessionImport` 校验；
+   * 2. `{meta:{cwd,title,createdAt?,provider?,model?}, messages:[...]}`（M3b 结构化）：在这里组装首行
+   *    `{kind:"meta",version:1,exportedAt,session:{...}}`，messages 逐条 `JSON.stringify` 拼行。
+   *
+   * 模型归属：meta 未给 provider/model 时按 owc 当前默认（settings.defaultModel → 首个已配置服务商 /
+   * 目录首模型，与 `POST /api/sessions` 的隐式解析同语义）补默认；provider 仍解析不出来即报
+   * 「无可用服务商配置」——导入的会话必须可继续对话，没有 provider 的会话落盘即是坏数据。
+   *
+   * 净化/校验一律交给 `SessionStore.importJsonl` 的既有兜底（信任边界只有一处）：本方法只做「拼装」，
+   * 不挑选/裁剪消息字段，也不接受 meta 里的沙盒/权限/工作区字段。
+   * @param params - 扩展下发的入参（`text` 或 `meta`+`messages`）。
+   * @returns 可喂 `importJsonl`/`replaceJsonl` 的 transfer 文本。
+   */
+  private sessionImportText(params: Record<string, unknown>): string {
+    const rawText = typeof params.text === "string" ? params.text : "";
+    if (rawText.trim().length > 0) return rawText;
+    const rawMeta = params.meta;
+    if (rawMeta === null || typeof rawMeta !== "object" || Array.isArray(rawMeta)) {
+      throw new Error("sessions.import requires non-empty text");
+    }
+    const meta = rawMeta as Record<string, unknown>;
+    const cwd = typeof meta.cwd === "string" ? meta.cwd.trim() : "";
+    if (cwd.length === 0) throw new Error("sessions.import requires meta.cwd");
+    if (!Array.isArray(params.messages)) throw new Error("sessions.import requires messages to be an array");
+    // title 是 parseSessionImport 的必填非空字段：扩展没给标题时补一个稳定占位（面板里可随手改名），
+    // 而不是整条导入失败。
+    const title = typeof meta.title === "string" && meta.title.trim().length > 0 ? meta.title.trim() : "导入的会话";
+    const explicitProvider = typeof meta.provider === "string" && meta.provider.trim().length > 0 ? meta.provider.trim() : undefined;
+    const explicitModel = typeof meta.model === "string" && meta.model.trim().length > 0 ? meta.model.trim() : undefined;
+    const resolved = explicitProvider === undefined || explicitModel === undefined ? this.deps.resolveModelSelection?.() : undefined;
+    const provider = explicitProvider ?? resolved?.provider;
+    if (provider === undefined || provider.length === 0) {
+      throw new Error("无可用服务商配置：导入会话需要 provider（请在设置里配置模型服务商）");
+    }
+    // model 的归属必须与 provider 一致：显式给了 provider 时只采纳「同一 provider」的默认模型，
+    // 否则宁可不带模型（新建会话允许 model 为空，用户进会话再选），也不把别的 provider 的模型写上。
+    const sameProviderSelection = resolved !== undefined && (explicitProvider === undefined || resolved.provider === explicitProvider);
+    const model = explicitModel ?? (sameProviderSelection ? resolved.model ?? "" : "");
+    const head = {
+      kind: "meta",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      session: {
+        cwd,
+        title,
+        provider,
+        model,
+        ...(typeof meta.createdAt === "string" && meta.createdAt.length > 0 ? { createdAt: meta.createdAt } : {}),
+      },
+    };
+    const lines = [JSON.stringify(head), ...params.messages.map((message) => JSON.stringify(message))];
+    return `${lines.join("\n")}\n`;
+  }
+
+  /**
+   * providers.upsertProfiles：逐 profile 走 ProviderProfilesService.upsertModel（热生效），
+   * 逐 model 走 ModelRegistry.upsertManual（manual 层）。逐项捕获错误、不中途抛——
+   * 单项失败（如缺 Key 的 anthropic profile、非法 id）不影响同批其它项。
+   */
+  private async upsertProviderProfiles(params: Record<string, unknown>): Promise<{
+    profiles: Array<{ id: string; ok: boolean; error?: string }>;
+    models: Array<{ id: string; provider?: string; ok: boolean; error?: string }>;
+  }> {
+    const rawProfiles = Array.isArray(params.profiles) ? params.profiles : [];
+    const rawModels = Array.isArray(params.models) ? params.models : [];
+    const profiles: Array<{ id: string; ok: boolean; error?: string }> = [];
+    for (const [index, item] of rawProfiles.entries()) {
+      const raw = item !== null && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : undefined;
+      const id = typeof raw?.id === "string" && raw.id.trim() ? raw.id.trim() : `#${index}`;
+      try {
+        const service = this.deps.providerProfiles;
+        if (!service) throw new Error("Provider profiles service is not configured");
+        if (!raw) throw new Error("模型服务商条目必须是对象");
+        // 只提交显式给出的字段：apiKey 缺省时 upsertModel 保留已有 Key（「无凭据更新」语义）。
+        const patch: Record<string, unknown> = { id };
+        for (const field of ["enabled", "interfaceType", "baseURL", "apiKey", "promptCaching", "includeUsage", "extraBody"] as const) {
+          if (raw[field] !== undefined) patch[field] = raw[field];
+        }
+        await service.upsertModel(id, patch);
+        profiles.push({ id, ok: true });
+      } catch (error: unknown) {
+        profiles.push({ id, ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    const models: Array<{ id: string; provider?: string; ok: boolean; error?: string }> = [];
+    for (const [index, item] of rawModels.entries()) {
+      const raw = item !== null && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : undefined;
+      const id = typeof raw?.id === "string" && raw.id.trim() ? raw.id.trim() : `#${index}`;
+      const provider = typeof raw?.provider === "string" && raw.provider.trim() ? raw.provider.trim() : undefined;
+      try {
+        const registry = this.deps.models;
+        if (!registry) throw new Error("Model registry is not configured");
+        if (!raw || !provider) throw new Error("模型条目需要 id 与 provider");
+        // contextWindow 缺省时按模型元数据库兜底（与 /api/models 的成档口径一致）；
+        // capabilities 只声明部分字段时由 registry 的 normalizeCatalogModel 逐字段回落默认。
+        const contextWindow = typeof raw.contextWindow === "number" && Number.isSafeInteger(raw.contextWindow) && raw.contextWindow > 0
+          ? raw.contextWindow
+          : getModelProfile(id).contextWindow;
+        await registry.upsertManual({
+          id,
+          provider,
+          source: "manual",
+          contextWindow,
+          ...(raw.capabilities !== undefined ? { capabilities: raw.capabilities as ModelCapabilities } : {}),
+        } as CatalogModel);
+        models.push({ id, provider, ok: true });
+      } catch (error: unknown) {
+        models.push({ id, ...(provider ? { provider } : {}), ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return { profiles, models };
   }
 
   /**
@@ -951,7 +1166,8 @@ export class ExtensionManager {
 
   /**
    * 扩展私有 HTTP 路由转发（/api/ext/<id><path>）：manifest 路由表精确匹配后经 IPC 转发 host，
-   * 5 秒超时沿用 hook/tool 调用模式。扩展未启用/未运行 → 503；路由未声明 → 404。
+   * 超时取 manifest.routes[].timeoutMs（钳制 1000–120000，缺省 5000），host 侧再按同一口径 withTimeout。
+   * 扩展未启用/未运行 → 503；路由未声明 → 404。
    */
   async routeHttpRequest(extensionId: string, method: string, requestPath: string, query: Record<string, unknown>, body: unknown): Promise<{ status: number; body: unknown }> {
     const manifest = this.manifests.find((item) => item.id === extensionId);
@@ -960,9 +1176,10 @@ export class ExtensionManager {
     if (!route) throw new ExtensionRouteError(404, `Route not declared: ${method} ${requestPath}`);
     if (!this.isEnabled(extensionId)) throw new ExtensionRouteError(503, `Extension ${extensionId} is disabled`);
     if (!this.child?.connected) throw new ExtensionRouteError(503, "Extension Host is not connected");
+    const timeoutMs = clampExtensionRouteTimeout(route.timeoutMs);
     let result: unknown;
     try {
-      result = await this.request("http.request", { extensionId, method, path: requestPath, query, ...(body !== undefined ? { body } : {}) }, 5000);
+      result = await this.request("http.request", { extensionId, method, path: requestPath, query, timeoutMs, ...(body !== undefined ? { body } : {}) }, timeoutMs);
     } catch (error) {
       throw new ExtensionRouteError(504, error instanceof Error ? error.message : String(error));
     }
@@ -1183,7 +1400,7 @@ async function readManifest(directory: string): Promise<ExtensionManifest> {
   if (!raw.id || !/^[a-z0-9][a-z0-9-]{1,63}$/.test(raw.id)) throw new Error("manifest.id is invalid");
   if (!raw.name || !raw.version || !raw.description) throw new Error("manifest requires name, version and description");
   if (raw.apiVersion !== EXTENSION_API_VERSION) throw new Error(`Unsupported apiVersion ${raw.apiVersion ?? "missing"}`);
-  const allowedPermissions = new Set(["context:read", "context:mutate", "tools:register", "sessions:read", "ui:panel", "ui:messageAttachment", "network:fetch", "http:route", "model:fast", "prompt:shape", "tools:shaping"]);
+  const allowedPermissions = new Set(["context:read", "context:mutate", "tools:register", "sessions:read", "sessions:mutate", "ui:panel", "ui:messageAttachment", "network:fetch", "http:route", "model:fast", "prompt:shape", "tools:shaping", "providers:read", "providers:mutate"]);
   if (!Array.isArray(raw.permissions) || raw.permissions.some((permission) => typeof permission !== "string" || !allowedPermissions.has(permission))) throw new Error("manifest.permissions contains an unsupported permission");
   const entry = raw.entry ?? "index.js";
   if (path.isAbsolute(entry) || entry.split(/[\\/]/).includes("..")) throw new Error("manifest.entry must stay inside the extension directory");

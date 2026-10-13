@@ -40,6 +40,11 @@ const MAX_CACHED_METAS = 64;
 /** 派生标题时的头部有界读取条数：首条用户文本消息几乎总在头几条里。 */
 const DERIVED_TITLE_HEAD_LIMIT = 50;
 
+/** 子代理转录的 taskId 形状（uuid；与 `routes/sessions-files.ts` 同一正则，防路径穿越）。 */
+const SUBAGENT_TASK_ID_PATTERN = /^[0-9a-f-]{36}$/;
+/** 子代理转录落盘时的必填字段（宽松校验：有值即可，具体形状由消费方按需处理）。 */
+const SUBAGENT_TRANSCRIPT_REQUIRED_FIELDS = ["id", "prompt", "startedAt", "messages"] as const;
+
 /**
  * 单会话消息整表缓存：size+mtime+ctime 指纹校验（同 message-reader），
  * 命中时免去整份 messages.jsonl 的 read+全量 JSON.parse。
@@ -809,6 +814,99 @@ export class SessionStore {
     invalidateMessageIndex(this.messagesPath(id));
     this.noteSessionCwd(meta.cwd);
     return meta;
+  }
+
+  /**
+   * 覆盖式导入（`sessions.import` 的 replaceId 分支）：用导入文本整体替换目标会话的消息历史。
+   *
+   * 与原会话的关系：**以原 meta 为底**，只覆盖 title/createdAt/updatedAt 与 messages——
+   * 沙盒档、权限规则、工作区（托管镜像盘）、模型配置等安全/环境字段一律保留（覆盖导入是
+   * 「换历史」不是「换安全边界」）；消息内容本身仍走 {@link parseSessionImport} 同一净化，
+   * 导入文件里夹带的权限/沙盒字段不会被吸收。
+   *
+   * 落盘纪律：先备份 messages.jsonl → `messages.jsonl.upgrade-<ms>`（沿用 transformMessages 的
+   * 备份约定，保留最近 3 份；回滚 = 用备份换回 messages.jsonl），再原子重写；随后删除
+   * ledger.json（导入方按新历史重建，缺失时 loadLedger 懒建空账本）；最后失效整表缓存与
+   * 分页索引。与追加消息走同一 per-session 串行链，避免并发追加的消息被整表写回覆盖。
+   * @param id - 目标会话 id（必须已存在，否则抛「会话不存在」）。
+   * @param text - 与 {@link importJsonl} 同一格式的会话文本（首行 meta + 每行一条消息）。
+   * @returns 更新后的 SessionMeta（title/createdAt/updatedAt 已覆盖）。
+   */
+  async replaceJsonl(id: string, text: string): Promise<SessionMeta> {
+    const parsed = parseSessionImport(text);
+    return serializeByKey(this.appendChains, id, async () => {
+      let meta: SessionMeta;
+      try {
+        meta = await this.readMeta(id);
+      } catch (error) {
+        if (isMissing(error)) throw new Error("会话不存在");
+        throw error;
+      }
+      const filePath = this.messagesPath(id);
+      // 目标会话理论上总有 messages.jsonl；缺失（recovery=needs_repair）时跳过备份——没有可备份的内容。
+      try {
+        await copyFile(filePath, path.join(this.sessionPath(id), `messages.jsonl.upgrade-${Date.now()}`));
+        await this.pruneUpgradeBackups(id);
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+      }
+      await writeUtf8Atomically(filePath, serializeMessagesJsonl(parsed.messages), { mode: 0o600 });
+      // 旧账本的压缩/驱逐边界针对旧历史：留着会让新历史被裁错，删掉由导入方重建或懒建空账本。
+      await rm(path.join(this.sessionPath(id), "ledger.json"), { force: true });
+      this.dropMessagesCache(id);
+      invalidateMessageIndex(filePath);
+      // activeLeafId 刻意不动：旧叶子多半不在新历史里，activePathMessages 遇到悬挂 leaf 会回退整表
+      //（旧线性行为）；强行指向新末条反而会与导入方的分叉/分支语义打架。
+      meta.title = parsed.meta.title;
+      meta.createdAt = parsed.meta.createdAt;
+      meta.updatedAt = monotonicTimestamp();
+      await this.writeMeta(meta);
+      return meta;
+    });
+  }
+
+  /**
+   * 子代理转录导入（dsh-sync M5a）：把子代理会话转换出的转录逐个写
+   * `<sessionDir>/subagents/<taskId>.json`（目录 0700、文件 0600、内容 JSON + 尾换行）。
+   *
+   * 与 {@link ../agent/sub-agent.js} 的 `runSubAgent` 落盘口径一致（同一目录、同一 JSON 形状），
+   * 因此导入进来的转录与 owc 自己跑出的转录对 web 侧完全同构（按 taskId 读、进「子代理转录」面板）。
+   *
+   * 校验：taskId 必须是 uuid（防路径穿越，同 `routes/sessions-files.ts` 的读取侧口径）；
+   * `data` 必须带 {@link SUBAGENT_TRANSCRIPT_REQUIRED_FIELDS} 且 `messages` 是数组——**坏条目抛错**，
+   * 由调用方逐项 try（单项坏数据不该让整批导入失败）。
+   * @param sessionId - 目标会话 id（必须已存在，否则抛错）。
+   * @param transcripts - 待写转录（`taskId` + 转录 JSON 对象）。
+   * @returns 成功写入的转录条数。
+   */
+  async importSubagentTranscripts(
+    sessionId: string,
+    transcripts: ReadonlyArray<{ taskId: string; data: Record<string, unknown> }>,
+  ): Promise<number> {
+    const root = this.sessionPath(sessionId);
+    try {
+      await this.readMeta(sessionId);
+    } catch (error) {
+      if (isMissing(error)) throw new Error("会话不存在");
+      throw error;
+    }
+    const dir = path.join(root, "subagents");
+    let written = 0;
+    for (const transcript of transcripts) {
+      if (!SUBAGENT_TASK_ID_PATTERN.test(transcript.taskId)) {
+        throw new Error(`子代理 taskId 必须是 uuid：${transcript.taskId}`);
+      }
+      const data = transcript.data;
+      if (data === null || typeof data !== "object" || Array.isArray(data)) throw new Error("子代理转录必须是 JSON 对象");
+      for (const field of SUBAGENT_TRANSCRIPT_REQUIRED_FIELDS) {
+        if (data[field] === undefined) throw new Error(`子代理转录缺少字段 ${field}`);
+      }
+      if (!Array.isArray(data.messages)) throw new Error("子代理转录的 messages 必须是数组");
+      await ensureDirWithMode(dir, 0o700);
+      await writeUtf8Atomically(path.join(dir, `${transcript.taskId}.json`), `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+      written += 1;
+    }
+    return written;
   }
 
   private sessionPath(id: string): string {
