@@ -33,6 +33,11 @@ import type { MemoryStats as ServerMemoryStats } from "../../server/src/routes/m
 import type { MemoryStats as WebMemoryStats } from "../../web/src/lib/contracts/misc";
 type _memory_stats = Expect<ServerMemoryStats extends WebMemoryStats ? true : false>;
 
+// ── 缓存清理结果：输出方向（server 结构可展示为 web 结构） ──
+import type { CompileCacheSweepResult } from "../../server/src/compile-cache.js";
+import type { CacheClearResult } from "../../web/src/lib/contracts/misc";
+type _cache_clear = Expect<CompileCacheSweepResult extends CacheClearResult ? true : false>;
+
 // ── scm 写操作返回（服务端 service.ts stage/unstage/discard 均返回 Promise<{ok:true}>） ──
 import type { ScmService } from "../../server/src/scm/service.js";
 type _scm_stage = Expect<Awaited<ReturnType<ScmService["stage"]>> extends { ok: true } ? true : false>;

@@ -73,6 +73,8 @@ export const api = {
   version: () => request<import("./contracts").VersionInfo>("/api/version"),
   // dsh 兼容模式运行态（入口置灰与「未就绪」可行动提示的事实来源）
   dshStatus: () => request<{ enabled: boolean; listening: boolean; address?: string; reason?: string }>("/api/dsh/status"),
+  // 用户主动清理磁盘缓存（设置 → 服务信息）：只删可安全重建的编译缓存，服务端会先做安全校验
+  clearCache: () => request<import("./contracts").CacheClearResponse>("/api/system/cache/clear", { method: "POST" }),
   updateCheck: () => request<import("./contracts").UpdateCheckResponse>("/api/update-check"),
   refreshUpdateCheck: () => request<import("./contracts").UpdateCheckResponse>("/api/update-check/refresh", { method: "POST" }),
   // 在线更新（应用内升级）：POST 202 返回初始状态；400=已是最新/平台不支持，409=已有更新进行中，501=未配置

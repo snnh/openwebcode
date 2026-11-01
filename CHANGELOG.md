@@ -6,12 +6,14 @@
 
 ### 性能与资源
 
-- **冷启动更快（V8 编译缓存）**：入口首条 import 开启 `module.enableCompileCache()`，编译产物按源码哈希写到 `<数据目录>/cache/compile`（数据目录未知时用 `$XDG_CACHE_HOME/openwebcode` 或 `~/.cache/openwebcode`，Windows 用 `%LOCALAPPDATA%`；**不落 /tmp**，`OWC_COMPILE_CACHE=0` 关闭）。**缓存会及时清理**：启动时比对构建版本标记，版本变了整体清空（旧字节码按源码哈希寻址，跨版本永不命中）；运行期每小时按「14 天未用 / 32MB 上限」逐出最旧条目。实测同一数据目录热启动 335ms → 287ms（约 -14%，磁盘慢的机器/容器更明显），缓存约 3.2MB，首次冷启动多付约 25ms。
+- **冷启动更快（V8 编译缓存）**：入口首条 import 开启 `module.enableCompileCache()`，编译产物按源码哈希写到 `<数据目录>/cache/compile`（数据目录未知时用 `$XDG_CACHE_HOME/openwebcode` 或 `~/.cache/openwebcode`，Windows 用 `%LOCALAPPDATA%`；**不落 /tmp**，`OWC_COMPILE_CACHE=0` 关闭）。**缓存会及时清理**：启动时比对构建版本标记，版本变了整体清空（旧字节码按源码哈希寻址，跨版本永不命中）；运行期每小时按「14 天未用 / 32MB 上限」逐出最旧条目（实测一次版本切换释放 642 个文件 / 1.87MB）。**清理前做安全校验**：只处理 `cache/compile` 或 `openwebcode/compile-cache` 布局、自身不是符号链接、不是文件系统根/HOME 的目录；目录里没有 owc 写入的构建标记时首轮只写标记、**一个文件都不删**；删除前逐个 `lstat`，跳过符号链接并校验仍在目录内。实测同一数据目录热启动 335ms → 287ms（约 -14%，磁盘慢的机器/容器更明显），缓存约 3.2MB，首次冷启动多付约 25ms。
 - **启动初始化并行**：会话、定价、汇率、更新检查四步只读各自的快照文件，改为一次 `Promise.all` 并发等待；`core.start()` 与 TOTP 凭据加载同理并行。启动日志新增一行 `[boot] ready in <n>ms (node <版本>, compile-cache <状态>)`，便于定位冷启动回归。
 - **大帧 RPC 少一次整块拷贝**：`FrameDecoder` 在「帧完整落在首块内」时直接交出该块或其前缀视图，32MB 级的 `fs.readBase64` / `index.scan` 不再先分配再复制；跨块拼接仍走原有一次性复制，避免视图长期持有底层缓冲。
 - **会话列表不再逐会话读盘**：`checkRecoveryTail` 按 size+mtime+ctime 指纹缓存（上限 256 条，写路径经 `invalidateMessageIndex` 一并失效）。`GET /api/sessions` 在大会话目录下不再为每个会话 `open + 读最多 256KB 尾窗口`。
 - **web 首屏与升级流量**：React/React DOM 与 React Query 拆为独立 vendor chunk（`vendor-react` 193.8KB、`vendor-query` 35.9KB），入口 chunk 520.9KB → 277.5KB；发版后重复访问的框架代码继续命中长缓存，首屏总字节不变。构建目标提到 ES2022（不再为 ES2020 降级可选链/类字段）。
 - 说明：dsh 运行时 / eval / anthropic SDK 的懒加载经 `probe.mjs modcost` 实测边际仅约 5MB、且与 app 模块共享依赖没有启动时间差，本轮不做（结论记在此处，避免重复评估）。
+
+- **设置 → 服务信息新增「清理缓存」按钮**：手动删除 V8 编译缓存，删除前弹确认框说明「只影响启动速度、可安全重建」，完成后提示清理的文件数与释放空间；服务端执行同一套安全校验（目录布局、非符号链接、构建标记），校验不过返回 skipped、不删任何文件。
 
 ### 工程
 

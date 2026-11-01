@@ -20,7 +20,7 @@
  * 与项目其它常驻缓存的空闲清扫同一纪律。
  */
 import { constants, enableCompileCache } from "node:module";
-import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -84,6 +84,8 @@ const BUILD_MARKER = ".owc-build-version";
 const MAX_COMPILE_CACHE_BYTES = 32 * 1024 * 1024;
 /** 条目最长闲置时间：超过即视为不会再命中的陈旧字节码。 */
 const MAX_COMPILE_CACHE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+/** Node 按 `v<ver>-<arch>-<hash>/` 分子目录存放字节码，遍历深度留一点余量。 */
+const MAX_CACHE_DEPTH = 4;
 
 export interface CompileCacheSweepOptions {
   /** 当前构建版本（服务器版本号）：与目录内标记不一致时整体清空。 */
@@ -105,13 +107,77 @@ export interface CompileCacheSweepResult {
   freedBytes: number;
   /** 是否因构建版本变化整体清空。 */
   cleared: boolean;
+  /** 安全校验未通过而跳过（不做任何删除）。 */
+  skipped: boolean;
 }
 
-/** 尽力而为：stat/删除失败一律跳过（缓存清理不允许影响主流程）。 */
-async function removeCacheFile(directory: string, name: string): Promise<number> {
-  const target = path.join(directory, name);
-  const info = await stat(target).catch(() => undefined);
-  if (info === undefined) return 0;
+const EMPTY_RESULT: CompileCacheSweepResult = { removed: 0, freedBytes: 0, cleared: false, skipped: false };
+
+interface CacheFile {
+  /** 相对缓存目录的路径（删除前再拼回绝对路径，避免误删目录外内容）。 */
+  relative: string;
+  size: number;
+  mtimeMs: number;
+}
+
+/** child 是否严格位于 parent 内（不相等、不越界）。 */
+function isWithin(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+/**
+ * 安全校验：只清理「确实是 owc 自己创建的编译缓存目录」。
+ *
+ * 删除是不可逆操作，而缓存目录来自环境变量/数据目录配置，可能被指错（`OWC_DATA_DIR=/`
+ * 会得到 `/cache/compile`）或被替换成指向别处的符号链接。因此逐条校验：
+ * 1. 必须是绝对路径，且不是文件系统根；
+ * 2. 自身必须是真实目录，**不能是符号链接**（lstat，不跟随）；
+ * 3. 结尾必须是我们写入的两种布局之一：`cache/compile` 或 `openwebcode/compile-cache`；
+ * 4. 不能是 HOME（兜底防手滑）。
+ * 校验不过就完全不删，只记一条「跳过」。
+ */
+async function safeCacheDirectory(directory: string): Promise<string | undefined> {
+  if (!path.isAbsolute(directory)) return undefined;
+  const normalised = path.resolve(directory);
+  if (normalised === path.parse(normalised).root) return undefined;
+  const info = await lstat(normalised).catch(() => undefined);
+  if (info === undefined || !info.isDirectory() || info.isSymbolicLink()) return undefined;
+  const tails = [path.join("cache", "compile"), path.join("openwebcode", "compile-cache")];
+  if (!tails.some((tail) => normalised.endsWith(tail))) return undefined;
+  if (normalised === os.homedir()) return undefined;
+  return normalised;
+}
+
+/** 递归列出缓存文件：跳过符号链接、只收普通文件，并记录相对路径便于再次校验。 */
+async function listCacheFiles(directory: string, depth = 0): Promise<CacheFile[]> {
+  if (depth > MAX_CACHE_DEPTH) return [];
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => undefined);
+  if (entries === undefined) return [];
+  const files: CacheFile[] = [];
+  for (const entry of entries) {
+    if (entry.name === BUILD_MARKER) continue;
+    const target = path.join(directory, entry.name);
+    if (!isWithin(directory, target)) continue;
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      const nested = await listCacheFiles(target, depth + 1);
+      for (const file of nested) files.push({ ...file, relative: path.join(entry.name, file.relative) });
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const info = await lstat(target).catch(() => undefined);
+    if (info?.isFile()) files.push({ relative: entry.name, size: info.size, mtimeMs: info.mtimeMs });
+  }
+  return files;
+}
+
+/** 删除单个缓存文件；删除前重新校验它仍在目录内且不是符号链接。 */
+async function removeCacheFile(directory: string, file: CacheFile): Promise<number> {
+  const target = path.join(directory, file.relative);
+  if (!isWithin(directory, target)) return 0;
+  const info = await lstat(target).catch(() => undefined);
+  if (info === undefined || !info.isFile() || info.isSymbolicLink()) return 0;
   try {
     await rm(target, { force: true });
     return info.size;
@@ -120,47 +186,64 @@ async function removeCacheFile(directory: string, name: string): Promise<number>
   }
 }
 
+/** 清空目录内容（保留构建标记）：只删除目录内、非符号链接的条目。 */
+async function clearCacheFiles(directory: string): Promise<{ removed: number; freedBytes: number }> {
+  const files = await listCacheFiles(directory);
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (entry.name === BUILD_MARKER) continue;
+    const target = path.join(directory, entry.name);
+    if (!isWithin(directory, target) || entry.isSymbolicLink()) continue;
+    try {
+      await rm(target, { recursive: true, force: true });
+    } catch {
+      // 单个条目删不掉（被占用等）时继续删其余条目
+    }
+  }
+  return { removed: files.length, freedBytes: files.reduce((sum, file) => sum + file.size, 0) };
+}
+
 /**
  * 清理编译缓存：构建版本变化 → 整体清空；否则先删闲置超龄条目，再按总量上限逐出最旧的。
- * 未启用缓存或目录不存在时为空操作。
+ * 未启用缓存、目录不存在或安全校验不通过时为空操作。
+ *
+ * 安全前提：**只有目录里存在我们自己写的构建标记时才会删除**。首次清理（旧版本没有标记）
+ * 只补写标记，绝不删任何文件——避免把配错目录里的用户数据当成缓存清掉。
  */
 export async function sweepCompileCache(options: CompileCacheSweepOptions = {}): Promise<CompileCacheSweepResult> {
-  const directory = options.directory ?? compileCacheState.directory;
-  if (directory === undefined) return { removed: 0, freedBytes: 0, cleared: false };
-  const entries = await readdir(directory, { withFileTypes: true }).catch(() => undefined);
-  if (entries === undefined) return { removed: 0, freedBytes: 0, cleared: false };
-  const names = entries.filter((entry) => entry.isFile() && entry.name !== BUILD_MARKER).map((entry) => entry.name);
-  let removed = 0;
-  let freedBytes = 0;
+  const candidate = options.directory ?? compileCacheState.directory;
+  if (candidate === undefined) return EMPTY_RESULT;
+  const directory = await safeCacheDirectory(candidate);
+  if (directory === undefined) return { ...EMPTY_RESULT, skipped: true };
+  const markerPath = path.join(directory, BUILD_MARKER);
+  const marker = await readFile(markerPath, "utf8").catch(() => undefined);
 
   // 1) 构建版本变化：旧字节码按源码哈希寻址，新构建不会再命中 → 整批丢弃。
-  const markerPath = path.join(directory, BUILD_MARKER);
-  if (options.version !== undefined) {
-    const marker = await readFile(markerPath, "utf8").catch(() => undefined);
-    if (marker !== undefined && marker.trim() !== options.version) {
-      for (const name of names) {
-        const size = await removeCacheFile(directory, name);
-        if (size > 0) { removed += 1; freedBytes += size; }
-      }
-      await writeFile(markerPath, `${options.version}\n`, "utf8").catch(() => undefined);
-      return { removed, freedBytes, cleared: true };
-    }
-    if (marker === undefined) await writeFile(markerPath, `${options.version}\n`, "utf8").catch(() => undefined);
+  if (options.version !== undefined && marker !== undefined && marker.trim() !== options.version) {
+    const { removed, freedBytes } = await clearCacheFiles(directory);
+    await writeFile(markerPath, `${options.version}\n`, "utf8").catch(() => undefined);
+    return { removed, freedBytes, cleared: true, skipped: false };
+  }
+  if (marker === undefined) {
+    // 首次清理（没有标记）：只写标记，本轮不删任何东西
+    const entries = await readdir(directory).catch(() => []);
+    if (entries.length === 0) return EMPTY_RESULT;
+    if (options.version !== undefined) await writeFile(markerPath, `${options.version}\n`, "utf8").catch(() => undefined);
+    return EMPTY_RESULT;
   }
 
-  // 2) 闲置超龄 → 总量上限（最旧优先），只处理目录下的普通文件。
-  const files: Array<{ name: string; size: number; mtimeMs: number }> = [];
-  for (const name of names) {
-    const info = await stat(path.join(directory, name)).catch(() => undefined);
-    if (info?.isFile()) files.push({ name, size: info.size, mtimeMs: info.mtimeMs });
-  }
+  // 2) 闲置超龄 → 总量上限（最旧优先）。
+  const files = await listCacheFiles(directory);
+  if (files.length === 0) return EMPTY_RESULT;
   const now = options.now ?? Date.now();
   const maxAgeMs = options.maxAgeMs ?? MAX_COMPILE_CACHE_AGE_MS;
   const maxBytes = options.maxBytes ?? MAX_COMPILE_CACHE_BYTES;
-  const survivors: typeof files = [];
+  let removed = 0;
+  let freedBytes = 0;
+  const survivors: CacheFile[] = [];
   for (const file of files) {
     if (now - file.mtimeMs > maxAgeMs) {
-      const size = await removeCacheFile(directory, file.name);
+      const size = await removeCacheFile(directory, file);
       if (size > 0) { removed += 1; freedBytes += size; }
     } else {
       survivors.push(file);
@@ -170,11 +253,28 @@ export async function sweepCompileCache(options: CompileCacheSweepOptions = {}):
   if (total > maxBytes) {
     for (const file of [...survivors].sort((a, b) => a.mtimeMs - b.mtimeMs)) {
       if (total <= maxBytes) break;
-      const size = await removeCacheFile(directory, file.name);
+      const size = await removeCacheFile(directory, file);
       if (size > 0) { removed += 1; freedBytes += size; total -= size; }
     }
   }
-  return { removed, freedBytes, cleared: false };
+  return { removed, freedBytes, cleared: false, skipped: false };
+}
+
+/**
+ * 用户主动清理（设置 → 服务信息「清理缓存」）：清空缓存文件但保留构建标记。
+ *
+ * 与 `sweepCompileCache` 共用同一套安全校验，并且**只在目录里已有构建标记时才删除**——
+ * 标记证明这个目录确实是本程序写入的编译缓存，避免把配错目录里的用户数据当成缓存清掉。
+ */
+export async function clearCompileCache(directory?: string): Promise<CompileCacheSweepResult> {
+  const candidate = directory ?? compileCacheState.directory;
+  if (candidate === undefined) return EMPTY_RESULT;
+  const safe = await safeCacheDirectory(candidate);
+  if (safe === undefined) return { ...EMPTY_RESULT, skipped: true };
+  const marker = await readFile(path.join(safe, BUILD_MARKER), "utf8").catch(() => undefined);
+  if (marker === undefined) return { ...EMPTY_RESULT, skipped: true };
+  const { removed, freedBytes } = await clearCacheFiles(safe);
+  return { removed, freedBytes, cleared: removed > 0, skipped: false };
 }
 
 /** 版本比较：current >= minimum（忽略 -rc/preview 等后缀）。 */

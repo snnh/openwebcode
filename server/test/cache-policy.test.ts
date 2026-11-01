@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendFile, stat, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -10,7 +10,7 @@ import {
   setSessionCacheIdleMinutes,
 } from "../src/cache-policy.js";
 import { readAllMessages, readMessagesHead, readMessagesTail, sweepIdleMessageIndexes } from "../src/sessions/message-reader.js";
-import { sweepCompileCache } from "../src/compile-cache.js";
+import { clearCompileCache, sweepCompileCache } from "../src/compile-cache.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
@@ -33,12 +33,17 @@ describe("常驻缓存空闲策略", () => {
 });
 
 describe("编译缓存清理", () => {
-  it("构建版本变化整体清空；否则按闲置超龄与总量上限逐出最旧条目", async () => {
-    const dir = await tempRoot("owc-compile-cache-");
+  it("只清理自己创建的目录：首轮只写标记、之后按超龄/上限逐出、构建版本变化整体清空", async () => {
+    const root = await tempRoot("owc-compile-cache-");
+    const dir = path.join(root, "cache", "compile");
+    await mkdir(dir, { recursive: true });
     const day = 24 * 60 * 60 * 1000;
     const now = Date.UTC(2026, 0, 20);
+    // 复刻 Node 的实际布局：字节码放在 v<ver>-<arch>-<hash>/ 子目录里
+    const nodeDir = path.join(dir, "v24.22.1-x64-test");
     const write = async (name: string, bytes: number, ageDays: number): Promise<string> => {
-      const file = path.join(dir, name);
+      await mkdir(nodeDir, { recursive: true });
+      const file = path.join(nodeDir, name);
       await writeFile(file, Buffer.alloc(bytes, 1));
       const time = new Date(now - ageDays * day);
       await utimes(file, time, time);
@@ -46,15 +51,18 @@ describe("编译缓存清理", () => {
     };
     const fresh = await write("fresh.cache", 100, 1);
     const stale = await write("stale.cache", 100, 20);
-    // 首次清理（旧版本没有标记文件）：写标记但不清空，只按闲置超龄删除陈旧条目
-    expect(await sweepCompileCache({ directory: dir, version: "1.0.0", now })).toMatchObject({ cleared: false });
+    // 首轮（没有构建标记）：只补写标记，绝不删除任何文件
+    expect(await sweepCompileCache({ directory: dir, version: "1.0.0", now })).toMatchObject({ removed: 0, cleared: false, skipped: false });
+    expect(await stat(stale)).toBeTruthy();
+    // 第二轮：闲置超龄条目删除，新鲜的保留
+    const aged = await sweepCompileCache({ directory: dir, version: "1.0.0", now });
+    expect(aged.freedBytes).toBeGreaterThanOrEqual(100);
     await expect(stat(stale)).rejects.toThrow();
     expect(await stat(fresh)).toBeTruthy();
     // 总量超过上限：最旧的先走
     const a = await write("a.cache", 80, 3);
     const b = await write("b.cache", 80, 2);
-    const capped = await sweepCompileCache({ directory: dir, version: "1.0.0", maxBytes: 120, now });
-    expect(capped.removed).toBeGreaterThanOrEqual(1);
+    expect((await sweepCompileCache({ directory: dir, version: "1.0.0", maxBytes: 120, now })).removed).toBeGreaterThanOrEqual(1);
     await expect(stat(a)).rejects.toThrow();
     await expect(stat(b)).rejects.toThrow();
     expect(await stat(fresh)).toBeTruthy();
@@ -62,6 +70,47 @@ describe("编译缓存清理", () => {
     expect(await sweepCompileCache({ directory: dir, version: "1.1.0", now })).toMatchObject({ cleared: true });
     await expect(stat(fresh)).rejects.toThrow();
     expect(await sweepCompileCache({ directory: dir, version: "1.1.0", now })).toMatchObject({ cleared: false, removed: 0 });
+  });
+
+  it("用户主动清理：没有构建标记时拒绝，有标记时清空但保留标记", async () => {
+    const root = await tempRoot("owc-compile-clear-");
+    const dir = path.join(root, "cache", "compile");
+    const nodeDir = path.join(dir, "v24.22.1-x64-test");
+    await mkdir(nodeDir, { recursive: true });
+    const file = path.join(nodeDir, "abc123");
+    await writeFile(file, Buffer.alloc(64, 1));
+    // 没有标记：无法证明目录归属，拒绝删除
+    expect(await clearCompileCache(dir)).toMatchObject({ skipped: true, removed: 0 });
+    expect(await stat(file)).toBeTruthy();
+    // 启动清理写下标记后，主动清理生效，标记本身保留
+    await sweepCompileCache({ directory: dir, version: "1.0.0" });
+    const cleared = await clearCompileCache(dir);
+    expect(cleared).toMatchObject({ cleared: true, skipped: false });
+    expect(cleared.freedBytes).toBeGreaterThanOrEqual(64);
+    await expect(stat(nodeDir)).rejects.toThrow();
+    expect(await stat(path.join(dir, ".owc-build-version"))).toBeTruthy();
+  });
+
+  it("安全校验：目录前缀不符或为符号链接时完全不删", async () => {
+    const root = await tempRoot("owc-compile-cache-guard-");
+    // 1) 不是 cache/compile 布局的目录：拒绝清理，用户文件原样保留
+    const unrelated = path.join(root, "not-a-cache");
+    await mkdir(unrelated, { recursive: true });
+    const keep = path.join(unrelated, "keep.txt");
+    await writeFile(keep, "user data");
+    expect(await sweepCompileCache({ directory: unrelated, version: "9.9.9" })).toMatchObject({ skipped: true, removed: 0 });
+    expect(await readFile(keep, "utf8")).toBe("user data");
+    // 2) 缓存目录是指向别处的符号链接：拒绝清理（不跟随）
+    const real = path.join(root, "real-cache");
+    await mkdir(real, { recursive: true });
+    const victim = path.join(real, "victim.txt");
+    await writeFile(victim, "keep me");
+    const linkParent = path.join(root, "link", "cache");
+    await mkdir(linkParent, { recursive: true });
+    const link = path.join(linkParent, "compile");
+    await symlink(real, link);
+    expect(await sweepCompileCache({ directory: link, version: "9.9.9" })).toMatchObject({ skipped: true, removed: 0 });
+    expect(await readFile(victim, "utf8")).toBe("keep me");
   });
 });
 

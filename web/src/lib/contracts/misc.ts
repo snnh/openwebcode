@@ -222,6 +222,22 @@ export interface VersionInfo {
 }
 
 /** 内存占用统计（/api/metrics memory 字段）：来源为 null 表示不可用（旧 core / 未握手 / 无宿主）。 */
+/** POST /api/system/cache/clear：单类磁盘缓存的清理结果（只涉及可安全重建的缓存）。 */
+export interface CacheClearResult {
+  /** 实际删除的文件数。 */
+  removed: number;
+  /** 释放的字节数。 */
+  freedBytes: number;
+  /** 是否真的清空了一批文件。 */
+  cleared: boolean;
+  /** 安全校验未通过而跳过（一个文件都没删）。 */
+  skipped: boolean;
+}
+
+export interface CacheClearResponse {
+  compile: CacheClearResult;
+}
+
 export interface MemoryStats {
   node: { rss: number; heapUsed: number; heapTotal: number; external: number };
   core: { rssBytes: number } | null;

@@ -5,6 +5,7 @@ import type { ExtensionManager } from "../extensions/extension-manager.js";
 import { getServerVersion, GITHUB_REPO } from "../version.js";
 import { UpdateApplyError } from "../update-applier.js";
 import { errorMessage } from "../error-utils.js";
+import { clearCompileCache } from "../compile-cache.js";
 import { maskAccessToken } from "./route-context.js";
 import type { RouteContext } from "./route-context.js";
 import type { MemoryStats } from "./metrics-types.js";
@@ -76,6 +77,9 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: RouteContext): v
   });
 
   app.get("/api/metrics", async () => ({ events: events.stats(), websocket: { clients: clients.size, slowClientDisconnects: wsStats.slowClientDisconnects, failedClientSends: wsStats.failedClientSends }, memory: await buildMemoryStats(core, dependencies.extensions) }));
+  // 用户主动清理磁盘缓存（设置 → 服务信息）：只清理可安全重建的编译缓存。
+  // 目录校验或所有权标记不通过时返回 skipped（removed=0），绝不误删用户数据。
+  app.post("/api/system/cache/clear", async () => ({ compile: await clearCompileCache() }));
   app.get("/api/core", async () => core.ping());
   app.get("/api/version", async () => {
     const info = await core.ping();

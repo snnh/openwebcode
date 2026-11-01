@@ -1,6 +1,9 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
+import { ui } from "../../app/ui-store";
+import { useConfirmDialog } from "../../components/ConfirmDialog";
+import { formatBytes } from "../../lib/format";
 import { useModelsQuery, useProvidersQuery } from "../../app/queries";
 import type { UpdateApplyState } from "../../lib/contracts";
 import { useI18n } from "../../i18n";
@@ -15,6 +18,21 @@ export function ServerInfoSection(): ReactElement {
   const refreshMutation = useMutation({
     mutationFn: api.refreshUpdateCheck,
     onSuccess: () => updateCheck.refetch(),
+  });
+  // 磁盘缓存清理：本地二次确认（缓存可安全重建，但删除不可撤销），结果用通知条反馈
+  const confirm = useConfirmDialog();
+  const clearMutation = useMutation({
+    mutationFn: api.clearCache,
+    onSuccess: ({ compile }) => {
+      if (compile.skipped) {
+        ui.notify(t("未执行清理：缓存目录未通过安全校验", "Nothing cleared: the cache directory failed the safety check"), "error");
+      } else if (compile.removed === 0) {
+        ui.notify(t("缓存已是最新，无需清理", "Cache is already clean"));
+      } else {
+        ui.notify(t(`已清理 ${compile.removed} 个缓存文件，释放 ${formatBytes(compile.freedBytes)}`, `Cleared ${compile.removed} cache files, freed ${formatBytes(compile.freedBytes)}`));
+      }
+    },
+    onError: (error: unknown) => ui.notify(error instanceof Error ? error.message : t("清理缓存失败", "Failed to clear cache"), "error"),
   });
   const snapshot = updateCheck.data?.snapshot ?? version.data?.latestRelease;
   const latest = snapshot ? {
@@ -65,6 +83,7 @@ export function ServerInfoSection(): ReactElement {
   };
 
   return (
+    <>
     <dl className="server-info">
       <dt>{t("版本", "Version")}</dt>
       <dd>
@@ -139,6 +158,34 @@ export function ServerInfoSection(): ReactElement {
       <dd>{providers.length > 0 ? providers.join("、") : "-"}</dd>
       <dt>{t("模型档案", "Model profiles")}</dt>
       <dd>{t(`${models.length} 个`, `${models.length}`)}</dd>
+      <dt>{t("磁盘缓存", "Disk cache")}</dt>
+      <dd>
+        <p className="muted">
+          {t(
+            "编译缓存（V8 字节码）只影响启动速度，可安全删除：清空后下一次启动会重新生成，首次略慢。",
+            "The compile cache (V8 bytecode) only affects startup speed and is safe to delete: it is rebuilt on the next start, which is slightly slower once.",
+          )}
+        </p>
+        <button
+          type="button"
+          className="btn small"
+          disabled={clearMutation.isPending}
+          onClick={() => confirm.ask({
+            title: t("清理磁盘缓存", "Clear disk cache"),
+            body: t(
+              "删除编译缓存文件？这些文件可安全重建，会话、设置与历史都不会受影响。",
+              "Delete the compile cache files? They are safe to rebuild; sessions, settings, and history are untouched.",
+            ),
+            confirmLabel: t("清理", "Clear"),
+            danger: false,
+            onConfirm: () => clearMutation.mutate(),
+          })}
+        >
+          {clearMutation.isPending ? t("清理中…", "Clearing…") : t("清理缓存", "Clear cache")}
+        </button>
+      </dd>
     </dl>
+    {confirm.dialogElement}
+    </>
   );
 }
