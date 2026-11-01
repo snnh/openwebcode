@@ -1,7 +1,10 @@
-// C3 Headless CLI：`owc run "prompt" ...` 的入口。fetch 使用 Node 20 全局实现，WebSocket 使用 ws 兼容 Node 20。
+// C3 Headless CLI：`owc run "prompt" ...` 的入口。fetch 用 Node 24 全局实现，WebSocket 用 ws
+// （Node 内置 WebSocket 客户端尚不支持本 CLI 需要的自定义头/代理，故保留 ws）。
 // 流程：POST /api/sessions（或 --session 复用）→ WS 订阅 /api/events → POST messages → 按事件流输出。
 // 退出码：agent.state=idle → 0；agent.error/连接失败 → 1；permission.request 且未带 --yolo → 2。
 
+// 第一条 import：与 server 入口同款 V8 编译缓存（CLI 冷启动同样受益）。
+import "./compile-cache.js";
 import WebSocket from "ws";
 import { getServerVersion, readServerVersion } from "./version.js";
 import { READ_ONLY_TOOL_NAMES } from "./agent/tool-schemas.js";

@@ -1,6 +1,5 @@
 import { mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   newSnapshotId,
   readCheckpoints,
@@ -16,7 +15,7 @@ import { diffTrees, type SnapshotDiffExcludes } from "./tree-diff.js";
 
 /** refs-clone.ps1 的资产路径（src 与 dist 下均位于 server/<src|dist>/snapshots，向上两级即 server/）。 */
 export function refsScriptPath(): string {
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "assets", "refs-clone.ps1");
+  return path.join(import.meta.dirname, "..", "..", "assets", "refs-clone.ps1");
 }
 
 /** Windows ReFS 块克隆快照（经 refs-clone.ps1 调用 FSCTL_DUPLICATE_EXTENTS，失败时脚本内回落普通拷贝）。 */

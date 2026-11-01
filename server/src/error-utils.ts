@@ -1,5 +1,7 @@
 export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  // Error.isError 跨 realm 也成立（vm/worker 里抛出的 Error 不会被 instanceof 误判为普通对象），
+  // Node 24 起为标准内建，比 `instanceof Error` 更稳。
+  return Error.isError(error) ? error.message : String(error);
 }
 
 /**

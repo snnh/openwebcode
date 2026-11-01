@@ -207,20 +207,20 @@ class Client implements McpClient {
   private request(method: string, params?: unknown): Promise<unknown> {
     const id = this.nextId;
     this.nextId += 1;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`MCP ${this.serverName} 请求 ${method} 超时（${this.timeoutMs}ms）`));
-      }, this.timeoutMs);
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
-      try {
-        this.sendRpc({ jsonrpc: "2.0", id, method, ...(params !== undefined ? { params } : {}) });
-      } catch (error) {
-        this.pending.delete(id);
-        clearTimeout(timer);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      }
-    });
+    const { promise, resolve, reject } = Promise.withResolvers<unknown>();
+    const timer = setTimeout(() => {
+      this.pending.delete(id);
+      reject(new Error(`MCP ${this.serverName} 请求 ${method} 超时（${this.timeoutMs}ms）`));
+    }, this.timeoutMs);
+    this.pending.set(id, { resolve, reject, timer });
+    try {
+      this.sendRpc({ jsonrpc: "2.0", id, method, ...(params !== undefined ? { params } : {}) });
+    } catch (error) {
+      this.pending.delete(id);
+      clearTimeout(timer);
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+    return promise;
   }
 
   private notify(method: string, params?: unknown): void {

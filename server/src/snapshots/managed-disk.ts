@@ -1,7 +1,6 @@
 import { existsSync, type Dirent } from "node:fs";
 import { cp, mkdir, readdir, readFile, rm, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import type { ManagedWorkspaceMeta } from "../sessions/types.js";
 import {
@@ -76,7 +75,7 @@ interface ChainState {
 
 /** managed-disk.ps1 的资产路径（与 refs-clone.ps1 同目录约定）。 */
 function managedDiskScriptPath(): string {
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "assets", "managed-disk.ps1");
+  return path.join(import.meta.dirname, "..", "..", "assets", "managed-disk.ps1");
 }
 
 /** 镜像仍由服务端私有 dataDir 持有；dataDir/mnt 仅用于 Linux qcow2。 */

@@ -33,9 +33,25 @@ export class FrameDecoder extends EventEmitter {
     }
   }
 
-  /** 从块列表头部取走 n 字节（调用前须保证 buffered >= n）。 */
+  /**
+   * 从块列表头部取走 n 字节（调用前须保证 buffered >= n）。
+   *
+   * 零拷贝快路径：帧完整落在首块内时直接交出该块（整块消费）或其前缀视图（部分消费），
+   * 少一次 32 MiB 级 `allocUnsafe + copy`——`fs.readBase64`/`index.scan` 这类大帧的
+   * 主要拷贝成本就在这里。只有跨块时才分配整块并复制：跨块拼接无法避免一次复制，
+   * 而在这里 `subarray` 会长期持有多个底层 buffer 的尾巴，反而抬高驻留。
+   */
   private take(n: number): Buffer {
     this.buffered -= n;
+    const head = this.chunks[0]!;
+    if (head.length === n) {
+      this.chunks.shift();
+      return head;
+    }
+    if (head.length > n) {
+      this.chunks[0] = head.subarray(n);
+      return head.subarray(0, n);
+    }
     const out = Buffer.allocUnsafe(n);
     let offset = 0;
     while (offset < n) {

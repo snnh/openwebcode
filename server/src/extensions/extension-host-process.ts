@@ -149,14 +149,14 @@ function requirePermission(manifest: ExtensionManifest, permission: ExtensionPer
 function callApi(extensionId: string, api: ExtensionApiMethod, params?: Record<string, unknown>, timeoutMs = 5000): Promise<unknown> {
   if (!process.send) return Promise.reject(new Error("Extension Host IPC is unavailable"));
   const id = randomUUID();
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      apiPending.delete(id);
-      reject(new Error(`server api ${api} timeout`));
-    }, timeoutMs);
-    apiPending.set(id, { resolve, reject, timer });
-    process.send!({ id, api, extensionId, ...(params ? { params } : {}) } satisfies ApiRequest);
-  });
+  const { promise, resolve, reject } = Promise.withResolvers<unknown>();
+  const timer = setTimeout(() => {
+    apiPending.delete(id);
+    reject(new Error(`server api ${api} timeout`));
+  }, timeoutMs);
+  apiPending.set(id, { resolve, reject, timer });
+  process.send!({ id, api, extensionId, ...(params ? { params } : {}) } satisfies ApiRequest);
+  return promise;
 }
 
 function serializedTools(): Record<string, ExtensionToolSpec[]> {

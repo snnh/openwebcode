@@ -254,26 +254,55 @@ export async function readAllMessages<T>(filePath: string): Promise<{ messages: 
  * 语义与逐行全扫完全一致，只是常见路径 O(尾窗口)。
  */
 export async function checkRecoveryTail(filePath: string): Promise<{ recovery?: { state: "recovered" | "needs_repair"; message: string } }> {
-  let handle: Awaited<ReturnType<typeof open>>;
-  try {
-    handle = await open(filePath, "r");
-  } catch (error) {
+  const info = await stat(filePath).catch((error: unknown) => {
     if (!isEnoent(error)) throw error;
-    return { recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
+    return undefined;
+  });
+  if (info === undefined) return { recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
+  // 指纹命中直接复用：`GET /api/sessions` 会为每个会话做一次恢复检测，而大会话目录下
+  // 每次都要 open + 读最多 256KB 尾窗口（每会话一次大块临时分配）。文件未变更时结果不变，
+  // 写路径（append/truncate/格式升级/导入）经 invalidateMessageIndex 一并失效。
+  const cached = recoveryTails.get(filePath);
+  if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs && cached.ctimeMs === info.ctimeMs) {
+    recoveryTails.delete(filePath);
+    recoveryTails.set(filePath, cached);
+    return cached.result;
   }
+  const handle = await open(filePath, "r");
+  let result: { recovery?: { state: "recovered" | "needs_repair"; message: string } };
   try {
-    const info = await handle.stat();
     const last = await readLastRecord(handle, info.size);
-    if (last === undefined) return {};
-    try {
-      JSON.parse(last.text);
-      return {};
-    } catch {
-      return { recovery: { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" } };
-    }
+    result = last === undefined ? {} : (() => {
+      try {
+        JSON.parse(last.text);
+        return {};
+      } catch {
+        return { recovery: { state: "recovered" as const, message: "Ignored a corrupt trailing messages.jsonl record" } };
+      }
+    })();
   } finally {
     await handle.close();
   }
+  rememberRecoveryTail(filePath, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, result });
+  return result;
+}
+
+/** 恢复尾检查缓存条目：写入侧或指纹变化时失效（上限见 MAX_CACHED_RECOVERY_TAILS）。 */
+interface RecoveryTailCacheEntry {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  result: { recovery?: { state: "recovered" | "needs_repair"; message: string } };
+}
+
+const recoveryTails = new Map<string, RecoveryTailCacheEntry>();
+/** 跟索引缓存同一纪律的 LRU 上限：列表扫描涉及全部会话，按「比索引多一档」保留。 */
+const MAX_CACHED_RECOVERY_TAILS = 256;
+
+function rememberRecoveryTail(filePath: string, entry: RecoveryTailCacheEntry): void {
+  recoveryTails.delete(filePath);
+  recoveryTails.set(filePath, entry);
+  while (recoveryTails.size > MAX_CACHED_RECOVERY_TAILS) recoveryTails.delete(recoveryTails.keys().next().value!);
 }
 
 /** 末条非空记录的位置与文本（text 不含换行符）。 */
@@ -351,6 +380,7 @@ async function readLastRecord(handle: Awaited<ReturnType<typeof open>>, size: nu
  */
 export function invalidateMessageIndex(filePath: string): void {
   indexes.delete(filePath);
+  recoveryTails.delete(filePath);
 }
 
 /**

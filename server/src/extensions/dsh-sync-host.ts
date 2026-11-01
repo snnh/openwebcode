@@ -562,8 +562,8 @@ function generationReason(generation: number): string {
   return `代际 v${generation} 不在读支持的 v${DSH_SYNC_READ_GENERATIONS.join("/v")} 内：请升级 dsh-sync 扩展`;
 }
 
-/** zstd 能力缺失（旧版 Node）时压缩会话的不可选原因。 */
-const ZSTD_REASON = "需要 Node ≥22.15";
+/** 运行时缺少 zstd 能力时压缩会话的不可选原因。 */
+const ZSTD_REASON = "需要 Node ≥ 24.22.1（当前运行时缺少 node:zlib zstd 能力）";
 
 /** 子代理嵌套导出的层级上限（超过只告警不递归，防畸形数据的自引用/超深嵌套）。 */
 const SUBAGENT_MAX_DEPTH = 5;
@@ -854,7 +854,7 @@ async function previewSessionsExport(
     isDirectory(dshHome),
   ]);
   const warnings: string[] = [];
-  if (!zstdAvailable()) warnings.push(`当前 Extension Host 的 Node（${process.version}）不支持 zstd：压缩会话需 Node ≥22.15`);
+  if (!zstdAvailable()) warnings.push(`当前 Extension Host 的 Node（${process.version}）缺少 zstd 能力：压缩会话需 Node ≥ 24.22.1`);
   if (!homeExists) warnings.push(`未检测到 dsh 数据目录 ${dshHome}：导出前请先在扩展设置中指定 dshHome`);
   if (mapState.error !== undefined) warnings.push(`读取会话映射表失败（按未同步处理）：${mapState.error}`);
   if (sessions.error !== undefined) warnings.push(`读取 owc 会话清单失败：${sessions.error}`);
@@ -894,7 +894,7 @@ async function previewSessions(
   ]);
   const base = { zstdAvailable: zstdAvailable(), dshRunning };
   const warnings: string[] = [];
-  if (!base.zstdAvailable) warnings.push(`当前 Extension Host 的 Node（${process.version}）不支持 zstd：压缩会话需 Node ≥22.15`);
+  if (!base.zstdAvailable) warnings.push(`当前 Extension Host 的 Node（${process.version}）缺少 zstd 能力：压缩会话需 Node ≥ 24.22.1`);
   if (mapState.error !== undefined) warnings.push(`读取会话映射表失败（按未同步处理）：${mapState.error}`);
   if (entries.length === 0) warnings.push(`未在 ${dshHome} 找到 dsh 会话（sessions/ 目录为空或不存在）`);
   const items = entries.map((entry) => previewItemOf(entry, mapState.map));

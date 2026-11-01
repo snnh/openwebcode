@@ -2,7 +2,6 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CoreShellBackend, SandboxPolicy } from "./sessions/types.js";
 import { StdioTransport, type RpcTransport } from "./rpc/transport.js";
 
@@ -631,7 +630,7 @@ export class CoreClient extends EventEmitter {
 
   private resolveCorePath(): string {
     if (path.isAbsolute(this.corePath)) return this.corePath;
-    const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+    const moduleDirectory = import.meta.dirname;
     return path.resolve(moduleDirectory, "..", this.corePath);
   }
 
@@ -643,18 +642,18 @@ export class CoreClient extends EventEmitter {
       return Promise.reject(new Error("Core is not running"));
     }
     const id = this.nextId++;
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const error = new Error(`Core request ${method} timed out`);
-        this.failConnection(generation, error);
-      }, timeoutMs);
-      this.pending.set(id, { resolve: (value) => resolve(value as T), reject, timer, generation });
-      try {
-        transport.write({ jsonrpc: "2.0", id, method, params });
-      } catch (error) {
-        this.failConnection(generation, normalizeError(error));
-      }
-    });
+    const { promise, resolve, reject } = Promise.withResolvers<T>();
+    const timer = setTimeout(() => {
+      const error = new Error(`Core request ${method} timed out`);
+      this.failConnection(generation, error);
+    }, timeoutMs);
+    this.pending.set(id, { resolve: (value) => resolve(value as T), reject, timer, generation });
+    try {
+      transport.write({ jsonrpc: "2.0", id, method, params });
+    } catch (error) {
+      this.failConnection(generation, normalizeError(error));
+    }
+    return promise;
   }
 
   private onMessage(generation: number, message: unknown): void {

@@ -1410,7 +1410,7 @@ function zstdFrame(text: string): Buffer {
  */
 function encodeSessionFrames(header: Record<string, unknown>, events: readonly Record<string, unknown>[]): Buffer {
   if (typeof zlib.zstdCompressSync !== "function") {
-    throw new Error("当前 Node 运行时缺少 zstd 压缩能力（需要 Node 22.15+），无法写出 dsh v3 会话");
+    throw new Error("当前 Node 运行时缺少 zstd 压缩能力（需要 Node ≥ 24.22.1），无法写出 dsh v3 会话");
   }
   const frames = [zstdFrame(`${JSON.stringify(header)}\n`)];
   if (events.length > 0) frames.push(zstdFrame(`${events.map((event) => JSON.stringify(event)).join("\n")}\n`));

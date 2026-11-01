@@ -1,5 +1,7 @@
+// 第一条 import：V8 编译缓存必须先于其它模块求值（ESM 按 import 顺序深度优先），
+// 这样 fastify/undici/anthropic SDK 等后续模块的编译产物才可能命中缓存。
+import { compileCacheState, nodeVersionAtLeast } from "./compile-cache.js";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { AgentRunner } from "./agent/agent-runner.js";
 import { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import { buildServer } from "./app.js";
@@ -64,8 +66,18 @@ import { resolveDefaultModel, resolveDefaultProvider, resolveDefaultSelection } 
 import { createDshModelBridge } from "./dsh/model-bridge.js";
 import { homedir } from "node:os";
 
-const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+const moduleDirectory = import.meta.dirname;
 const resolveFromServer = (value: string) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
+// 最低支持的 Node.js 版本（与 package.json engines、安装器 NODE_MIN_VERSION 一致）。
+// 只在启动时告警而不退出：开发环境的旧 Node 不应被一刀切锁死，硬门禁由 npm engines
+// 与安装器负责；但必须让用户知道「编译缓存等 Node 24 能力没有生效」。
+const MIN_NODE_VERSION = "24.22.1";
+if (!nodeVersionAtLeast(process.versions.node, MIN_NODE_VERSION)) {
+  process.stderr.write(
+    `[boot] 警告：当前 Node.js ${process.versions.node} 低于最低支持版本 ${MIN_NODE_VERSION}；`
+    + "部分性能特性（V8 编译缓存等）不会生效，请升级 Node.js 后再运行。\n",
+  );
+}
 
 // Linux 基准环境是 systemd/Docker 等最小环境：可能不带 HOME。按 passwd 记录补齐，
 // 保证沙盒 shell（~/.bashrc 依赖 $HOME）、git 凭据查找、uv/fnm 探测拿到一致 home。
@@ -265,10 +277,14 @@ core.on("error", (error: Error) => {
   coreLog.append(`[owc-exec] core error: ${error}\n`);
 });
 
-await sessions.initialize();
-await pricing.initialize();
-await exchangeRates.initialize();
-await updateChecker.initialize();
+// 这几个初始化只读各自的快照文件（会话目录创建、模型定价、汇率缓存、更新检查缓存），
+// 彼此无依赖：串行等待等于把磁盘 IO 延迟相加，合并成一次并发等待，冷启动更快。
+await Promise.all([
+  sessions.initialize(),
+  pricing.initialize(),
+  exchangeRates.initialize(),
+  updateChecker.initialize(),
+]);
 
 /** Remote model/pricing catalogs share settings but fail independently: one bad endpoint never
  * prevents the other catalog from refreshing, nor does it replace a validated local snapshot. */
@@ -311,7 +327,9 @@ events.on("event", (event) => {
 });
 remoteSyncScheduler.start();
 
-await core.start();
+// TOTP 凭据只读 <dataDir>/totp.json，与 core 进程启动互不依赖：一起并发等待。
+const totp = new TotpAuthService(path.join(dataDir, "totp.json"));
+await Promise.all([core.start(), totp.load()]);
 // cron 恢复需在 sessions/core 就绪之后：load 会 coalesce 补发停机期间错过的触发（经 follow-up 队列起 run）
 await cron.load();
 // 存储 GC：启动时一次（含托管挂载孤儿清理）+ 每小时周期清理（失败仅记日志）
@@ -331,9 +349,7 @@ const pruneUsageLog = (): void => {
 pruneUsageLog();
 const usageLogTimer = setInterval(pruneUsageLog, 3_600_000);
 usageLogTimer.unref();
-// TOTP 全局登录认证（提交⑥）：启动时加载凭据；文件缺失视为关闭，门禁不生效
-const totp = new TotpAuthService(path.join(dataDir, "totp.json"));
-await totp.load();
+// TOTP 全局登录认证（提交⑥）：凭据已在 core 启动处并发加载；文件缺失视为关闭，门禁不生效。
 // 聊天模式（Chat）：独立会话存储（<dataDir>/chat-sessions/）、全局配置（chat.json）、
 // 助手预设（chat-assistants.json）与执行引擎；搜索/抓取复用 provider profiles 选定的 web 能力
 const chatConfigService = new ChatConfigService(path.join(dataDir, "chat.json"));
@@ -585,6 +601,11 @@ async function shutdown(): Promise<void> {
 installGracefulShutdown({ shutdown });
 
 await app.listen({ host: config.host, port: config.port });
+// 启动可观测性：一行说明 Node 版本与编译缓存状态，配合上面的 ready 耗时定位冷启动回归。
+process.stderr.write(
+  `[boot] ready in ${Math.round(performance.now())}ms (node ${process.versions.node}, compile-cache ${compileCacheState.status}`
+  + `${compileCacheState.directory ? ` @ ${compileCacheState.directory}` : ""})\n`,
+);
 // 启动完成即归还启动期空闲页：索引扫描/会话装载/扩展宿主拉起产生数百 MB 临时分配，
 // V8 归还保守（实测启动 44s RSS 907MB → 两次 full GC 后 289MB）。排到事件循环末尾执行，
 // 不阻塞首批请求；GC 经 gc-utils 解析（--expose-gc 缺失时运行时兜底注入，Windows launcher

@@ -140,7 +140,7 @@ export interface DshSessionPreviewItem {
 export interface DshSessionPreview {
   direction: DshSyncDirection;
   items: DshSessionPreviewItem[];
-  /** node:zlib 是否具备 zstd 能力（压缩会话需 Node ≥22.15）。 */
+  /** node:zlib 是否具备 zstd 能力（最低支持版本 Node ≥ 24.22.1 必然提供）。 */
   zstdAvailable: boolean;
   dshRunning: boolean;
   /** 整体降级说明（目录缺失、zstd 不可用、映射表读取失败等）。 */
@@ -596,7 +596,7 @@ function StatusBar({ status, isPending, error }: { status?: DshSyncStatus | unde
       {!status.zstdAvailable && (
         <div className="dsh-sync-status-item warn">
           <Icon name="alert" size={12} />
-          <span className="dsh-sync-status-label">{t("zstd 不可用（需要 Node ≥22.15）", "zstd unavailable (Node ≥22.15 required)")}</span>
+          <span className="dsh-sync-status-label">{t("zstd 不可用（需要 Node ≥ 24.22.1）", "zstd unavailable (Node ≥ 24.22.1 required)")}</span>
           <code className="mono dsh-sync-status-value">{status.nodeVersion}</code>
         </div>
       )}
@@ -1039,7 +1039,7 @@ export function DshSyncPanel(): ReactElement {
   const sessionGateReason: string | undefined = (() => {
     const status = statusQuery.data;
     if (status === undefined) return undefined;
-    if (!status.zstdAvailable) return t("zstd 不可用（需要 Node ≥22.15），会话同步不可用", "zstd unavailable (requires Node ≥22.15); session sync is unavailable");
+    if (!status.zstdAvailable) return t("zstd 不可用（需要 Node ≥ 24.22.1），会话同步不可用", "zstd unavailable (Node ≥ 24.22.1 required); session sync is unavailable");
     if (sessionDirection === "export" && !status.dshHomeExists) return t("未检测到 dsh 数据目录，无法导出", "dsh data directory not found; exporting is unavailable");
     return undefined;
   })();

@@ -13,6 +13,11 @@ function manualChunks(id: string): string | undefined {
   // Vite 的 __vitePreload helper 必须单独成 chunk：它是所有懒加载 chunk 的静态依赖，
   // 若与 monaco 同 chunk，入口就会静态引用 monaco（进而 modulepreload 4 MB）。
   if (id.includes("vite/preload-helper")) return "vite-preload";
+  // 框架 vendor 单独成 chunk：React/React DOM/React Query 的代码随版本几乎不变，
+  // 拆出后每次发版只有业务入口 chunk 的哈希变化，重复访问/升级时框架部分继续命中
+  // 强缓存（index.html 的 modulepreload 会带上该 chunk，首屏总字节不变）。
+  if (/\/node_modules\/(react|react-dom|scheduler)\//.test(id)) return "vendor-react";
+  if (id.includes("/node_modules/@tanstack/")) return "vendor-query";
   if (!id.includes("/node_modules/monaco-editor/")) return undefined;
   // monaco 的语言模式/基础语法由 monaco 自己按语言动态 import：保持独立懒加载 chunk，
   // 不并进 monaco 主 chunk（否则打开编辑器要一次下全量语言包）。
@@ -40,6 +45,9 @@ function stripKatexLegacyFonts(): Plugin {
 export default defineConfig({
   plugins: [react(), stripKatexLegacyFonts()],
   build: {
+    // 现代浏览器目标（Chrome 111+/Safari 16.4+）：不再为 ES2020 降级可选链/类字段，
+    // 产出更小、解析更快；与项目实际支持的浏览器范围一致。
+    target: "es2022",
     rollupOptions: {
       output: {
         // Monaco 固定独立 chunk（编辑器懒加载，0.5.0 Phase 1a）；size budget 按名匹配该 chunk

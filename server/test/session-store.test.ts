@@ -152,6 +152,10 @@ describe("会话分页", () => {
     expect(list.find((item) => item.id === session)?.recovery).toMatchObject({ state: "recovered" });
     // 健康会话 list() 不解析全部消息，不带 recovery
     expect(list.find((item) => item.id === healthy)).not.toHaveProperty("recovery");
+    // 恢复尾检查按 size+mtime+ctime 指纹缓存：重复 list() 复用结果，文件改写后自动重检
+    expect((await store.list()).find((item) => item.id === session)?.recovery).toMatchObject({ state: "recovered" });
+    await writeFile(messagesPathOf(root, session), `${JSON.stringify({ id: "valid-2", role: "user", content: [], createdAt: "x" })}\n`, "utf8");
+    expect((await store.list()).find((item) => item.id === session)).not.toHaveProperty("recovery");
     const { rm } = await import("node:fs/promises");
     await rm(messagesPathOf(root, session));
     expect((await store.list()).find((item) => item.id === session)?.recovery).toMatchObject({ state: "needs_repair" });

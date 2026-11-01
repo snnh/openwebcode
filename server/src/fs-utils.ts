@@ -1,7 +1,8 @@
 import { chmod, mkdir } from "node:fs/promises";
 
 export function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
+  // Error.isError：跨 realm 的 Error 也识别（沙盒/扩展宿主经 IPC 传回的错误对象常见）。
+  return Error.isError(error) && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
 /** POSIX 下对目标 chmod；Windows 无权限位语义，no-op。 */

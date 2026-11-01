@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { copyFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import type { CoreClientLike } from "../core-client.js";
 import { ensureDirWithMode } from "../fs-utils.js";
@@ -28,7 +27,7 @@ import type { ProxyConfig } from "../proxy.js";
 const DEFAULT_PORT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_MS = 100;
 
-const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+const moduleDirectory = import.meta.dirname;
 
 export interface FilteredProxyDeps {
   /** 业务数据目录；deny 文件写入 <dataDir>/proxy/。 */

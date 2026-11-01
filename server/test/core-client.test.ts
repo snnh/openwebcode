@@ -214,6 +214,17 @@ describe("FrameDecoder", () => {
     decoder.push(input.subarray(0, 7));
     decoder.push(input.subarray(7, first.length + 3));
     decoder.push(input.subarray(first.length + 3)); expect(messages).toEqual([{ text: "你好" }, { value: 2 }]);
+    // 零拷贝快路径：整帧落在一个块里（含尾部多余字节的前缀消费）与逐字节喂入结果一致
+    const whole = new FrameDecoder();
+    const wholeMessages: unknown[] = [];
+    whole.on("message", (message) => wholeMessages.push(message));
+    whole.push(Buffer.concat([encodeFrame({ text: "整块" }), encodeFrame({ value: 3 })]));
+    expect(wholeMessages).toEqual([{ text: "整块" }, { value: 3 }]);
+    const bytewise = new FrameDecoder();
+    const byteMessages: unknown[] = [];
+    bytewise.on("message", (message) => byteMessages.push(message));
+    for (const byte of first) bytewise.push(Buffer.from([byte]));
+    expect(byteMessages).toEqual([{ text: "你好" }]);
   });
 
   it("畸形 header 拒绝：重复 Content-Length、超长 header 行、超过 32 MiB 的声明", () => {

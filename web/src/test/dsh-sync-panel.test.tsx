@@ -175,7 +175,7 @@ const statusPayload: DshSyncStatus = {
   profileExists: false,
   zstdAvailable: true,
   dshRunning: true,
-  nodeVersion: "v22.15.0",
+  nodeVersion: "v24.22.1",
 };
 
 /** dsh 数据目录/profile 就绪的状态（导出方向的执行门禁要求 dshHomeExists）。 */

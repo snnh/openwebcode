@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 性能与资源
+
+- **冷启动更快（V8 编译缓存）**：入口首条 import 开启 `module.enableCompileCache()`，编译产物按源码哈希写到 `<数据目录>/cache/compile`（`OWC_COMPILE_CACHE=0` 关闭）。实测同一数据目录热启动 335ms → 287ms（约 -14%，磁盘慢的机器/容器更明显），缓存约 3.2MB，首次冷启动多付约 25ms。
+- **启动初始化并行**：会话、定价、汇率、更新检查四步只读各自的快照文件，改为一次 `Promise.all` 并发等待；`core.start()` 与 TOTP 凭据加载同理并行。启动日志新增一行 `[boot] ready in <n>ms (node <版本>, compile-cache <状态>)`，便于定位冷启动回归。
+- **大帧 RPC 少一次整块拷贝**：`FrameDecoder` 在「帧完整落在首块内」时直接交出该块或其前缀视图，32MB 级的 `fs.readBase64` / `index.scan` 不再先分配再复制；跨块拼接仍走原有一次性复制，避免视图长期持有底层缓冲。
+- **会话列表不再逐会话读盘**：`checkRecoveryTail` 按 size+mtime+ctime 指纹缓存（上限 256 条，写路径经 `invalidateMessageIndex` 一并失效）。`GET /api/sessions` 在大会话目录下不再为每个会话 `open + 读最多 256KB 尾窗口`。
+- **web 首屏与升级流量**：React/React DOM 与 React Query 拆为独立 vendor chunk（`vendor-react` 193.8KB、`vendor-query` 35.9KB），入口 chunk 520.9KB → 277.5KB；发版后重复访问的框架代码继续命中长缓存，首屏总字节不变。构建目标提到 ES2022（不再为 ES2020 降级可选链/类字段）。
+- 说明：dsh 运行时 / eval / anthropic SDK 的懒加载经 `probe.mjs modcost` 实测边际仅约 5MB、且与 app 模块共享依赖没有启动时间差，本轮不做（结论记在此处，避免重复评估）。
+
 ### 工程
 
 - **Node.js 最低版本提升到 24.22.1（破坏性变更）**：`engines.node`、CI、Docker 镜像、发行包内置 Node、`install.sh` 校验统一为 Node 24 的最新小版本。低于该版本时服务端启动会打印警告（不退出），安装器与 `npm engines` 为硬门禁。升级方式：`nvm install 24.22.1 && nvm use 24.22.1`，或用发行包自带的 Node（不复制系统 node）。

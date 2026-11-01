@@ -142,7 +142,8 @@ export function resolveDshProfile(config?: DshSyncConfig): string {
 }
 
 /**
- * 探测 node:zlib 是否具备 zstd 解压能力（Node 22.15+/24 起提供；旧版为 undefined）。
+ * 探测 node:zlib 的 zstd 能力。最低支持版本（Node 24.22.1）必然提供 zstd，
+ * 这里保留运行时探测只为在异常精简的运行时上给出明确降级原因，不再作为版本门槛。
  * @returns 存在 `zstdDecompressSync` 即 true。
  */
 export function zstdAvailable(): boolean {
