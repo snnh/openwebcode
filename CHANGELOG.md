@@ -6,7 +6,7 @@
 
 ### 性能与资源
 
-- **冷启动更快（V8 编译缓存）**：入口首条 import 开启 `module.enableCompileCache()`，编译产物按源码哈希写到 `<数据目录>/cache/compile`（数据目录未知时用 `$XDG_CACHE_HOME/openwebcode` 或 `~/.cache/openwebcode`，Windows 用 `%LOCALAPPDATA%`；**不落 /tmp**，`OWC_COMPILE_CACHE=0` 关闭）。实测同一数据目录热启动 335ms → 287ms（约 -14%，磁盘慢的机器/容器更明显），缓存约 3.2MB，首次冷启动多付约 25ms。
+- **冷启动更快（V8 编译缓存）**：入口首条 import 开启 `module.enableCompileCache()`，编译产物按源码哈希写到 `<数据目录>/cache/compile`（数据目录未知时用 `$XDG_CACHE_HOME/openwebcode` 或 `~/.cache/openwebcode`，Windows 用 `%LOCALAPPDATA%`；**不落 /tmp**，`OWC_COMPILE_CACHE=0` 关闭）。**缓存会及时清理**：启动时比对构建版本标记，版本变了整体清空（旧字节码按源码哈希寻址，跨版本永不命中）；运行期每小时按「14 天未用 / 32MB 上限」逐出最旧条目。实测同一数据目录热启动 335ms → 287ms（约 -14%，磁盘慢的机器/容器更明显），缓存约 3.2MB，首次冷启动多付约 25ms。
 - **启动初始化并行**：会话、定价、汇率、更新检查四步只读各自的快照文件，改为一次 `Promise.all` 并发等待；`core.start()` 与 TOTP 凭据加载同理并行。启动日志新增一行 `[boot] ready in <n>ms (node <版本>, compile-cache <状态>)`，便于定位冷启动回归。
 - **大帧 RPC 少一次整块拷贝**：`FrameDecoder` 在「帧完整落在首块内」时直接交出该块或其前缀视图，32MB 级的 `fs.readBase64` / `index.scan` 不再先分配再复制；跨块拼接仍走原有一次性复制，避免视图长期持有底层缓冲。
 - **会话列表不再逐会话读盘**：`checkRecoveryTail` 按 size+mtime+ctime 指纹缓存（上限 256 条，写路径经 `invalidateMessageIndex` 一并失效）。`GET /api/sessions` 在大会话目录下不再为每个会话 `open + 读最多 256KB 尾窗口`。

@@ -14,8 +14,13 @@
  * `~/.cache`，Windows 的 `%LOCALAPPDATA%`）。**绝不落 /tmp**：编译缓存是跨重启复用的持久
  * 内容，临时目录会被清理/重启清空，放到 tmpfs 上还白占内存。HOME 也解析不到时直接关闭缓存。
  * 关闭方式：`OWC_COMPILE_CACHE=0`（也会被 Node 自带的 `NODE_DISABLE_COMPILE_CACHE=1` 覆盖）。
+ *
+ * 清理（`sweepCompileCache`）：字节码按源码哈希寻址，跨构建永远不会再命中，只会白占磁盘。
+ * 启动时比对构建版本标记，版本变了整体清空；运行期每小时按「14 天未用 / 32MB 上限」再收一次，
+ * 与项目其它常驻缓存的空闲清扫同一纪律。
  */
 import { constants, enableCompileCache } from "node:module";
+import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -71,6 +76,105 @@ function enableStartupCompileCache(): CompileCacheState {
   } catch {
     return { status: "failed" };
   }
+}
+
+/** 缓存目录里记录「这批字节码属于哪个构建」的标记文件（Node 自身不会读它）。 */
+const BUILD_MARKER = ".owc-build-version";
+/** 缓存总量上限：单次构建实测约 3.2MB，32MB 约等于 10 次构建的余量。 */
+const MAX_COMPILE_CACHE_BYTES = 32 * 1024 * 1024;
+/** 条目最长闲置时间：超过即视为不会再命中的陈旧字节码。 */
+const MAX_COMPILE_CACHE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+export interface CompileCacheSweepOptions {
+  /** 当前构建版本（服务器版本号）：与目录内标记不一致时整体清空。 */
+  version?: string;
+  /** 缓存目录；缺省用当前生效的编译缓存目录（测试可注入）。 */
+  directory?: string;
+  /** 字节上限，默认 32MB。 */
+  maxBytes?: number;
+  /** 闲置上限（毫秒），默认 14 天。 */
+  maxAgeMs?: number;
+  /** 当前时间（测试注入）。 */
+  now?: number;
+}
+
+export interface CompileCacheSweepResult {
+  /** 实际删除的文件数。 */
+  removed: number;
+  /** 释放的字节数。 */
+  freedBytes: number;
+  /** 是否因构建版本变化整体清空。 */
+  cleared: boolean;
+}
+
+/** 尽力而为：stat/删除失败一律跳过（缓存清理不允许影响主流程）。 */
+async function removeCacheFile(directory: string, name: string): Promise<number> {
+  const target = path.join(directory, name);
+  const info = await stat(target).catch(() => undefined);
+  if (info === undefined) return 0;
+  try {
+    await rm(target, { force: true });
+    return info.size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 清理编译缓存：构建版本变化 → 整体清空；否则先删闲置超龄条目，再按总量上限逐出最旧的。
+ * 未启用缓存或目录不存在时为空操作。
+ */
+export async function sweepCompileCache(options: CompileCacheSweepOptions = {}): Promise<CompileCacheSweepResult> {
+  const directory = options.directory ?? compileCacheState.directory;
+  if (directory === undefined) return { removed: 0, freedBytes: 0, cleared: false };
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => undefined);
+  if (entries === undefined) return { removed: 0, freedBytes: 0, cleared: false };
+  const names = entries.filter((entry) => entry.isFile() && entry.name !== BUILD_MARKER).map((entry) => entry.name);
+  let removed = 0;
+  let freedBytes = 0;
+
+  // 1) 构建版本变化：旧字节码按源码哈希寻址，新构建不会再命中 → 整批丢弃。
+  const markerPath = path.join(directory, BUILD_MARKER);
+  if (options.version !== undefined) {
+    const marker = await readFile(markerPath, "utf8").catch(() => undefined);
+    if (marker !== undefined && marker.trim() !== options.version) {
+      for (const name of names) {
+        const size = await removeCacheFile(directory, name);
+        if (size > 0) { removed += 1; freedBytes += size; }
+      }
+      await writeFile(markerPath, `${options.version}\n`, "utf8").catch(() => undefined);
+      return { removed, freedBytes, cleared: true };
+    }
+    if (marker === undefined) await writeFile(markerPath, `${options.version}\n`, "utf8").catch(() => undefined);
+  }
+
+  // 2) 闲置超龄 → 总量上限（最旧优先），只处理目录下的普通文件。
+  const files: Array<{ name: string; size: number; mtimeMs: number }> = [];
+  for (const name of names) {
+    const info = await stat(path.join(directory, name)).catch(() => undefined);
+    if (info?.isFile()) files.push({ name, size: info.size, mtimeMs: info.mtimeMs });
+  }
+  const now = options.now ?? Date.now();
+  const maxAgeMs = options.maxAgeMs ?? MAX_COMPILE_CACHE_AGE_MS;
+  const maxBytes = options.maxBytes ?? MAX_COMPILE_CACHE_BYTES;
+  const survivors: typeof files = [];
+  for (const file of files) {
+    if (now - file.mtimeMs > maxAgeMs) {
+      const size = await removeCacheFile(directory, file.name);
+      if (size > 0) { removed += 1; freedBytes += size; }
+    } else {
+      survivors.push(file);
+    }
+  }
+  let total = survivors.reduce((sum, file) => sum + file.size, 0);
+  if (total > maxBytes) {
+    for (const file of [...survivors].sort((a, b) => a.mtimeMs - b.mtimeMs)) {
+      if (total <= maxBytes) break;
+      const size = await removeCacheFile(directory, file.name);
+      if (size > 0) { removed += 1; freedBytes += size; total -= size; }
+    }
+  }
+  return { removed, freedBytes, cleared: false };
 }
 
 /** 版本比较：current >= minimum（忽略 -rc/preview 等后缀）。 */

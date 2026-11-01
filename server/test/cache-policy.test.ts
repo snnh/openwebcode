@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -10,6 +10,7 @@ import {
   setSessionCacheIdleMinutes,
 } from "../src/cache-policy.js";
 import { readAllMessages, readMessagesHead, readMessagesTail, sweepIdleMessageIndexes } from "../src/sessions/message-reader.js";
+import { sweepCompileCache } from "../src/compile-cache.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
@@ -28,6 +29,39 @@ describe("常驻缓存空闲策略", () => {
     setSessionCacheIdleMinutes(99_999);
     expect(sessionCacheIdleTtlMs()).toBe(1440 * 60_000);
     resetSessionCacheIdleMinutes();
+  });
+});
+
+describe("编译缓存清理", () => {
+  it("构建版本变化整体清空；否则按闲置超龄与总量上限逐出最旧条目", async () => {
+    const dir = await tempRoot("owc-compile-cache-");
+    const day = 24 * 60 * 60 * 1000;
+    const now = Date.UTC(2026, 0, 20);
+    const write = async (name: string, bytes: number, ageDays: number): Promise<string> => {
+      const file = path.join(dir, name);
+      await writeFile(file, Buffer.alloc(bytes, 1));
+      const time = new Date(now - ageDays * day);
+      await utimes(file, time, time);
+      return file;
+    };
+    const fresh = await write("fresh.cache", 100, 1);
+    const stale = await write("stale.cache", 100, 20);
+    // 首次清理（旧版本没有标记文件）：写标记但不清空，只按闲置超龄删除陈旧条目
+    expect(await sweepCompileCache({ directory: dir, version: "1.0.0", now })).toMatchObject({ cleared: false });
+    await expect(stat(stale)).rejects.toThrow();
+    expect(await stat(fresh)).toBeTruthy();
+    // 总量超过上限：最旧的先走
+    const a = await write("a.cache", 80, 3);
+    const b = await write("b.cache", 80, 2);
+    const capped = await sweepCompileCache({ directory: dir, version: "1.0.0", maxBytes: 120, now });
+    expect(capped.removed).toBeGreaterThanOrEqual(1);
+    await expect(stat(a)).rejects.toThrow();
+    await expect(stat(b)).rejects.toThrow();
+    expect(await stat(fresh)).toBeTruthy();
+    // 构建版本变化：整体清空并重写标记
+    expect(await sweepCompileCache({ directory: dir, version: "1.1.0", now })).toMatchObject({ cleared: true });
+    await expect(stat(fresh)).rejects.toThrow();
+    expect(await sweepCompileCache({ directory: dir, version: "1.1.0", now })).toMatchObject({ cleared: false, removed: 0 });
   });
 });
 

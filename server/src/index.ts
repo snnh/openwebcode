@@ -1,6 +1,6 @@
 // 第一条 import：V8 编译缓存必须先于其它模块求值（ESM 按 import 顺序深度优先），
 // 这样 fastify/undici/anthropic SDK 等后续模块的编译产物才可能命中缓存。
-import { compileCacheState, nodeVersionAtLeast } from "./compile-cache.js";
+import { compileCacheState, nodeVersionAtLeast, sweepCompileCache } from "./compile-cache.js";
 import path from "node:path";
 import { AgentRunner } from "./agent/agent-runner.js";
 import { BackgroundTaskRegistry } from "./agent/background-tasks.js";
@@ -92,6 +92,11 @@ await ensureDirWithMode(bootDataDir, 0o700);
 // 解析服务版本并初始化全局 User-Agent（所有出站 HTTP 统一注入 UA）
 const serverVersion = await readServerVersion();
 setServerVersion(serverVersion);
+// 编译缓存清理：启动时按构建版本清掉上一版留下的字节码（跨版本永不命中，只会白占磁盘），
+// 之后每小时按「14 天未用 / 32MB 上限」再收一次；定时器 unref，不影响进程退出。
+void sweepCompileCache({ version: serverVersion }).catch(() => undefined);
+const compileCacheSweepTimer = setInterval(() => { void sweepCompileCache().catch(() => undefined); }, 3_600_000);
+compileCacheSweepTimer.unref();
 process.stderr.write(`openwebcode ${serverVersion} starting\n`);
 const settings = await SettingsService.load({
   env: process.env,
