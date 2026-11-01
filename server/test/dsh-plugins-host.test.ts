@@ -58,6 +58,20 @@ describe("dsh 插件宿主集成", () => {
     await expect(gate("blocked_tool")).resolves.toEqual({ kind: "deny", reason: "该工具在本插件中被禁止" });
     await expect(gate("other_tool")).resolves.toEqual({ kind: "allow", reason: "" });
   });
+  it("宿主按需启停：关掉最后一个扩展后回收进程，重新启用再拉起", async () => {
+    expect(await manager.hostMemory()).not.toBeNull();
+    // 逐个关掉当前启用的扩展（默认启用项随官方清单演进，不在用例里写死）→ 没有扩展需要宿主
+    for (const item of manager.list()) {
+      if (item.enabled) await manager.configure(item.id, { enabled: false });
+    }
+    expect(manager.list().some((item) => item.enabled)).toBe(false);
+    expect(await manager.hostMemory()).toBeNull();
+    // 重新启用 → 按需拉起；再次关闭 → 再次回收
+    await manager.configure("context-saver", { enabled: true });
+    expect(await manager.hostMemory()).not.toBeNull();
+    await manager.configure("context-saver", { enabled: false });
+    expect(await manager.hostMemory()).toBeNull();
+  });
   it("停用回滚与模式开关：逐插件摘除工具、调用被拒，重启用/重开模式可逆装回", async () => {
     await manager.syncDsh();
     await setDshPluginEnabled(dataDir, "tool-hello", false);

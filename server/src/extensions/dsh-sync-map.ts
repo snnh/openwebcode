@@ -14,6 +14,8 @@
  *   映射表只是「省掉一次重选」，丢了最坏是重复导入一次。
  */
 
+import { asRecord } from "./json-utils.js";
+
 /** 映射文件在扩展私有 storage 里的相对路径。 */
 export const DSH_SYNC_MAP_PATH = "map.json";
 
@@ -58,12 +60,6 @@ export interface DshSyncStorageApi {
 /** 空表（每次返回新对象，避免调用方改到共享单例）。 */
 export function emptySyncMap(): DshSyncMap {
   return { version: 1, entries: [] };
-}
-
-/** 未知 JSON 值取纯对象视图（数组/null/标量返回 undefined）。 */
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  return value as Record<string, unknown>;
 }
 
 /** 非空字符串判定（去首尾空白后仍非空）。 */

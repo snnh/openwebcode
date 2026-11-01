@@ -1,5 +1,5 @@
 // ── session ──
-export type { Session, SessionDetail, PersonaSummary, PersonaDetail, PersonaPresetInput, MessagesPage, PendingPermission, InteractionRequest, SessionTimeline, QueueItem } from "./contracts/session";
+export type { Session, SessionDetail, PresetSummary, PresetDetail, PresetInput, PresetAlias, PresetCategory, PresetPromptStyle, PresetProjectContext, PresetToolInfo, PresetToolGroup, MessagesPage, PendingPermission, InteractionRequest, SessionTimeline, QueueItem } from "./contracts/session";
 // ── sandbox ──
 export type { SandboxCapability, SandboxMode, SandboxNetwork, ShellBackend, PythonEnv, NodeEnv, SandboxCapabilities, SessionSandboxStatus, ManagedWorkspaceCapability, ManagedWorkspace, ManagedWorkspaceSyncChange, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult } from "./contracts/sandbox";
 // ── subagent ──

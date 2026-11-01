@@ -211,7 +211,7 @@ agent.setMaxTurns(() => settings.effective().agentMaxTurns);
 agent.setSubAgentMaxTurns(() => settings.effective().subAgentMaxTurns);
 agent.setSubAgentConcurrency(() => settings.effective().subAgentConcurrency);
 agent.setSpawnSwarmConcurrency(() => settings.effective().spawnSwarmConcurrency);
-// 出站 User-Agent：启动装配一次；此后设置变更经 SettingsService.hotApply 热应用（env-sim 模拟优先于自定义）
+// 出站 User-Agent：启动装配一次；此后设置变更经 SettingsService.hotApply 热应用（agent-presets 模拟优先于自定义）
 setCustomUserAgent(settings.effective().userAgent ?? null);
 agent.setCompactionThreshold(() => settings.effective().compactionThresholdPercent);
 compactor.setCompactMaxTokens(() => settings.effective().compactMaxTokens);

@@ -1,4 +1,4 @@
-import type { PersonaPreset } from "./types.js";
+import type { AgentPreset } from "./types.js";
 
 /**
  * 内置预设全部为原创的风格模仿文本：只复刻各产品公开可见的工作方式与工具命名习惯，
@@ -44,7 +44,28 @@ const TODO_ITEMS = {
   },
 } as const;
 
-export const BUILTIN_PERSONAS: PersonaPreset[] = [
+export const BUILTIN_PRESETS: AgentPreset[] = [
+  // OWC 原生「精简模式」：不是 DSH minimal 的拟态。只保留基础工具与默认辅助能力，
+  // Git/分析/编排/工作流/扩展工具默认关闭；用户可在编辑器里按组或逐个打开。
+  // 提示词由 prompt-builder 的 minimal 形态生成（工作纪律、沟通、安全、尾注为固定精简段）。
+  {
+    id: "minimal",
+    name: "精简模式",
+    category: "minimal",
+    description: "OWC 原生精简提示词与按需工具集。",
+    identity: "",
+    basePrompt: "You are an expert coding assistant.",
+    productSections: [],
+    promptStyle: "minimal",
+    projectContext: "paths",
+    externalTools: false,
+    allowedBuiltIns: [
+      "bash", "read_file", "edit_file",
+      "web_search", "web_fetch", "read_media", "ask_user",
+    ],
+    hideBuiltIns: [],
+    aliases: [],
+  },
   // claude-code 预设 0.1.7 起按社区逆向的 Claude Code CLI 系统提示词重写：
   // 来源 gist.github.com/agokrani（claude-code-prompt.txt，2026-08-19 更新，2.1.x 时代；
   // 同仓亦有 chigkim 的 Agent SDK/headless 形态完整 dump，本档取 CLI 主提示词形态）。
@@ -55,6 +76,8 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
   {
     id: "claude-code",
     name: "Claude Code",
+    category: "mimicry",
+    description: "拟态 Claude Code 的提示词与工具命名。",
     userAgent: "claude-code/2.1.260",
     identity: "You are Claude Code, Anthropic's official CLI for Claude.",
     basePrompt: [
@@ -439,6 +462,8 @@ Rules: be brief; keep file paths, command names and error strings verbatim; neve
   {
     id: "kimi-code",
     name: "Kimi Code",
+    category: "mimicry",
+    description: "拟态 Kimi Code 的提示词与工具命名。",
     userAgent: "kimi-code/0.40.1",
     identity: "You are Kimi Code CLI, an interactive general AI agent running on a user's computer.",
     basePrompt: [
@@ -742,6 +767,8 @@ Popular sections usually written in \`AGENTS.md\`:
   {
     id: "zcode",
     name: "ZCode",
+    category: "mimicry",
+    description: "拟态 ZCode 的提示词与工具命名。",
     userAgent: "zcode/3.10.1",
     identity: "You are ZCode, an interactive coding agent.",
     basePrompt: [
@@ -1041,6 +1068,8 @@ Keep it small: short bullets only; file paths, commands and error text verbatim;
   {
     id: "codex",
     name: "Codex",
+    category: "mimicry",
+    description: "拟态 Codex 的提示词与工具命名。",
     userAgent: "codex/0.153.2",
     identity: "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful.",
     basePrompt: [
@@ -1448,6 +1477,8 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
     // 内置工具统一隐藏，由模型经 bash 处理。
     id: "dsh-minimal",
     name: "DSH Minimal",
+    category: "mimicry",
+    description: "拟态 DeepSeek Harness 极简模式。",
     userAgent: "dsh/0.1.2-rc.1",
     identity: "You are a helpful software engineer assistant.",
     // basePrompt 在 DSH 原文基础上追加人称约定（The personal pronoun is us/we.），

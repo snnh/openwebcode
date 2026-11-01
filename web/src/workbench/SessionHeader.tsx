@@ -17,6 +17,7 @@ import { useContextViewQuery, useServerSettingsQuery } from "../app/queries";
 import { Icon } from "../components/Icon";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useI18n } from "../i18n";
+import { presetLabel } from "../lib/preset-labels";
 import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { MobileNavTrigger } from "./Rail";
 import type { SessionHeaderProps } from "../chat/types";
@@ -77,7 +78,7 @@ function FitSelect({ children, ...props }: SelectHTMLAttributes<HTMLSelectElemen
 }
 
 export function SessionHeader({ session, agentState, costSummary, windowUsage, latestUsage, running = false, checkpointPending = false, onAbort, onConfig, onCreateCheckpoint, onOpenNavMenu }: SessionHeaderProps): ReactElement {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const busy = isBusyState(agentState) || running;
   const budgetRatio = costSummary?.tokenBudget ? Math.min(1, costSummary.tokens / costSummary.tokenBudget) : undefined;
@@ -116,14 +117,17 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
     queryFn: api.sandboxCapabilities,
     staleTime: 60_000,
   });
-  // env-sim 人格清单：仅人格生效时拉取（会话级覆盖下拉供数；扩展宿主不可用时静默为空）
-  const personas = useQuery({
-    queryKey: ["env-sim-personas"],
-    queryFn: api.envSimPersonas,
-    enabled: Boolean(session.activePersona),
+  // Agent 预设清单：会话级覆盖下拉供数（扩展停用/后端不可用时静默为空）
+  const presetsQuery = useQuery({
+    queryKey: ["agent-presets"],
+    queryFn: api.agentPresets,
     staleTime: 60_000,
     retry: false,
   });
+  // 扩展停用时不显示预设下拉（选择不会生效，避免误导）
+  const presetEnabled = presetsQuery.data?.enabled === true;
+  const presetOptions = presetEnabled ? presetsQuery.data?.presets ?? [] : [];
+  const presetActiveName = session.activePreset ? presetLabel(session.activePreset, language).name : t("经典模式", "Classic");
   // 弹层排序：运行中在前（startedAt 升序），已结束后随（finishedAt 降序，弱化显示）
   const sortedTasks = useMemo(() => {
     const all = tasks.data ?? [];
@@ -340,22 +344,24 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
           </button>
         )}
         {!isMobile && stateItem}
-        {session.activePersona && (
+        {presetEnabled && (presetOptions.length > 0 || session.activePreset) && (
           <label
-            className="mode-switch persona-switch"
-            title={t(`env-sim 人格模拟生效：${session.activePersona.name}（点击切换会话级人格）`, `env-sim persona active: ${session.activePersona.name} (click to override for this session)`)}
+            className="mode-switch preset-switch"
+            title={t(`本会话 Agent 预设：${presetActiveName}（点击切换；会话级覆盖优先于全局默认）`, `Agent preset for this session: ${presetActiveName} (click to switch; session overrides beat the global default)`)}
           >
             <Icon name="layers" size={11} />
             <FitSelect
-              aria-label={t("人格模拟", "Persona")}
-              value={session.persona ?? ""}
+              aria-label={t("Agent 预设", "Agent preset")}
+              value={session.preset ?? ""}
               disabled={busy || configPending}
-              onChange={(event) => updateMode({ persona: event.target.value })}
+              onChange={(event) => updateMode({ preset: event.target.value })}
             >
-              <option value="">{t(`跟随扩展配置（${session.activePersona.name}）`, `Follow extension config (${session.activePersona.name})`)}</option>
-              {(personas.data?.personas ?? []).map((persona) => (
-                <option key={persona.id} value={persona.id}>{persona.overridden === true ? t(`${persona.name}（已自定义）`, `${persona.name} (customized)`) : persona.name}</option>
-              ))}
+              <option value="">{t(`跟随全局默认（${presetActiveName}）`, `Follow global default (${presetActiveName})`)}</option>
+              <option value="classic">{t("经典模式（本会话）", "Classic (this session)")}</option>
+              {presetOptions.map((preset) => {
+                const name = presetLabel(preset, language).name;
+                return <option key={preset.id} value={preset.id}>{preset.overridden === true ? t(`${name}（已自定义）`, `${name} (customized)`) : name}</option>;
+              })}
             </FitSelect>
           </label>
         )}

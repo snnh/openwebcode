@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { ExtensionInfo } from "../../lib/contracts";
 import { useI18n } from "../../i18n";
-import { DeletePersonaButton, PersonaCreator, PersonaPreview } from "./env-sim-personas";
+import { presetLabel } from "../../lib/preset-labels";
 
 /** configSchema（JSON Schema 子集）解析后的单个可渲染字段 */
 export interface ExtensionConfigField {
@@ -145,7 +145,8 @@ function initialValues(fields: ExtensionConfigField[], config: Record<string, un
 /**
  * 扩展类型化配置表单：按 configSchema 渲染 select/number/checkbox/字典编辑器，
  * 与原始 JSON 编辑保持相同的“保存配置”显式提交语义；未覆盖的既有键原样保留。
- * env-sim 的 persona 字段选项由 api.envSimPersonas() 动态提供（空值表示不模拟）。
+ * agent-presets 的 preset 字段选项由 api.agentPresets() 动态提供（空值表示经典模式）；
+ * 详细的预设管理与编辑器在设置 → Agent 预设页签。
  */
 export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
   extension: ExtensionInfo;
@@ -153,15 +154,15 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
   busy: boolean;
   onSave(config: Record<string, unknown>): void;
 }): ReactElement {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [values, setValues] = useState<FormValues>(() => initialValues(fields, extension.config));
   const [error, setError] = useState<string>();
-  const isEnvSim = extension.id === "env-sim";
+  const isAgentPresets = extension.id === "agent-presets";
   const hasModelPicker = fields.some((field) => field.modelPicker === true);
-  const personas = useQuery({
-    queryKey: ["env-sim-personas"],
-    queryFn: api.envSimPersonas,
-    enabled: isEnvSim,
+  const presets = useQuery({
+    queryKey: ["agent-presets"],
+    queryFn: api.agentPresets,
+    enabled: isAgentPresets,
   });
   // 模型选择器（x-model-picker）：已启用服务商 × 模型目录中支持图片输入的模型；值编码 `provider/model`
   const modelCatalog = useQuery({
@@ -268,42 +269,27 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
         </div>
       );
     }
-    if (isEnvSim && id === "persona") {      const list = personas.data?.personas ?? [];
-      const builtin = list.filter((persona) => persona.builtin);
-      const custom = list.filter((persona) => !persona.builtin);
+    if (isAgentPresets && id === "preset") {
+      const list = presets.data?.presets ?? [];
       const selected = typeof values[id] === "string" ? values[id] as string : "";
-      const selectedIsCustom = Boolean(selected) && custom.some((persona) => persona.id === selected);
-      // 内置 id 且存在用户覆盖：显示「还原内置」（删除覆盖文件即还原）
-      const selectedOverridden = Boolean(selected) && builtin.some((persona) => persona.id === selected && persona.overridden === true);
       return (
         <div key={id} className="extension-config-field">
           <label>
             {label}
             <select className="input" value={selected} disabled={busy} onChange={(event) => setValue(id, event.target.value)}>
-              <option value="">{t("（不模拟）", "(No simulation)")}</option>
-              {builtin.length > 0 && (
-                <optgroup label={t("内置", "Built-in")}>
-                  {builtin.map((persona) => <option key={persona.id} value={persona.id}>{persona.overridden === true ? t(`${persona.name}（已自定义）`, `${persona.name} (customized)`) : persona.name}</option>)}
-                </optgroup>
-              )}
-              {custom.length > 0 && (
-                <optgroup label={t("自定义", "Custom")}>
-                  {custom.map((persona) => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
-                </optgroup>
-              )}
+              <option value="">{t("经典模式（不覆盖提示词与工具）", "Classic (override nothing)")}</option>
+              {list.map((preset) => {
+                const name = presetLabel(preset, language).name;
+                return (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.overridden === true ? t(`${name}（已自定义）`, `${name} (customized)`) : name}
+                  </option>
+                );
+              })}
             </select>
           </label>
           {description}
-          {selected && <PersonaPreview id={selected} />}
-          {selectedIsCustom && <DeletePersonaButton id={selected} onDeleted={() => setValue(id, "")} />}
-          {selectedOverridden && <DeletePersonaButton id={selected} overridden onDeleted={() => undefined} />}
-          <PersonaCreator onCreated={(personaId) => setValue(id, personaId)} />
-          {personas.data && (
-            <p className="settings-note">{t(
-              `自定义预设从 ${personas.data.directory} 加载，可将共享的预设 .json 文件放入该目录；id 与内置预设相同时即自定义该内置（只覆盖填写的字段，其余继承内置）。`,
-              `User presets are loaded from ${personas.data.directory} — drop shared preset .json files there; using a built-in id customizes that built-in (only the fields you provide take effect, the rest are inherited).`,
-            )}</p>
-          )}
+          <p className="settings-note">{t("预设的预览、编辑与自定义管理在「设置 → Agent 预设」页签；每个会话也可在顶栏单独覆盖。", "Preview, editing, and custom presets live under Settings → Agent presets; each session can also override it from the header.")}</p>
         </div>
       );
     }

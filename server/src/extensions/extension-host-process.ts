@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import { OFFICIAL_EXTENSIONS, optimizeAttention } from "./official.js";
 import { RECALL_MEMORY_SPEC, recallMemory, reinjectVaultIndex, type VaultHostApi } from "./compact-vault-host.js";
 import { DESCRIBE_IMAGE_SPEC, bridgeVisionImages, describeImage, type VisionToolsHostApi } from "./vision-tools-host.js";
-import { clampExtensionRouteTimeout, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolAfterHookPayload, type ToolHookPayload, type ToolHookResult } from "./types.js";
+import { clampExtensionRouteTimeout, isExtensionEventAllowed, EXTENSION_HOOKS, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolAfterHookPayload, type ToolHookPayload, type ToolHookResult } from "./types.js";
 import { createDshSyncRoutes, type DshSyncServerApi } from "./dsh-sync-host.js";
 import type { DshHostRuntime } from "../dsh/host-runtime.js";
 import { dshToolSourceId, type DshPluginReport, type DshSyncItem } from "../dsh/loader.js";
@@ -32,10 +32,41 @@ const HOOK_PERMISSIONS: Record<ExtensionHook, ExtensionPermission[]> = {
 };
 const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
+/**
+ * 钩子执行顺序缓存：handlers 只在模块加载 / 第三方 activate 时注册，register 即失效。
+ * 每次 hook 都重建数组 + 去重/排序会落在每轮上下文构建的热路径上（context.beforeBuild 每轮至少一次）。
+ */
+let hookOrderCache: string[] | undefined;
+let promptHookOrderCache: string[] | undefined;
+
+function invalidateHookOrderCache(): void {
+  hookOrderCache = undefined;
+  promptHookOrderCache = undefined;
+}
+
+function hookOrderFor(hook: ExtensionHook): string[] {
+  if (hook === "prompt.beforeBuild") {
+    // 官方扩展优先（稳定排序保持组内注册顺序），替代原先按 id 硬编码的特判。
+    return promptHookOrderCache ??= [...handlers.keys()].sort((left, right) => Number(officialFlags.get(right) === true) - Number(officialFlags.get(left) === true));
+  }
+  return hookOrderCache ??= ["context-saver", "attention-optimizer", "content-lens", "pdf-to-image", ...handlers.keys()]
+    .filter((id, index, all) => all.indexOf(id) === index);
+}
+
 function register(id: string, hook: ExtensionHook, handler: Handler): void {
   const extension = handlers.get(id) ?? new Map<ExtensionHook, Handler[]>();
   extension.set(hook, [...(extension.get(hook) ?? []), handler]);
   handlers.set(id, extension);
+  invalidateHookOrderCache();
+}
+
+/** 丢弃某个扩展的全部注册（activate 中途抛错时回滚，避免半注册的钩子/工具继续生效）。 */
+function forget(id: string): void {
+  handlers.delete(id);
+  tools.delete(id);
+  routes.delete(id);
+  eventSubscriptions.delete(id);
+  invalidateHookOrderCache();
 }
 
 register("attention-optimizer", "context.beforeBuild", (payload, config) => optimizeAttention(payload as ContextHookPayload, config));
@@ -159,6 +190,18 @@ function callApi(extensionId: string, api: ExtensionApiMethod, params?: Record<s
   return promise;
 }
 
+/** 当前启用扩展实际注册了处理器的钩子集合：server 据此跳过空钩子 IPC（大上下文不再每轮序列化）。 */
+function activeHooks(): ExtensionHook[] {
+  const active: ExtensionHook[] = [];
+  for (const [id, byHook] of handlers) {
+    if (!states.get(id)?.enabled) continue;
+    for (const hook of byHook.keys()) {
+      if (!active.includes(hook)) active.push(hook);
+    }
+  }
+  return active;
+}
+
 function serializedTools(): Record<string, ExtensionToolSpec[]> {
   const result: Record<string, ExtensionToolSpec[]> = {};
   for (const [extensionId, registered] of tools) {
@@ -253,7 +296,7 @@ async function loadThirdParty(manifests: Array<ExtensionManifest & { directory?:
       await activate({
         manifest: Object.freeze({ ...manifest }),
         on(hook: ExtensionHook, handler: Handler): void {
-          if (!["context.beforeBuild", "tool.beforeExecute", "tool.afterExecute", "message.beforeSend", "prompt.beforeBuild"].includes(hook) || typeof handler !== "function") {
+          if (!EXTENSION_HOOKS.includes(hook) || typeof handler !== "function") {
             throw new Error(`Unsupported extension hook: ${hook}`);
           }
           const missing = HOOK_PERMISSIONS[hook].filter((permission) => !manifest.permissions.includes(permission));
@@ -362,6 +405,8 @@ async function loadThirdParty(manifests: Array<ExtensionManifest & { directory?:
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // 回滚 activate 期间已注册的部分（第三方代码可能先 on()/registerTool() 再抛错）。
+      forget(manifest.id);
       errors[manifest.id] = message;
       process.stderr.write(`[extension-host] ${manifest.id}: ${message}\n`);
     }
@@ -386,8 +431,7 @@ async function runHook(hook: ExtensionHook, original: unknown): Promise<unknown>
   // 顺序应用时后续 handler 看到已叠加前面结果的载荷。
   if (hook === "prompt.beforeBuild") {
     const result: PromptHookResult = {};
-    // 官方扩展优先（稳定排序保持组内注册顺序），替代原先按 id 硬编码的特判。
-    const ordered = [...handlers.keys()].sort((left, right) => Number(officialFlags.get(right) === true) - Number(officialFlags.get(left) === true));
+    const ordered = hookOrderFor(hook);
     for (const id of ordered) {
       const state = states.get(id);
       if (!state?.enabled) continue;
@@ -411,7 +455,7 @@ async function runHook(hook: ExtensionHook, original: unknown): Promise<unknown>
     return result;
   }
   let current = original;
-  const ordered = ["context-saver", "attention-optimizer", "content-lens", "pdf-to-image", ...handlers.keys()].filter((id, index, all) => all.indexOf(id) === index);
+  const ordered = hookOrderFor(hook);
   // context 变换钩子可能含模型调用（视觉工具逐图描述等），超时放宽到 120s；其余保持 5s
   const hookTimeout = hook === "context.beforeBuild" || hook === "message.beforeSend" ? 120_000 : 5000;
   for (const id of ordered) {
@@ -518,6 +562,8 @@ process.on("message", (message: HostRequest | EventMessage | ApiResponse) => {
     let result: unknown;
     if (request.method === "initialize" || request.method === "reload") {
       states.clear();
+      // officialFlags 在 initialize 中才建立，重算顺序缓存（第三方 activate 的 register 也会失效）。
+      invalidateHookOrderCache();
       const rawStates = (request.params?.states ?? {}) as Record<string, ExtensionState>;
       for (const manifest of OFFICIAL_EXTENSIONS) {
         officialFlags.set(manifest.id, true);
@@ -530,7 +576,7 @@ process.on("message", (message: HostRequest | EventMessage | ApiResponse) => {
       const errors = request.method === "initialize"
         ? await loadThirdParty((request.params?.manifests ?? []) as Array<ExtensionManifest & { directory?: string }>)
         : {};
-      result = { ready: true, errors, tools: serializedTools() };
+      result = { ready: true, errors, tools: serializedTools(), hooks: activeHooks() };
     } else if (request.method === "hook") {
       result = await runHook(request.params?.hook as ExtensionHook, request.params?.payload);
     } else if (request.method === "dsh.beforeTool") {

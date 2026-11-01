@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 新功能
+
+- **「环境模拟」升级为「Agent 预设」，默认启用**：系统提示词与工具集在四种预设之间切换，全部同级平铺展示，分类只作徽标。
+  - **经典模式**（默认，零侵入）：OWC 原有提示词框架与全量工具，不落盘、不覆盖任何内容。
+  - **精简模式**（`minimal`，OWC 原生，不是 DSH 拟态）：身份行 + 一句话基线 + 3 条工作纪律 + 2 条沟通 + 2 条安全边界 + 自定义指令 + cwd 尾注；工具走白名单——`bash` 必选，`read_file`/`edit_file` 与联网/媒体/`ask_user` 默认开，Git/代码分析/子代理与后台任务/工作流默认关，扩展与 MCP 工具默认不注入；`read_artifact` 随驱逐/截断占位自动注入（plan 模式与经典/拟态一致：计划批准卡支持批准、编辑后批准、拒绝附意见）；工作区约定文件只列路径、全局 memory 照常注入内容。
+  - **拟态**：原 env-sim 的 `claude-code`/`kimi-code`/`zcode`/`codex`/`dsh-minimal` 五档预设整体迁移，提示词、工具形态、`/init` 与 `/compact` 拟态、首轮工具、UA 模拟行为不变。
+  - **自定义**：复制内置后修改或从空白创建；工具名按服务端目录严格校验（未知名字直接 400）。
+  - 两层选择：设置 →「Agent 预设」页签设全局默认，会话顶栏下拉单独覆盖（含「经典模式（本会话）」强制回经典）；优先级为**会话级 `preset` > 全局 `preset` > 经典模式**。
+- **工具形态新增白名单与描述覆盖**：预设支持 `allowedBuiltIns`（硬上限，优先于 `hideBuiltIns`）、`toolDescriptions`（逐工具描述覆盖）与 `externalTools`（是否允许扩展/MCP 工具进入工具表）。
+- **精简模式工具编辑器**：设置页可按组开关工具、逐个勾选，`bash` 固定必选；扩展配置表单只保留「默认预设」下拉，编辑与预览集中在 Agent 预设页签。
+- **扩展拆分为 hostless**：`agent-presets`/`owc-eval`/`session-format-upgrade` 在 server 侧执行，启用它们不再拉起 Extension Host 子进程。
+- **兼容与迁移**：旧 `env-sim` 扩展配置键（`enabled`/`config.persona`）自动迁移为 `agent-presets`/`config.preset`；会话级 `SessionMeta.persona`、`extensionState["env-sim"].persona` 读取时回退，新写入统一落到 `SessionMeta.preset` 并清理旧字段；数据目录 `<数据目录>/env-sim/personas/` 迁移到 `<数据目录>/agent-presets/presets/`，旧路径保留 `env-sim/personas` 目录链接供外部脚本与分享文档继续使用。
+- **REST**：`GET/POST /api/extensions/agent-presets/presets`、`GET/DELETE /api/extensions/agent-presets/presets/:id`、`GET /api/extensions/agent-presets/tools`；`PUT /api/sessions/:id/config` 接受 `preset`（`classic` 强制经典，空串清除），会话详情返回 `activePreset`。
+
 ### 性能与资源
 
 - **冷启动更快（V8 编译缓存）**：入口首条 import 开启 `module.enableCompileCache()`，编译产物按源码哈希写到 `<数据目录>/cache/compile`（数据目录未知时用 `$XDG_CACHE_HOME/openwebcode` 或 `~/.cache/openwebcode`，Windows 用 `%LOCALAPPDATA%`；**不落 /tmp**，`OWC_COMPILE_CACHE=0` 关闭）。**缓存会及时清理**：启动时比对构建版本标记，版本变了整体清空（旧字节码按源码哈希寻址，跨版本永不命中）；运行期每小时按「14 天未用 / 32MB 上限」逐出最旧条目（实测一次版本切换释放 642 个文件 / 1.87MB）。**清理前做安全校验**：只处理 `cache/compile` 或 `openwebcode/compile-cache` 布局、自身不是符号链接、不是文件系统根/HOME 的目录；目录里没有 owc 写入的构建标记时首轮只写标记、**一个文件都不删**；删除前逐个 `lstat`，跳过符号链接并校验仍在目录内。实测同一数据目录热启动 335ms → 287ms（约 -14%，磁盘慢的机器/容器更明显），缓存约 3.2MB，首次冷启动多付约 25ms。
@@ -12,6 +26,7 @@
 - **会话列表不再逐会话读盘**：`checkRecoveryTail` 按 size+mtime+ctime 指纹缓存（上限 256 条，写路径经 `invalidateMessageIndex` 一并失效）。`GET /api/sessions` 在大会话目录下不再为每个会话 `open + 读最多 256KB 尾窗口`。
 - **web 首屏与升级流量**：React/React DOM 与 React Query 拆为独立 vendor chunk（`vendor-react` 193.8KB、`vendor-query` 35.9KB），入口 chunk 520.9KB → 277.5KB；发版后重复访问的框架代码继续命中长缓存，首屏总字节不变。构建目标提到 ES2022（不再为 ES2020 降级可选链/类字段）。
 - 说明：dsh 运行时 / eval / anthropic SDK 的懒加载经 `probe.mjs modcost` 实测边际仅约 5MB、且与 app 模块共享依赖没有启动时间差，本轮不做（结论记在此处，避免重复评估）。
+- **扩展宿主关掉最后一个扩展后立即回收**：延迟启动的对称面——此前禁用最后一个扩展后宿主仍常驻（实测约 100MB）；现在没有启用扩展（且未开 dsh 兼容模式）时关闭宿主，重新启用再按需拉起。顺带整理扩展子系统：manifest 校验、私有存储、会话导入、模型/服务商通道拆为独立模块；宿主钩子顺序改为注册时缓存，且没有启用处理器的空钩子不再每轮经 IPC 序列化完整上下文（大上下文收益更明显）；dsh 转换里重复的 JSON 收窄与时间戳工具收敛到一处。
 
 - **设置 → 服务信息新增「清理缓存」按钮**：手动删除 V8 编译缓存，删除前弹确认框说明「只影响启动速度、可安全重建」，完成后提示清理的文件数与释放空间；服务端执行同一套安全校验（目录布局、非符号链接、构建标记），校验不过返回 skipped、不删任何文件。
 

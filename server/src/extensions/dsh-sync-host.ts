@@ -32,6 +32,7 @@ import {
   type DshSyncConfig,
 } from "./dsh-sync-dsh.js";
 import { imageMediaType } from "./dsh-sync-image-size.js";
+import { isoOfMs } from "./json-utils.js";
 import {
   DSH_SYNC_MAP_PATH,
   emptySyncMap,
@@ -758,12 +759,6 @@ export interface DshSyncExportResult {
   applied: DshSyncExportAppliedItem[];
   skipped: DshSyncExportSkippedItem[];
   report: DshSyncExportReport;
-}
-
-/** 毫秒时间戳 → ISO（非法/缺失返回 undefined）。 */
-function isoOfMs(value: unknown): string | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  return new Date(value).toISOString();
 }
 
 /**

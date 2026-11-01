@@ -136,7 +136,7 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
           className="input"
           rows={2}
           value={faces.identityOverride}
-          placeholder={t("留空则使用默认身份行（env-sim 人格身份优先于此覆盖）", "Leave empty for the default identity line (an env-sim persona identity wins over this override)")}
+          placeholder={t("留空则使用默认身份行（Agent 预设的身份行优先于此覆盖）", "Leave empty for the default identity line (an Agent preset identity wins over this override)")}
           onChange={setFace("identityOverride")}
         />
       </label>
@@ -146,7 +146,7 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
           className="input"
           rows={6}
           value={faces.baseOverride}
-          placeholder={t("留空则使用内置基线", "Leave empty to use the built-in baseline")}
+          placeholder={t("留空则使用内置基线（Agent 预设的基线优先于此覆盖）", "Leave empty for the built-in baseline (an Agent preset baseline wins over this override)")}
           onChange={setFace("baseOverride")}
         />
       </label>
@@ -176,7 +176,7 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
           className="input"
           rows={4}
           value={faces.initOverride}
-          placeholder={t("留空则依次回退到 env-sim 人格提示词与内置 /init 探查提示词", "Leave empty to fall back to the env-sim persona prompt, then the built-in /init exploration prompt")}
+          placeholder={t("留空则依次回退到 Agent 预设的 /init 提示词与内置 /init 探查提示词", "Leave empty to fall back to the Agent preset /init prompt, then the built-in /init exploration prompt")}
           onChange={setFace("initOverride")}
         />
       </label>

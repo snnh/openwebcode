@@ -1,7 +1,7 @@
 /**
  * 设置对话框（Phase 3 重写）：零 props 外壳，开合/深链页签读 uiStore，
  * 偏好（主题/强调色/发送键/桌面通知/会话默认）经各 store hook 自取，
- * 十七个分区在 sections/ 内自取数。移动端钻取 + 未保存改动确认保留。
+ * 十六个分区在 sections/ 内自取数。移动端钻取 + 未保存改动确认保留。
  * 左侧应用导航轨（navRail）刻意裁剪：导航经活动栏/移动菜单触达。
  */
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
@@ -26,6 +26,7 @@ import { ContextSection } from "./sections/ContextSection";
 import { ModelCatalogSection } from "./sections/ModelCatalogSection";
 import { SkillsSection } from "./sections/SkillsSection";
 import { ExtensionsSection } from "./sections/ExtensionsSection";
+import { AgentPresetsSection } from "./sections/AgentPresetsSection";
 import { PricingSection } from "./sections/PricingSection";
 import { ServerSettingsFields } from "./sections/ServerSettingsFields";
 import { PromptSection } from "./sections/PromptSection";
@@ -75,6 +76,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
     en: "Capabilities",
     tabs: [
       { id: "skills", zh: "技能", en: "Skills", descriptionZh: "查看内置与工作区技能", descriptionEn: "Browse built-in and workspace skills", icon: "check" },
+      { id: "agentPresets", zh: "Agent 预设", en: "Agent presets", descriptionZh: "选择提示词与工具集预设（经典/精简/拟态/自定义）", descriptionEn: "Pick a prompt and tool-set preset (classic, minimal, mimicry, custom)", icon: "layers" },
       { id: "extensions", zh: "扩展", en: "Extensions", descriptionZh: "安装、启用与配置扩展", descriptionEn: "Install, enable, and configure extensions", icon: "plus" },
       { id: "remote", zh: "远程访问", en: "Remote access", descriptionZh: "检查网络暴露与访问安全", descriptionEn: "Review network exposure and access security", icon: "shield" },
     ],
@@ -376,6 +378,7 @@ export function SettingsDialog(): ReactElement | null {
               <ExtensionsSection />
             </section>
           )}
+          {activeTab === "agentPresets" && <AgentPresetsSection />}
           {activeTab === "pricing" && (
             <section>
               <h3>{t("模型定价", "Model pricing")}</h3>

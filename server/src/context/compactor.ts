@@ -254,7 +254,7 @@ export class Compactor {
 
     if (this.fastModel.configured) {
       const transcript = renderSpan(span);
-      // 提示词覆盖（prompt-overrides 面 / env-sim persona，由调用方按优先级组装）：
+      // 提示词覆盖（prompt-overrides 面 / Agent 预设，由调用方按优先级组装）：
       // 压缩行为仍由 Node 强制（保留尾部、指令累积、降级链），覆盖只改模型侧文本。
       const system = mode === "overview"
         ? (options.promptOverrides?.overview ?? COMPACT_OVERVIEW_SYSTEM)

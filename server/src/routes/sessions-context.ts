@@ -102,14 +102,19 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     if (nodeEnv !== undefined && !["global", "project", "fnm", "nvm"].includes(nodeEnv)) {
       return reply.code(400).send({ error: 'nodeEnv must be "global", "project", "fnm", or "nvm"' });
     }
-    // env-sim 人格预设（会话级覆盖）：空串清除；非空必须是已知预设 id（扩展宿主不可用时只做类型校验）
-    const persona = request.body && "persona" in request.body ? request.body.persona ?? undefined : session.persona;
-    if (persona !== undefined) {
-      if (typeof persona !== "string") return reply.code(400).send({ error: "persona must be a string" });
-      const trimmed = persona.trim();
-      if (trimmed && dependencies.extensions) {
-        const known = (await dependencies.extensions.listEnvSimPersonas()).personas;
-        if (!known.some((item) => item.id === trimmed)) return reply.code(400).send({ error: `unknown persona "${trimmed}"` });
+    // Agent 预设（会话级覆盖）：空串清除；非空必须是已知预设 id 或 classic
+    // 旧客户端仍可能发 persona：等价于 preset（旧字段仅在显式提供 preset 时被清理）
+    const preset = request.body && "preset" in request.body
+      ? request.body.preset ?? undefined
+      : request.body && "persona" in request.body
+        ? request.body.persona ?? undefined
+        : session.preset;
+    if (preset !== undefined) {
+      if (typeof preset !== "string") return reply.code(400).send({ error: "preset must be a string" });
+      const trimmed = preset.trim();
+      if (trimmed && trimmed !== "classic" && dependencies.extensions) {
+        const known = (await dependencies.extensions.listAgentPresets()).presets;
+        if (!known.some((item) => item.id === trimmed)) return reply.code(400).send({ error: `unknown preset "${trimmed}"` });
       }
     }
     // 并行子代理开关：布尔校验；显式 false 与未设置等价（关闭）
@@ -193,7 +198,7 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
       // WSB 的启动脚本/模式/网络只在虚拟机启动时生效，切换前先释放旧实例。
       await core.release?.(session.id);
     }
-    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(nodeEnv ? { nodeEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(sshCredentials === true ? { sshCredentials: true } : {}), ...(reviewModel ? { reviewModel } : {}), ...(toolsAllow?.length ? { toolsAllow } : {}), ...(toolsDeny?.length ? { toolsDeny } : {}), ...(fallbackModels?.length ? { fallbackModels } : {}) });
+    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(nodeEnv ? { nodeEnv } : {}), ...(preset !== undefined ? { preset: preset.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(sshCredentials === true ? { sshCredentials: true } : {}), ...(reviewModel ? { reviewModel } : {}), ...(toolsAllow?.length ? { toolsAllow } : {}), ...(toolsDeny?.length ? { toolsDeny } : {}), ...(fallbackModels?.length ? { fallbackModels } : {}) });
     // 运行中热切主模型：主循环每 turn 现读会话配置，但 fallback 覆盖会遮蔽新主模型，
     // 这里打标让下一轮先丢弃覆盖（见 AgentRunner.resetModelFallbackOverride）。
     // 仅模型/provider 变化触发；只改 thinking/effort 时保留在途的 fallback 覆盖。

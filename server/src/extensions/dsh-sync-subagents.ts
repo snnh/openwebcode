@@ -28,6 +28,7 @@ import { randomUUID } from "node:crypto";
 import type { ChatMessage, TextContent, ToolResultContent } from "../sessions/types.js";
 import { decodeDshSessionFile, type DshSessionEntry } from "./dsh-sync-dsh.js";
 import { convertDshSession, type DshConversionOptions, type DshSessionConversion } from "./dsh-sync-session.js";
+import { asRecord, isoOfMs } from "./json-utils.js";
 
 /** 父会话里触发子代理的工具名（dsh 侧的 subagent 调用在 owc 的约定名）。 */
 const SUBAGENT_TOOL_NAME = "subagent";
@@ -93,21 +94,9 @@ export interface DshSubagentTranscriptExport {
   startedAt?: string;
 }
 
-/** 未知 JSON 值取纯对象视图（数组/null/标量返回 undefined）。 */
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  return value as Record<string, unknown>;
-}
-
 /** 未知 JSON 值取字符串（其它类型返回 undefined）。 */
 function str(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-/** 毫秒时间戳 → ISO（非法/缺失返回 undefined）。 */
-function isoOfMs(value: unknown): string | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  return new Date(value).toISOString();
 }
 
 /** 文本截断（与 `sub-agent.ts` 的 `truncateConclusion` 同口径：截断时带 `…(truncated)` 后缀）。 */

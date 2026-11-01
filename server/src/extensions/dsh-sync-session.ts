@@ -38,6 +38,7 @@ import type {
   ToolCallContent,
   ToolResultContent,
 } from "../sessions/types.js";
+import { asRecord, isoOfMs } from "./json-utils.js";
 
 /** dsh 的 surface 事件类型集合（决定"可见历史"的四类事件；v3/v4 同词表）。 */
 const SURFACE_TYPES: readonly string[] = ["system/message", "user/message", "assistant/message", "tool/result"];
@@ -162,12 +163,6 @@ interface SurfaceItem {
   event: Record<string, unknown>;
 }
 
-/** 未知 JSON 值取纯对象视图（数组/null/标量返回 undefined）。 */
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  return value as Record<string, unknown>;
-}
-
 /** 未知 JSON 值取数组视图（非数组返回空数组，避免到处判空）。 */
 function asArray(value: unknown): readonly unknown[] {
   return Array.isArray(value) ? value : [];
@@ -183,15 +178,9 @@ function seqOf(event: Record<string, unknown>): number {
   return typeof event.seq === "number" && Number.isInteger(event.seq) ? event.seq : NO_SEQ;
 }
 
-/** 事件信封里的 time（毫秒）→ ISO；非法返回 undefined。 */
-function isoOfTime(value: unknown): string | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  return new Date(value).toISOString();
-}
-
 /** 取消息的 createdAt：事件 time 非法时回退会话 createdAt 并记账。 */
 function createdAtOf(event: Record<string, unknown>, acc: ConversionAccumulator): string {
-  const iso = isoOfTime(event.time);
+  const iso = isoOfMs(event.time);
   if (iso !== undefined) return iso;
   acc.badTimes += 1;
   return acc.fallbackCreatedAt;
@@ -911,7 +900,7 @@ export function convertDshSession(
   events: Array<Record<string, unknown>>,
   options?: DshConversionOptions,
 ): DshSessionConversion {
-  const createdAtOfSession = isoOfTime(header.createdAt) ?? isoOfTime(events[0]?.time);
+  const createdAtOfSession = isoOfMs(header.createdAt) ?? isoOfMs(events[0]?.time);
   const fallbackCreatedAt = createdAtOfSession ?? new Date(0).toISOString();
   const acc: ConversionAccumulator = {
     dropped: {},

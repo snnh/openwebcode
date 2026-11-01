@@ -5,13 +5,13 @@ import { writeUtf8Atomically } from "../../atomic-file.js";
 /**
  * 可编辑的系统提示词覆盖（plan 提示词修改功能），七个配置面：
  * - 身份行 identity：<dir>/system-prompt-identity.md（覆盖首行 "You are OpenWebCode..."；
- *   env-sim persona 身份优先于此覆盖）
+ *   Agent 预设 身份优先于此覆盖）
  * - 基线覆盖 base：<dir>/system-prompt.md（完整覆盖内置 PI_BASE_SYSTEM_PROMPT）
  * - 追加指令 append：<dir>/system-prompt-append.md（finalConstraints 之后插入）
  * - 子代理附加 subAgentAppend：<dir>/system-prompt-subagent.md（拼入所有子代理系统提示，
  *   追加在自定义子代理 body 之后）
  * - /init 命令 init：<dir>/command-init-prompt.md（覆盖 /init 展开的内置探查提示词；
- *   env-sim persona 的 initPrompt 次之、内置最后）
+ *   Agent 预设 的 initPrompt 次之、内置最后）
  * - compact 概览 compactOverview：<dir>/compact-prompt-overview.md（覆盖 overview 压缩系统提示词）
  * - compact 工具占位 compactToolcalls：<dir>/compact-prompt-toolcalls.md（覆盖 toolcalls 压缩系统提示词）
  *

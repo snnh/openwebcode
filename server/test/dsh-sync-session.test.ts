@@ -822,4 +822,17 @@ describe("readManifest 允许新权限（第三方扩展）", () => {
     const discovered = await (manager as unknown as { discoverThirdParty(): Promise<ExtensionManifest[]> }).discoverThirdParty();
     expect(discovered.map((manifest) => manifest.id)).toEqual(["third-party"]);
   });
+
+  it("自称 official 的第三方 manifest 被拒绝（不污染 builtIn/status）", async () => {
+    const root = await tempRoot("dsh-sync-manifest-official-");
+    const directory = path.join(root, "extensions", "owc-ext-fake");
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, "manifest.json"), JSON.stringify({
+      id: "fake", name: "假官方", version: "0.0.1", description: "claims official",
+      apiVersion: "1", permissions: [], official: true,
+    }), "utf8");
+    const manager = new ExtensionManager(root, undefined, {});
+    const discovered = await (manager as unknown as { discoverThirdParty(): Promise<ExtensionManifest[]> }).discoverThirdParty();
+    expect(discovered).toEqual([]);
+  });
 });

@@ -76,7 +76,7 @@ import { effectiveNodeEnv, NodeEnvManagers, wrapCommandWithNodeEnv } from "../no
 import { activePathMessages, INJECTION_MESSAGE_ID_PREFIX, isInjectionMessageId } from "../sessions/session-tree.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
-import { resolveSessionPersona } from "../sessions/extension-state.js";
+import { resolveSessionPreset } from "../sessions/extension-state.js";
 import { parseSkillCommand, type SkillRegistry } from "../skills.js";
 import type { AgentRegistry } from "../agents.js";
 import { renderCommand, type CommandRegistry } from "../commands.js";
@@ -1029,16 +1029,16 @@ export class AgentRunner {
         ...(Number.isSafeInteger(config.chunkSize) ? { chunkSize: config.chunkSize as number } : {}),
       });
     } else {
-      // 压缩提示词优先级：用户覆盖 > env-sim persona > 内置；用户覆盖与主提示词覆盖共用 promptOverrideCache
+      // 压缩提示词优先级：用户覆盖 > Agent 预设 > 内置；用户覆盖与主提示词覆盖共用 promptOverrideCache
       let override = this.promptOverrideCache.get(session.cwd);
       if (!override && this.dataDir) {
         override = await loadPromptOverride(this.dataDir, session.cwd);
         this.promptOverrideCache.set(session.cwd, override);
       }
-      const persona = this.extensions
-        ? await this.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session))
+      const preset = this.extensions
+        ? await this.extensions.activeAgentPresetDetail(resolveSessionPreset(session))
         : null;
-      const overviewPrompt = override?.compactOverviewOverride ?? persona?.compactOverviewPrompt;
+      const overviewPrompt = override?.compactOverviewOverride ?? preset?.compactOverviewPrompt;
       compacted = await this.compactor!.compact(sessionId, "overview", { forced: true, protectFromMessageId, ...(overviewPrompt ? { promptOverrides: { overview: overviewPrompt } } : {}) });
     }
     if (compacted.changed) {
@@ -1494,10 +1494,14 @@ export class AgentRunner {
         // 未隐藏处理，不阻断。
         let repoMapSection = "";
         if (session.repoMapEnabled === true) {
-          const repoMapToolHidden = this.extensions
-            ? (await this.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session)).catch(() => null))?.hideBuiltIns.includes("repo_map") ?? false
+          const repoMapPreset = this.extensions
+            ? await this.extensions.activeAgentPresetDetail(resolveSessionPreset(session)).catch(() => null)
+            : null;
+          const repoMapToolHidden = repoMapPreset?.hideBuiltIns.includes("repo_map") ?? false;
+          const repoMapToolExcluded = repoMapPreset?.allowedBuiltIns?.length
+            ? !repoMapPreset.allowedBuiltIns.includes("repo_map")
             : false;
-          if (!repoMapToolHidden) {
+          if (!repoMapToolHidden && !repoMapToolExcluded) {
             try {
               const map = await this.repoMap.generate({
                 sessionId,
@@ -1591,7 +1595,7 @@ export class AgentRunner {
         // 仅含已启用扩展；host 断线时注册表已清空，本轮自然不注入。
         const extensionTools = toolsEnabled && this.extensions ? this.extensions.registeredTools() : [];
 
-        // 工具形态（env-sim 等官方扩展）：隐藏内置工具 + 别名重命名。反向映射按轮重建——
+        // 工具形态（agent-presets 等官方扩展）：隐藏内置工具 + 别名重命名。反向映射按轮重建——
         // 形态由实时扩展配置驱动，不可跨 run 缓存；执行/权限/门禁经 resolveBuiltinToolName 归一。
         // 会话级 toolsAllow/toolsDeny 先作用于内置工具表（交互类始终保留；MCP/扩展工具不受影响）。
         const builtIns = filterBuiltInTools(builtInTools({
@@ -1611,8 +1615,12 @@ export class AgentRunner {
           },
         }), session.toolsAllow, session.toolsDeny);
         const shaping = toolsEnabled && this.extensions
-          ? await this.extensions.activeToolShaping(builtIns.map((tool) => tool.name), resolveSessionPersona(session))
+          ? await this.extensions.activeToolShaping(builtIns.map((tool) => tool.name), resolveSessionPreset(session))
           : undefined;
+        // 本轮生效预设只解析一次（首轮工具/项目上下文/plan 批准形态共用，避免重复读预设目录）
+        const activePreset = this.extensions
+          ? await this.extensions.activeAgentPresetDetail(resolveSessionPreset(session)).catch(() => null)
+          : null;
         // 工具拟态应用（hideBuiltIns 过滤 + 别名重命名/克隆，含同源多别名）抽到
         // tool-schemas.applyToolShaping：纯函数、可单测，主循环只消费结果。
         const shapingApplication = shaping
@@ -1626,16 +1634,13 @@ export class AgentRunner {
         // 仅首轮解析一次预设（读用户预设目录），后续轮次零成本。
         const isFirstTurn = visibleUserTurns <= 1;
         let firstTurnOnly: string[] | undefined;
-        if (isFirstTurn && this.extensions) {
-          const persona = await this.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session)).catch(() => null);
-          firstTurnOnly = persona?.firstTurnOnlyTools;
-        }
+        if (isFirstTurn) firstTurnOnly = activePreset?.firstTurnOnlyTools;
         if (firstTurnOnly && isFirstTurn) {
           // 旧用户预设 firstTurnOnlyTools 里的 spawn_task 归一为 subagent（兼容匹配）
           const allow = new Set(firstTurnOnly.map((name) => (isSubagentToolName(name) ? SUBAGENT_TOOL : name)));
           shapedBuiltIns = shapedBuiltIns.filter((tool) => allow.has(tool.name));
         }
-        // 首轮极简提示词：firstTurnOnlyTools 生效时（首轮形态），系统提示词只保留 persona
+        // 首轮精简提示词：firstTurnOnlyTools 生效时（首轮形态），系统提示词只保留预设
         // 基础提示词与工具表渲染——项目上下文、安全边界、技能段、自定义指令、尾注、后台
         // 通知等段落一律跳过，用户发出第二条消息后恢复完整形态。
         const minimalPromptTurn = isFirstTurn && firstTurnOnly !== undefined;
@@ -1667,8 +1672,8 @@ export class AgentRunner {
               ...shapedBuiltIns,
               // plan 模式专属批准出口：仅主 agent、仅 plan 模式下发（子代理工具集由 SUB_AGENT_TOOL_NAMES 过滤，不含此项）
               ...(session.agentMode === "plan" ? [EXIT_PLAN_MODE_TOOL] : []),
-              ...mcpBinding.tools,
-              ...extensionTools,
+              ...(shaping?.externalTools === false ? [] : mcpBinding.tools),
+              ...(shaping?.externalTools === false ? [] : extensionTools),
             ]
           : [];
         const availableToolNames = new Set(tools.map((tool) => tool.name));
@@ -1696,8 +1701,10 @@ export class AgentRunner {
           }).join("\n")}`
           : "";
 
-        // 长期记忆注入（§2.3/§7.5）：CLAUDE.md/AGENTS.md + 项目/全局 memory.md，每轮现读
-        const memorySection = await this.memorySections.build(session.cwd);
+        // 长期记忆注入（§2.3/§7.5）：CLAUDE.md/AGENTS.md + 项目/全局 memory.md，每轮现读。
+        // 预设 projectContext=paths 时全局 memory 注入内容、工作区文件只列路径。
+        const projectContextMode = activePreset?.projectContext ?? "content";
+        const memorySection = projectContextMode === "none" ? "" : await this.memorySections.build(session.cwd, projectContextMode);
 
         // 可编辑提示词覆盖：按 cwd 缓存一次（首次读取文件，后续复用）
         let promptOverride = this.promptOverrideCache.get(session.cwd);
@@ -1708,7 +1715,7 @@ export class AgentRunner {
 
         // 后台任务完成提示（读后即清）
         // 后台任务是工具能力的一部分；不支持工具的模型既不注入也不消费待发送通知。
-        // 首轮极简提示词（minimalPromptTurn）不消费也不注入后台通知：通知保留到下一轮，
+        // 首轮精简提示词（minimalPromptTurn）不消费也不注入后台通知：通知保留到下一轮，
         // 避免首轮形态泄漏后台信息。
         const bgNotices = toolsEnabled && !minimalPromptTurn ? (this.backgroundTasks?.drainNotices(sessionId) ?? []) : [];
         const bgNoticeSection = bgNotices.join("\n\n");
@@ -1723,7 +1730,7 @@ export class AgentRunner {
             : "",
         ];
 
-        // prompt.beforeBuild 钩子（env-sim 等）：不缓存——结果依赖实时扩展配置，
+        // prompt.beforeBuild 钩子（agent-presets 等）：不缓存——结果依赖实时扩展配置，
         // 逐轮叠加在文件覆盖之上。finalConstraints/安全边界由核心追加，钩子无法移除。
         let promptTransform: PromptHookResult = {};
         if (this.extensions) {
@@ -1735,10 +1742,10 @@ export class AgentRunner {
             productSections: baseProductSections,
             // 会话级扩展状态随载荷下发，扩展可在 prompt.beforeBuild 里读取自己的会话级配置
             ...(session.extensionState ? { extensionState: session.extensionState } : {}),
-          }, resolveSessionPersona(session));
+          }, resolveSessionPreset(session));
         }
         const effectiveBaseOverride = promptTransform.basePromptOverride ?? promptOverride?.baseOverride;
-        // 身份行优先级：env-sim persona 身份（transformPrompt）> identity 覆盖文件 > 默认行
+        // 身份行优先级：Agent 预设 身份（transformPrompt）> identity 覆盖文件 > 默认行
         const effectiveIdentity = promptTransform.identity ?? promptOverride?.identityOverride;
 
         const system = buildSystemPrompt({
@@ -1746,17 +1753,18 @@ export class AgentRunner {
           tools,
           ...(effectiveIdentity ? { identity: effectiveIdentity } : {}),
           productSections: [...(promptTransform.prependSections ?? []), ...(promptTransform.productSections ?? baseProductSections)],
-          // 首轮极简提示词：跳过安全边界段（finalConstraints），第二轮起恢复
+          // 首轮精简提示词：跳过安全边界段，第二轮起恢复；精简形态始终带核心安全边界（预设不可移除）
           finalConstraints: minimalPromptTurn ? [] : [SAFETY_BOUNDARY_SECTION],
-          // 首轮极简提示词：跳过技能/代理/角色段（skillsSection），第二轮起恢复
+          // 首轮精简提示词：跳过技能/代理/角色段（skillsSection），第二轮起恢复
           skillsSection: minimalPromptTurn ? "" : [skillSection, agentSection, roleSection].filter(Boolean).join("\n\n"),
-          // 首轮极简提示词：跳过项目上下文段（project_instructions），第二轮起恢复
-          projectContext: minimalPromptTurn ? [] : (memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : []),
+          // 首轮精简提示词：跳过项目上下文段；projectContext=none 同样跳过
+          projectContext: minimalPromptTurn || promptTransform.projectContext === "none" ? [] : (memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : []),
           ...(effectiveBaseOverride ? { basePromptOverride: effectiveBaseOverride } : {}),
-          // 首轮极简提示词：跳过用户自定义指令（customAppend），第二轮起恢复
+          // 首轮精简提示词：跳过用户自定义指令（customAppend），第二轮起恢复
           ...(promptOverride?.customAppend && !minimalPromptTurn ? { customAppend: promptOverride.customAppend } : {}),
-          // 首轮极简提示词：跳过尾注（Prompt version / Current working directory）
+          // 首轮精简提示词：跳过尾注
           ...(minimalPromptTurn ? { suppressTrailer: true } : {}),
+          ...(promptTransform.promptStyle === "minimal" ? { minimal: true } : {}),
         });
         await this.state(sessionId, "streaming", true);
         const providerCallStart = performance.now();
@@ -2060,7 +2068,7 @@ export class AgentRunner {
                   } else {
                     // PreToolUse 钩子：exit 2 否决 → 工具不执行，stderr 回填 LLM。
                     // tool 统一传内置名（与权限判定同名空间，matcher 按内置名配置）；
-                    // env-sim 别名激活时另附 toolAlias 供钩子需要时识别展示形态。
+                    // agent-presets 别名激活时另附 toolAlias 供钩子需要时识别展示形态。
                     const builtinName = this.toolAliases.resolveBuiltinToolName(sessionId, call.name);
                     const outcome = this.hooks
                       ? await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: builtinName, input: effectiveInput, ...(builtinName !== call.name ? { toolAlias: call.name } : {}) })
@@ -2923,7 +2931,7 @@ export class AgentRunner {
       ...(session.shellBackend ? { shellBackend: session.shellBackend } : {}),
       ...(session.pythonEnv ? { pythonEnv: session.pythonEnv } : {}),
       ...(session.nodeEnv ? { nodeEnv: session.nodeEnv } : {}),
-      ...(session.persona ? { persona: session.persona } : {}),
+      ...(session.preset ? { preset: session.preset } : {}),
       ...(session.swarmEnabled ? { swarmEnabled: true } : {}),
       ...(session.reviewModel ? { reviewModel: session.reviewModel } : {}),
       ...(session.toolsAllow ? { toolsAllow: session.toolsAllow } : {}),
@@ -3861,6 +3869,7 @@ export class AgentRunner {
         const runId = this.runs.get(sessionId)?.id ?? "";
         // 计划批准走 InteractionCoordinator 落盘（kind=plan_approval，prompt 即计划全文），
         // 语义同 ask_user：持久 pending，重启后可恢复；REST respond 恢复工具执行。
+        // 所有预设统一走专用批准卡（Markdown 预览 + 编辑后批准 + 拒绝附意见），不依赖 ask_user 在场。
         const interaction = await this.createInteraction(sessionId, {
           runId,
           toolCallId,

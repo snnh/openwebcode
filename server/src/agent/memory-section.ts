@@ -32,7 +32,9 @@ export class MemorySectionBuilder {
     }
   }
 
-  async build(cwd: string): Promise<string> {
+  async build(cwd: string, mode: "content" | "paths" | "none" = "content"): Promise<string> {
+    if (mode === "none") return "";
+    if (mode === "paths") return this.buildPathsOnly(cwd);
     const sections: string[] = [];
     const add = (title: string, body: string): void => {
       const trimmed = body.trim();
@@ -82,5 +84,30 @@ export class MemorySectionBuilder {
       this.memoryFileCache.delete(oldest);
     }
     return content;
+  }
+
+  /** 精简模式：全局 memory 注入内容，工作区约定文件只列相对路径（按需让模型自己读）。 */
+  private async buildPathsOnly(cwd: string): Promise<string> {
+    const candidates = ["CLAUDE.md", "AGENTS.md", path.join(".owc", "memory.md")];
+    const found: string[] = [];
+    for (const relative of candidates) {
+      try {
+        await stat(path.join(cwd, relative));
+        found.push(relative.split(path.sep).join("/"));
+      } catch {
+        // 不存在即跳过
+      }
+    }
+    const globalMemory = this.dataDir
+      ? await this.readMemoryFileCached(path.join(this.dataDir, "memory.md"))
+      : "";
+    const sections: string[] = [];
+    if (found.length > 0) sections.push(`## Workspace instruction files (read as needed)\n${found.map((file) => `- ${file}`).join("\n")}`);
+    if (globalMemory.trim()) {
+      const trimmed = globalMemory.trim();
+      const text = trimmed.length > MEMORY_SECTION_LIMIT ? `${trimmed.slice(0, MEMORY_SECTION_LIMIT)}…(truncated)` : trimmed;
+      sections.push(`## Global memory\n${text}`);
+    }
+    return sections.length === 0 ? "" : `\n\n${sections.join("\n\n")}`;
   }
 }

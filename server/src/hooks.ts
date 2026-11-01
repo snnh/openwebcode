@@ -19,7 +19,7 @@ export interface HookPayload {
   cwd: string;
   /** 工具事件携带工具名（内置名，与权限判定同名空间）；UserPromptSubmit/Stop/SessionStart/SessionEnd 无 tool（matcher 仅 "*" 命中） */
   tool?: string;
-  /** env-sim 等工具形态别名激活时的模型侧别名（如 execute_command）；与内置名一致或无别名时缺省 */
+  /** agent-presets 等工具形态别名激活时的模型侧别名（如 execute_command）；与内置名一致或无别名时缺省 */
   toolAlias?: string;
   input?: unknown;
   /** PostToolUse：结果摘要（截断） */

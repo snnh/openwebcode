@@ -404,7 +404,7 @@ interface ToolShapingApplication {
 }
 
 /**
- * 把工具拟态（env-sim persona / 扩展 toolShaping）应用到内置工具清单：先按 hideBuiltIns
+ * 把工具拟态（agent-presets 预设 / 扩展 toolShaping）应用到内置工具清单：先按 hideBuiltIns
  * 过滤，再按 aliases 重命名。同一 from 可注册多个别名（如 zcode 的 Agent/Task 同源于
  * subagent）：首个别名原位重命名保持工具顺序，其余从原始内置工具克隆后追加——
  * 一律原位替换会让后续别名找不到 from 而被静默丢弃。旧用户预设别名里的 spawn_task
@@ -413,7 +413,12 @@ interface ToolShapingApplication {
 export function applyToolShaping(builtIns: ProviderTool[], shaping: ActiveToolShaping): ToolShapingApplication {
   const aliasMap = new Map<string, string>();
   const aliasArgMaps = new Map<string, Record<string, string>>();
-  const tools = builtIns.filter((tool) => !shaping.hideBuiltIns.has(tool.name));
+  const tools = builtIns
+    .filter((tool) => !shaping.allowedBuiltIns || shaping.allowedBuiltIns.has(tool.name))
+    .filter((tool) => !shaping.hideBuiltIns.has(tool.name))
+    .map((tool) => shaping.toolDescriptions.has(tool.name)
+      ? { ...tool, description: shaping.toolDescriptions.get(tool.name)! }
+      : tool);
   const renamedFrom = new Set<string>();
   for (const [as, spec] of shaping.aliases) {
     const from = spec.from === SUBAGENT_LEGACY_NAME ? SUBAGENT_TOOL : spec.from;

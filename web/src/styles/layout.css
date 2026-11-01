@@ -748,7 +748,7 @@
   .job-header-info .job-info { flex: 0 1 auto; min-width: 0; overflow: hidden; gap: 8px; flex-wrap: nowrap; line-height: 1.2; }
   .job-header.compact .job-info .cost-summary,
   .job-header.compact .job-info .cache-usage,
-  .job-header.compact .job-info .persona-switch { display: none; }
+  .job-header.compact .job-info .preset-switch { display: none; }
   .job-header:not(.compact) .job-header-info { flex-wrap: wrap; row-gap: 4px; }
   .job-header:not(.compact) .job-header-info .job-info {
     flex: 1 0 100%;

@@ -37,7 +37,7 @@ export function normalizeBuiltinToolInput(name: string, input: Record<string, un
 /**
  * 工具形态别名解析器（拆分自 agent-runner.ts）：
  * 会话级别名（模型侧工具名 → 内置名）与参数名归一（模型侧参数名 → 内置参数名）。
- * 形态由实时扩展配置（env-sim 等）驱动，不可跨 run 缓存——每轮重建，run 结束清理。
+ * 形态由实时扩展配置（agent-presets 等）驱动，不可跨 run 缓存——每轮重建，run 结束清理。
  * 执行/权限/门禁统一按内置名归一。
  */
 export class ToolAliasResolver {
@@ -60,7 +60,7 @@ export class ToolAliasResolver {
   }
 
   /**
-   * 别名工具的参数名归一（env-sim 拟态外部产品参数形态）：模型侧参数名按 argMap
+   * 别名工具的参数名归一（agent-presets 拟态外部产品参数形态）：模型侧参数名按 argMap
    * 改回内置参数名，未列出的键原样透传。归一发生在权限/门禁/执行之前，
    * 下游链路只看到内置工具的标准参数。
    */

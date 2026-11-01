@@ -476,7 +476,7 @@ export class SessionStore {
     return message;
   }
 
-  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv" | "nodeEnv" | "persona" | "swarmEnabled" | "reviewModel" | "toolsAllow" | "toolsDeny" | "fallbackModels" | "sshCredentials">>): Promise<SessionMeta> {
+  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv" | "nodeEnv" | "preset" | "persona" | "swarmEnabled" | "reviewModel" | "toolsAllow" | "toolsDeny" | "fallbackModels" | "sshCredentials">>): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.provider = update.provider;
     meta.model = update.model;
@@ -494,8 +494,20 @@ export class SessionStore {
     else meta.pythonEnv = update.pythonEnv;
     if (update.nodeEnv === undefined || update.nodeEnv === "global") delete meta.nodeEnv;
     else meta.nodeEnv = update.nodeEnv;
+    if (update.preset === undefined || update.preset === "") delete meta.preset;
+    else meta.preset = update.preset;
+    // 新写入 preset 后清理旧通道，避免旧 persona/extensionState 继续覆盖。
+    if (update.preset !== undefined) {
+      delete meta.persona;
+      if (meta.extensionState) {
+        if (meta.extensionState["agent-presets"]) delete meta.extensionState["agent-presets"].preset;
+        if (meta.extensionState["env-sim"]) delete meta.extensionState["env-sim"].persona;
+        if (Object.keys(meta.extensionState["agent-presets"] ?? {}).length === 0) delete meta.extensionState["agent-presets"];
+        if (Object.keys(meta.extensionState["env-sim"] ?? {}).length === 0) delete meta.extensionState["env-sim"];
+      }
+    }
     if (update.persona === undefined || update.persona === "") delete meta.persona;
-    else meta.persona = update.persona;
+    else if (update.preset === undefined) meta.persona = update.persona;
     if (update.swarmEnabled !== true) delete meta.swarmEnabled;
     else meta.swarmEnabled = true;
     // reviewModel 不做清除语义：仅显式提供时更新
@@ -990,7 +1002,7 @@ export class SessionStore {
     if (!source) throw new Error("Session not found");
     if (path.resolve(cwd) === source.cwd) throw new Error("A cloned session requires a different workspace directory");
     const meta = await this.create({ cwd, provider: source.provider, model: source.model, title: title ?? `${source.title} (clone)`, ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.sandboxMode ? { sandboxMode: source.sandboxMode } : {}), ...(source.setupScript ? { setupScript: source.setupScript } : {}) });
-    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined || source.pythonEnv !== undefined || source.nodeEnv !== undefined || source.persona !== undefined || source.swarmEnabled !== undefined || source.reviewModel !== undefined || source.toolsAllow !== undefined || source.toolsDeny !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}), ...(source.pythonEnv ? { pythonEnv: source.pythonEnv } : {}), ...(source.nodeEnv ? { nodeEnv: source.nodeEnv } : {}), ...(source.persona ? { persona: source.persona } : {}), ...(source.swarmEnabled ? { swarmEnabled: true } : {}), ...(source.reviewModel ? { reviewModel: source.reviewModel } : {}), ...(source.toolsAllow?.length ? { toolsAllow: source.toolsAllow } : {}), ...(source.toolsDeny?.length ? { toolsDeny: source.toolsDeny } : {}) });
+    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined || source.pythonEnv !== undefined || source.nodeEnv !== undefined || source.preset !== undefined || source.persona !== undefined || source.swarmEnabled !== undefined || source.reviewModel !== undefined || source.toolsAllow !== undefined || source.toolsDeny !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}), ...(source.pythonEnv ? { pythonEnv: source.pythonEnv } : {}), ...(source.nodeEnv ? { nodeEnv: source.nodeEnv } : {}), ...(source.preset ? { preset: source.preset } : source.persona ? { preset: source.persona } : {}), ...(source.swarmEnabled ? { swarmEnabled: true } : {}), ...(source.reviewModel ? { reviewModel: source.reviewModel } : {}), ...(source.toolsAllow?.length ? { toolsAllow: source.toolsAllow } : {}), ...(source.toolsDeny?.length ? { toolsDeny: source.toolsDeny } : {}) });
     for (const message of source.messages) await this.appendMessage(meta.id, message.role, message.content, { ...(message.runId ? { runId: message.runId } : {}), ...(message.turnId ? { turnId: message.turnId } : {}) });
     return (await this.get(meta.id))!;
   }

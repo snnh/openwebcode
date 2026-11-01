@@ -77,7 +77,9 @@ export interface SessionConfigBody {
   shellBackend?: ShellBackend;
   pythonEnv?: PythonEnv;
   nodeEnv?: NodeEnv;
-  /** env-sim 人格预设 id（会话级覆盖）；空串清除。 */
+  /** Agent 预设 id（会话级覆盖）；空串清除；`classic` 强制经典。 */
+  preset?: string;
+  /** 旧字段（env-sim 人格预设）；仅兼容读取。 */
   persona?: string;
   /** 会话级扩展状态补丁：key=扩展 id（必须已安装），value 为 JSON 对象（整体替换）或 null（清除）。 */
   extensionState?: Record<string, Record<string, unknown> | null>;

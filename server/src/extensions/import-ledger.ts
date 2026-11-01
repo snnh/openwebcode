@@ -14,6 +14,8 @@
  * 调用方不落账本（账本懒建为空的最小账本，比写一份垃圾账本安全）。单条畸形条目只丢该条。
  */
 
+import { asRecord } from "./json-utils.js";
+
 /** `compacted.summary` 的字符上限（超出截断并在末尾标注）。 */
 export const IMPORT_SUMMARY_MAX_LENGTH = 100_000;
 
@@ -25,12 +27,6 @@ export const IMPORT_ENTRIES_LIMIT = 2000;
 
 /** 截断标注后缀（与子代理转录截断同款措辞）。 */
 const TRUNCATED_SUFFIX = "…(truncated)";
-
-/** 未知 JSON 值取纯对象视图（数组/null/标量返回 undefined）。 */
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  return value as Record<string, unknown>;
-}
 
 /** 非空字符串判定。 */
 function isNonEmptyString(value: unknown): value is string {

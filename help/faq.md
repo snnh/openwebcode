@@ -13,7 +13,7 @@
 4. **上下文与快照（9）：**
 [上下文满了怎么办？](#q-上下文满了怎么办) | [驱逐掉的内容还能找回来吗？](#q-驱逐掉的内容还能找回来吗) | [`/clear` 会丢历史吗？](#q-clear-会丢历史吗) | [快速模型是什么？必须配置吗？](#q-快速模型是什么必须配置吗) | [怎么调整上下文驱逐与压缩？](#q-怎么调整上下文驱逐与压缩) | [检查点什么时候自动打？](#q-检查点什么时候自动打) | [回滚会丢会话历史吗？](#q-回滚会丢会话历史吗) | [快照回退后可以马上继续对话吗？](#q-快照回退后可以马上继续对话吗) | [托管工作区是什么？什么时候用？](#q-托管工作区是什么什么时候用)
 5. **子代理与扩展（6）：**
-[十个官方扩展分别做什么？](#q-十个官方扩展分别做什么) | [子代理能写文件吗？](#q-子代理能写文件吗) | [怎么手动启动一个子代理？explore 和 general 选哪个？](#q-怎么手动启动一个子代理explore-和-general-选哪个) | [环境模拟（env-sim）预设怎么用？能自制吗？](#q-环境模拟env-sim预设怎么用能自制吗) | [Hooks 安全吗？](#q-hooks-安全吗) | [MCP 工具能写文件吗？](#q-mcp-工具能写文件吗)
+[十个官方扩展分别做什么？](#q-十个官方扩展分别做什么) | [子代理能写文件吗？](#q-子代理能写文件吗) | [怎么手动启动一个子代理？explore 和 general 选哪个？](#q-怎么手动启动一个子代理explore-和-general-选哪个) | [Agent 预设怎么用？经典、精简和拟态有什么区别？](#q-agent-预设怎么用经典精简和拟态有什么区别) | [Hooks 安全吗？](#q-hooks-安全吗) | [MCP 工具能写文件吗？](#q-mcp-工具能写文件吗)
 6. **CLI 与脚本集成（4）：**
 [`owc run` 怎么在 CI 里用？](#q-owc-run-怎么在-ci-里用) | [`owc run` 会创建新会话吗？](#q-owc-run-会创建新会话吗) | [怎么限制 agent 能用的工具？](#q-怎么限制-agent-能用的工具) | [Windows 下 `owc run` 报找不到命令？](#q-windows-下-owc-run-报找不到命令)
 7. **故障排查（14）：**
@@ -246,7 +246,7 @@ Windows 选 WSB 沙盒：一会话一 VM，关闭即销毁，仅工作目录留�
 - `pdf-to-image`（默认开）：PDF 先存到工作区 `.owc/uploads/`，再把最多 4 页转成图片附件
 - `owc-eval`（默认关）：内置回归评测面板，固定 mock 任务在隔离工作区回放，不用你的模型 Key
 - `session-format-upgrade`（默认关）：手动把旧会话格式升到当前版本——补上 Responses 的 thinking signature、tool_call 的 itemId 等，顺手清掉孤儿工具调用。触发即锁 409，升级前自动备份可回滚
-- `env-sim`（默认关）：提示词与工具命名切换为其他产品风格，底层实现与权限链不变
+- `agent-presets`（默认开）：在经典、精简、五档拟态与自定义预设之间切换提示词与工具集，底层实现与权限链不变
 - `compact-vault`（默认关）：`/compact` 切换为档案库式压缩——完整上下文归档到会话 `compact/` 目录，上下文只留索引，主模型按 key 经 `recall_memory` 召回细节
 - `vision-tools`（默认关）：主模型不支持视觉时，图片交给视觉模型生成描述注入上下文（describe），或以占位符 + `describe_image` 工具按需提问（toolCall）
 - `dsh-sync`（默认关）：与 dsh（DeepSeek Harness）数据目录**双向手动**同步模型配置与会话——先预览差异、再逐项勾选；导出**不写明文 Key**（只生成 `OWC_SYNC_*_API_KEY` 引用）、只在 dsh 侧新建会话目录不覆盖；会话压缩同步需要 Node ≥22.15。详见 [dsh-sync.md](./dsh-sync.md)
@@ -261,9 +261,11 @@ Windows 选 WSB 沙盒：一会话一 VM，关闭即销毁，仅工作目录留�
 
 底部「子代理」面板顶部手动启动：填任务描述、选类型。查代码、找引用、总结结构选 `explore`（只读）；要改文件、跑 bash 选 `general`（ask 模式下照样弹权限卡）。中断主 agent 会同时取消手动启动的子代理。
 
-### Q: 环境模拟（env-sim）预设怎么用？能自制吗？
+### Q: Agent 预设怎么用？经典、精简和拟态有什么区别？
 
-设置 → 扩展启用 `env-sim`，在其配置里选预设（内置 `claude-code`/`kimi-code`/`zcode`/`codex`/`dsh-minimal` 五档）。`dsh-minimal` 复刻 DeepSeek Harness 极简模式：首轮只注入 `bash`/`str_replace_editor` 双工具、系统提示词也是极简形态，第二轮起保留 web 搜索与子代理等少数工具。自制：把预设 JSON（必填 `id`/`name`/`identity`/`basePrompt`，可选 `productSections`/`hideBuiltIns`/`aliases`/`firstTurnOnlyTools`）放进 `<数据目录>/env-sim/personas/`，一个文件一个预设，即出现在下拉里。详见 [usage.md 的官方扩展一节](./usage.md#extension-host-与官方扩展)。
+设置 →「Agent 预设」页签里全部预设平铺同级：**经典模式**零侵入（原有提示词 + 全量工具，默认）；**精简模式**是 OWC 原生精简——短提示词 + 工具白名单（`bash` 必选，读写与联网/媒体/`ask_user` 默认开，Git/分析/子代理/工作流默认关，扩展与 MCP 工具不进工具表）；**拟态**是内置的 `claude-code`/`kimi-code`/`zcode`/`codex`/`dsh-minimal` 五档，把提示词与工具命名切换成对应产品风格；**自定义**由你复制或新建。默认预设对新会话生效，单个会话可在顶栏下拉单独覆盖（含「经典模式（本会话）」强制回经典），优先级为会话级 > 全局 > 经典。
+
+自制：把预设 JSON（必填 `id`/`name`/`identity`/`basePrompt`，可选 `allowedBuiltIns`/`hideBuiltIns`/`aliases`/`productSections`/`toolDescriptions`/`firstTurnOnlyTools`）放进 `<数据目录>/agent-presets/presets/`，一个文件一个预设；旧 `env-sim/personas/` 会自动迁移并保留目录链接。`id` 与内置相同时即覆盖该内置，删除覆盖文件即还原。详见 [usage.md 的官方扩展一节](./usage.md#extension-host-与官方扩展)。
 
 ### Q: Hooks 安全吗？
 

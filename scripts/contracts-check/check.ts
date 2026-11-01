@@ -5,24 +5,24 @@
  * 由 `tsc --noEmit` 承担实际校验。
  *
  * 方向约定：
- * - 输出（server → web，如 PersonaDetail）：`ServerType extends WebType`
- * - 输入（web → server，如 PersonaPresetInput）：`WebType extends ServerType`
+ * - 输出（server → web，如 PresetDetail）：`ServerType extends WebType`
+ * - 输入（web → server，如 PresetInput）：`WebType extends ServerType`
  * 方向写反会把「web 过窄」误判为通过。
  */
-import type { PersonaAlias as ServerPersonaAlias, PersonaDetail as ServerPersonaDetail, PersonaPreset as ServerPersonaPreset } from "../../server/src/extensions/env-sim/types.js";
+import type { PresetAlias as ServerPresetAlias, PresetDetail as ServerPresetDetail, AgentPreset as ServerAgentPreset } from "../../server/src/extensions/agent-presets/types.js";
 import type { ExtensionPermission as ServerExtensionPermission } from "../../server/src/extensions/types.js";
-import type { PersonaAlias, PersonaDetail, PersonaPresetInput } from "../../web/src/lib/contracts/session";
+import type { PresetAlias, PresetDetail, PresetInput } from "../../web/src/lib/contracts/session";
 import type { ExtensionPermission } from "../../web/src/lib/contracts/extension";
 
 type Expect<T extends true> = T;
 
-// ── env-sim：输出方向（server 详情可展示为 web 详情） ──
-type _personaDetail = Expect<ServerPersonaDetail extends PersonaDetail ? true : false>;
-// ── env-sim：输入方向（web 提交体字段集 ⊂ 服务端模型字段，类型兼容；端点接受松散 body，运行时宽松解析） ──
-type _personaInput = Expect<PersonaPresetInput extends Partial<ServerPersonaPreset> ? true : false>;
-// ── env-sim：别名双向一致（web 表单透传 aliases，json 文本框直接使用） ──
-type _alias_out = Expect<ServerPersonaAlias extends PersonaAlias ? true : false>;
-type _alias_in = Expect<PersonaAlias extends ServerPersonaAlias ? true : false>;
+// ── agent-presets：输出方向（server 详情可展示为 web 详情） ──
+type _presetDetail = Expect<ServerPresetDetail extends PresetDetail ? true : false>;
+// ── agent-presets：输入方向（web 提交体字段集 ⊂ 服务端模型字段，类型兼容；端点接受松散 body，运行时宽松解析） ──
+type _presetInput = Expect<PresetInput extends Partial<ServerAgentPreset> ? true : false>;
+// ── agent-presets：别名双向一致（web 表单透传 aliases，json 文本框直接使用） ──
+type _alias_out = Expect<ServerPresetAlias extends PresetAlias ? true : false>;
+type _alias_in = Expect<PresetAlias extends ServerPresetAlias ? true : false>;
 
 // ── extension：输出方向（server 权限联合是 web 联合的子集） ──
 type _permission = Expect<ServerExtensionPermission extends ExtensionPermission ? true : false>;

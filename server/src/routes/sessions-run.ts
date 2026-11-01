@@ -8,7 +8,7 @@ import { CoreRpcError } from "../core-client.js";
 import { activePathMessages } from "../sessions/session-tree.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
-import { resolveSessionPersona } from "../sessions/extension-state.js";
+import { resolveSessionPreset } from "../sessions/extension-state.js";
 import { loadPromptOverride } from "../agent/prompts/prompt-overrides.js";
 import { isSessionUpgrading } from "../extensions/session-format-upgrade.js";
 import { MAX_IMAGE_BASE64_CHARS } from "../media-limits.js";
@@ -63,13 +63,13 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
       }
       return vaultResult;
     }
-    // 压缩提示词优先级：用户覆盖（prompt-overrides 面）> env-sim persona > 内置（内置回退在 Compactor 内）
+    // 压缩提示词优先级：用户覆盖（prompt-overrides 面）> Agent 预设 > 内置（内置回退在 Compactor 内）
     let promptOverrides: { overview?: string; toolcalls?: string } | undefined;
     const session = await sessions.get(sessionId);
     if (session) {
       const override = dependencies.dataDir ? await loadPromptOverride(dependencies.dataDir, session.cwd) : undefined;
       const persona = dependencies.extensions
-        ? await dependencies.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session))
+        ? await dependencies.extensions.activeAgentPresetDetail(resolveSessionPreset(session))
         : null;
       const overview = override?.compactOverviewOverride ?? persona?.compactOverviewPrompt;
       const toolcalls = override?.compactToolcallsOverride ?? persona?.compactToolcallsPrompt;
@@ -243,12 +243,12 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
           return reply.code(400).send({ error: errorMessage(error) });
         }
       }
-      // /init：展开为探查提示词（用户覆盖 > env-sim persona > 内置）后继续走正常 agent.run() 路径（写 AGENTS.md 经权限链与快照）
+      // /init：展开为探查提示词（用户覆盖 > Agent 预设 > 内置）后继续走正常 agent.run() 路径（写 AGENTS.md 经权限链与快照）
       if (/^\/init\s*$/i.test(request.body.content)) {
         if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "会话运行中，请先等待完成或中断后再初始化" });
         const override = dependencies.dataDir ? await loadPromptOverride(dependencies.dataDir, session.cwd) : undefined;
         const persona = dependencies.extensions
-          ? await dependencies.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session))
+          ? await dependencies.extensions.activeAgentPresetDetail(resolveSessionPreset(session))
           : null;
         request.body.content = override?.initOverride ?? persona?.initPrompt ?? INIT_COMMAND_PROMPT;
       }

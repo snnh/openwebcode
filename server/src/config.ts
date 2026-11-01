@@ -45,7 +45,7 @@ export interface ServerConfig {
   /** spawn_swarm 并发成员数（设置 spawnSwarmConcurrency / OWC_SPAWN_SWARM_CONCURRENCY，热生效）：2–16，默认 4。 */
   spawnSwarmConcurrency: number;
   /** 出站 User-Agent 自定义（设置 userAgent / OWC_USER_AGENT，热生效）：缺省官方 owc/openwebcode{version}；
-   *  env-sim 模拟优先于它；更新检查/更新应用链路恒走官方 UA。 */
+   *  agent-presets 模拟优先于它；更新检查/更新应用链路恒走官方 UA。 */
   userAgent?: string;
   /** SSE/流 idle 超时覆盖（设置 providerStreamIdleMs / OWC_PROVIDER_STREAM_IDLE_MS）：0 = 关闭 idle 超时；
    *  缺省由 provider 内置默认决定；provider 注册时读取（重启或 profile 变更生效）。 */

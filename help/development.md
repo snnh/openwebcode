@@ -37,7 +37,7 @@ openwebcode/
 │   ├── src/
 │   │   ├── app/             # 装配层：App 薄根组件、store（ui/session/live/prefs/chat-mode）、ws 事件客户端与路由、queries、commands（命令注册表/快捷键/覆盖审计）
 │   │   ├── chat/ composer/  # 会话区（MessageList/scroll-controller/stream-buffer/卡片）与输入区
-│   │   ├── workbench/ panels/ dialogs/ settings/  # 五区外壳、底部七面板、弹层、设置对话框与十八分区
+│   │   ├── workbench/ panels/ dialogs/ settings/  # 五区外壳、底部七面板、弹层、设置对话框与十六个分区
 │   │   ├── components/      # 设计基元（Icon/Overlay/ConfirmDialog 等）与保留件（Markdown/Monaco 编辑器）
 │   │   ├── lib/             # api.ts REST 客户端、contracts/ 按域拆分的类型契约（barrel 在 contracts.ts）
 │   │   ├── i18n.tsx         # 中英双语
@@ -148,6 +148,16 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 6. web 端要专门渲染的话改 `chat/MessageCard.tsx` 的 `ContentBlock`。
 7. 测试用 stub provider 回放工具调用 + 真实 `executeTool`，断言 tool_result。
 
+### 加一个 Agent 预设
+
+1. 内置预设写 `server/src/extensions/agent-presets/builtin-presets.ts`（`BUILTIN_PRESETS`）：拟态用 `identity`/`basePrompt`/`productSections` + `hideBuiltIns`/`aliases`（可带 `inputSchema`/`argMap`）；精简形态用 `promptStyle: "minimal"` + `allowedBuiltIns` 白名单。
+2. 新增工具要同步 `agent-presets/tool-catalog.ts`（`PRESET_TOOLS` / `PRESET_TOOL_GROUPS`）：保存预设时按这张表严格校验工具名，未知名字直接 400；`advancedOnly` 的工具不在精简模式编辑器里出现。
+3. 提示词形态：`transformPrompt` 把 `promptStyle`/`projectContext` 透给 `agent/prompts/prompt-builder.ts`（`minimal: true` 走精简段）；项目上下文 `paths` 由 `agent/memory-section.ts` 的 `build()` 分支处理。
+4. 工具形态：`activeToolShaping` 汇总 `allowedBuiltIns`（硬上限）/`hideBuiltIns`/`toolDescriptions`/`aliases`/`externalTools`，`agent/tool-schemas.ts` 的 `applyToolShaping` 负责落地；`externalTools: false` 时 MCP 与扩展工具都不注入。
+5. 预设数据：内置随代码分发，用户预设是 `<dataDir>/agent-presets/presets/<id>.json`（`preset-store.ts` 宽松解析、原子写、0600）；同 id 即字段级覆盖内置。旧 `env-sim` 目录由 `migration.ts` 一次性迁移并留兼容目录链接。
+6. `agent-presets` 是 server 侧 hostless 扩展：启用它不会拉起 Extension Host（见 `ExtensionManager.HOSTLESS_EXTENSIONS`）。
+7. 测试参考 `server/test/agent-presets.test.ts`（迁移/兼容链接、白名单裁剪、精简提示词、REST 校验与会话级覆盖）。
+
 ### 加一个 LLM provider
 
 1. `server/src/providers/` 下实现 `Provider` 接口（`name` + `streamChat(req): AsyncIterable<ProviderEvent>`），参照 `anthropic-provider.ts` / `openai-compatible-provider.ts` / `openai-responses-provider.ts`。事件类型见 `providers/provider.ts`：`text_delta` / `thinking_delta` / `tool_call` / `usage` / `done` 等。
@@ -170,7 +180,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 ### 改上下文策略
 
 - 驱逐：服务端实现在 `extensions/context-saver/`（context-saver 官方扩展）——evict 决策（按账本 policy：lag/interval/off + evictionMode + 豁免下限算可驱逐集）、条目操作（逐出/恢复/pin）与策略校验都在这里，全部经 ContextManager 的 `transactLedger` 事务入口操作账本；扩展停用时 agent 循环不自动驱逐、相关 REST 端点返回 409。核心 `context/context-manager.ts` 保留账本存储、buildView 视图组装、预算上限与压缩；驱逐占位/摘录的渲染（buildFragment/applyProcessEviction）留在核心——buildView 需要渲染既有 evicted 条目。纯账本运算与常量（驱逐占位/摘要/glob 排除/usage 累加等）在 `context-ledger-ops.ts`。视图渲染在 `buildView` 返回前应用，不改缓存主本。
-- repo map：`context/repo-map.ts` 生成，agent-runner 装配注入。默认不注入——会话显式开启（`repoMapEnabled`，`PUT /api/sessions/:id/context/repo-map`，budget 64–100000、默认 2048）才把仓库结构段拼进 systemSuffix；env-sim 预设 `hideBuiltIns` 隐藏 `repo_map` 工具时内容段也不注入；token 归因到 system（系统提示词）桶。会话关闭时不注入也不扫描。
+- repo map：`context/repo-map.ts` 生成，agent-runner 装配注入。默认不注入——会话显式开启（`repoMapEnabled`，`PUT /api/sessions/:id/context/repo-map`，budget 64–100000、默认 2048）才把仓库结构段拼进 systemSuffix；Agent 预设把 `repo_map` 排除在白名单外（或 `hideBuiltIns` 隐藏）时内容段也不注入；token 归因到 system（系统提示词）桶。会话关闭时不注入也不扫描。
 - 压缩：`fast-model.ts` + `context/compactor.ts` 两种策略；压缩输出经 `validateCompactionOutput` 格式校验防复述原文（不合格带原因纠偏重试一次），快速模型彻底失败时强制压缩降级 `ruleBasedToolcalls`（truncated）照常完成；压缩 maxTokens 走设置 `compactMaxTokens`（默认 65536，热生效，env `OWC_COMPACT_MAX_TOKENS`）；快速模型空返回兜底链（max_tokens 翻倍重试 → thinking 通道回退）集中在 `fast-model.ts`，所有调用方共享。`extensions/compact-vault.ts` 是 compact-vault 官方扩展的 server 侧服务（归档完整上下文 + 快速模型整理 + 目录索引，host 侧 `extensions/compact-vault-host.ts` 提供 recall_memory 工具与索引回注）。
 - 新增条目状态要动一串地方：`ContextLedger` 接口、`normalizeLedger` 兼容、`buildView` 渲染、`replaceLedger` 回滚。
 - 前端始终拿全量历史，驱逐只影响发给 LLM 的视图——改策略不会破坏 UI。
@@ -186,6 +196,8 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 ### 写扩展
 
 v1 扩展跑在独立的 Extension Host 子进程，经 IPC 拿到注入的 `ctx`，manifest 声明权限、能力调用逐项校验。能注册 agent 工具、读会话和上下文（含只读会话 `compact/` 归档的 `context.readVaultFile`）、订阅事件、私有存储、私有 HTTP 路由、快速模型通道、提示词钩子、工具塑形等。权限与能力的完整对照表看 `server/src/extensions/types.ts`，可运行的完整示例在 `examples/extensions/demo/`。扩展是可信代码（安全级别 ≈ yolo），只装自己信得过的。
+
+实现按职责拆分：`extension-manager.ts`（生命周期、权限门禁、IPC 与宿主按需启停）、`manifest.ts`（manifest/权限/路由校验）、`extension-storage.ts`（私有存储与配额）、`extension-model-api.ts` / `extension-provider-api.ts` / `extension-session-import.ts`（能力分发）、`session-projection.ts`（会话字段白名单）、`extension-host-process.ts`（宿主进程与钩子执行）。权限全集以 `types.ts` 的 `EXTENSION_PERMISSIONS` 为唯一来源。
 
 manifest 可选声明 `configSchema`（JSON Schema 子集）：设置页据此把扩展配置渲染成类型化表单而不是原始 JSON 编辑，保存时 server 做松散校验（类型/枚举/未知键，只查顶层一层，`server/src/extensions/config-schema.ts`）。表单支持的属性形态（`web/src/settings/sections/ExtensionConfigForm.tsx` 的 `parseConfigSchema`）：`string`（可带 `enum` 渲染下拉）、`number`/`integer`（可带 `minimum`/`maximum`）、`boolean`、一层 `object` 嵌套组（带 `properties`）、字符串字典（`additionalProperties: { "type": "string" }`，按「键=值」行编辑）。每个属性应给 `title` 和 `description`，表单会展示为字段名与说明文字；未覆盖的既有配置键在保存时原样保留。官方扩展的英文字段文案映射在 `ExtensionsSection.tsx` 的 `OFFICIAL_FIELD_EN`。
 

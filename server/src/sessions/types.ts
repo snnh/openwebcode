@@ -196,7 +196,9 @@ export interface SessionMeta {
   pythonEnv?: PythonEnv;
   /** Node 运行环境；undefined = 跟随全局默认（settings 的 nodeEnv，缺省本机环境）。 */
   nodeEnv?: NodeEnv;
-  /** env-sim 人格预设 id（会话级覆盖）；undefined = 跟随扩展全局 config.persona。 */
+  /** Agent 预设 id（会话级覆盖）；undefined = 跟随扩展全局 config.preset；`classic` = 强制经典。 */
+  preset?: string;
+  /** 旧字段（env-sim 人格预设）；仅读取兼容，不再新写入。 */
   persona?: string;
   /** 会话级扩展状态（key=扩展 id，value 为该扩展自定义的 JSON 对象）；通用化替代官方扩展私货字段。 */
   extensionState?: Record<string, Record<string, unknown>>;

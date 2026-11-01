@@ -407,9 +407,9 @@ const FIELDS: FieldSpec[] = [
   { key: "dshPort", group: "general", label: "dsh 兼容模式端口", type: "number", env: "OWC_DSH_PORT", defaultValue: 3211, restartRequired: false, fromEnv: envNumber, validate: requireDshPort, description: "dsh 兼容模式独立监听端口（1024–65535，默认 3211）；与主端口分离，避免 /api 与 /plugins 前缀冲突" },
   { key: "dshUiPath", group: "general", label: "自选 dsh UI 目录", type: "text", env: "OWC_DSH_UI_PATH", defaultValue: null, restartRequired: false, description: "留空 = 使用内置 vendor（scripts/fetch-dsh-web.mjs 产出的 server/assets/dsh-web）；填目录则用该目录下的 manifest.json + static/ + plugins/。自选 UI 不受本项目维护承诺，仅按协议面尽力兼容" },
   { key: "chatModeEnabled", group: "general", label: "启用 Chat 模式", type: "boolean", env: "OWC_CHAT_MODE_ENABLED", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "默认关闭；开启后界面显示 Chat / Workbench 模式切换，可使用 ChatGPT 风格对话模式" },
-  // 出站 User-Agent（热生效）：留空使用官方默认 owc/openwebcode{version}；env-sim 扩展的拟态 UA 优先于自定义值；
+  // 出站 User-Agent（热生效）：留空使用官方默认 owc/openwebcode{version}；agent-presets 扩展的拟态 UA 优先于自定义值；
   // 更新检查/更新应用链路恒走官方 UA，不受此项影响
-  { key: "userAgent", group: "general", label: "出站 User-Agent", type: "text", env: "OWC_USER_AGENT", defaultValue: null, restartRequired: false, validate: requireUserAgent, description: "自定义所有出站 HTTP 请求的 User-Agent（联网搜索/抓取、模型 API、MCP 等）；留空 = 官方默认 owc/openwebcode{版本号}；不含换行、≤200 字符。环境模拟（env-sim）激活时以拟态值为准" },
+  { key: "userAgent", group: "general", label: "出站 User-Agent", type: "text", env: "OWC_USER_AGENT", defaultValue: null, restartRequired: false, validate: requireUserAgent, description: "自定义所有出站 HTTP 请求的 User-Agent（联网搜索/抓取、模型 API、MCP 等）；留空 = 官方默认 owc/openwebcode{版本号}；不含换行、≤200 字符。Agent 预设激活时以拟态值为准" },
   // 离线模式（热生效）：只关 server 自身的遥测/更新/同步类出站（更新检查、远程目录/定价后台同步、
   // 汇率在线刷新）；provider API、web_search/web_fetch、MCP 与扩展联网等用户/agent 主动网络行为不受影响。
   // 归联网组：Web 端在「联网服务」页签渲染。

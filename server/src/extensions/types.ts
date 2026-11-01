@@ -2,26 +2,47 @@ import type { ChatMessage } from "../sessions/types.js";
 
 export const EXTENSION_API_VERSION = "1";
 
-export type ExtensionPermission =
-  | "context:read"
-  | "context:mutate"
-  | "tools:register"
-  | "sessions:read"
-  | "ui:panel"
-  | "ui:messageAttachment"
-  | "network:fetch"
-  | "http:route"
-  | "model:fast"
-  | "prompt:shape"
-  | "tools:shaping"
+/**
+ * 扩展权限全集：既是 manifest 校验的运行时白名单，也是 `ExtensionPermission` 类型的唯一来源。
+ * 新增权限只改这一处，避免类型与白名单漂移。
+ */
+export const EXTENSION_PERMISSIONS = [
+  "context:read",
+  "context:mutate",
+  "tools:register",
+  "sessions:read",
+  "ui:panel",
+  "ui:messageAttachment",
+  "network:fetch",
+  "http:route",
+  "model:fast",
+  "prompt:shape",
+  "tools:shaping",
   /** 读取模型服务商配置（脱敏视图，见 providers.listProfiles）。 */
-  | "providers:read"
+  "providers:read",
   /** 新增/更新模型服务商配置与模型目录 manual 层（见 providers.upsertProfiles）。 */
-  | "providers:mutate"
+  "providers:mutate",
   /** 写入会话历史（见 sessions.import：新建导入与被导入覆盖目标会话的 messages.jsonl）。 */
-  | "sessions:mutate";
+  "sessions:mutate",
+] as const;
 
-export type ExtensionHook = "context.beforeBuild" | "tool.beforeExecute" | "tool.afterExecute" | "message.beforeSend" | "prompt.beforeBuild";
+export type ExtensionPermission = (typeof EXTENSION_PERMISSIONS)[number];
+
+/** 扩展可注册的钩子全集（宿主上报与权限表共用，避免字符串清单多处漂移）。 */
+export const EXTENSION_HOOKS = [
+  "context.beforeBuild",
+  "tool.beforeExecute",
+  "tool.afterExecute",
+  "message.beforeSend",
+  "prompt.beforeBuild",
+] as const;
+
+export type ExtensionHook = (typeof EXTENSION_HOOKS)[number];
+
+/** 未知字符串是否为合法钩子名（宿主上报结果在 server 侧再校验一次）。 */
+export function isExtensionHook(value: unknown): value is ExtensionHook {
+  return typeof value === "string" && (EXTENSION_HOOKS as readonly string[]).includes(value);
+}
 
 /** 工具形态别名：把内置工具 from 以新名字 as 暴露给模型。 */
 export interface ToolShapingAlias {
@@ -35,7 +56,11 @@ export interface ToolShapingAlias {
 
 /** 工具形态声明：隐藏内置工具 + 别名重命名。官方扩展直接声明；第三方扩展需 tools:shaping 权限。 */
 export interface ToolShapingSpec {
+  /** 非空时只保留白名单内的内置工具（硬上限）。 */
+  allowedBuiltIns?: string[];
   hideBuiltIns?: string[];
+  /** 逐工具描述覆盖（不改名也能改描述），键为内置工具名。 */
+  toolDescriptions?: Record<string, string>;
   aliases?: ToolShapingAlias[];
 }
 
@@ -99,8 +124,8 @@ export interface ExtensionInfo extends ExtensionManifest {
   status: "running" | "disabled" | "error";
   config: Record<string, unknown>;
   error?: string;
-  /** env-sim 专用：可选预设列表（内置 + 用户目录发现），供 UI 下拉渲染。 */
-  availablePersonas?: Array<{ id: string; name: string; builtin: boolean }>;
+  /** Agent 预设专用：可选预设列表（内置 + 用户目录发现），供 UI 下拉渲染。 */
+  availablePresets?: Array<{ id: string; name: string; description: string; category: "minimal" | "mimicry" | "custom"; builtin: boolean; overridden?: boolean }>;
 }
 
 export interface ContextHookPayload {
@@ -156,6 +181,9 @@ export interface PromptHookPayload {
 
 /** prompt.beforeBuild 结果：字段缺省表示保持不变；finalConstraints/安全边界由核心追加，不可经此移除。 */
 export interface PromptHookResult {
+  /** Agent 预设：精简/经典提示词形态与项目上下文模式。 */
+  promptStyle?: "classic" | "minimal";
+  projectContext?: "paths" | "content" | "none";
   identity?: string;
   basePromptOverride?: string;
   productSections?: string[];

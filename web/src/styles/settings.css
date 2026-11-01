@@ -1,18 +1,41 @@
-/* 设置对话框与十七个分区 —— 自旧 styles.css 迁移（Phase 3），选择器未改动 */
-.persona-preview {
+/* 设置对话框与十六个分区 —— 自旧 styles.css 迁移（Phase 3），选择器未改动 */
+.preset-preview {
   margin-top: 6px;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel-2);
 }
-.persona-preview-identity {
+.preset-preview-identity {
   margin: 0 0 4px;
   font-size: 12px;
   color: var(--text);
   word-break: break-word;
 }
-.persona-preview .settings-note { margin: 0; }
+.preset-preview .settings-note { margin: 0; }
+.preset-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin: 10px 0 14px; }
+.preset-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.preset-card:hover:not(:disabled) { border-color: var(--accent); }
+.preset-card.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.preset-card:disabled { opacity: 0.55; cursor: not-allowed; }
+.preset-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.preset-card-desc { font-size: 12px; color: var(--text-2); }
+.preset-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); }
+.preset-badge.subtle { border-style: dashed; }
+.preset-tool-groups { display: flex; flex-wrap: wrap; gap: 10px; }
+.preset-tool-list { display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.preset-tool-list .mono { color: var(--text-3); font-size: 11px; }
 .terminal-gate .totp-gate-list { margin: 0 0 10px; }
 .extension-list { display: grid; gap: 10px; margin: 12px 0 18px; }
 .extension-card { border: 1px solid var(--border); border-radius: var(--radius-l); background: var(--panel-2); padding: 12px; }

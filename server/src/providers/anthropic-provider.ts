@@ -40,7 +40,7 @@ export class AnthropicProvider implements Provider {
       // 避免与外层重试嵌套放大（2×3 次）
       maxRetries: 0,
       timeout: options.streamIdleTimeoutMs === 0 ? 0 : (options.streamIdleTimeoutMs ?? DEFAULT_ANTHROPIC_REQUEST_TIMEOUT_MS),
-      // UA 不在此固化：出站 UA 由 user-agent 模块动态解析（env-sim 模拟开关可能
+      // UA 不在此固化：出站 UA 由 user-agent 模块动态解析（agent-presets 模拟开关可能
       // 在 provider 存活期间变更），故在每次 streamChat 的请求级 headers 中注入。
     });
   }
@@ -73,7 +73,7 @@ export class AnthropicProvider implements Provider {
           ...(request.tools.length > 0 ? { tools: toAnthropicTools(request.tools, caching) } : {}),
           ...(caching ? { cache_control: { type: "ephemeral" as const } } : {}),
         },
-        // 请求级 UA：每次请求取当前生效值（默认官方 UA，env-sim 模拟开启时为拟态值）
+        // 请求级 UA：每次请求取当前生效值（默认官方 UA，agent-presets 模拟开启时为拟态值）
         { signal: request.signal, headers: { "User-Agent": getUserAgent() } },
       );
 

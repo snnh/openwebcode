@@ -11,37 +11,38 @@ export function registerExtensionRoutes(app: FastifyInstance, ctx: RouteContext)
   app.get("/api/extensions", async (_request, reply) => {
     if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
     const list = dependencies.extensions.list();
-    // env-sim：附加可选预设列表供 UI 下拉（内置 + 用户目录发现）
-    const envSim = list.find((item) => item.id === "env-sim");
-    if (envSim) envSim.availablePersonas = (await dependencies.extensions.listEnvSimPersonas()).personas;
+    // Agent 预设：附加可选预设列表供 UI 平铺卡片/下拉（内置 + 用户目录发现）
+    const presets = list.find((item) => item.id === "agent-presets");
+    if (presets) presets.availablePresets = (await dependencies.extensions.listAgentPresets()).presets;
     return list;
   });
-  app.get("/api/extensions/env-sim/personas", async (_request, reply) => {
+  app.get("/api/extensions/agent-presets/presets", async (_request, reply) => {
     if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
-    // 预设清单 + 用户预设目录绝对路径（UI 提示用户把分享的预设 JSON 放进来）
-    return dependencies.extensions.listEnvSimPersonas();
+    return dependencies.extensions.listAgentPresets();
   });
-  app.get<{ Params: { id: string } }>("/api/extensions/env-sim/personas/:id", async (request, reply) => {
+  app.get("/api/extensions/agent-presets/tools", async (_request, reply) => {
     if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
-    // 完整预设详情：UI 选前预览（identity/basePrompt/productSections/hideBuiltIns/aliases）
-    const detail = await dependencies.extensions.envSimPersonaDetail(request.params.id);
-    if (!detail) return reply.code(404).send({ error: "Persona not found" });
+    return dependencies.extensions.agentPresetToolCatalog();
+  });
+  app.get<{ Params: { id: string } }>("/api/extensions/agent-presets/presets/:id", async (request, reply) => {
+    if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
+    const detail = await dependencies.extensions.agentPresetDetail(request.params.id);
+    if (!detail) return reply.code(404).send({ error: "Preset not found" });
     return detail;
   });
-  app.post("/api/extensions/env-sim/personas", async (request, reply) => {
+  app.post("/api/extensions/agent-presets/presets", async (request, reply) => {
     if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
-    // 新建/覆盖用户预设：形状/id 校验在 saveUserPreset（同 id 覆盖即编辑）
     try {
-      return reply.code(201).send(await dependencies.extensions.createEnvSimPersona(request.body));
+      return reply.code(201).send(await dependencies.extensions.createAgentPreset(request.body));
     } catch (error) {
       return reply.code(400).send({ error: errorMessage(error) });
     }
   });
-  app.delete<{ Params: { id: string } }>("/api/extensions/env-sim/personas/:id", async (request, reply) => {
+  app.delete<{ Params: { id: string } }>("/api/extensions/agent-presets/presets/:id", async (request, reply) => {
     if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
     try {
-      const deleted = await dependencies.extensions.deleteEnvSimPersona(request.params.id);
-      if (!deleted) return reply.code(404).send({ error: "Persona not found" });
+      const deleted = await dependencies.extensions.deleteAgentPreset(request.params.id);
+      if (!deleted) return reply.code(404).send({ error: "Preset not found" });
       return { ok: true };
     } catch (error) {
       return reply.code(400).send({ error: errorMessage(error) });

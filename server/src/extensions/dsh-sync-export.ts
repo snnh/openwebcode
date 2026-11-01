@@ -64,6 +64,7 @@ import { deriveSessionRecords } from "../dsh/web-protocol/session-events.js";
 import type { ChatMessage, ImageContent, MessageContent, ToolResultContent } from "../sessions/types.js";
 import { DSH_SYNC_WRITE_GENERATION, decodeDshSessionFile, dshSessionDir, writeDshAttachment } from "./dsh-sync-dsh.js";
 import { imageMediaType, imageSize } from "./dsh-sync-image-size.js";
+import { asRecord } from "./json-utils.js";
 
 /** dsh v3 会话文件名（写出代际固定为 v3，dsh 加载时自动迁移到当前代际）。 */
 const SESSION_FILE_NAME = `session.v${DSH_SYNC_WRITE_GENERATION}.jsonl.zstd`;
@@ -198,12 +199,6 @@ export interface DshExportResult {
   warnings: string[];
   /** 写出的事件条数。 */
   eventCount: number;
-}
-
-/** 未知 JSON 值取纯对象视图（数组/null/标量返回 undefined）。 */
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  return value as Record<string, unknown>;
 }
 
 /** 事件 seq（缺省 -1；导出流由 deriveSessionRecords 保证稠密）。 */

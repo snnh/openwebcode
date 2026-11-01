@@ -11,7 +11,7 @@ import { probeSnapshotBackend, probeSnapshotBackendByName, createExecFileRunner 
 import type { ManagedProvisionResult } from "../snapshots/managed-disk.js";
 import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput } from "../snapshots/managed-sync.js";
 import { ContextManager } from "../context/context-manager.js";
-import { resolveSessionPersona } from "../sessions/extension-state.js";
+import { resolveSessionPreset } from "../sessions/extension-state.js";
 import { isSessionUpgrading } from "../extensions/session-format-upgrade.js";
 import { errorMessage } from "../error-utils.js";
 import type { EffortLevel, ModelProfile } from "../context/model-profile.js";
@@ -294,16 +294,18 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
       const limit = Math.max(1, Math.min(500, parseInt(limitParam, 10) || 100));
       const session = await sessions.getTail(request.params.id, limit);
       if (!session) return reply.code(404).send({ error: "Session not found" });
-      // 与全量分支同口径：上下文注入消息对 UI 不可见
-      return { ...session, messages: (session.messages ?? []).filter((message) => !isInjectionMessageId(message.id)) };
+      // 与全量分支同口径：上下文注入消息对 UI 不可见；生效预设同样按会话级覆盖解析
+      // （会话头默认走 limit 分页分支，缺这个字段会让预设下拉与生效标识消失）
+      const activePreset = dependencies.extensions ? await dependencies.extensions.activeAgentPreset(resolveSessionPreset(session)) : null;
+      return { ...session, messages: (session.messages ?? []).filter((message) => !isInjectionMessageId(message.id)), activePreset };
     }
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
-    // 当前生效的 env-sim 人格预设（会话级覆盖优先：extensionState["env-sim"].persona > 旧 persona 字段；扩展未启用/未配置为 null）
-    const activePersona = dependencies.extensions ? await dependencies.extensions.activeEnvSimPersona(resolveSessionPersona(session)) : null;
+    // 当前生效的 Agent 预设（会话级覆盖优先：SessionMeta.preset > 旧 persona 字段；扩展未启用/未配置为 null）
+    const activePreset = dependencies.extensions ? await dependencies.extensions.activeAgentPreset(resolveSessionPreset(session)) : null;
     // 上下文注入消息（模式/日期引导）对 UI 不可见（inj: 前缀，见 session-tree.ts）：消息流/树操作以可见消息为锚。
     const visible = { ...session, messages: (session.messages ?? []).filter((message) => !isInjectionMessageId(message.id)) };
-    return { ...visible, activePersona };
+    return { ...visible, activePreset };
   });
   /**
    * 会话显示属性：重命名（title ≤120 字符，空串清除覆盖回落派生标题）、置顶（pinned）、

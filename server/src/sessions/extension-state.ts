@@ -6,7 +6,11 @@ function sessionExtensionValue(meta: Pick<SessionMeta, "extensionState">, extens
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
-/** env-sim 会话级 persona：优先 extensionState["env-sim"].persona（新通道），回退旧 SessionMeta.persona 字段。 */
-export function resolveSessionPersona(meta: Pick<SessionMeta, "persona" | "extensionState">): string | undefined {
-  return sessionExtensionValue(meta, "env-sim", "persona") ?? meta.persona;
+/** Agent 预设会话级覆盖：优先 SessionMeta.preset（新字段），回退 extensionState["agent-presets"].preset、
+ * extensionState["env-sim"].persona 与旧 SessionMeta.persona。`classic` 强制经典。 */
+export function resolveSessionPreset(meta: Pick<SessionMeta, "preset" | "persona" | "extensionState">): string | undefined {
+  if (typeof meta.preset === "string" && meta.preset.trim()) return meta.preset.trim();
+  return sessionExtensionValue(meta, "agent-presets", "preset")
+    ?? sessionExtensionValue(meta, "env-sim", "persona")
+    ?? (typeof meta.persona === "string" && meta.persona.trim() ? meta.persona : undefined);
 }

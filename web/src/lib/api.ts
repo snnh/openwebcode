@@ -1,4 +1,4 @@
-import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, CronJobInfo, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PersonaDetail, PersonaSummary, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, SandboxNetwork, Session, SessionDetail, SessionSandboxStatus, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
+import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, CronJobInfo, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PresetDetail, PresetSummary, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, SandboxNetwork, Session, SessionDetail, SessionSandboxStatus, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string, readonly code?: string) {
@@ -284,12 +284,13 @@ export const api = {
   configureExtension: (id: string, body: { enabled?: boolean; config?: Record<string, unknown> }) =>
     request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ id, ...body }) }),
   installExtension: (path: string) => request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ action: "install", path }) }),
-  envSimPersonas: () => request<{ personas: PersonaSummary[]; directory: string }>("/api/extensions/env-sim/personas"),
-  envSimPersona: (id: string) => request<PersonaDetail>(`/api/extensions/env-sim/personas/${encodeURIComponent(id)}`),
-  saveEnvSimPersona: (body: import("./contracts").PersonaPresetInput) =>
-    request<PersonaDetail>("/api/extensions/env-sim/personas", { method: "POST", body: JSON.stringify(body) }),
-  deleteEnvSimPersona: (id: string) =>
-    request<{ ok: boolean }>(`/api/extensions/env-sim/personas/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  agentPresets: () => request<{ presets: PresetSummary[]; directory: string; enabled: boolean }>("/api/extensions/agent-presets/presets"),
+  agentPreset: (id: string) => request<PresetDetail>(`/api/extensions/agent-presets/presets/${encodeURIComponent(id)}`),
+  agentPresetTools: () => request<{ tools: import("./contracts").PresetToolInfo[]; groups: import("./contracts").PresetToolGroup[] }>("/api/extensions/agent-presets/tools"),
+  saveAgentPreset: (body: import("./contracts").PresetInput) =>
+    request<PresetDetail>("/api/extensions/agent-presets/presets", { method: "POST", body: JSON.stringify(body) }),
+  deleteAgentPreset: (id: string) =>
+    request<{ ok: boolean }>(`/api/extensions/agent-presets/presets/${encodeURIComponent(id)}`, { method: "DELETE" }),
   uninstallExtension: (id: string) => request<void>(`/api/extensions/${encodeURIComponent(id)}`, { method: "DELETE" }),
   /**
    * 扩展私有路由（`/api/ext/<id><path>`，dsh-sync 为首个调用方）：

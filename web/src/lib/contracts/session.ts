@@ -21,7 +21,9 @@ export interface Session {
   shellBackend?: ShellBackend;
   pythonEnv?: PythonEnv;
   nodeEnv?: NodeEnv;
-  /** env-sim 人格预设 id（会话级覆盖）；undefined = 跟随扩展全局配置。 */
+  /** Agent 预设 id（会话级覆盖）；undefined = 跟随扩展全局配置；`classic` = 强制经典模式。 */
+  preset?: string;
+  /** 旧字段（env-sim 人格预设）；仅读取兼容。 */
   persona?: string;
   /** 并行子代理（spawn_swarm）开关；undefined/false = 关闭。 */
   swarmEnabled?: boolean;
@@ -74,25 +76,41 @@ export interface SessionDetail extends Session {
   messageCount?: number;
   /** Whether older messages exist beyond the returned page */
   hasMoreMessages?: boolean;
-  /** 当前生效的 env-sim 人格预设（会话级覆盖优先；扩展未启用/未配置为 null）。 */
-  activePersona?: PersonaSummary | null;
+  /** 当前生效的 Agent 预设（会话级覆盖优先；扩展未启用/未配置为空表示经典模式）。 */
+  activePreset?: PresetSummary | null;
 }
 
-/** env-sim 人格预设摘要（清单/生效标识；overridden = 内置预设存在用户覆盖，当前生效的是合并版）。 */
-export interface PersonaSummary {
+export type PresetCategory = "minimal" | "mimicry" | "custom";
+export type PresetPromptStyle = "classic" | "minimal";
+export type PresetProjectContext = "paths" | "content" | "none";
+
+/** Agent 预设摘要（清单/生效标识；overridden = 内置预设存在用户覆盖，当前生效的是合并版）。 */
+export interface PresetSummary {
   id: string;
   name: string;
+  description: string;
+  category: PresetCategory;
   builtin: boolean;
   overridden?: boolean;
 }
 
-/** env-sim 人格预设完整详情（选前预览）。 */
-export interface PersonaDetail extends PersonaSummary {
+/** Agent 预设完整详情（选前预览与编辑器回填）。 */
+export interface PresetDetail extends PresetSummary {
   identity: string;
   basePrompt: string;
   productSections: string[];
   hideBuiltIns: string[];
-  aliases: PersonaAlias[];
+  aliases: PresetAlias[];
+  /** 白名单：非空时只保留这些内置工具；优先于 hideBuiltIns。 */
+  allowedBuiltIns?: string[];
+  /** 提示词形态：classic=现有完整框架；minimal=精简模式专用裁剪。 */
+  promptStyle?: PresetPromptStyle;
+  /** 项目上下文：paths=全局记忆注入+工作区文件只列路径；content=经典全量；none=不注入。 */
+  projectContext?: PresetProjectContext;
+  /** 是否允许扩展/MCP 工具进入工具表。 */
+  externalTools?: boolean;
+  /** 逐工具描述覆盖（键为内置工具名）。 */
+  toolDescriptions?: Record<string, string>;
   /** 首轮（会话首个模型调用）只注入这些内置工具（模型侧别名后名），其余内置保持隐藏。 */
   firstTurnOnlyTools?: string[];
   /** /init 命令展开提示词拟态（可选）。 */
@@ -101,12 +119,12 @@ export interface PersonaDetail extends PersonaSummary {
   compactOverviewPrompt?: string;
   /** /compact tools 压缩系统提示词拟态（可选）。 */
   compactToolcallsPrompt?: string;
-  /** 出站 User-Agent 拟态值（仅扩展 simulateUserAgent 开启且选为全局 persona 时生效）。 */
+  /** 出站 User-Agent 拟态值（仅扩展 simulateUserAgent 开启且选为全局预设时生效）。 */
   userAgent?: string;
 }
 
-/** env-sim 工具形态别名（与 server PersonaAlias 对齐）。 */
-export interface PersonaAlias {
+/** 工具形态别名（与 server PresetAlias 对齐）。 */
+export interface PresetAlias {
   from: string;
   as: string;
   description?: string;
@@ -116,20 +134,48 @@ export interface PersonaAlias {
   argMap?: Record<string, string>;
 }
 
-/** 新建/编辑 env-sim 用户预设的提交体（同 id 覆盖即编辑）。 */
-export interface PersonaPresetInput {
+/** 新建/编辑 Agent 预设的提交体（同 id 覆盖即编辑）。 */
+export interface PresetInput {
   id: string;
   name: string;
+  description?: string;
+  category?: PresetCategory;
   identity: string;
   basePrompt: string;
   productSections?: string[];
+  allowedBuiltIns?: string[];
   hideBuiltIns?: string[];
-  aliases?: PersonaAlias[];
+  promptStyle?: PresetPromptStyle;
+  projectContext?: PresetProjectContext;
+  externalTools?: boolean;
+  toolDescriptions?: Record<string, string>;
+  aliases?: PresetAlias[];
   firstTurnOnlyTools?: string[];
   initPrompt?: string;
   compactOverviewPrompt?: string;
   compactToolcallsPrompt?: string;
   userAgent?: string;
+}
+
+/** 工具目录（精简模式编辑器供数）。 */
+export interface PresetToolInfo {
+  name: string;
+  label: string;
+  labelEn: string;
+  group: "core" | "web" | "media" | "interaction" | "git" | "analysis" | "orchestration" | "workflow" | "external";
+  description: string;
+  optional?: boolean;
+  advancedOnly?: boolean;
+  required?: boolean;
+  defaultEnabled?: boolean;
+}
+
+export interface PresetToolGroup {
+  id: PresetToolInfo["group"];
+  label: string;
+  labelEn: string;
+  tools: string[];
+  defaultEnabled: boolean;
 }
 
 /** 0.5.0 Phase 2: paginated message page from GET /api/sessions/:id/messages */

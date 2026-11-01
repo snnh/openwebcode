@@ -21,7 +21,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
     apiVersion: "1",
     permissions: ["context:read", "context:mutate", "ui:panel"],
     official: true,
-    defaultEnabled: false,
+    defaultEnabled: true,
     configSchema: {
       type: "object",
       additionalProperties: false,
@@ -153,23 +153,23 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
     defaultEnabled: false,
   },
   {
-    id: "env-sim",
-    name: "环境模拟",
-    version: "0.1.7",
-    description: "启用后按选定预设模仿其他编码 Agent 的系统提示词风格与默认工具形态。",
+    id: "agent-presets",
+    name: "Agent 预设",
+    version: "0.2.0",
+    description: "在经典、精简、拟态与自定义预设之间切换系统提示词与工具形态；支持全局默认与会话级覆盖。",
     apiVersion: "1",
     // 提示词变换与工具形态都在 server 侧直接执行（预设数据与用户预设目录是 server
     // 本地状态），不经 Extension Host IPC；因此无需任何扩展权限。
     permissions: [],
     official: true,
-    defaultEnabled: false,
-    // persona 枚举是动态的（内置 + 用户目录发现），不在 schema 写死；可用列表经
-    // ExtensionInfo.availablePersonas / GET /api/extensions/env-sim/personas 暴露。
+    defaultEnabled: true,
+    // preset 枚举是动态的（内置 + 用户目录发现），不在 schema 写死；可用列表经
+    // ExtensionInfo.availablePresets / GET /api/extensions/agent-presets/presets 暴露。
     configSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        persona: { type: "string", title: "预设", description: "选择要模拟的编码 Agent 预设；留空表示不模拟。", default: "" },
+        preset: { type: "string", title: "默认预设", description: "选择默认 Agent 预设；留空或 classic 表示经典模式。", default: "" },
         simulateUserAgent: {
           type: "boolean",
           title: "模拟出站 User-Agent",
@@ -262,15 +262,16 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
 export const OFFICIAL_DEFAULT_CONFIG: Record<string, Record<string, unknown>> = {
   "context-saver": {},
   "attention-optimizer": { mode: "bottomOnly", anchorBudget: 3000 },
+  // 只保留有消费端的键：translate.mode/glossary 供消息翻译，targetLang 供翻译与解析；
+  // 旧的 translate.layout、explain.* 无消费端，不再写入默认值（已存在的旧配置仍被容忍）。
   "content-lens": {
     targetLang: "zh-CN",
-    translate: { mode: "manual", layout: "sideBySide", glossary: {} },
-    explain: { webSearch: true, searchProvider: "host" },
+    translate: { mode: "manual", glossary: {} },
   },
   "pdf-to-image": { maxPages: 4, dpi: 150, maxDimension: 2048 },
   "owc-eval": {},
   "session-format-upgrade": {},
-  "env-sim": { persona: "" },
+  "agent-presets": { preset: "" },
   "compact-vault": { keepTail: 10, chunkSize: 25, recallMaxTokens: 4096 },
   "vision-tools": { model: "", prompt: "", thinking: true, cacheDescriptions: true, mode: "describe" },
   "dsh-sync": { dshHome: "~/.dsh", profile: "web" },
