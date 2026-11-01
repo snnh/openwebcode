@@ -47,16 +47,19 @@
 .sidebar-views .sessions-view { border-right: 0; }
 
 /* ================= 会话轨 ================= */
-.sessions-view header {
+.sessions-view > header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  gap: 4px;
+  min-height: 52px;
+  padding: 10px 12px;
 }
-.brand { font-size: 15px; font-weight: 700; letter-spacing: 0.01em; margin-right: auto; }
+.brand { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; margin-right: auto; }
 .brand b { color: var(--accent); font-weight: 700; }
-/* 完整会话项带 4 个悬浮操作钮，标题区让出右侧空间（覆盖 layout.css 极简版的 28px） */
-.sessions-view .session-link { padding-right: 100px; }
+/* 会话行只让出「状态 + 置顶 + 更多」的空间；待回答角标出现时再增加一档。 */
+.sessions-view .session-link { padding: 9px 66px 9px 10px; }
+.sessions-view .session-item.has-attention .session-link { padding-right: 100px; }
 .session-rename {
   flex: 1;
   min-width: 0;
@@ -100,43 +103,86 @@
   font-variant-numeric: tabular-nums;
 }
 .session-pin,
-.session-rename-btn,
-.session-delete,
-.session-export,
-.session-archive,
-.session-unarchive {
+.session-more-trigger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
+  flex: none;
   border-radius: var(--radius-s);
   color: var(--text-3);
   font-size: 14px;
   opacity: 0;
   cursor: pointer;
+  transition: opacity 0.15s var(--ease-out), color 0.15s var(--ease-out), background-color 0.15s var(--ease-out);
 }
-.session-item:hover .session-pin, .session-pin:focus-visible, .session-pin.active,
-.session-item:hover .session-rename-btn, .session-rename-btn:focus-visible,
-.session-item:hover .session-delete, .session-delete:focus-visible,
-.session-item:hover .session-export, .session-export:focus-visible,
-.session-item:hover .session-archive, .session-archive:focus-visible,
-.session-item:hover .session-unarchive, .session-unarchive:focus-visible,
-.session-item:hover .session-move-trigger, .session-move-trigger:focus-visible,
-.session-move-trigger[aria-expanded="true"] { opacity: 1; }
+.session-item:hover .session-pin,
+.session-item:focus-within .session-pin,
+.session-pin.active,
+.session-item:hover .session-more-trigger,
+.session-item:focus-within .session-more-trigger,
+.session-more-trigger[aria-expanded="true"] { opacity: 1; }
 .session-pin.active { color: var(--accent); }
-.session-pin:hover, .session-rename-btn:hover, .session-export:hover, .session-archive:hover,
-.session-unarchive:hover, .session-move-trigger:hover { color: var(--accent); background: var(--accent-soft); }
-.session-delete:hover { color: var(--danger); background: var(--danger-bg); }
-/* 触屏设备无悬停：会话项操作按钮常显 */
+.session-pin:hover,
+.session-more-trigger:hover,
+.session-more-trigger[aria-expanded="true"] { color: var(--accent); background: var(--accent-soft); }
+.session-more { position: relative; display: inline-flex; flex: none; }
+.session-more-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: var(--z-menu);
+  width: 184px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-lg);
+  animation: session-menu-in 0.14s var(--ease-out);
+}
+@keyframes session-menu-in { from { opacity: 0; transform: translateY(-3px); } }
+/* 触发器靠近视口底部时向上展开（SessionsView 依 getBoundingClientRect 决定） */
+.session-more-menu.above { top: auto; bottom: calc(100% + 4px); }
+@keyframes session-menu-in-above { from { opacity: 0; transform: translateY(3px); } }
+.session-more-menu.above { animation-name: session-menu-in-above; }
+.session-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border-radius: var(--radius-s);
+  color: var(--text-2);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+.session-menu-item:hover,
+.session-menu-item:focus-visible { color: var(--text); background: var(--hover-bg); }
+.session-menu-item.danger { color: var(--danger); }
+.session-menu-item.danger:hover { background: var(--danger-bg); }
+.session-menu-item > svg:last-child:not(:first-child) { margin-left: auto; }
+.session-menu-separator { height: 1px; margin: 4px; background: var(--border); }
+.session-more-menu .session-move { display: block; }
+.session-more-menu .session-move-menu {
+  position: static;
+  min-width: 0;
+  max-width: none;
+  max-height: 180px;
+  margin: 3px 0 3px 18px;
+  padding: 3px 0 3px 6px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+}
+/* 触屏设备无悬停：两个常用入口常显，命中区域大于桌面图标按钮。 */
 @media (hover: none) {
   .session-item .session-pin,
-  .session-item .session-rename-btn,
-  .session-item .session-delete,
-  .session-item .session-export,
-  .session-item .session-archive,
-  .session-item .session-unarchive,
-  .session-item .session-move-trigger { opacity: 1; }
+  .session-item .session-more-trigger { opacity: 1; width: 30px; height: 30px; }
+  .session-menu-item { min-height: 40px; }
 }
 
 /* ================= 分组 / 归档 / 多选批量 ================= */
@@ -174,7 +220,6 @@
 .session-item.selecting .session-link { padding-right: 12px; }
 /* 「移动到分组」下拉（放在会话项操作行内，绝对定位浮层） */
 .session-move { position: relative; display: inline-flex; }
-.session-move-trigger { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-s); color: var(--text-3); font-size: 14px; opacity: 0; cursor: pointer; }
 .session-move-menu {
   position: absolute;
   right: 0;
@@ -220,15 +265,24 @@
 .session-bulk-count { font-size: 12px; color: var(--amber); font-variant-numeric: tabular-nums; margin-right: auto; }
 /* 批量条里的「移动到组」下拉：与其他浮层同款样式，锚在按钮下方 */
 .session-bulk-move { position: relative; display: inline-flex; }
-.rail-search-wrap { position: relative; display: block; margin: 0 12px 8px; color: var(--text-3); }
-.rail-search-wrap svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.rail-search-wrap { position: relative; display: block; margin: 0 12px 10px; color: var(--text-3); }
+.rail-search-wrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); pointer-events: none; }
 .rail-search {
   width: 100%;
+  min-height: 34px;
   margin: 0;
-  padding: 7px 10px 7px 28px;
+  padding: 7px 10px 7px 30px;
 }
-.sessions-view footer { gap: 4px; }
-.sessions-view footer .icon-btn:first-child { margin-right: auto; }
+/* 主操作独占一行，次级入口另起一行右对齐：窄侧栏也不会挤压「新建会话」。 */
+.sessions-view footer {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  padding: 8px 10px;
+  background: var(--panel-subtle);
+}
+.sessions-new-btn { flex: 1 1 100%; min-width: 0; }
+.sessions-new-btn svg { flex: none; }
 
 /* ================= 文件面板 ================= */
 /* 文件面板外层：非滚动容器，预览浮层相对它定位，不随文件树滚动 */

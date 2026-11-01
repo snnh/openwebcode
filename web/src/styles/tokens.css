@@ -7,6 +7,8 @@
   --bg: #f1f4f5;
   --panel: #ffffff;
   --panel-2: #e9eef0;
+  --panel-subtle: #f7f9fa;
+  --hover-bg: rgb(23 32 42 / 0.055);
   --border: #d9e1e4;
   --border-strong: #b9c7cc;
   --text: #17202a;
@@ -41,7 +43,10 @@
   --radius-xl: 16px;
   --gutter: clamp(20px, 3vw, 52px);
   /* 对话内容列最大宽度（消息/输入卡片/实时活动条共用） */
-  --content-max: 1100px;
+  --content-max: 960px;
+  --reading-max: 800px;
+  --control-h: 32px;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
   /* z-index 分层：近值同语义归一档（档值取档内最大值），保持原有层叠大小关系 */
   --z-base: 3; /* 局部浮层：代码复制钮(原1)、面板/侧栏拖拽柄与文件预览(原2)、会话拖拽柄与实时活动条(原3) */
   --z-sticky: 10; /* 吸顶小件：后台任务下拉(原10) */
@@ -79,6 +84,8 @@
   --bg: #0e1318;
   --panel: #161d26;
   --panel-2: #1e2833;
+  --panel-subtle: #121922;
+  --hover-bg: rgb(217 226 234 / 0.065);
   --border: #2b3745;
   --border-strong: #415061;
   --text: #d9e2ea;

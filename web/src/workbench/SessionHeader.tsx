@@ -370,123 +370,129 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
         </div>
       )}
       {!headerCollapsed && <div className="job-actions">
-        {/* 本机会话固定 off 沙盒：不提供切换（服务端也拒绝变更） */}
-        {session.kind !== "local" && (
-        <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "appcontainer") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
-          <Icon name="box" size={11} />
-          <span>{t("沙盒", "Sandbox")}</span>
-          <FitSelect
-            aria-label={t("沙盒模式", "Sandbox mode")}
-            value={selectedSandboxMode}
-            disabled={busy || configPending}
-            onChange={(event) => changeSandbox(event.target.value as SandboxMode)}
+        <div className="job-actions-group job-environment" role="group" aria-label={t("运行环境", "Runtime environment")}>
+          <span className="job-actions-label" aria-hidden>{t("运行环境", "Environment")}</span>
+          {/* 本机会话固定 off 沙盒：不提供切换（服务端也拒绝变更） */}
+          {session.kind !== "local" && (
+          <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "appcontainer") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
+            <Icon name="box" size={11} />
+            <span>{t("沙盒", "Sandbox")}</span>
+            <FitSelect
+              aria-label={t("沙盒模式", "Sandbox mode")}
+              value={selectedSandboxMode}
+              disabled={busy || configPending}
+              onChange={(event) => changeSandbox(event.target.value as SandboxMode)}
+            >
+              {sandboxModeOptions.map((mode) => (
+                <option
+                  key={mode}
+                  value={mode}
+                  disabled={(mode === "wsb" && sandboxCapabilities.data?.wsb?.available === false) || (mode === "bubblewrap" && bwrapUnavailableReason !== undefined)}
+                  title={mode === "bubblewrap" ? bwrapUnavailableReason : undefined}
+                >
+                  {t(...SANDBOX_LABELS[mode])}
+                </option>
+              ))}
+            </FitSelect>
+          </label>
+          )}
+          <label className="mode-switch shell-backend-switch" title={t("选择当前会话命令使用的解释器", "Choose the command shell for this session")}>
+            <Icon name="terminal" size={11} />
+            <span>Shell</span>
+            <FitSelect
+              aria-label={t("Shell 后端", "Shell backend")}
+              value={session.shellBackend ?? "default"}
+              disabled={busy || configPending}
+              onChange={(event) => updateMode({ shellBackend: event.target.value as ShellBackend })}
+            >
+              {shellOptions.map((option) => (
+                <option key={option.value} value={option.value}>{t(...option.label)}</option>
+              ))}
+            </FitSelect>
+          </label>
+          <label className="mode-switch python-env-switch" title={t("选择当前会话 bash 的虚拟环境（Python）", "Choose the virtual environment (Python) for bash in this session")}>
+            <Icon name="layers" size={11} />
+            <span>{t("虚拟环境", "Env")}</span>
+            <FitSelect
+              aria-label={t("虚拟环境", "Virtual environment")}
+              value={session.pythonEnv ?? "global"}
+              disabled={busy || configPending}
+              onChange={(event) => updateMode({ pythonEnv: event.target.value as PythonEnv })}
+            >
+              <option value="global">{t("本机环境", "Host")}</option>
+              <option value="uv-workspace">{t("uv·工作区", "uv · workspace")}</option>
+              <option value="uv-config">{t("uv·配置目录", "uv · config dir")}</option>
+            </FitSelect>
+          </label>
+          <label className="mode-switch node-env-switch" title={t("选择当前会话 bash 的 Node 环境", "Choose the Node environment for bash in this session")}>
+            <Icon name="layers" size={11} />
+            <span>{t("Node 环境", "Node")}</span>
+            <FitSelect
+              aria-label={t("Node 环境", "Node environment")}
+              value={session.nodeEnv ?? "global"}
+              disabled={busy || configPending}
+              onChange={(event) => updateMode({ nodeEnv: event.target.value as NodeEnv })}
+            >
+              <option value="global">{t("本机 global", "Host global")}</option>
+              <option value="project">{t("工作区 project", "Workspace project")}</option>
+              <option value="fnm">fnm</option>
+              <option value="nvm">nvm</option>
+            </FitSelect>
+          </label>
+          <label className="mode-switch snapshot-mode-switch" title={t("自动模式会在每轮用户消息前创建检查点", "Automatic mode creates a checkpoint before each user turn")}>
+            <Icon name="history" size={11} />
+            <span>{t("快照", "Snapshot")}</span>
+            <FitSelect
+              aria-label={t("快照模式", "Snapshot mode")}
+              value={session.snapshotMode ?? "auto"}
+              disabled={busy || configPending}
+              onChange={(event) => updateMode({ snapshotMode: event.target.value as SnapshotMode })}
+            >
+              <option value="auto">{t("每轮自动", "Automatic")}</option>
+              <option value="manual">{t("仅手动", "Manual only")}</option>
+            </FitSelect>
+          </label>
+        </div>
+        <div className="job-actions-group job-session-actions" role="group" aria-label={t("会话操作", "Session actions")}>
+          <span className="job-actions-label" aria-hidden>{t("会话操作", "Actions")}</span>
+          {session.workspace?.mode === "managed" && (
+            <button
+              type="button"
+              className="btn small manual-snapshot-btn"
+              aria-label={t("创建虚拟磁盘快照", "Create virtual disk snapshot")}
+              title={checkpointPending
+                ? t("正在创建虚拟磁盘快照", "Creating virtual disk snapshot")
+                : busy || configPending
+                  ? t("会话运行或配置更新时无法创建快照", "Cannot create a snapshot while the session is running or being updated")
+                  : t("立即为当前虚拟磁盘创建手动差分链快照", "Create a manual differential-disk snapshot now")}
+              disabled={busy || configPending || checkpointPending}
+              onClick={onCreateCheckpoint}
+            >
+              <Icon name="history" size={12} /> {checkpointPending ? t("创建中…", "Creating…") : t("手动快照", "Snapshot now")}
+            </button>
+          )}
+          <a
+            className="icon-btn"
+            href={`/api/sessions/${session.id}/export`}
+            download
+            aria-label={t("导出会话", "Export session")}
+            title={t("导出会话（JSONL，不含账本与 artifacts）", "Export session (JSONL, excluding ledger and artifacts)")}
           >
-            {sandboxModeOptions.map((mode) => (
-              <option
-                key={mode}
-                value={mode}
-                disabled={(mode === "wsb" && sandboxCapabilities.data?.wsb?.available === false) || (mode === "bubblewrap" && bwrapUnavailableReason !== undefined)}
-                title={mode === "bubblewrap" ? bwrapUnavailableReason : undefined}
-              >
-                {t(...SANDBOX_LABELS[mode])}
-              </option>
-            ))}
-          </FitSelect>
-        </label>
-        )}
-        <label className="mode-switch shell-backend-switch" title={t("选择当前会话命令使用的解释器", "Choose the command shell for this session")}>
-          <Icon name="terminal" size={11} />
-          <span>Shell</span>
-          <FitSelect
-            aria-label={t("Shell 后端", "Shell backend")}
-            value={session.shellBackend ?? "default"}
-            disabled={busy || configPending}
-            onChange={(event) => updateMode({ shellBackend: event.target.value as ShellBackend })}
+            <Icon name="download" size={14} />
+          </a>
+          <a
+            className="icon-btn"
+            href={`/api/sessions/${session.id}/export.md`}
+            download
+            aria-label={t("导出 Markdown", "Export Markdown")}
+            title={t("导出会话为 Markdown 文档", "Export session as a Markdown document")}
           >
-            {shellOptions.map((option) => (
-              <option key={option.value} value={option.value}>{t(...option.label)}</option>
-            ))}
-          </FitSelect>
-        </label>
-        <label className="mode-switch python-env-switch" title={t("选择当前会话 bash 的虚拟环境（Python）", "Choose the virtual environment (Python) for bash in this session")}>
-          <Icon name="layers" size={11} />
-          <span>{t("虚拟环境", "Env")}</span>
-          <FitSelect
-            aria-label={t("虚拟环境", "Virtual environment")}
-            value={session.pythonEnv ?? "global"}
-            disabled={busy || configPending}
-            onChange={(event) => updateMode({ pythonEnv: event.target.value as PythonEnv })}
-          >
-            <option value="global">{t("本机环境", "Host")}</option>
-            <option value="uv-workspace">{t("uv·工作区", "uv · workspace")}</option>
-            <option value="uv-config">{t("uv·配置目录", "uv · config dir")}</option>
-          </FitSelect>
-        </label>
-        <label className="mode-switch node-env-switch" title={t("选择当前会话 bash 的 Node 环境", "Choose the Node environment for bash in this session")}>
-          <Icon name="layers" size={11} />
-          <span>{t("Node 环境", "Node")}</span>
-          <FitSelect
-            aria-label={t("Node 环境", "Node environment")}
-            value={session.nodeEnv ?? "global"}
-            disabled={busy || configPending}
-            onChange={(event) => updateMode({ nodeEnv: event.target.value as NodeEnv })}
-          >
-            <option value="global">{t("本机 global", "Host global")}</option>
-            <option value="project">{t("工作区 project", "Workspace project")}</option>
-            <option value="fnm">fnm</option>
-            <option value="nvm">nvm</option>
-          </FitSelect>
-        </label>
-        <label className="mode-switch snapshot-mode-switch" title={t("自动模式会在每轮用户消息前创建检查点", "Automatic mode creates a checkpoint before each user turn")}>
-          <Icon name="history" size={11} />
-          <span>{t("快照", "Snapshot")}</span>
-          <FitSelect
-            aria-label={t("快照模式", "Snapshot mode")}
-            value={session.snapshotMode ?? "auto"}
-            disabled={busy || configPending}
-            onChange={(event) => updateMode({ snapshotMode: event.target.value as SnapshotMode })}
-          >
-            <option value="auto">{t("每轮自动", "Automatic")}</option>
-            <option value="manual">{t("仅手动", "Manual only")}</option>
-          </FitSelect>
-        </label>
-        {session.workspace?.mode === "managed" && (
-          <button
-            type="button"
-            className="btn small manual-snapshot-btn"
-            aria-label={t("创建虚拟磁盘快照", "Create virtual disk snapshot")}
-            title={checkpointPending
-              ? t("正在创建虚拟磁盘快照", "Creating virtual disk snapshot")
-              : busy || configPending
-                ? t("会话运行或配置更新时无法创建快照", "Cannot create a snapshot while the session is running or being updated")
-                : t("立即为当前虚拟磁盘创建手动差分链快照", "Create a manual differential-disk snapshot now")}
-            disabled={busy || configPending || checkpointPending}
-            onClick={onCreateCheckpoint}
-          >
-            <Icon name="history" size={12} /> {checkpointPending ? t("创建中…", "Creating…") : t("手动快照", "Snapshot now")}
-          </button>
-        )}
-        <a
-          className="icon-btn"
-          href={`/api/sessions/${session.id}/export`}
-          download
-          aria-label={t("导出会话", "Export session")}
-          title={t("导出会话（JSONL，不含账本与 artifacts）", "Export session (JSONL, excluding ledger and artifacts)")}
-        >
-          <Icon name="download" size={14} />
-        </a>
-        <a
-          className="icon-btn"
-          href={`/api/sessions/${session.id}/export.md`}
-          download
-          aria-label={t("导出 Markdown", "Export Markdown")}
-          title={t("导出会话为 Markdown 文档", "Export session as a Markdown document")}
-        >
-          <Icon name="file" size={14} />
-        </a>
-        {busy && (
-          <button className="btn danger-outline" onClick={onAbort}>{t("中断", "Stop")}</button>
-        )}
+            <Icon name="file" size={14} />
+          </a>
+          {busy && (
+            <button className="btn danger-outline" onClick={onAbort}>{t("中断", "Stop")}</button>
+          )}
+        </div>
       </div>}
       {tasksOpen && sortedTasks.length > 0 && (
         <div className="task-dropdown" ref={tasksDropdownRef}>

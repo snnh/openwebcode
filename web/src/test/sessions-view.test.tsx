@@ -17,6 +17,9 @@ function renderView(
     <SessionsView sessions={sessions} currentId={overrides.currentId} agentStates={overrides.agentStates ?? {}} attention={overrides.attention ?? {}} onSelect={overrides.onSelect ?? noop} />,
   );
 }
+function openSessionActions(title: string): void {
+  fireEvent.click(screen.getByRole("button", { name: `更多操作 ${title}` }));
+}
 beforeEach(() => {
   vi.restoreAllMocks();
   window.localStorage.clear();
@@ -45,20 +48,35 @@ describe("SessionsView 列表与选中", () => {
   it("重命名 Enter 提交 trim 后标题、Esc 不调；置顶与取消置顶调 patch；工具栏删除确认/新建/设置/主题持久化", async () => {
     const patch = vi.spyOn(api, "patchSession").mockResolvedValue(session("a"));
     renderView([session("a", { title: "旧标题" }), session("b", { title: "已置顶", pinned: true })]);
-    fireEvent.click(screen.getByRole("button", { name: "重命名 旧标题" }));
+    openSessionActions("旧标题");
+    fireEvent.click(screen.getByRole("menuitem", { name: "重命名 旧标题" }));
     const input = screen.getByRole("textbox", { name: "重命名会话" });
     fireEvent.change(input, { target: { value: "改动未提交" } }); fireEvent.keyDown(input, { key: "Escape" });
     expect(patch).not.toHaveBeenCalled(); expect(screen.getByText("旧标题")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "重命名 旧标题" }));
+    openSessionActions("旧标题");
+    fireEvent.click(screen.getByRole("menuitem", { name: "重命名 旧标题" }));
     const retry = screen.getByRole("textbox", { name: "重命名会话" });
     fireEvent.change(retry, { target: { value: "  新标题  " } }); fireEvent.keyDown(retry, { key: "Enter" });
     await waitFor(() => expect(patch).toHaveBeenCalledWith("a", { title: "新标题" }));
     fireEvent.click(screen.getByRole("button", { name: "置顶 旧标题" })); await waitFor(() => expect(patch).toHaveBeenCalledWith("a", { pinned: true }));
     fireEvent.click(screen.getByRole("button", { name: "取消置顶 已置顶" })); await waitFor(() => expect(patch).toHaveBeenCalledWith("b", { pinned: false }));
-    fireEvent.click(screen.getByRole("button", { name: "删除会话 旧标题" })); expect(uiStore.get().deleteTarget).toBe("a");
+    openSessionActions("旧标题");
+    fireEvent.click(screen.getByRole("menuitem", { name: "删除会话 旧标题" })); expect(uiStore.get().deleteTarget).toBe("a");
     fireEvent.click(screen.getByRole("button", { name: "新建会话" })); expect(uiStore.get().newSessionOpen).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "设置" })); expect(uiStore.get().settingsOpen).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "切换主题" })); expect(["light", "dark"]).toContain(window.localStorage.getItem("owc-theme"));
+  });
+  it("更多菜单 Esc 关闭并还焦、外部点击关闭", () => {
+    renderView([session("a", { title: "菜单会话" })]);
+    const trigger = screen.getByRole("button", { name: "更多操作 菜单会话" });
+    fireEvent.click(trigger);
+    expect(screen.getByRole("menu", { name: "会话操作 菜单会话" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "会话操作 菜单会话" })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    fireEvent.click(trigger);
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("menu", { name: "会话操作 菜单会话" })).toBeNull();
   });
   it("分组渲染（未分组恒在最后，单项退化为「全部会话」）+ 折叠记忆写入 localStorage 后沿用", () => {
     const { container } = renderView([session("a", { title: "前端一", group: "前端" }), session("b", { title: "后端一", group: "后端" }), session("c", { title: "散装" })]);
@@ -76,11 +94,14 @@ describe("SessionsView 列表与选中", () => {
   it("移动到分组（选已有组/移出分组/新组名）、分组重命名、删除分组把组内会话移回未分组", async () => {
     const patch = vi.spyOn(api, "patchSession").mockResolvedValue(session("a"));
     renderView([session("a", { title: "要归组的", group: "前端" }), session("b", { title: "参考", group: "后端" })]);
-    fireEvent.click(screen.getByRole("button", { name: "移动到分组 要归组的" })); fireEvent.click(screen.getByRole("menuitem", { name: "后端" }));
+    openSessionActions("要归组的");
+    fireEvent.click(screen.getByRole("menuitem", { name: "移动到分组 要归组的" })); fireEvent.click(screen.getByRole("menuitem", { name: "后端" }));
     await waitFor(() => expect(patch).toHaveBeenCalledWith("a", { group: "后端" }));
-    fireEvent.click(screen.getByRole("button", { name: "移动到分组 要归组的" })); fireEvent.click(screen.getByRole("menuitem", { name: "移出分组" }));
+    openSessionActions("要归组的");
+    fireEvent.click(screen.getByRole("menuitem", { name: "移动到分组 要归组的" })); fireEvent.click(screen.getByRole("menuitem", { name: "移出分组" }));
     await waitFor(() => expect(patch).toHaveBeenLastCalledWith("a", { group: "" }));
-    fireEvent.click(screen.getByRole("button", { name: "移动到分组 要归组的" }));
+    openSessionActions("要归组的");
+    fireEvent.click(screen.getByRole("menuitem", { name: "移动到分组 要归组的" }));
     const input = screen.getByRole("textbox", { name: "新分组名" });
     fireEvent.change(input, { target: { value: "新组" } }); fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(patch).toHaveBeenLastCalledWith("a", { group: "新组" }));
@@ -99,18 +120,22 @@ describe("SessionsView 列表与选中", () => {
     const notify = vi.spyOn(ui, "notify");
     const patch = vi.spyOn(api, "patchSession").mockResolvedValue(session("a"));
     renderView([session("a", { title: "待归档" })]);
-    fireEvent.click(screen.getByRole("button", { name: "归档 待归档" }));
+    openSessionActions("待归档");
+    fireEvent.click(screen.getByRole("menuitem", { name: "归档 待归档" }));
     await waitFor(() => expect(patch).toHaveBeenCalledWith("a", { archived: true }));
     cleanup();
     vi.spyOn(api, "patchSession").mockRejectedValue(new Error("Session is running; stop it before archiving"));
     renderView([session("a", { title: "运行中的" })]);
-    fireEvent.click(screen.getByRole("button", { name: "归档 运行中的" }));
+    openSessionActions("运行中的");
+    fireEvent.click(screen.getByRole("menuitem", { name: "归档 运行中的" }));
     await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.stringContaining("stop it before archiving"), "error"));
     cleanup();
     const archived = renderView([session("a", { title: "老会话", archived: true })]);
     expect(archived.container.querySelector(".session-group[data-collapsed]")).not.toBeNull();
     expect(screen.queryByText("老会话")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /已归档/ })); fireEvent.click(screen.getByRole("button", { name: "取消归档 老会话" }));
+    fireEvent.click(screen.getByRole("button", { name: /已归档/ }));
+    openSessionActions("老会话");
+    fireEvent.click(screen.getByRole("menuitem", { name: "取消归档 老会话" }));
     await waitFor(() => expect(api.patchSession).toHaveBeenLastCalledWith("a", { archived: false }));
   });
   it("多选批量：全选只覆盖当前列表、批量归档/删除确认逐个删/批量移动分组/批量取消归档", async () => {

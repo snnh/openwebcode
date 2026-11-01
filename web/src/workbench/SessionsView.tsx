@@ -64,6 +64,12 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
   // 多选批量：selection 只存 id，退出多选即清空
   const [multiSelect, setMultiSelect] = useState(false);
   const [selection, setSelection] = useState<Set<string>>(new Set());
+  // 会话项只常驻置顶与「更多」；低频操作收进同一个菜单，避免触屏/窄侧栏挤满图标
+  const [sessionMenuId, setSessionMenuId] = useState<string | undefined>();
+  // 靠近视口底部时向上展开，避免菜单被列表滚动容器裁掉
+  const [sessionMenuAbove, setSessionMenuAbove] = useState(false);
+  const sessionMenuRefs = useRef(new Map<string, HTMLSpanElement>());
+  const sessionMenuTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   // 「移动到组」下拉当前打开的会话，以及新建组输入
   const [moveMenuId, setMoveMenuId] = useState<string | undefined>();
   const [newGroupDraft, setNewGroupDraft] = useState("");
@@ -79,6 +85,31 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
       // 隐私模式：折叠记忆失效不影响使用
     }
   }, [collapsed]);
+
+  // 会话「更多」菜单：外部点击关闭；Esc 关闭并还焦触发钮，避免焦点随菜单卸载丢失。
+  useEffect(() => {
+    if (!sessionMenuId) return undefined;
+    const onPointer = (event: PointerEvent): void => {
+      const target = event.target;
+      if (target instanceof Node && sessionMenuRefs.current.get(sessionMenuId)?.contains(target)) return;
+      setSessionMenuId(undefined);
+      setMoveMenuId(undefined);
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setSessionMenuId(undefined);
+      setMoveMenuId(undefined);
+      sessionMenuTriggerRefs.current.get(sessionMenuId)?.focus();
+    };
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [sessionMenuId]);
 
   const matched = useMemo(() => filterSessions(sessions ?? [], filter), [sessions, filter]);
   const { active, archived } = useMemo(() => splitArchived(matched), [matched]);
@@ -230,9 +261,14 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
       });
   };
 
+  const closeSessionActions = (): void => {
+    setSessionMenuId(undefined);
+    setMoveMenuId(undefined);
+  };
+
   /** 单个会话项（分组区、未分组区、已归档区共用；archived 区多一个「恢复」动作） */
   const renderSession = (session: Session, options: { archived?: boolean } = {}): ReactElement => (
-    <div key={session.id} className={`session-item${session.id === currentId ? " active" : ""}${multiSelect ? " selecting" : ""}`}>
+    <div key={session.id} className={`session-item${session.id === currentId ? " active" : ""}${multiSelect ? " selecting" : ""}${attention[session.id] ? " has-attention" : ""}`}>
       {multiSelect && (
         <input
           type="checkbox"
@@ -288,76 +324,6 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
               {attention[session.id] && isBusyState(agentStates[session.id]) && (
                 <span className="running-dot" role="status" aria-label={t("运行中", "Running")} title={t("运行中", "Running")} />
               )}
-              {options.archived && (
-                <button
-                  className="session-unarchive"
-                  aria-label={t(`取消归档 ${session.title}`, `Unarchive ${session.title}`)}
-                  title={t("取消归档（回到默认列表）", "Unarchive (back to the default list)")}
-                  onClick={() => void patchSession(session.id, { archived: false })}
-                >
-                  <Icon name="upload" size={13} />
-                </button>
-              )}
-              {!options.archived && (
-                <span className="session-move">
-                  <button
-                    type="button"
-                    className="session-move-trigger"
-                    aria-label={t(`移动到分组 ${session.title}`, `Move to group: ${session.title}`)}
-                    aria-expanded={moveMenuId === session.id}
-                    title={t("移动到分组", "Move to group")}
-                    onClick={() => setMoveMenuId(moveMenuId === session.id ? undefined : session.id)}
-                  >
-                    <Icon name="folder" size={13} />
-                  </button>
-                  {moveMenuId === session.id && (
-                    <ul className="session-move-menu" role="menu">
-                      {knownGroups.filter((name) => name !== session.group).map((name) => (
-                        <li key={name}>
-                          <button type="button" role="menuitem" onClick={() => { setMoveMenuId(undefined); void patchSession(session.id, { group: name }); }}>{name}</button>
-                        </li>
-                      ))}
-                      {session.group && (
-                        <li>
-                          <button type="button" role="menuitem" onClick={() => { setMoveMenuId(undefined); void patchSession(session.id, { group: "" }); }}>
-                            {t("移出分组", "Remove from group")}
-                          </button>
-                        </li>
-                      )}
-                      <li className="session-move-new">
-                        <input
-                          className="input"
-                          value={newGroupFor === session.id ? newGroupDraft : ""}
-                          placeholder={t("新建分组…", "New group…")}
-                          aria-label={t("新分组名", "New group name")}
-                          maxLength={40}
-                          onFocus={() => setNewGroupFor(session.id)}
-                          onChange={(event) => { setNewGroupFor(session.id); setNewGroupDraft(event.target.value); }}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Enter") return;
-                            const name = newGroupDraft.trim();
-                            if (!name) return;
-                            setNewGroupDraft("");
-                            setNewGroupFor(undefined);
-                            setMoveMenuId(undefined);
-                            void patchSession(session.id, { group: name });
-                          }}
-                        />
-                      </li>
-                    </ul>
-                  )}
-                </span>
-              )}
-              {!options.archived && (
-                <button
-                  className="session-archive"
-                  aria-label={t(`归档 ${session.title}`, `Archive ${session.title}`)}
-                  title={t("归档（移出默认列表；有运行时需先停止）", "Archive (out of the default list; stop the run first)")}
-                  onClick={() => void patchSession(session.id, { archived: true })}
-                >
-                  <Icon name="archive" size={13} />
-                </button>
-              )}
               <button
                 className={`session-pin${session.pinned ? " active" : ""}`}
                 aria-label={session.pinned ? t(`取消置顶 ${session.title}`, `Unpin ${session.title}`) : t(`置顶 ${session.title}`, `Pin ${session.title}`)}
@@ -367,30 +333,134 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
               >
                 <Icon name="pin" size={13} />
               </button>
-              <button
-                className="session-rename-btn"
-                aria-label={t(`重命名 ${session.title}`, `Rename ${session.title}`)}
-                title={t("重命名", "Rename")}
-                onClick={() => startRename(session)}
+              <span
+                className="session-more"
+                ref={(node) => {
+                  if (node) sessionMenuRefs.current.set(session.id, node);
+                  else sessionMenuRefs.current.delete(session.id);
+                }}
               >
-                <Icon name="edit" size={13} />
-              </button>
-              <button
-                className="session-export"
-                aria-label={t(`导出分享页 ${session.title}`, `Export share page for ${session.title}`)}
-                title={t("导出分享页（HTML）", "Export share page (HTML)")}
-                onClick={() => window.open(`/api/sessions/${session.id}/export.html?lang=${language}`, "_blank")}
-              >
-                <Icon name="download" size={13} />
-              </button>
-              <button
-                className="session-delete"
-                aria-label={t(`删除会话 ${session.title}`, `Delete session ${session.title}`)}
-                title={t("删除会话", "Delete session")}
-                onClick={() => ui.setDeleteTarget(session.id)}
-              >
-                <Icon name="trash" size={13} />
-              </button>
+                <button
+                  type="button"
+                  className="session-more-trigger"
+                  ref={(node) => {
+                    if (node) sessionMenuTriggerRefs.current.set(session.id, node);
+                    else sessionMenuTriggerRefs.current.delete(session.id);
+                  }}
+                  aria-label={t(`更多操作 ${session.title}`, `More actions for ${session.title}`)}
+                  aria-expanded={sessionMenuId === session.id}
+                  aria-haspopup="menu"
+                  title={t("更多操作", "More actions")}
+                  onClick={(event) => {
+                    if (sessionMenuId === session.id) {
+                      closeSessionActions();
+                      return;
+                    }
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setSessionMenuAbove(window.innerHeight - rect.bottom < 300);
+                    setMoveMenuId(undefined);
+                    setSessionMenuId(session.id);
+                  }}
+                >
+                  <Icon name="more" size={15} />
+                </button>
+                {sessionMenuId === session.id && (
+                  <div className={`session-more-menu${sessionMenuAbove ? " above" : ""}`} role="menu" aria-label={t(`会话操作 ${session.title}`, `Session actions for ${session.title}`)}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="session-menu-item"
+                      aria-label={t(`重命名 ${session.title}`, `Rename ${session.title}`)}
+                      onClick={() => { closeSessionActions(); startRename(session); }}
+                    >
+                      <Icon name="edit" size={13} />{t("重命名", "Rename")}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="session-menu-item"
+                      aria-label={t(`导出分享页 ${session.title}`, `Export share page for ${session.title}`)}
+                      onClick={() => {
+                        closeSessionActions();
+                        window.open(`/api/sessions/${session.id}/export.html?lang=${language}`, "_blank");
+                      }}
+                    >
+                      <Icon name="download" size={13} />{t("导出分享页", "Export share page")}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="session-menu-item"
+                      aria-label={options.archived ? t(`取消归档 ${session.title}`, `Unarchive ${session.title}`) : t(`归档 ${session.title}`, `Archive ${session.title}`)}
+                      onClick={() => { closeSessionActions(); void patchSession(session.id, { archived: !options.archived }); }}
+                    >
+                      <Icon name={options.archived ? "upload" : "archive"} size={13} />
+                      {options.archived ? t("取消归档", "Unarchive") : t("归档", "Archive")}
+                    </button>
+                    {!options.archived && (
+                      <span className="session-move session-menu-move">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="session-menu-item session-move-trigger"
+                          aria-label={t(`移动到分组 ${session.title}`, `Move to group: ${session.title}`)}
+                          aria-expanded={moveMenuId === session.id}
+                          onClick={() => setMoveMenuId(moveMenuId === session.id ? undefined : session.id)}
+                        >
+                          <Icon name="folder" size={13} />{t("移动到分组", "Move to group")}
+                          <Icon name={moveMenuId === session.id ? "chevron-down" : "chevron-right"} size={11} />
+                        </button>
+                        {moveMenuId === session.id && (
+                          <ul className="session-move-menu" role="menu">
+                            {knownGroups.filter((name) => name !== session.group).map((name) => (
+                              <li key={name}>
+                                <button type="button" role="menuitem" onClick={() => { closeSessionActions(); void patchSession(session.id, { group: name }); }}>{name}</button>
+                              </li>
+                            ))}
+                            {session.group && (
+                              <li>
+                                <button type="button" role="menuitem" onClick={() => { closeSessionActions(); void patchSession(session.id, { group: "" }); }}>
+                                  {t("移出分组", "Remove from group")}
+                                </button>
+                              </li>
+                            )}
+                            <li className="session-move-new">
+                              <input
+                                className="input"
+                                value={newGroupFor === session.id ? newGroupDraft : ""}
+                                placeholder={t("新建分组…", "New group…")}
+                                aria-label={t("新分组名", "New group name")}
+                                maxLength={40}
+                                onFocus={() => setNewGroupFor(session.id)}
+                                onChange={(event) => { setNewGroupFor(session.id); setNewGroupDraft(event.target.value); }}
+                                onKeyDown={(event) => {
+                                  if (event.key !== "Enter") return;
+                                  const name = newGroupDraft.trim();
+                                  if (!name) return;
+                                  setNewGroupDraft("");
+                                  setNewGroupFor(undefined);
+                                  closeSessionActions();
+                                  void patchSession(session.id, { group: name });
+                                }}
+                              />
+                            </li>
+                          </ul>
+                        )}
+                      </span>
+                    )}
+                    <div className="session-menu-separator" role="separator" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="session-menu-item danger"
+                      aria-label={t(`删除会话 ${session.title}`, `Delete session ${session.title}`)}
+                      onClick={() => { closeSessionActions(); ui.setDeleteTarget(session.id); }}
+                    >
+                      <Icon name="trash" size={13} />{t("删除会话", "Delete session")}
+                    </button>
+                  </div>
+                )}
+              </span>
             </div>
           )}
         </>
@@ -451,7 +521,7 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
         />
         <button
           className="icon-btn"
-          onClick={() => { setMultiSelect(false); setSelection(new Set()); setMoveMenuId(undefined); setBulkMoveOpen(false); }}
+          onClick={() => { setMultiSelect(false); setSelection(new Set()); closeSessionActions(); setBulkMoveOpen(false); }}
           aria-label={t("退出多选", "Exit multi-select")}
           title={t("退出多选", "Exit multi-select")}
           hidden={!multiSelect}
@@ -460,16 +530,14 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
         </button>
         <button
           className="icon-btn"
-          onClick={() => { setMultiSelect(true); setSelection(new Set()); setMoveMenuId(undefined); setBulkMoveOpen(false); }}
+          onClick={() => { setMultiSelect(true); setSelection(new Set()); closeSessionActions(); setBulkMoveOpen(false); }}
           aria-label={t("多选会话", "Select sessions")}
-          title={t("多选（批量删除/归档/置顶；分组用会话项上的文件夹按钮）", "Multi-select (bulk delete/archive/pin; use the folder button on a session to group)")}
+          title={t("多选（批量删除/归档/置顶；单个会话的分组在「更多操作」里）", "Multi-select (bulk delete/archive/pin; per-session grouping lives under More actions)")}
           hidden={multiSelect}
         >
           <Icon name="check" size={15} />
         </button>
         <button className="icon-btn" onClick={() => fileInput.current?.click()} aria-label={t("导入会话", "Import session")} title={t("导入会话（JSONL）", "Import session (JSONL)")}><Icon name="upload" size={15} /></button>
-        <button className="icon-btn" onClick={() => ui.setNewSessionOpen(true)} aria-label={t("新建会话", "New session")} title={t("新建会话", "New session")}><Icon name="plus" size={16} /></button>
-        <button className="icon-btn" onClick={createLocalSession} aria-label={t("新建本机会话", "New local session")} title={t("本机会话：在 HOME 下直跑宿主机，HOME 外路径需允许", "Local session: runs on the host under HOME; paths outside HOME require approval")}><Icon name="terminal" size={15} /></button>
       </header>
       <span className="rail-search-wrap">
         <Icon name="search" size={13} />
@@ -583,6 +651,10 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
         {sessions !== undefined && sessions.length > 0 && matched.length === 0 && <p className="muted-empty rail-empty">{t("无匹配会话", "No matching sessions")}</p>}
       </nav>
       <footer>
+        <button className="btn primary small sessions-new-btn" onClick={() => ui.setNewSessionOpen(true)} aria-label={t("新建会话", "New session")}>
+          <Icon name="plus" size={14} />{t("新建会话", "New session")}
+        </button>
+        <button className="icon-btn" onClick={createLocalSession} aria-label={t("新建本机会话", "New local session")} title={t("本机会话：在 HOME 下直跑宿主机，HOME 外路径需允许", "Local session: runs on the host under HOME; paths outside HOME require approval")}><Icon name="terminal" size={15} /></button>
         <button className="icon-btn" onClick={toggleTheme} aria-label={t("切换主题", "Toggle theme")} title={t("切换主题", "Toggle theme")}>
           <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
         </button>

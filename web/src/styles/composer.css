@@ -5,22 +5,26 @@
 .composer {
   background: var(--bg);
   border-top: 1px solid var(--border);
-  padding: var(--space-2) 22px var(--space-3);
+  padding: 10px var(--gutter) var(--space-3);
 }
-/* 输入区大圆角卡片：textarea 融入其中，底栏一行排布 */
+/* 输入区大圆角卡片：与消息列同宽同轴，textarea 融入其中。 */
 .composer-card {
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   background: var(--panel);
-  padding: 8px 14px 10px;
+  padding: 10px 14px 10px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  gap: 5px;
+  box-shadow: 0 1px 2px rgb(23 32 42 / 0.025);
+  transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
 }
 .composer-card:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 65%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent), 0 8px 24px rgb(23 32 42 / 0.05);
 }
 .composer-toolbar {
   display: flex;
@@ -77,17 +81,18 @@
 /* ================= Composer 配置弹层（权限/模式/模型） ================= */
 .composer-menu { position: relative; display: inline-flex; }
 .composer-menu-btn {
-  min-height: 32px;
+  min-height: var(--control-h);
   padding: 0 10px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
-  background: var(--panel);
+  background: var(--panel-subtle);
   color: var(--text-2);
   font-size: var(--text-s);
   white-space: nowrap;
+  transition: color 0.15s var(--ease-out), border-color 0.15s var(--ease-out), background-color 0.15s var(--ease-out);
 }
 .composer-menu-btn:hover,
 .composer-menu-btn.open { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
@@ -249,7 +254,7 @@
 .popover-capabilities { padding: 2px 8px 6px; }
 
 /* ================= 输入框 / 提示 / 编辑横幅 ================= */
-.composer-input { display: flex; gap: 10px; align-items: flex-end; position: relative; }
+.composer-input { display: flex; gap: 8px; align-items: flex-end; position: relative; }
 .composer-hint { margin-top: 6px; color: var(--text-3); font-size: var(--text-xs); display: flex; align-items: baseline; gap: 8px; }
 .composer-hint-text { flex: 1; min-width: 0; }
 .composer-hint-dismiss {
@@ -273,9 +278,9 @@
   border: none;
   background: transparent;
   padding: 6px 2px 2px;
-  line-height: 1.5;
+  line-height: 1.55;
   max-height: 200px;
-  font-size: 14px;
+  font-size: 15px;
   /* 默认无纵向滚动条轨道；JS 自动增高检测到真实溢出（达 max-height）后改回 auto */
   overflow-y: hidden;
 }

@@ -2,9 +2,10 @@
    差异：.send-to-agent 去掉负边距重叠（正常流内间距）；.live-activity 改文档流内占位（不再 sticky 覆盖消息）。 */
 
 /* ================= 消息卡 ================= */
-.message, .permission-card { position: relative; max-width: min(100%, var(--content-max)); margin: 0 0 22px; }
+.message, .permission-card { position: relative; max-width: min(100%, var(--content-max)); margin: 0 0 26px; }
+.message.assistant > .markdown { max-width: var(--reading-max); font-size: 15px; line-height: 1.75; }
 /* user 消息：右对齐气泡列（气泡 + 下方右对齐的元信息行） */
-.message.user { margin-top: 6px; display: flex; flex-direction: column; align-items: flex-end; }
+.message.user { margin-top: 8px; display: flex; flex-direction: column; align-items: flex-end; }
 .message-meta {
   display: flex;
   align-items: baseline;
@@ -13,8 +14,8 @@
   font-size: 12px;
   color: var(--text-3);
 }
-.message.user .message-meta { justify-content: flex-end; margin: 6px 2px 0; }
-.message-author { font-weight: 600; color: var(--text-2); font-size: 13px; }
+.message.user .message-meta { justify-content: flex-end; flex-wrap: wrap; row-gap: 4px; max-width: 100%; margin: 6px 2px 0; }
+.message-author { font-weight: 600; color: var(--text-2); font-size: 12px; letter-spacing: 0.01em; }
 .message-meta time { font-family: var(--font-mono); font-size: 11px; }
 .copy-btn {
   display: inline-flex;
@@ -32,12 +33,13 @@
 .copy-btn:hover { background: var(--panel-2); color: var(--accent); }
 .message.user .markdown {
   display: inline-block;
-  max-width: 80%;
+  max-width: min(80%, 720px);
   background: var(--accent-soft);
-  border-radius: var(--radius-l) var(--radius-l) 4px var(--radius-l);
-  padding: 9px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 14px 14px 5px 14px;
+  padding: 10px 15px;
 }
-@media (max-width: 768px) { .message.user .markdown { max-width: 90%; } }
+@media (max-width: 768px) { .message.user .markdown { max-width: 92%; padding: 9px 12px; } }
 /* 紧凑密度：表格降档 */
 @media (max-width: 768px) { .markdown th, .markdown td { padding: 3px 6px; } }
 .message-image { max-width: 320px; max-height: 240px; border-radius: var(--radius-s); border: 1px solid var(--border); display: block; margin: 4px 0; }
@@ -102,10 +104,11 @@
 /* 执行过程折叠段（ProcessFold）：连续过程消息（thinking/工具调用/工具结果）收进默认折叠的 details */
 .turn-process {
   max-width: min(100%, var(--content-max));
-  margin: 0 0 22px;
+  margin: 0 0 24px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel);
+  border-radius: var(--radius-l);
+  background: var(--panel-subtle);
+  overflow: clip;
 }
 .turn-process > summary {
   display: flex;
@@ -183,9 +186,12 @@
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  margin: 5px 0;
+  margin: 6px 0;
   max-width: min(100%, var(--content-max));
+  transition: border-color 0.15s var(--ease-out), background-color 0.15s var(--ease-out);
 }
+.tool-row:hover { border-color: var(--border-strong); }
+.tool-row.open { background: var(--panel-subtle); }
 .tool-row.error { border-color: var(--danger-border); }
 .tool-row-status { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--text-3); }
 .tool-row-status.done { color: var(--text-3); }
@@ -393,7 +399,18 @@
   -webkit-overflow-scrolling: touch;
 }
 .pending-zone > * { flex: 0 0 auto; }
-.pending-zone .permission-card { margin: 8px 22px; }
+.pending-zone > .permission-card,
+.pending-zone > .interaction-card,
+.pending-zone > .steering-queue {
+  width: calc(100% - var(--gutter) - var(--gutter));
+  max-width: var(--content-max);
+  margin: 8px auto;
+}
+.pending-zone > .steering-queue {
+  border: 1px solid var(--amber-border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+}
 /* 消息列表不再留保底：待回答卡未折叠时铺满整个信息流区域（列表收缩为 0），
    折叠或答完后列表自然复原。容器自身限高内滚，Composer 不会被挤出去。 */
 .main-tab-panel.chat-panel { min-height: 0; }
@@ -494,6 +511,9 @@
 /* 移动端（≤768px）：待回答区已是单一滚动容器（桌面同规则），这里只补触屏细节。 */
 @media (max-width: 768px) {
   .pending-zone { padding-bottom: 2px; }
+  .pending-zone > .permission-card,
+  .pending-zone > .interaction-card,
+  .pending-zone > .steering-queue { width: calc(100% - 24px); }
 }
 @media (hover: none) {
   .permission-actions .btn, .interaction-actions .btn { min-height: 36px; }

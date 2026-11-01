@@ -6,9 +6,11 @@
   overflow-y: auto;
   /* 滚动链截断：消息流滚到顶/底不再传给外壳（Android 下拉刷新会重载 SPA 丢草稿，iOS 橡皮筋露底） */
   overscroll-behavior-y: contain;
-  padding: 26px var(--gutter) 72px;
+  padding: 30px var(--gutter) 72px;
   position: relative;
 }
+/* 所有顶层消息/过程/活动块共用同一中心轴；保留原有 DOM 与滚动测量。 */
+.chat-track > :not(.chat-top-sentinel) { width: 100%; margin-inline: auto; }
 /* 长列表渲染性能：屏外消息卡跳过布局/绘制（DOM 常驻，会话内搜索 querySelectorAll 可达） */
 .chat-track > article {
   content-visibility: auto;

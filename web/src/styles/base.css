@@ -9,6 +9,9 @@ body {
   background: var(--bg);
   color: var(--text);
   font-synthesis: none;
+  font-feature-settings: "cv02", "cv03", "cv04";
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 #root { height: 100vh; height: 100dvh; }
 button, input, textarea, select { font: inherit; color: inherit; }
@@ -22,12 +25,19 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .input {
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
-  background: var(--bg);
+  background: var(--panel-subtle);
   color: var(--text);
   padding: 7px 9px;
   font-size: 13px;
+  transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), background-color 0.15s var(--ease-out);
 }
-.input:focus { border-color: var(--accent); outline: none; }
+.input:hover:not(:disabled) { border-color: var(--border-strong); }
+.input:focus {
+  border-color: var(--accent);
+  outline: none;
+  background: var(--panel);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
 
 /*
  * 悬停显现滚动条：拇指静止透明，容器 :hover/:focus-within 时显现（拇指自身 hover 更深一档）。
@@ -50,34 +60,41 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-height: 34px;
   gap: 6px;
-  padding: 7px 14px;
+  padding: 6px 14px;
   border-radius: var(--radius-s);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   background: var(--panel);
   color: var(--text);
   font-size: 13px;
   font-weight: 500;
+  transition: color 0.15s var(--ease-out), background-color 0.15s var(--ease-out), border-color 0.15s var(--ease-out), transform 0.1s var(--ease-out);
 }
-.btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .btn.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
 .btn.danger { border-color: var(--danger-border); color: var(--danger); }
 .btn.danger:hover:not(:disabled) { background: var(--danger); border-color: var(--danger); color: var(--on-danger); }
 .btn.danger-outline { border-color: var(--danger-border); color: var(--danger); background: transparent; }
 .btn.danger-outline:hover:not(:disabled) { background: var(--danger-bg); }
-.btn.small { padding: 4px 10px; font-size: 12px; }
+.btn.small { min-height: 28px; padding: 4px 10px; font-size: 12px; }
 
 .icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
+  flex: none;
   border-radius: var(--radius-s);
   color: var(--text-2);
+  transition: color 0.15s var(--ease-out), background-color 0.15s var(--ease-out), transform 0.1s var(--ease-out);
 }
-.icon-btn:hover { background: var(--panel-2); color: var(--text); }
+.icon-btn:hover { background: var(--hover-bg); color: var(--text); }
+.icon-btn:active:not(:disabled) { transform: translateY(1px); }
 .icon-btn svg, .btn svg { display: block; flex-shrink: 0; }
 
 /* 折叠行基类：工具调用/子代理运行等可展开卡片的头部行 */
@@ -249,6 +266,13 @@ button, a, [role="button"], summary, select, .icon-btn {
 }
 /* Markdown 渲染失败降级为纯文本：内容不丢，只是不排版 */
 .markdown-degraded > pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+
+/* 触屏保留足够命中区域；高密度场景可在组件内进一步扩大到 44px。 */
+@media (hover: none) {
+  .btn { min-height: 40px; }
+  .btn.small { min-height: 36px; }
+  .icon-btn { min-width: 36px; min-height: 36px; }
+}
 
 /* ================= 动效 ================= */
 @keyframes blink { 50% { opacity: 0; } }
