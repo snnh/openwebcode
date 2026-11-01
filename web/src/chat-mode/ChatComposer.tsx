@@ -9,22 +9,13 @@ import { api, ApiError } from "../lib/api";
 import { Icon } from "../components/Icon";
 import { clipboardFiles, dataUrlBase64, readFileAsDataUrl } from "../lib/file-data-url";
 import { useAutosizeTextarea } from "../hooks/use-autosize-textarea";
+import { clearSubmittedChatComposer, migrateChatComposer, useChatComposer, type PendingImage } from "./composer-store";
 import type { MessageContent } from "./types";
 
 /** 与 server 对齐：内嵌上限 2MB（CHAT_INLINE_IMAGE_MAX_BYTES），上传上限 10MB（CHAT_IMAGE_MAX_BYTES），单消息 ≤3 张。 */
 const INLINE_MAX_BYTES = 2 * 1024 * 1024;
 const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGES = 3;
-
-interface PendingImage {
-  id: string;
-  mediaType: string;
-  /** ≤2MB 内嵌 base64；>2MB 时保留 File，发送前才上传换取 ref。 */
-  data?: string;
-  file?: File;
-  /** data URL 预览（内嵌与上传路径统一读取，无 objectURL 生命周期）。 */
-  previewUrl: string;
-}
 
 let nextImageId = 0;
 
@@ -43,12 +34,19 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
   apiRef?: MutableRefObject<ChatComposerApi | undefined>;
 }): ReactElement {
   const { t } = useI18n();
-  const [draft, setDraft] = useState("");
-  const [images, setImages] = useState<PendingImage[]>([]);
+  const { sessionKey, draft, images, setDraft, setImages } = useChatComposer(sessionId);
   const [sending, setSending] = useState(false);
   const running = useStore(chatModeStore, (s) => (sessionId ? (s.running[sessionId] ?? false) : false));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 图片读取是异步的：组件卸载（切会话/删会话）后不得再写回 store，否则会复活已清理的条目
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // 建议行注入：设草稿 + 聚焦（注册/卸载时清理）；send 供空态建议一键直达（跨过草稿状态直接发送）。
   // handleSend 经 ref 取最新版本：apiRef 注册于挂载时，直接闭包捕获会冻结当次渲染的 state
@@ -68,7 +66,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
     return () => {
       apiRef.current = undefined;
     };
-  }, [apiRef]);
+  }, [apiRef, setDraft]);
 
   // 自适应高度（上限 200px）
   useAutosizeTextarea(textareaRef, draft, 200);
@@ -78,6 +76,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
   }
 
   async function addImages(files: Iterable<File>): Promise<void> {
+    if (sending) return;
     // 本地计数：一次批量添加多图时闭包里的 images 不会逐张刷新
     let count = images.length;
     for (const file of files) {
@@ -93,6 +92,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
       count += 1;
       if (file.size <= INLINE_MAX_BYTES) {
         const dataUrl = await readFileAsDataUrl(file);
+        if (!mountedRef.current) return;
         const image: PendingImage = {
           id: `img-${nextImageId++}`,
           mediaType: file.type,
@@ -103,6 +103,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
       } else {
         // >2MB：保留 File，发送前才上传换取 ref（避免用户放弃发送时留下孤儿文件）；预览与内嵌路径一致用 data URL
         const dataUrl = await readFileAsDataUrl(file);
+        if (!mountedRef.current) return;
         const image: PendingImage = {
           id: `img-${nextImageId++}`,
           mediaType: file.type,
@@ -149,11 +150,13 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
 
   async function handleSend(overrideText?: string): Promise<void> {
     // 建议直发经 overrideText 跨过草稿状态（setDraft 异步，直接读 state 会拿到旧值）
-    const text = (overrideText ?? draft).trim();
+    const submittedDraft = overrideText ?? draft;
+    const text = submittedDraft.trim();
     // 纯图片消息（无文字）也可发送：vision 场景「贴图即问」
     if ((!text && images.length === 0) || sending) return;
 
     setSending(true);
+    let targetKey = sessionKey;
     try {
       // 无会话（首页空态）先建会话；建失败（如未配置模型）保留草稿
       let sid = sessionId;
@@ -163,6 +166,8 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
           setSending(false);
           return;
         }
+        migrateChatComposer(sessionKey, sid);
+        targetKey = sid;
       }
       // 纯文本保持旧 {text} 形态；带图走 content 块数组（text 为空时只发图片块）
       let body: Record<string, unknown> = { text };
@@ -175,21 +180,22 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
         body = { content };
       }
       await api.chatSend(sid, body);
-      setDraft("");
-      setImages([]);
+      clearSubmittedChatComposer(targetKey, submittedDraft, new Set(images.map((image) => image.id)));
       onSent?.();
     } catch (error) {
-      // 带图消息失败时给出服务端原因（400 校验 / 413 超限等）；纯文本失败保留草稿静默
-      if (error instanceof ApiError && images.length > 0) {
-        ui.notify(error.message || t("发送失败", "Send failed"), "error");
-      }
+      const fallback = t("发送失败，请重试", "Send failed; please try again");
+      ui.notify(error instanceof ApiError && error.message ? error.message : fallback, "error");
     }
     setSending(false);
   }
 
   async function handleStop(): Promise<void> {
     if (!sessionId) return;
-    await api.chatStop(sessionId).catch(() => undefined);
+    try {
+      await api.chatStop(sessionId);
+    } catch {
+      ui.notify(t("停止失败，请重试", "Failed to stop; please try again"), "error");
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
@@ -221,6 +227,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
                   type="button"
                   className="chat-attachment-remove"
                   aria-label={t("移除图片", "Remove image")}
+                  disabled={sending}
                   onClick={() => removeImage(image.id)}
                 >
                   <Icon name="x" size={10} />
@@ -235,6 +242,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
           accept="image/*"
           multiple
           hidden
+          disabled={sending}
           aria-label={t("选择图片文件", "Choose image files")}
           onChange={(event) => {
             const files = Array.from(event.target.files ?? []);
@@ -251,6 +259,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
           onPaste={handlePaste}
           placeholder={t("有问题，随便问", "Ask anything")}
           rows={1}
+          aria-busy={sending}
         />
         <div className="chat-composer-toolbar">
           <button
@@ -258,6 +267,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
             className="icon-btn"
             aria-label={t("添加图片", "Add images")}
             title={t("添加图片", "Add images")}
+            disabled={sending}
             onClick={() => fileInputRef.current?.click()}
           >
             <Icon name="paperclip" />

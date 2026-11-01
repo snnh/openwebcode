@@ -2,6 +2,7 @@
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatComposer } from "../ChatComposer";
+import { discardChatComposer } from "../composer-store";
 import { ui } from "../../app/ui-store";
 const INLINE_MAX = 2 * 1024 * 1024; const UPLOAD_MAX = 10 * 1024 * 1024;
 const makeImage = (size: number): File => new File([new Uint8Array(size)], "pic.png", { type: "image/png" });
@@ -14,7 +15,13 @@ function mockFetch(handler: (url: string) => { status: number; body?: unknown })
   return mock;
 }
 const defaultHandler = (url: string) => (url.includes("/uploads") ? { status: 201, body: { ref: "uploads/abc.png" } } : { status: 202, body: { runId: "r1" } });
-afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => {
+  vi.unstubAllGlobals(); vi.restoreAllMocks();
+  // Chat 草稿/附件是模块级按会话状态：逐用例清理，避免前一个用例的附件串进来
+  discardChatComposer("s1");
+  discardChatComposer("s2");
+  discardChatComposer("new");
+});
 /** 经文件选择加入图片并等待预览出现。 */
 async function attach(view: ReturnType<typeof render>, files: File[]): Promise<void> {
   fireEvent.change(view.getByLabelText("选择图片文件"), { target: { files } });
@@ -82,5 +89,30 @@ describe("ChatComposer 图片附件", () => {
       const body = messagesBody(fetchMock);
       expect(body).not.toHaveProperty("text"); expect(body.content).toEqual([{ type: "image", mediaType: "image/png", data: expect.any(String) }]);
     });
+  });
+  it("每个会话的草稿与附件隔离：切换会话互不覆盖，工作台草稿前缀不受影响", async () => {
+    mockFetch(defaultHandler);
+    const view = render(<ChatComposer sessionId="s1" />);
+    const input = (): HTMLTextAreaElement => view.getByPlaceholderText("有问题，随便问") as HTMLTextAreaElement;
+    fireEvent.change(input(), { target: { value: "会话一的草稿" } });
+    await attach(view, [makeImage(100)]);
+    expect(JSON.parse(window.sessionStorage.getItem("owc-chat-draft-s1") ?? '""')).toBe("会话一的草稿");
+    // 工作台同名会话草稿走自己的前缀，Chat 草稿不应写进/清掉它
+    expect(window.sessionStorage.getItem("owc-draft-s1")).toBeNull();
+    view.rerender(<ChatComposer sessionId="s2" />);
+    expect(input().value).toBe("");
+    expect(view.container.querySelectorAll(".chat-attachment")).toHaveLength(0);
+    fireEvent.change(input(), { target: { value: "会话二" } });
+    view.rerender(<ChatComposer sessionId="s1" />);
+    await waitFor(() => expect(input().value).toBe("会话一的草稿"));
+    expect(view.container.querySelectorAll(".chat-attachment")).toHaveLength(1);
+  });
+  it("纯文本发送失败也提示服务端原因并保留草稿", async () => {
+    mockFetch(() => ({ status: 500, body: { error: "provider unavailable" } }));
+    const notify = vi.spyOn(ui, "notify");
+    const view = render(<ChatComposer sessionId="s1" />);
+    send(view);
+    await waitFor(() => expect(notify).toHaveBeenCalledWith("provider unavailable", "error"));
+    expect((view.getByPlaceholderText("有问题，随便问") as HTMLTextAreaElement).value).toBe("看图");
   });
 });

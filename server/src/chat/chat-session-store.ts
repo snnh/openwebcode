@@ -190,12 +190,19 @@ export class ChatSessionStore {
     return this.readMessages(id);
   }
 
-  /** 读取 beforeId 之前（不含）的最近 limit 条消息，用于向上翻页加载。 */
-  async getMessagesBefore(id: string, beforeId: string, limit: number): Promise<ChatMessage[]> {
-    const messages = await this.readMessages(id);
-    const index = messages.findIndex((message) => message.id === beforeId);
-    if (index === -1) return [];
-    return messages.slice(Math.max(0, index - limit), index);
+  /** 当前活动分支（根→activeLeaf）；旧分支仍保留在 JSONL，但不混入对话视图。 */
+  async getActiveMessages(id: string): Promise<ChatMessage[]> {
+    const [meta, messages] = await Promise.all([this.readMeta(id), this.readMessages(id)]);
+    return activePathMessages(messages, meta.activeLeafId);
+  }
+
+  /** 活动分支的尾部/向前分页；beforeId 不在当前分支时返回空页，避免跨分支串联。 */
+  async getActiveMessagesPage(id: string, limit: number, beforeId?: string): Promise<{ messages: ChatMessage[]; hasMore: boolean }> {
+    const messages = await this.getActiveMessages(id);
+    const end = beforeId === undefined ? messages.length : messages.findIndex((message) => message.id === beforeId);
+    if (end < 0) return { messages: [], hasMore: false };
+    const start = Math.max(0, end - limit);
+    return { messages: messages.slice(start, end), hasMore: start > 0 };
   }
 
   /** patch.share 显式传 undefined 表示撤销分享（删除该键而非落盘 undefined）。 */

@@ -18,7 +18,7 @@
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--panel-subtle);
   overflow: hidden;
   min-width: 0;
   white-space: nowrap;
@@ -27,11 +27,43 @@
 .chat-sidebar-header {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 10px 8px 4px;
+  gap: 2px;
+  padding: 10px 8px 6px;
 }
 
-/* 侧栏行基元：「新对话」「工作台」等整宽行，悬停高亮 */
+/* 新对话主入口：侧栏里唯一的强调行，与后续会话项拉开层级 */
+.chat-new-chat-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: var(--text-m);
+  font-weight: 500;
+  min-width: 0;
+  text-align: left;
+  transition: background-color 150ms var(--ease-out);
+}
+
+.chat-new-chat-btn:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.chat-new-chat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 侧栏行基元：「工作台」等整宽行，悬停高亮 */
 .chat-sidebar-row {
   flex: 1;
   display: flex;
@@ -39,14 +71,20 @@
   gap: 8px;
   padding: 8px 10px;
   border-radius: var(--radius);
-  color: var(--text);
+  color: var(--text-2);
   font-size: var(--text-m);
   min-width: 0;
   text-align: left;
 }
 
+.chat-sidebar-row svg:last-child {
+  margin-left: auto;
+  color: var(--text-3);
+}
+
 .chat-sidebar-row:hover:not(:disabled) {
-  background: var(--panel-2);
+  background: var(--hover-bg);
+  color: var(--text);
 }
 
 .chat-sidebar-row:disabled {
@@ -68,26 +106,25 @@
 
 .chat-session-group {
   padding: 14px 10px 4px;
-  font-size: var(--text-xs);
+  font-size: var(--text-2xs);
   font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--text-3);
 }
 
 .chat-session-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 8px 10px;
+  gap: 2px;
   border-radius: var(--radius);
-  cursor: pointer;
-  font-size: var(--text-m);
   color: var(--text-2);
-  white-space: nowrap;
-  overflow: hidden;
+  font-size: var(--text-m);
+  min-width: 0;
 }
 
-.chat-session-item:hover {
-  background: var(--panel-2);
+.chat-session-item:hover,
+.chat-session-item:focus-within {
+  background: var(--hover-bg);
   color: var(--text);
 }
 
@@ -96,18 +133,36 @@
   color: var(--text);
 }
 
-.chat-session-item .title {
+.chat-session-item.active .chat-session-select {
+  font-weight: 500;
+}
+
+/* 会话选择本体是可聚焦按钮：整行可点，键盘可 Tab 选中 */
+.chat-session-select {
   flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.chat-session-select:focus-visible {
+  outline-offset: -2px;
 }
 
 /* 三点菜单：悬停/激活/聚焦时显现，平时保持列表干净 */
 .chat-session-item .chat-session-menu {
   opacity: 0;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
   flex-shrink: 0;
+  color: var(--text-3);
 }
 
 .chat-session-item:hover .chat-session-menu,
@@ -128,10 +183,21 @@
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
-  min-height: 48px;
+  min-height: 52px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
 }
 
-.chat-main-header .title {
+/* 头部主区：模型入口为主、会话标题为辅；min-width: 0 保证长标题省略而不挤走操作 */
+.chat-main-heading {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.chat-main-heading .title {
   flex: 1;
   font-size: var(--text-m);
   font-weight: 500;
@@ -140,15 +206,66 @@
   white-space: nowrap;
 }
 
+.chat-main-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-size: var(--text-s);
+}
+
+.chat-main-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+/* 顶栏模型选择：看起来是标题，悬停才露出可切换的边界 */
+.chat-model-select {
+  max-width: min(260px, 46vw);
+  padding: 4px 22px 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  background: transparent
+    url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")
+    no-repeat right 6px center;
+  color: var(--text);
+  font-size: var(--text-m);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  appearance: none;
+  cursor: pointer;
+  transition: background-color 150ms var(--ease-out), border-color 150ms var(--ease-out);
+}
+
+.chat-model-select:hover:not(:disabled) {
+  background-color: var(--hover-bg);
+  border-color: var(--border);
+}
+
+.chat-model-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.chat-model-select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .chat-messages {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 
 .chat-messages-inner {
   max-width: 768px;
   margin: 0 auto;
-  padding: 24px 16px 16px;
+  padding: 24px 20px 16px;
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -157,25 +274,34 @@
 
 /* 用户消息：右对齐圆角气泡；助手消息：通栏平铺无底色（ChatGPT 布局） */
 .chat-message {
-  line-height: 1.6;
+  line-height: 1.65;
   font-size: var(--text-m);
   min-width: 0;
 }
 
 .chat-message.user {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .chat-message.user .chat-bubble {
   background: var(--panel-2);
-  border-radius: var(--radius-xl);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  border-bottom-right-radius: 6px;
   padding: 10px 16px;
-  max-width: 75%;
+  max-width: min(85%, 640px);
+  overflow-wrap: anywhere;
+}
+
+.chat-message.user .chat-bubble .chat-block-image {
+  max-height: 320px;
 }
 
 .chat-message.assistant .chat-bubble {
   width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .chat-message .actions {
@@ -183,7 +309,11 @@
   gap: 2px;
   margin-top: 4px;
   opacity: 0;
-  transition: opacity 150ms;
+  transition: opacity 150ms var(--ease-out);
+}
+
+.chat-message.user .actions {
+  justify-content: flex-end;
 }
 
 .chat-message:hover .actions,
@@ -201,6 +331,20 @@
   color: var(--text);
 }
 
+/* 消息级轻量状态行：断线/空页/分页失败与正文同一宽度，不抢视觉焦点 */
+.chat-history-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: var(--text-s);
+}
+
 /* ── Composer：一体式圆角框（附件条 + textarea + 工具行） ── */
 .chat-composer-area {
   padding: 8px 16px 12px;
@@ -214,14 +358,15 @@
   gap: 2px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  padding: 8px 12px;
+  border-radius: 24px;
+  padding: 10px 12px 8px;
   box-shadow: var(--shadow);
-  transition: border-color 150ms;
+  transition: border-color 150ms var(--ease-out), box-shadow 150ms var(--ease-out);
 }
 
 .chat-composer-box:focus-within {
   border-color: var(--border-strong);
+  box-shadow: var(--shadow-lg);
 }
 
 .chat-composer-input {
@@ -229,13 +374,17 @@
   background: transparent;
   padding: 6px 4px;
   font-size: var(--text-m);
-  line-height: 1.5;
+  line-height: 1.55;
   resize: none;
-  min-height: 28px;
+  min-height: 30px;
   max-height: 200px;
   overflow-y: auto;
   outline: none;
   color: var(--text);
+}
+
+.chat-composer-input::placeholder {
+  color: var(--text-3);
 }
 
 .chat-composer-toolbar {
@@ -257,6 +406,11 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  transition: background-color 150ms var(--ease-out), transform 100ms var(--ease-out);
+}
+
+.chat-round-btn:active:not(:disabled) {
+  transform: scale(0.96);
 }
 
 .chat-round-btn.send {
@@ -431,22 +585,30 @@
   margin: 0;
 }
 
-/* ── 首页空态（ChatGPT 风格：居中问候 + 居中输入框 + 建议行） ── */
+/* ── 首页空态（ChatGPT 风格：居中问候 + 居中输入框 + 建议卡片） ── */
 .chat-home {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 20px;
-  padding: 24px 16px;
+  gap: 22px;
+  padding: 24px 16px 48px;
   overflow-y: auto;
 }
 
+.chat-home-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: 64px;
+}
+
 .chat-home-greeting {
-  font-size: 26px;
+  font-size: clamp(24px, 2.4vw, 30px);
   font-weight: 600;
-  color: var(--text-2);
+  letter-spacing: -0.01em;
+  color: var(--text);
   text-align: center;
   margin: 0;
 }
@@ -458,28 +620,55 @@
 
 .chat-suggestions {
   width: min(768px, 100%);
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .chat-suggestion {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 9px;
+  min-width: 0;
   padding: 10px 12px;
-  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
   color: var(--text-2);
-  font-size: var(--text-m);
+  font-size: var(--text-s);
   text-align: left;
+  transition: background-color 150ms var(--ease-out), border-color 150ms var(--ease-out), color 150ms var(--ease-out);
 }
 
-.chat-suggestion svg {
+.chat-suggestion-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 8px;
+  background: var(--panel-2);
   color: var(--text-3);
+  transition: color 150ms var(--ease-out), background-color 150ms var(--ease-out);
+}
+
+.chat-suggestion-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-suggestion:hover {
-  background: var(--panel-2);
+  background: var(--hover-bg);
+  border-color: var(--border-strong);
   color: var(--text);
+}
+
+.chat-suggestion:hover .chat-suggestion-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 /* ── Settings panel ── */
@@ -575,11 +764,50 @@
 .chat-dialog-menu {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
-.chat-dialog-menu .btn {
+/* 会话操作菜单项：整行可点，图标 + 文案；危险操作独立分组 */
+.chat-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: var(--radius-s);
+  color: var(--text);
+  font-size: var(--text-m);
   text-align: left;
+}
+
+.chat-menu-item svg {
+  color: var(--text-3);
+}
+
+.chat-menu-item:hover {
+  background: var(--hover-bg);
+}
+
+.chat-menu-item:hover svg {
+  color: var(--text-2);
+}
+
+.chat-menu-item.danger {
+  color: var(--danger);
+}
+
+.chat-menu-item.danger svg {
+  color: var(--danger);
+}
+
+.chat-menu-item.danger:hover {
+  background: var(--danger-bg);
+}
+
+.chat-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
 }
 
 .chat-dialog-field {
@@ -795,10 +1023,15 @@
   }
   @keyframes chat-sidebar-in { from { transform: translateX(-100%); } }
   /* 顶栏紧凑：标题 + 状态徽标 + 设置钮单行 */
-  .chat-main-header { min-height: 44px; padding: 6px 12px; }
-  .chat-main-header .title { font-size: 14px; }
+  .chat-main-header { min-height: 48px; padding: 6px 12px; gap: 4px; }
+  .chat-main-heading { gap: 6px; }
+  .chat-model-select { max-width: 52vw; font-size: 14px; }
+  .chat-main-subtitle { display: none; }
+  /* 工作台入口在侧栏底部已有，窄屏顶栏不再重复占位 */
+  .chat-header-workbench { display: none; }
   /* 消息流收边 */
   .chat-messages-inner { padding: 16px 12px 12px; gap: 20px; }
+  .chat-message.user .chat-bubble { max-width: 92%; padding: 9px 13px; }
   .chat-composer-area {
     padding: 6px calc(12px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
   }
@@ -813,8 +1046,11 @@
   .chat-dialog { min-width: 0; }
   .chat-dialog-actions { flex-wrap: wrap; }
   /* 首页空态收边 */
-  .chat-home { padding: 16px 12px; gap: 16px; }
+  .chat-home { padding: 16px 12px 32px; gap: 18px; }
+  .chat-home-hero { min-height: 48px; }
   .chat-home-greeting { font-size: 22px; }
+  .chat-suggestions { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .chat-suggestion { padding: 8px 10px; }
 }
 
 /* 触屏（hover 不可用）：会话菜单与消息操作按钮常显，触控目标顶满 44px */
@@ -825,4 +1061,5 @@
   .chat-composer-toolbar .icon-btn { width: 44px; height: 44px; }
   .chat-round-btn { width: 44px; height: 44px; }
   .chat-message .actions .icon-btn { width: 36px; height: 36px; }
+  .chat-model-select { min-height: 40px; }
 }

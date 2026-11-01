@@ -86,11 +86,12 @@ export class ChatRunner {
 
   async runChatMessage(params: {
     sessionId: string;
-    userMessage: string;
     images?: ChatImageInput[];
     meta: ChatSessionMeta;
     signal: AbortSignal;
     onDelta: (text: string) => void;
+    /** 运行登记成功（首个 await 之前）：路由层据此广播 started，让 UI 无需等待首个 token。 */
+    onStarted?: () => void;
     /** 思考过程增量（thinking_delta）：与文本同通道实时上抛，路由层转 SSE thinking_delta。 */
     onThinkingDelta?: (text: string) => void;
     onToolCall?: (call: { id: string; name: string }) => void;
@@ -100,7 +101,7 @@ export class ChatRunner {
     /** Python 环境状态（preparing/ready/error）：转发自 chat-tools，路由层据此发 python_status 事件。 */
     onPythonStatus?: PythonStatusCallback;
   }): Promise<{ assistantContent: MessageContent[]; stopReason: string }> {
-    const { sessionId, userMessage, meta, signal, onDelta, onThinkingDelta, onToolCall, onToolResult, onStopped, onPythonStatus } = params;
+    const { sessionId, meta, signal, onDelta, onStarted, onThinkingDelta, onToolCall, onToolResult, onStopped, onPythonStatus } = params;
 
     // 并发护栏必须在首个 await 之前同步执行：两个 await 之后才登记会让并发重复提交双双通过。
     // 路由层按 message 含 "already running" 判 409。
@@ -108,6 +109,7 @@ export class ChatRunner {
     // 外部 signal 与 stopChatMessage 的内部 abort 合并
     const abort = new AbortController();
     this.activeRuns.set(sessionId, abort);
+    onStarted?.();
     const combinedSignal = AbortSignal.any([signal, abort.signal]);
 
     // 合并助手预设得到生效配置
@@ -127,31 +129,9 @@ export class ChatRunner {
       ...pathMessages,
     ];
 
-    // 本轮用户消息（HTTP 层已落盘；此处补进内存上下文）
-    const userContent: MessageContent[] = [{ type: "text", text: userMessage }];
-    for (const image of params.images ?? []) {
-      userContent.push({
-        type: "image",
-        mediaType: image.mediaType,
-        ...(image.data ? { data: image.data } : {}),
-        ...(image.ref ? { ref: image.ref } : {}),
-      });
-    }
-    const lastStored = messages.at(-1);
-    // 空文本消息（纯图片）跳过内容级去重：图片消息的落盘形态无 text 块可比对，
-    // 直接 push 保证图片进上下文（HTTP 层落盘消息与内存 messages 同源，不会重复）
-    const isAlreadyStored = userMessage !== ""
-      && lastStored?.role === "user"
-      && lastStored.content.some((c) => c.type === "text" && c.text === userMessage);
-    if (!isAlreadyStored) {
-      messages.push({
-        id: randomUUID(),
-        role: "user",
-        content: userContent,
-        createdAt: new Date().toISOString(),
-      });
-    }
-
+    // 所有入口（普通发送 / edit / retry）都已在路由层确定 activeLeaf：
+    // 当前 user 消息及其图片已在 pathMessages 中，不能再按文本补投一次。
+    // 否则纯图片消息会出现重复 user/image，纯图片 retry 还会多出一个无图空白 user。
     // ref 形态图片块（>2MB 落盘图 / 生成图）内联为 base64：provider 只认 data 形态。
     // 读取失败的块保留 ref 不进 provider（provider 侧跳过缺 data 的 image 块）。
     await this.inlineImageRefs(sessionId, messages);

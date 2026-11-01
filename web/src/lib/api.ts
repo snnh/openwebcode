@@ -337,6 +337,11 @@ export const api = {
   // chat 模式（ChatGPT 风格）：与主路径同一 request 封装（ApiError 归一化 + 401 广播）。
   // 响应体宽松类型（unknown/void）仅作状态判定，调用方按各自契约解析。
   chatSession: (id: string) => request<import("./contracts").ChatSessionDetail>(`/api/chat/sessions/${id}`),
+  chatMessages: (id: string, limit = 50, before?: string) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (before) query.set("before", before);
+    return request<import("./contracts").ChatMessagesPage>(`/api/chat/sessions/${id}/messages?${query.toString()}`);
+  },
   chatSessions: () => request<import("./contracts").ChatSessionMeta[]>("/api/chat/sessions"),
   chatCreateSession: (body: { provider: string; model: string }) =>
     request<import("./contracts").ChatSessionMeta>("/api/chat/sessions", { method: "POST", body: JSON.stringify(body) }),

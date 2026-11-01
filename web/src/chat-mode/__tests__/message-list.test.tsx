@@ -1,7 +1,10 @@
-// ChatMessageList：重新生成（仅 assistant、请求形状、409 提示）、图片路由、思考块（历史折叠 / 流式 live）。
+// ChatMessageList：重新生成（仅 assistant、请求形状、409 提示）、图片路由、思考块（历史折叠 / 流式 live）、
+// 活动分支分页前插与 started 运行态。
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatMessageList } from "../ChatMessageList";
+import { api } from "../../lib/api";
+import type { ChatMessage } from "../types";
 import { ui } from "../../app/ui-store";
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -68,5 +71,36 @@ describe("ChatMessageList", () => {
     expect((await view.findByText("正在思考")).closest("details")?.className).toContain("live");
     es.emit({ type: "done", runId: "r1", stopReason: "end_turn" });
     await waitFor(() => expect(view.container.querySelector("details.thinking.live")).toBeNull());
+  });
+});
+
+describe("活动分支分页与运行起点", () => {
+  it("首屏只取最近一页；向上翻页按 before 前插且按 id 去重；started 立即进入思考态，done 后收起", async () => {
+    const older: ChatMessage = { id: "u0", role: "user", content: [{ type: "text", text: "更早的问题" }], createdAt: "2026-01-01T00:00:00Z" };
+    const tail: ChatMessage[] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "问题" }], createdAt: "2026-01-01T00:00:01Z" },
+      { id: "a1", role: "assistant", content: [{ type: "text", text: "回答" }], createdAt: "2026-01-01T00:00:02Z" },
+    ];
+    const pages = vi.spyOn(api, "chatMessages").mockImplementation(async (_id, _limit, before) =>
+      before
+        ? { messages: [older, tail[0]!], hasMore: false }
+        : { messages: tail, hasMore: true });
+    stubFetch(() => ({ status: 200, body: DETAIL }));
+
+    const view = render(<ChatMessageList sessionId="s1" />);
+    await view.findByText("回答");
+    expect(pages.mock.calls[0]).toEqual(["s1", 50]);
+    // jsdom 无 IntersectionObserver：渲染兜底按钮，点击后前插更早一页并去重
+    fireEvent.click(view.getByRole("button", { name: "加载更早的消息" }));
+    await view.findByText("更早的问题");
+    expect(pages.mock.calls.at(-1)).toEqual(["s1", 50, "u1"]);
+    expect(view.getAllByText("问题")).toHaveLength(1);
+
+    const es = MockEventSource.instances.find((instance) => instance.url.includes("/stream"))!;
+    es.emit({ type: "connected", running: false });
+    es.emit({ type: "started", runId: "r1" });
+    expect(await view.findByLabelText("正在思考…")).toBeInTheDocument();
+    es.emit({ type: "done", runId: "r1", stopReason: "end_turn" });
+    await waitFor(() => expect(view.queryByLabelText("正在思考…")).toBeNull());
   });
 });

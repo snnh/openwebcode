@@ -1,7 +1,7 @@
 // 消息列表：REST 拉历史 + SSE 增量（delta/done/error/stopped/python_status/tool_call/connected）。
 // 流式渲染复用 chat/stream-buffer（rAF 合批），滚动跟随复用 chat/scroll-controller（上翻不拽回）。
 // reloadToken 由父组件在发送成功后递增——自己刚发的 user 消息立刻可见，不等 done 才刷新。
-import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import { useI18n } from "../i18n";
 import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
@@ -14,6 +14,8 @@ import { createScrollFollower, type ScrollFollower } from "../chat/scroll-contro
 import { ThinkingBlock } from "../chat/MessageCard";
 import { ChatBlocks } from "./ChatBlocks";
 import type { ChatMessage, ChatStreamEvent } from "./types";
+
+const HISTORY_PAGE_SIZE = 50;
 
 export function ChatMessageList({ sessionId, reloadToken }: {
   sessionId: string;
@@ -30,8 +32,20 @@ export function ChatMessageList({ sessionId, reloadToken }: {
   const [toolActivity, setToolActivity] = useState<string>();
   const [copiedId, setCopiedId] = useState<string>();
   const [following, setFollowing] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [historyError, setHistoryError] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   const followerRef = useRef<ScrollFollower | undefined>(undefined);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  const sessionRef = useRef(sessionId);
+  const historyRequestRef = useRef(0);
+  const previousSessionRef = useRef(sessionId);
+  const prependPendingRef = useRef(false);
+  const firstMessageId = messages[0]?.id;
+  const previousFirstMessageRef = useRef(firstMessageId);
+  sessionRef.current = sessionId;
   const streamingBlocks = useStreamBlocks(sessionId);
   // 块引用级 join 缓存：stream-buffer 提交时未触碰的块保持引用稳定，直接复用上次 join 结果，
   // 流式期间每帧只重 join 末尾活跃块，不再 O(全长) 复制
@@ -67,32 +81,112 @@ export function ChatMessageList({ sessionId, reloadToken }: {
     };
   }, []);
 
+  /** 拉当前活动分支尾部；保留窗口用于流式完成后的原位刷新，避免已翻出的历史突然消失。 */
+  const loadMessages = useCallback(async (preserveWindow = false): Promise<boolean> => {
+    const request = ++historyRequestRef.current;
+    const limit = preserveWindow ? Math.min(500, Math.max(HISTORY_PAGE_SIZE, messagesRef.current.length)) : HISTORY_PAGE_SIZE;
+    setLoadingMore(false);
+    try {
+      const data = await api.chatMessages(sessionId, limit);
+      if (request !== historyRequestRef.current || sessionRef.current !== sessionId) return false;
+      messagesRef.current = data.messages;
+      setMessages(data.messages);
+      setHasMore(data.hasMore);
+      setHistoryError(false);
+      return true;
+    } catch {
+      if (request === historyRequestRef.current && sessionRef.current === sessionId) setHistoryError(true);
+      return false;
+    }
+  }, [sessionId]);
+
   useEffect(() => {
+    const sessionChanged = previousSessionRef.current !== sessionId;
+    previousSessionRef.current = sessionId;
     setError(undefined);
     setMaxTurns(false);
     setToolActivity(undefined);
-    streamBuffer.clear(sessionId);
-    void loadMessages();
-    // 切换会话后回到贴底跟随态
-    follower().scrollToBottom();
-    // sessionId / reloadToken 变化时重拉
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, reloadToken]);
-
-  const loadMessages = useCallback(async (): Promise<void> => {
-    try {
-      const data = await api.chatSession(sessionId);
-      setMessages(data.messages ?? []);
-    } catch {
-      // 拉取失败保持现有列表
+    setHistoryError(false);
+    if (sessionChanged) {
+      historyRequestRef.current += 1;
+      messagesRef.current = [];
+      setMessages([]);
+      setHasMore(false);
+      setLoadingMore(false);
+      prependPendingRef.current = false;
+      // 只清上一个会话的残留流；同会话重拉时保留在途流式内容（避免清掉刚开始的输出）
+      streamBuffer.clear(sessionId);
     }
-  }, [sessionId]);
+    void loadMessages(!sessionChanged);
+    // 切换会话/自己发送后回到贴底跟随态
+    follower().scrollToBottom();
+  }, [sessionId, reloadToken, loadMessages]);
+
+  const handleLoadMore = useCallback(async (): Promise<void> => {
+    const oldestId = messagesRef.current[0]?.id;
+    if (loadingMore || !hasMore || !oldestId) return;
+    const request = ++historyRequestRef.current;
+    setLoadingMore(true);
+    setHistoryError(false);
+    follower().preparePrepend();
+    prependPendingRef.current = true;
+    try {
+      const page = await api.chatMessages(sessionId, HISTORY_PAGE_SIZE, oldestId);
+      if (request !== historyRequestRef.current || sessionRef.current !== sessionId) return;
+      const existing = messagesRef.current;
+      const existingIds = new Set(existing.map((message) => message.id));
+      const older = page.messages.filter((message) => !existingIds.has(message.id));
+      const next = [...older, ...existing];
+      messagesRef.current = next;
+      setMessages(next);
+      setHasMore(page.hasMore);
+    } catch {
+      if (request === historyRequestRef.current && sessionRef.current === sessionId) setHistoryError(true);
+    } finally {
+      if (request === historyRequestRef.current && sessionRef.current === sessionId) setLoadingMore(false);
+    }
+  }, [loadingMore, hasMore, sessionId]);
+
+  // 前插完成后按 scrollHeight 差值补偿，视口停留在原消息上。
+  useLayoutEffect(() => {
+    if (previousFirstMessageRef.current === firstMessageId) return;
+    previousFirstMessageRef.current = firstMessageId;
+    if (prependPendingRef.current) {
+      prependPendingRef.current = false;
+      follower().applyPrepend();
+    }
+  }, [firstMessageId]);
+
+  // 空页/重复页/失败没有前插时也要恢复 overflow-anchor。
+  useLayoutEffect(() => {
+    if (loadingMore || !prependPendingRef.current) return;
+    prependPendingRef.current = false;
+    follower().applyPrepend();
+  }, [loadingMore]);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || typeof IntersectionObserver === "undefined") return undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void handleLoadMore();
+      },
+      { root: scrollRef.current, rootMargin: "320px 0px 0px 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [handleLoadMore]);
 
   // SSE 增量通道：出错不 close，交给浏览器自动重连（connected 帧带 running 可自愈）
   useEffect(() => {
     if (!sessionId) return undefined;
 
     const es = new EventSource(`/api/chat/sessions/${sessionId}/stream`);
+    const settleStream = async (): Promise<void> => {
+      streamBuffer.finish();
+      // 历史替换成功后才清理流式层；失败时保留已流出的正文，避免完成后空白。
+      if (await loadMessages(true)) streamBuffer.clear(sessionId);
+    };
 
     es.onmessage = (event) => {
       try {
@@ -101,6 +195,12 @@ export function ChatMessageList({ sessionId, reloadToken }: {
           setRunning(data.running ?? false);
           chatMode.setRunning(sessionId, data.running ?? false);
           setDisconnected(false);
+        } else if (data.type === "started") {
+          setError(undefined);
+          setMaxTurns(false);
+          setToolActivity(undefined);
+          setRunning(true);
+          chatMode.setRunning(sessionId, true);
         } else if (data.type === "delta") {
           streamBuffer.queueDelta(sessionId, data.text ?? "");
           setToolActivity(undefined);
@@ -120,19 +220,16 @@ export function ChatMessageList({ sessionId, reloadToken }: {
           if (data.status) chatMode.setPythonStatus(sessionId, data.status);
         } else if (data.type === "stopped") {
           // 用户停止：已累积的部分文本由 server 落盘，刷新历史即可拿到，不加错误样式
-          streamBuffer.finish();
-          streamBuffer.clear(sessionId);
           setToolActivity(undefined);
           setRunning(false);
           chatMode.setRunning(sessionId, false);
-          void loadMessages();
+          void settleStream();
         } else if (data.type === "done") {
-          streamBuffer.clear(sessionId);
           setToolActivity(undefined);
           setRunning(false);
           chatMode.setRunning(sessionId, false);
           setMaxTurns(data.stopReason === "max_turns");
-          void loadMessages();
+          void settleStream();
         } else if (data.type === "error") {
           setError(data.error ?? t("未知错误", "Unknown error"));
           streamBuffer.clear(sessionId);
@@ -168,8 +265,7 @@ export function ChatMessageList({ sessionId, reloadToken }: {
       streamBuffer.clear(sessionId);
       setError(undefined);
       setMaxTurns(false);
-      setRunning(true);
-      chatMode.setRunning(sessionId, true);
+      void loadMessages();
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
         ui.notify(t("对话正在运行中，请稍后再试", "Chat is running; try again later"), "error");
@@ -177,7 +273,7 @@ export function ChatMessageList({ sessionId, reloadToken }: {
         ui.notify(t("重新生成失败", "Regenerate failed"), "error");
       }
     }
-  }, [sessionId, t]);
+  }, [sessionId, t, loadMessages]);
 
   // 编辑重发：与 retry 同语义（回溯长出文本已编辑的新分支），202 后走同一接管逻辑
   const handleEdit = useCallback(async (messageId: string, text: string): Promise<void> => {
@@ -186,8 +282,6 @@ export function ChatMessageList({ sessionId, reloadToken }: {
       streamBuffer.clear(sessionId);
       setError(undefined);
       setMaxTurns(false);
-      setRunning(true);
-      chatMode.setRunning(sessionId, true);
       void loadMessages();
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
@@ -210,12 +304,33 @@ export function ChatMessageList({ sessionId, reloadToken }: {
     });
   }, []);
 
-  const isEmpty = messages.length === 0 && !streamingText && !running && !error;
+  const isEmpty = messages.length === 0 && !streamingText && !running && !error && !historyError;
 
   return (
     <div className="chat-messages-wrap">
       <div className="chat-messages" ref={scrollRef}>
         <div className="chat-messages-inner">
+        {hasMore && <div className="chat-top-sentinel" ref={sentinelRef} aria-hidden />}
+        {loadingMore && <div className="chat-loading-row">{t("加载中…", "Loading…")}</div>}
+        {hasMore && !loadingMore && typeof IntersectionObserver === "undefined" && (
+          <div className="load-more-bar">
+            <button type="button" className="load-more-btn" onClick={() => void handleLoadMore()}>
+              {t("加载更早的消息", "Load earlier messages")}
+            </button>
+          </div>
+        )}
+        {historyError && (
+          <div className="chat-history-error" role="alert">
+            <span>{t("消息加载失败，请重试", "Failed to load messages; please try again")}</span>
+            <button
+              type="button"
+              className="btn small"
+              onClick={() => void (messages.length > 0 && hasMore ? handleLoadMore() : loadMessages(messages.length > 0))}
+            >
+              {t("重试", "Retry")}
+            </button>
+          </div>
+        )}
         {disconnected && (
           <p className="chat-muted-hint">{t("连接中断，正在重连…", "Connection lost, reconnecting…")}</p>
         )}
@@ -355,39 +470,41 @@ const ChatMessageItem = memo(function ChatMessageItem({ message, copied, resolve
           <ChatBlocks content={message.content} resolveImageRef={resolveImageRef} />
         </div>
       )}
-      {message.role === "assistant" && (
+      {!editing && (message.role === "assistant" || message.role === "user") && (
         <div className="actions">
-          <button
-            className="icon-btn"
-            aria-label={copied ? t("已复制", "Copied") : t("复制", "Copy")}
-            title={copied ? t("已复制", "Copied") : t("复制", "Copy")}
-            onClick={() => onCopy(message)}
-          >
-            <Icon name={copied ? "check" : "copy"} />
-          </button>
-          <button
-            className="icon-btn"
-            aria-label={t("重新生成", "Regenerate")}
-            title={t("重新生成", "Regenerate")}
-            onClick={() => void onRetry(message.id)}
-          >
-            <Icon name="undo" />
-          </button>
-        </div>
-      )}
-      {canEdit && !editing && (
-        <div className="actions">
-          <button
-            className="icon-btn"
-            aria-label={t("编辑重发", "Edit & resend")}
-            title={t("编辑重发", "Edit & resend")}
-            onClick={() => {
-              setDraft(messageText);
-              setEditing(true);
-            }}
-          >
-            <Icon name="edit" />
-          </button>
+          {messageText && (
+            <button
+              className="icon-btn"
+              aria-label={copied ? t("已复制", "Copied") : t("复制", "Copy")}
+              title={copied ? t("已复制", "Copied") : t("复制", "Copy")}
+              onClick={() => onCopy(message)}
+            >
+              <Icon name={copied ? "check" : "copy"} />
+            </button>
+          )}
+          {message.role === "assistant" && (
+            <button
+              className="icon-btn"
+              aria-label={t("重新生成", "Regenerate")}
+              title={t("重新生成", "Regenerate")}
+              onClick={() => void onRetry(message.id)}
+            >
+              <Icon name="undo" />
+            </button>
+          )}
+          {canEdit && (
+            <button
+              className="icon-btn"
+              aria-label={t("编辑重发", "Edit & resend")}
+              title={t("编辑重发", "Edit & resend")}
+              onClick={() => {
+                setDraft(messageText);
+                setEditing(true);
+              }}
+            >
+              <Icon name="edit" />
+            </button>
+          )}
         </div>
       )}
     </div>

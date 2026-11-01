@@ -9,18 +9,27 @@ type StoreUpdater<T> = Partial<T> | ((previous: T) => Partial<T>);
 interface Store<T> {
   get(): T;
   set(updater: StoreUpdater<T>): void;
+  /** 整表替换（可删除键）。浅合并的 set 无法删除条目，按会话清理状态时必须用这个。 */
+  replace(next: T): void;
   subscribe(listener: () => void): () => void;
 }
 
 export function createStore<T extends object>(initial: T): Store<T> {
   let state = initial;
   const listeners = new Set<() => void>();
+  const notify = (): void => {
+    for (const listener of listeners) listener();
+  };
   return {
     get: () => state,
     set(updater) {
       const partial = typeof updater === "function" ? updater(state) : updater;
       state = { ...state, ...partial };
-      for (const listener of listeners) listener();
+      notify();
+    },
+    replace(next) {
+      state = next;
+      notify();
     },
     subscribe(listener) {
       listeners.add(listener);

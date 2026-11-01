@@ -15,6 +15,44 @@ interface ToolCategory {
   sandbox?: boolean;
 }
 
+/** 顶栏快捷模型选择；高级生成参数仍由完整设置面板承担。 */
+export function ChatModelSelect({ provider, model, models, disabled, onChange }: {
+  provider: string;
+  model: string;
+  models: ChatModelEntry[];
+  disabled?: boolean;
+  onChange(provider: string, model: string): void;
+}): ReactElement {
+  const { t } = useI18n();
+  const value = `${provider}/${model}`;
+  const available = models.some((entry) => entry.provider === provider && entry.models.some((candidate) => candidate.id === model));
+  return (
+    <select
+      className="chat-model-select"
+      aria-label={t("选择模型", "Choose model")}
+      title={`${provider}/${model}`}
+      value={value}
+      disabled={disabled}
+      onChange={(event) => {
+        const raw = event.target.value;
+        const slash = raw.indexOf("/");
+        if (slash > 0) onChange(raw.slice(0, slash), raw.slice(slash + 1));
+      }}
+    >
+      {!available && <option value={value}>{model} · {provider}</option>}
+      {models.filter((entry) => entry.models.length > 0).map((entry) => (
+        <optgroup key={entry.provider} label={entry.provider}>
+          {entry.models.map((candidate) => (
+            <option key={`${entry.provider}/${candidate.id}`} value={`${entry.provider}/${candidate.id}`}>
+              {candidate.id}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
+  );
+}
+
 export function ChatSettings({ sessionId, onClose, onSaved }: {
   sessionId: string;
   onClose(): void;

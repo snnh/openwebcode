@@ -11,8 +11,9 @@ import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { ChatSessionList } from "./ChatSessionList";
 import { ChatMessageList } from "./ChatMessageList";
 import { ChatComposer, type ChatComposerApi } from "./ChatComposer";
-import { ChatSettings } from "./ChatSettings";
+import { ChatModelSelect, ChatSettings } from "./ChatSettings";
 import { PythonStatusBadge } from "./PythonStatusBadge";
+import { discardChatComposer, migrateChatComposer } from "./composer-store";
 import type { ChatModelEntry, ChatSessionMeta } from "./types";
 
 export function ChatModeView(): ReactElement {
@@ -24,6 +25,7 @@ export function ChatModeView(): ReactElement {
   const [activeSessionId, setActiveSessionId] = useState<string>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(isNarrow);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [modelSaving, setModelSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   /** 发送成功后递增，驱动 ChatMessageList 重拉历史（自己的消息立即可见）。 */
   const [messagesVersion, setMessagesVersion] = useState(0);
@@ -121,6 +123,8 @@ export function ChatModeView(): ReactElement {
       }
 
       const session = await api.chatCreateSession({ provider, model });
+      // 首页未建会话时输入的草稿随新建会话迁移，避免点「新对话」后草稿看起来丢了
+      migrateChatComposer("new", session.id);
       setSessions((previous) => [session, ...previous]);
       setActiveSessionId(session.id);
       setFresh(true);
@@ -132,6 +136,7 @@ export function ChatModeView(): ReactElement {
   }
 
   async function handleDeleted(id: string): Promise<void> {
+    discardChatComposer(id);
     if (activeSessionId === id) {
       setActiveSessionId(undefined);
       setFresh(false);
@@ -146,6 +151,25 @@ export function ChatModeView(): ReactElement {
     if (isNarrow) setSidebarCollapsed(true);
   }
 
+  async function handleModelChange(provider: string, model: string): Promise<void> {
+    const current = sessions.find((session) => session.id === activeSessionId);
+    if (!current || modelSaving || (current.provider === provider && current.model === model)) return;
+    const id = current.id;
+    setModelSaving(true);
+    setSessions((previous) => previous.map((session) => (session.id === id ? { ...session, provider, model } : session)));
+    try {
+      const updated = await api.chatPatch(id, { provider, model });
+      setSessions((previous) => previous.map((session) => (session.id === id ? updated : session)));
+    } catch {
+      setSessions((previous) => previous.map((session) => (
+        session.id === id && session.provider === provider && session.model === model ? current : session
+      )));
+      ui.notify(t("模型切换失败，请重试", "Failed to switch model; please try again"), "error");
+    } finally {
+      setModelSaving(false);
+    }
+  }
+
   /** 首页空态发送成功后切回常规布局并刷新。 */
   function handleSent(): void {
     setFresh(false);
@@ -157,23 +181,26 @@ export function ChatModeView(): ReactElement {
     return <div className="chat-empty"><p>{t("加载中…", "Loading…")}</p></div>;
   }
 
-  const activeTitle = sessions.find((s) => s.id === activeSessionId)?.title;
+  const activeSession = sessions.find((session) => session.id === activeSessionId);
+  const activeTitle = activeSession?.title;
 
   return (
     <div className={`chat-mode-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <div className="chat-sidebar" ref={sidebarRef} tabIndex={-1} aria-label={t("对话列表", "Chat list")}>
         <div className="chat-sidebar-header">
           <button
-            className="chat-sidebar-row"
+            className="chat-new-chat-btn"
             disabled={!canCreate}
             title={canCreate ? undefined : t("尚未配置可用模型，请先在设置中配置服务商", "No model available; configure a provider in Settings first")}
             onClick={() => void createSession()}
           >
-            <Icon name="edit" /> {t("新对话", "New chat")}
+            <span className="chat-new-chat-icon"><Icon name="edit" size={15} /></span>
+            <span>{t("新对话", "New chat")}</span>
           </button>
           <button
             className="icon-btn"
             aria-label={t("收起侧边栏", "Collapse sidebar")}
+            title={t("收起侧边栏", "Collapse sidebar")}
             onClick={() => setSidebarCollapsed(true)}
           >
             <Icon name="chevrons-left" />
@@ -189,12 +216,14 @@ export function ChatModeView(): ReactElement {
         <div className="chat-sidebar-footer">
           <button
             className="chat-sidebar-row"
+            title={t("切换到编码工作台", "Switch to Workbench")}
             onClick={() => {
               ui.setMode("workbench");
               router.navigate("/workbench");
             }}
           >
-            <Icon name="terminal" /> {t("工作台", "Workbench")}
+            <Icon name="terminal" size={15} /> {t("工作台", "Workbench")}
+            <Icon name="chevrons-right" size={13} />
           </button>
         </div>
       </div>
@@ -222,7 +251,7 @@ export function ChatModeView(): ReactElement {
                 <Icon name="edit" />
               </button>
               <button
-                className="icon-btn"
+                className="icon-btn chat-header-workbench"
                 aria-label={t("工作台", "Workbench")}
                 title={t("工作台", "Workbench")}
                 onClick={() => {
@@ -234,17 +263,33 @@ export function ChatModeView(): ReactElement {
               </button>
             </>
           )}
-          <span className="title">{activeTitle ?? t("新对话", "New Chat")}</span>
-          {activeSessionId && <PythonStatusBadge sessionId={activeSessionId} />}
-          {activeSessionId && (
-            <button
-              className="icon-btn"
-              aria-label={t("对话设置", "Chat settings")}
-              onClick={() => setSettingsOpen(true)}
-            >
-              <Icon name="settings" />
-            </button>
-          )}
+          <div className="chat-main-heading">
+            {activeSession ? (
+              <ChatModelSelect
+                provider={activeSession.provider}
+                model={activeSession.model}
+                models={models}
+                disabled={modelSaving}
+                onChange={(provider, model) => void handleModelChange(provider, model)}
+              />
+            ) : (
+              <span className="title">{t("新对话", "New Chat")}</span>
+            )}
+            {activeTitle && activeSession && <span className="chat-main-subtitle">{activeTitle}</span>}
+          </div>
+          <div className="chat-main-actions">
+            {activeSessionId && <PythonStatusBadge sessionId={activeSessionId} />}
+            {activeSessionId && (
+              <button
+                className="icon-btn"
+                aria-label={t("对话设置", "Chat settings")}
+                title={t("对话设置", "Chat settings")}
+                onClick={() => setSettingsOpen(true)}
+              >
+                <Icon name="settings" />
+              </button>
+            )}
+          </div>
         </div>
         {activeSessionId && !fresh ? (
           <>
@@ -253,7 +298,9 @@ export function ChatModeView(): ReactElement {
           </>
         ) : (
           <div className="chat-home">
-            <h1 className="chat-home-greeting">{t("有什么可以帮忙的？", "What can I help with?")}</h1>
+            <div className="chat-home-hero">
+              <h1 className="chat-home-greeting">{t("有什么可以帮忙的？", "What can I help with?")}</h1>
+            </div>
             <ChatComposer
               sessionId={activeSessionId}
               ensureSession={createSession}
@@ -268,8 +315,8 @@ export function ChatModeView(): ReactElement {
                   className="chat-suggestion"
                   onClick={() => void composerApi.current?.send(t(suggestion.zh, suggestion.en))}
                 >
-                  <Icon name={suggestion.icon} size={16} />
-                  {t(suggestion.labelZh, suggestion.labelEn)}
+                  <span className="chat-suggestion-icon"><Icon name={suggestion.icon} size={15} /></span>
+                  <span className="chat-suggestion-label">{t(suggestion.labelZh, suggestion.labelEn)}</span>
                 </button>
               ))}
               {SUGGESTIONS.length > SUGGESTION_PAGE && (
@@ -279,8 +326,8 @@ export function ChatModeView(): ReactElement {
                   aria-label={t("换一批建议", "More suggestions")}
                   onClick={() => setSuggestionOffset((value) => (value + SUGGESTION_PAGE) % SUGGESTIONS.length)}
                 >
-                  <Icon name="undo" size={16} />
-                  {t("换一批", "More")}
+                  <span className="chat-suggestion-icon"><Icon name="undo" size={15} /></span>
+                  <span className="chat-suggestion-label">{t("换一批", "More")}</span>
                 </button>
               )}
             </div>

@@ -1,7 +1,7 @@
 // ChatSettings 能力模型：候选过滤、主模型能力驱动的工具开关显隐、未配置 pill、PUT 保存形状。
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatSettings } from "../ChatSettings";
+import { ChatModelSelect, ChatSettings } from "../ChatSettings";
 const BASE_META = { id: "s1", title: "对话", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", provider: "p1", model: "m-text", enabledTools: [] };
 const MODELS = [
   { provider: "p1", models: [{ id: "m-text", modalities: ["text"], imageOutput: false }, { id: "m-vision", modalities: ["text", "image"], imageOutput: false }, { id: "m-gen", modalities: ["text"], imageOutput: true }] },
@@ -57,5 +57,20 @@ describe("ChatSettings 能力模型", () => {
     expect(lastPut(fetchMock)[1].credentials).toBe("include");
     fireEvent.change(view.getByLabelText("image_gen 模型（生图）"), { target: { value: "" } });
     await waitFor(() => expect("imageGenModel" in (JSON.parse(String(lastPut(fetchMock)[1].body)) as Record<string, unknown>)).toBe(false));
+  });
+});
+
+describe("ChatModelSelect 顶栏模型入口", () => {
+  it("按服务商分组列出候选，切换时把 provider/model 拆分交给调用方；当前模型不在目录中时补占位项", async () => {
+    const onChange = vi.fn();
+    const view = render(<ChatModelSelect provider="p1" model="m-text" models={MODELS} onChange={onChange} />);
+    const select = view.getByLabelText("选择模型") as HTMLSelectElement;
+    expect(select.options).toHaveLength(4);
+    expect(Array.from(select.querySelectorAll("optgroup")).map((group) => group.getAttribute("label"))).toEqual(["p1", "p2"]);
+    fireEvent.change(select, { target: { value: "p2/other-vision" } });
+    expect(onChange).toHaveBeenCalledWith("p2", "other-vision");
+    view.rerender(<ChatModelSelect provider="p9" model="legacy-model" models={MODELS} onChange={onChange} />);
+    expect((view.getByLabelText("选择模型") as HTMLSelectElement).value).toBe("p9/legacy-model");
+    expect(view.getByText("legacy-model · p9")).toBeInTheDocument();
   });
 });

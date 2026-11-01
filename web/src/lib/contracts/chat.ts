@@ -70,7 +70,7 @@ export interface ChatModelEntry {
 
 /** Chat SSE 事件（GET /api/chat/sessions/:id/stream，data: 行 JSON；对齐 server/src/app.ts chatStreamSend） */
 export interface ChatStreamEvent {
-  type: "connected" | "delta" | "thinking_delta" | "tool_call" | "tool_result" | "stopped" | "python_status" | "done" | "error";
+  type: "connected" | "started" | "delta" | "thinking_delta" | "tool_call" | "tool_result" | "stopped" | "python_status" | "done" | "error";
   /** 本次运行的 id（connected 事件没有）。 */
   runId?: string;
   /** connected：该会话是否有运行中的消息。 */
@@ -93,4 +93,10 @@ export interface ChatStreamEvent {
 
 export interface ChatSessionDetail extends ChatSessionMeta {
   messages: ChatMessage[];
+}
+
+/** GET /api/chat/sessions/:id/messages?limit=…[&before=…] 的活动分支分页。 */
+export interface ChatMessagesPage {
+  messages: ChatMessage[];
+  hasMore: boolean;
 }

@@ -10,7 +10,11 @@ describe("ChatSessionList 重命名", () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => ({ ...SESSION, title: "新标题" }) }) as Response);
     vi.stubGlobal("fetch", fetchMock);
     const onRefresh = vi.fn();
-    const view = render(<ChatSessionList sessions={[SESSION]} onSelect={() => undefined} onRefresh={onRefresh} />);
+    const onSelect = vi.fn();
+    const view = render(<ChatSessionList sessions={[SESSION]} onSelect={onSelect} onRefresh={onRefresh} />);
+    // 会话行本身是可聚焦按钮：键盘 Enter/Space 也能选中（不再是仅鼠标可点的 div）
+    fireEvent.click(view.getByRole("button", { name: "旧标题" }));
+    expect(onSelect).toHaveBeenCalledWith("s1");
     fireEvent.click(view.getByRole("button", { name: "更多操作" }));
     fireEvent.click(await view.findByRole("button", { name: "重命名" }));
     const input = await view.findByPlaceholderText("对话标题");

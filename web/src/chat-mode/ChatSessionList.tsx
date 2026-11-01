@@ -198,18 +198,23 @@ export function ChatSessionList(props: {
             <div
               key={session.id}
               className={`chat-session-item${session.id === props.activeId ? " active" : ""}`}
-              onClick={() => props.onSelect(session.id)}
             >
-              <span className="title">{session.title}</span>
+              <button
+                type="button"
+                className="chat-session-select"
+                aria-current={session.id === props.activeId ? "page" : undefined}
+                title={session.title}
+                onClick={() => props.onSelect(session.id)}
+              >
+                {session.title}
+              </button>
               <button
                 className="icon-btn chat-session-menu"
                 aria-label={t("更多操作", "More actions")}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setMenuSession(session);
-                }}
+                title={t("更多操作", "More actions")}
+                onClick={() => setMenuSession(session)}
               >
-                <Icon name="more" />
+                <Icon name="more" size={14} />
               </button>
             </div>
           ))}
@@ -232,17 +237,18 @@ export function ChatSessionList(props: {
           <div className="chat-dialog">
             <h3>{menuSession.title}</h3>
             <div className="chat-dialog-menu">
-              <button className="btn small" onClick={() => runMenuAction(() => openRename(menuSession))}>
-                {t("重命名", "Rename")}
+              <button className="chat-menu-item" onClick={() => runMenuAction(() => openRename(menuSession))}>
+                <Icon name="edit" size={15} /> {t("重命名", "Rename")}
               </button>
-              <button className="btn small" onClick={() => runMenuAction(() => openShare(menuSession))}>
-                {t("分享", "Share")}
+              <button className="chat-menu-item" onClick={() => runMenuAction(() => openShare(menuSession))}>
+                <Icon name="upload" size={15} /> {t("分享", "Share")}
               </button>
-              <button className="btn small" onClick={() => runMenuAction(() => void handleBranch(menuSession.id))}>
-                {t("分支", "Branch")}
+              <button className="chat-menu-item" onClick={() => runMenuAction(() => void handleBranch(menuSession.id))}>
+                <Icon name="git" size={15} /> {t("分支", "Branch")}
               </button>
-              <button className="btn small danger" onClick={() => runMenuAction(() => handleDelete(menuSession.id))}>
-                {t("删除", "Delete")}
+              <div className="chat-menu-separator" />
+              <button className="chat-menu-item danger" onClick={() => runMenuAction(() => handleDelete(menuSession.id))}>
+                <Icon name="trash" size={15} /> {t("删除", "Delete")}
               </button>
             </div>
           </div>

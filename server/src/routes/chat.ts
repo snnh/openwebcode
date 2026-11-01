@@ -6,7 +6,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { errorMessage } from "../error-utils.js";
 import { timingSafeHashEqual } from "../auth-totp.js";
 import { hashSharePassword, verifySharePassword } from "../chat/share-password.js";
-import type { MessageContent, TextContent } from "../sessions/types.js";
+import type { MessageContent } from "../sessions/types.js";
 import type { ChatAssistant, ChatConfig, ChatImageInput, ChatRunner, ChatSessionMeta, ChatShare } from "../chat/index.js";
 import { CHAT_IMAGE_MAX_BYTES, CHAT_INLINE_IMAGE_MAX_BYTES, extForMediaType, mediaTypeForFile, resolveSessionPath } from "../chat/index.js";
 import { withTimeout } from "../http-utils.js";
@@ -96,6 +96,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
 
   // runner 的停止/Python 环境状态事件经可选回调桥接进 SSE（chat-runner.ts 声明同名回调后即生效）
   type ChatRunOptionalEvents = {
+    onStarted?: () => void;
     onStopped?: () => void;
     onPythonStatus?: (status: "preparing" | "ready" | "error", detail?: string) => void;
     onThinkingDelta?: (text: string) => void;
@@ -108,7 +109,6 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
     runner: ChatRunner,
     params: {
       sessionId: string;
-      userMessage: string;
       images?: ChatImageInput[];
       meta: ChatSessionMeta;
       log: FastifyRequest["log"];
@@ -119,10 +119,10 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
     let startError: unknown;
     const runParams: Parameters<ChatRunner["runChatMessage"]>[0] & ChatRunOptionalEvents = {
       sessionId,
-      userMessage: params.userMessage,
       meta: params.meta,
       signal: withTimeout(undefined, 300_000),
       ...(params.images && params.images.length > 0 ? { images: params.images } : {}),
+      onStarted: () => chatStreamSend(sessionId, { type: "started", runId }),
       onDelta: (text) => chatStreamSend(sessionId, { type: "delta", runId, text }),
       onThinkingDelta: (text) => chatStreamSend(sessionId, { type: "thinking_delta", runId, text }),
       onToolCall: (call) => chatStreamSend(sessionId, { type: "tool_call", runId, ...call }),
@@ -197,20 +197,20 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
     if (!chatSessions) return reply.code(503).send(chatUnavailable());
     const meta = await chatSessions.get(request.params.id);
     if (!meta) return reply.code(404).send({ error: "Session not found" });
-    const messages = await chatSessions.getMessages(request.params.id);
+    const messages = await chatSessions.getActiveMessages(request.params.id);
     return { ...publicMeta(meta), messages };
   });
 
-  /** 向上翻页：beforeId 之前（不含）的最近 limit 条；缺省 before 时返回全量。 */
+  /** 当前活动分支：缺省返回全量；带 limit 返回尾页，带 before 返回其前（不含）一页。 */
   app.get<{ Params: { id: string }; Querystring: { before?: string; limit?: string } }>("/api/chat/sessions/:id/messages", async (request, reply) => {
     if (!chatSessions) return reply.code(503).send(chatUnavailable());
     if (!(await chatSessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
-    const before = request.query.before;
-    if (before !== undefined) {
-      const limit = Math.max(1, Math.min(500, parseInt(request.query.limit ?? "50", 10) || 50));
-      return { messages: await chatSessions.getMessagesBefore(request.params.id, before, limit) };
+    const { before, limit: rawLimit } = request.query;
+    if (before === undefined && rawLimit === undefined) {
+      return { messages: await chatSessions.getActiveMessages(request.params.id) };
     }
-    return { messages: await chatSessions.getMessages(request.params.id) };
+    const limit = Math.max(1, Math.min(500, parseInt(rawLimit ?? "50", 10) || 50));
+    return chatSessions.getActiveMessagesPage(request.params.id, limit, before);
   });
 
   /**
@@ -341,7 +341,6 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
     if (!freshMeta) return reply.code(404).send({ error: "Session not found" });
     const started = await startChatRun(chatRunner, {
       sessionId,
-      userMessage: text,
       meta: freshMeta,
       log: request.log,
       ...(images.length > 0 ? { images } : {}),
@@ -482,13 +481,10 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
     if (target.role !== "assistant") return reply.code(400).send({ error: "Can only retry an assistant message" });
     if (!target.parentId) return reply.code(400).send({ error: "Assistant message has no parent to retry from" });
     if (chatRunner.isRunning(sessionId)) return reply.code(409).send({ error: "Session is already running" });
-    const parent = messages.find((message) => message.id === target.parentId);
-    const userMessage = parent?.role === "user"
-      ? parent.content.filter((block): block is TextContent => block.type === "text").map((block) => block.text).join("\n")
-      : "";
-    // checkout 返回含新 activeLeafId 的最新 meta，直接交给 runner（与父链修复同一纪律）
+    // checkout 返回含新 activeLeafId 的最新 meta，直接交给 runner（与父链修复同一纪律）；
+    // 活动路径已含原 user 消息及其图片，runner 不再需要额外文本
     const freshMeta = await chatSessions.checkout(sessionId, target.parentId);
-    const started = await startChatRun(chatRunner, { sessionId, userMessage, meta: freshMeta, log: request.log });
+    const started = await startChatRun(chatRunner, { sessionId, meta: freshMeta, log: request.log });
     if (started === "conflict") return reply.code(409).send({ error: "Session is already running" });
     return reply.code(202).send(started);
   });
@@ -515,7 +511,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
     // appendMessage 更新了 activeLeafId：重新读取 meta（与 POST messages 同一纪律）
     const freshMeta = await chatSessions.get(sessionId);
     if (!freshMeta) return reply.code(404).send({ error: "Session not found" });
-    const started = await startChatRun(chatRunner, { sessionId, userMessage: text, meta: freshMeta, log: request.log });
+    const started = await startChatRun(chatRunner, { sessionId, meta: freshMeta, log: request.log });
     if (started === "conflict") return reply.code(409).send({ error: "Session is already running" });
     return reply.code(202).send(started);
   });
@@ -685,7 +681,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
       const expected = await shareToken(shareId, session.share.passwordHash);
       if (!timingSafeHashEqual(expected, token)) return reply.code(401).send({ error: "Invalid token" });
     }
-    const messages = await chatSessions.getMessages(session.id);
+    const messages = await chatSessions.getActiveMessages(session.id);
     return { title: session.title, slug: session.share.slug, messages };
   });
 

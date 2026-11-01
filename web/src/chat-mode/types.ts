@@ -9,4 +9,5 @@ export type {
   ChatModelEntry,
   ChatStreamEvent,
   ChatSessionDetail,
+  ChatMessagesPage,
 } from "../lib/contracts";

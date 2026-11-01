@@ -1,4 +1,4 @@
-// python_status SSE 事件 → chatModeStore → PythonStatusBadge 渲染（idle/preparing/ready/error 四态）。
+// python_status SSE 事件 → chatModeStore → PythonStatusBadge 渲染（idle 不占位；preparing/ready/error 三态可见）。
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatMessageList } from "../ChatMessageList";
@@ -19,9 +19,9 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe("python_status 事件链路", () => {
-  it("SSE python_status 写入 store，Badge 按状态渲染", async () => {
+  it("SSE python_status 写入 store，Badge 按状态渲染；idle 不占位", async () => {
     const view = render(<><ChatMessageList sessionId="s1" /><PythonStatusBadge sessionId="s1" /></>);
-    expect(await view.findByText("未初始化")).toBeInTheDocument();
+    expect(view.queryByText("未初始化")).toBeNull();
     const es = MockEventSource.instances[0]!;
     act(() => es.emit({ type: "python_status", runId: "r1", status: "preparing" })); expect(view.getByText("启动中")).toBeInTheDocument();
     act(() => es.emit({ type: "python_status", runId: "r1", status: "ready" })); expect(view.getByText("就绪")).toBeInTheDocument();

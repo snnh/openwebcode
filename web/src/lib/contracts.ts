@@ -23,7 +23,7 @@ export type { EvalTaskInfo, EvalTaskResult, EvalTokenUsage, EvalRunReport, EvalR
 // ── scm ──
 export type { ScmStatusEntry, ScmStatus, ScmDiff, ScmWorktree, ScmLogEntry, ScmWorktreeMergeResult } from "./contracts/scm";
 // ── chat ──
-export type { ChatSessionMeta, ChatShare, ChatAssistant, ChatConfig, ChatModelEntry, ChatStreamEvent, ChatSessionDetail } from "./contracts/chat";
+export type { ChatSessionMeta, ChatShare, ChatAssistant, ChatConfig, ChatModelEntry, ChatStreamEvent, ChatSessionDetail, ChatMessagesPage } from "./contracts/chat";
 // ── provider ──
 export type { ModelInterfaceType, WebCapability, WebProviderType, ModelProviderProfileView, WebProviderProfileView, ProviderProfilesView, ProviderConnectionTestResult } from "./contracts/provider";
 // ── update ──
