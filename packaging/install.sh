@@ -3,7 +3,7 @@
 #
 # 用法（在解压后的包根目录执行）:
 #   ./install.sh [--prefix <dir>] [--port <n>] [--data-dir <dir>] \
-#     [--host <addr> | --lan] [--system] [--use-system-node] \
+#     [--host <addr> | --lan] [--system] [--use-system-node] [--upgrade-node] \
 #     [--with-systemd] [--enable-service] [--open-firewall] [--dsh-compat] [--yes]
 #
 # 未传 --yes 且 stdin/stdout 都是 TTY 时，会仅询问没有由命令行指定的选项。
@@ -17,7 +17,9 @@
 #   --host <addr>        启动器的 OWC_HOST 默认值（默认 127.0.0.1）
 #   --lan                --host 0.0.0.0 的快捷方式（开启局域网访问；与 --host 互斥）
 #   --system             显式系统级安装（需要 root；root 运行时本就走系统级默认路径）
-#   --use-system-node    不复制包内 node/，安装时验证系统 Node.js >= 24
+#   --use-system-node    不复制包内 node/，安装时验证系统 Node.js >= 24.22.1
+#   --upgrade-node       系统 Node.js 低于 24.22.1 时自动帮助升级：优先用 nvm 安装该版本，
+#                        没有 nvm 时下载官方发行包到安装目录（自包含，需要网络）
 #   --with-systemd       写入 systemd unit（root → /etc/systemd/system，否则用户级；
 #                        可用 OWC_SYSTEMD_UNIT_DIR 覆盖目标目录；不主动执行 systemctl）
 #   --enable-service     隐含 --with-systemd，并执行 systemctl daemon-reload + enable --now
@@ -60,6 +62,12 @@
 #           rm -rf /var/lib/openwebcode   # 用户数据，按需
 set -eu
 
+# 最低支持的 Node.js 版本：与 server/package.json、web/package.json 的 engines.node 一致。
+# 低于该版本时安装器不直接失败，而是先尝试「帮助升级」：包内自带 Node → 直接改用自带
+# （不复制、不动系统）；无自带 Node 且打了 --upgrade-node（或交互确认）→ 依次尝试 nvm 与
+# 官方发行包下载到安装目录（自包含，卸载随安装目录一起删除）。
+NODE_MIN_VERSION=24.22.1
+
 die() {
     echo "install.sh: $1" >&2
     exit "${2:-2}"
@@ -75,7 +83,9 @@ usage() {
   --host <addr>        启动器默认监听地址（默认 127.0.0.1）
   --lan                开启局域网访问（等价 --host 0.0.0.0；与 --host 互斥）
   --system             显式系统级安装（需要 root）
-  --use-system-node    使用系统 Node.js（安装时要求 >= 24）
+  --use-system-node    使用系统 Node.js（安装时要求 >= 24.22.1）
+  --upgrade-node       系统 Node.js 过旧时自动升级（优先 nvm，其次下载官方
+                       发行包到安装目录；需要网络）
   --with-systemd       写入 systemd 服务文件（root 写系统级，否则用户级），不自动启用
   --enable-service     写入并立即启用、启动 systemd 服务（systemctl enable --now）
   --open-firewall      非回环监听时放行防火墙端口（firewalld/ufw，仅 root）
@@ -236,6 +246,130 @@ ask_until_valid() {
     done
 }
 
+# ---- Node.js 版本比较与升级助手 ----
+# 版本比较：$1 >= $2 时返回 0。按 . 分段做数值比较（"24.22.1"、"24.22.1-nightly" 这类
+# 带后缀的版本按前缀数字比较），不依赖 GNU sort -V，busybox 环境同样可用。
+version_ge() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        na = split(a, pa, "."); nb = split(b, pb, ".");
+        n = na > nb ? na : nb;
+        for (i = 1; i <= n; i++) {
+            x = (i <= na) ? pa[i] + 0 : 0;
+            y = (i <= nb) ? pb[i] + 0 : 0;
+            if (x > y) exit 0;
+            if (x < y) exit 1;
+        }
+        exit 0;
+    }'
+}
+
+# 读取某个 node 可执行文件的版本号；不可执行/读不到时返回非零。
+node_version_of() {
+    [ -n "$1" ] && [ -x "$1" ] || return 1
+    "$1" -p 'process.versions.node' 2>/dev/null
+}
+
+# 若用户装了 nvm，用它安装目标版本并输出该版本的 node 绝对路径。
+# 只安装、不切换默认版本（不写用户的 nvm alias/default），失败返回非零。
+nvm_node_path() {
+    [ -n "${HOME:-}" ] || return 1
+    nvm_sh=''
+    for candidate in "${NVM_DIR:-}/nvm.sh" "$HOME/.nvm/nvm.sh" /usr/local/share/nvm/nvm.sh /usr/share/nvm/nvm.sh; do
+        case "$candidate" in
+            /nvm.sh|'') continue ;;
+        esac
+        if [ -f "$candidate" ]; then nvm_sh=$candidate; break; fi
+    done
+    [ -n "$nvm_sh" ] || return 1
+    command -v bash >/dev/null 2>&1 || return 1
+    echo "检测到 nvm（$nvm_sh）：正在安装 Node.js $NODE_MIN_VERSION..." >&2
+    resolved=$(NVM_SH="$nvm_sh" NVM_VER="$NODE_MIN_VERSION" bash -c \
+        '. "$NVM_SH" >/dev/null 2>&1 || exit 1; nvm install "$NVM_VER" >/dev/null 2>&1 || exit 1; nvm which "$NVM_VER"' 2>/dev/null) || return 1
+    node_version_of "$resolved" >/dev/null 2>&1 || return 1
+    printf '%s' "$resolved"
+}
+
+# 下载官方 Node 发行包到临时目录，供「包内没有 node/」的发行包（如 loongarch64）在安装目录内
+# 自包含升级：不动系统 Node，产物随后复制到 <prefix>/lib/openwebcode/node，卸载时一并删除。
+# 成功时设置 NODE_DOWNLOAD_DIR 指向解压出的 node-v<ver>-linux-<arch> 目录。
+fetch_node_runtime() {
+    NODE_DOWNLOAD_DIR=''
+    if [ "$(uname -s)" != 'Linux' ]; then
+        echo "install.sh: 自动下载 Node.js 目前只支持 Linux 发行包。" >&2
+        return 1
+    fi
+    case "$(uname -m)" in
+        x86_64|amd64) node_arch=linux-x64 ;;
+        aarch64|arm64) node_arch=linux-arm64 ;;
+        *)
+            echo "install.sh: Node.js 官方没有 $(uname -m) 的预编译包；请用发行版包管理器安装 Node.js >= $NODE_MIN_VERSION。" >&2
+            return 1
+            ;;
+    esac
+    node_tar="node-v$NODE_MIN_VERSION-$node_arch.tar.gz"
+    node_url="https://nodejs.org/dist/v$NODE_MIN_VERSION/$node_tar"
+    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/owc-node.XXXXXX") || return 1
+    echo "正在下载 Node.js $NODE_MIN_VERSION（$node_url）..." >&2
+    if command -v curl >/dev/null 2>&1; then
+        fetch='curl -fsSL'
+    elif command -v wget >/dev/null 2>&1; then
+        fetch='wget -q -O -'
+    else
+        rm -rf "$tmp_dir"
+        echo "install.sh: 需要 curl 或 wget 才能下载 Node.js。" >&2
+        return 1
+    fi
+    if ! $fetch "$node_url" > "$tmp_dir/$node_tar" 2>/dev/null; then
+        rm -rf "$tmp_dir"
+        echo "install.sh: 下载 Node.js 失败（网络不可用？）：$node_url" >&2
+        return 1
+    fi
+    # 校验官方 SHASUMS256.txt（与 release.yml 同一纪律：不信任裸下载）
+    if $fetch "https://nodejs.org/dist/v$NODE_MIN_VERSION/SHASUMS256.txt" > "$tmp_dir/SHASUMS256.txt" 2>/dev/null; then
+        expected=$(awk -v name="$node_tar" '$2 == name { print $1 }' "$tmp_dir/SHASUMS256.txt" | head -n 1)
+        if [ -n "$expected" ]; then
+            if command -v sha256sum >/dev/null 2>&1; then
+                actual=$(sha256sum "$tmp_dir/$node_tar" | awk '{ print $1 }')
+            elif command -v shasum >/dev/null 2>&1; then
+                actual=$(shasum -a 256 "$tmp_dir/$node_tar" | awk '{ print $1 }')
+            else
+                actual=$expected
+            fi
+            if [ "$actual" != "$expected" ]; then
+                rm -rf "$tmp_dir"
+                echo "install.sh: Node.js 发行包校验失败（期望 $expected，实际 $actual）。" >&2
+                return 1
+            fi
+        fi
+    fi
+    if ! tar -xzf "$tmp_dir/$node_tar" -C "$tmp_dir" 2>/dev/null; then
+        rm -rf "$tmp_dir"
+        echo "install.sh: 解压 Node.js 发行包失败。" >&2
+        return 1
+    fi
+    node_root="$tmp_dir/node-v$NODE_MIN_VERSION-$node_arch"
+    if ! node_version_of "$node_root/bin/node" >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        echo "install.sh: 解压后的 Node.js 不可执行。" >&2
+        return 1
+    fi
+    NODE_DOWNLOAD_DIR=$node_root
+    return 0
+}
+
+# 升级失败/用户拒绝时的统一提示。
+node_upgrade_hint() {
+    echo "install.sh: 可用以下方式升级 Node.js 到 >= $NODE_MIN_VERSION：" >&2
+    echo "  nvm:   nvm install $NODE_MIN_VERSION && nvm use $NODE_MIN_VERSION" >&2
+    echo "  fnm:   fnm install $NODE_MIN_VERSION && fnm use $NODE_MIN_VERSION" >&2
+    echo "  Debian/Ubuntu: 使用 NodeSource 或 nvm（发行版自带 nodejs 通常过旧）" >&2
+    if [ "$BUNDLED_NODE" -eq 1 ]; then
+        echo "  或去掉 --use-system-node 重跑 ./install.sh，直接使用包内自带的 Node.js $NODE_MIN_VERSION" >&2
+    else
+        echo "  或加 --upgrade-node 重跑 ./install.sh，让安装器自动安装（优先 nvm，其次下载官方发行包到安装目录）" >&2
+    fi
+}
+
 [ -n "${HOME:-}" ] || die "HOME 未设置，无法选择用户安装前缀" 1
 
 PREFIX=$(default_prefix)
@@ -246,6 +380,7 @@ WITH_SYSTEMD=0
 ENABLE_SERVICE=0
 OPEN_FIREWALL=0
 USE_SYSTEM_NODE=0
+UPGRADE_NODE=0
 ASSUME_YES=0
 SYSTEM_INSTALL=0
 DSH_COMPAT=0
@@ -256,6 +391,7 @@ HOST_SET=0
 LAN_SET=0
 WITH_SYSTEMD_SET=0
 USE_SYSTEM_NODE_SET=0
+UPGRADE_NODE_SET=0
 OPEN_FIREWALL_SET=0
 DSH_COMPAT_SET=0
 
@@ -322,6 +458,11 @@ while [ $# -gt 0 ]; do
         --use-system-node)
             USE_SYSTEM_NODE=1
             USE_SYSTEM_NODE_SET=1
+            shift
+            ;;
+        --upgrade-node)
+            UPGRADE_NODE=1
+            UPGRADE_NODE_SET=1
             shift
             ;;
         --with-systemd)
@@ -614,26 +755,95 @@ if [ "$USE_SYSTEM_NODE" -eq 0 ] && [ "$BUNDLED_NODE" -eq 0 ]; then
     USE_SYSTEM_NODE=1
 fi
 
-# SYSTEM_NODE 非空表示沿用旧启动器 pin 的系统 node（安装时已校验过，不再重复校验）。
-if [ "$USE_SYSTEM_NODE" -eq 1 ] && [ -z "$SYSTEM_NODE" ]; then
-    SYSTEM_NODE=$(command -v node 2>/dev/null || true)
-    case "$SYSTEM_NODE" in
-        /*) [ -x "$SYSTEM_NODE" ] || die "系统 node 不可执行: $SYSTEM_NODE" 1 ;;
-        *) die "未找到可执行的系统 node；--use-system-node 需要 Node.js >= 24" 1 ;;
-    esac
-    if ! SYSTEM_NODE_VERSION=$("$SYSTEM_NODE" -p 'process.versions.node' 2>/dev/null); then
-        die "无法读取系统 Node.js 版本: $SYSTEM_NODE" 1
+# ---- Node.js 运行时解析（含「帮助升级」）----
+# 1) 包内自带 node/ 且未显式 --use-system-node → 用自带（默认路径，不碰系统 Node）；
+# 2) 系统 node（或旧启动器 pin 的 node）版本 >= NODE_MIN_VERSION → 用它；
+# 3) 版本不足时先尝试帮助用户升级，而不是直接失败：
+#    a. 包内自带 node/ → 提示并改用自带（非交互自动降级，交互先确认）；
+#    b. --upgrade-node（或交互确认）→ 优先 nvm 安装目标版本，其次下载官方发行包到安装目录；
+#    c. 都不行 → 报错并给出明确的升级命令。
+NODE_DOWNLOAD_DIR=''
+if [ "$USE_SYSTEM_NODE" -eq 1 ]; then
+    candidate_node=''
+    if [ -n "$SYSTEM_NODE" ] && [ -x "$SYSTEM_NODE" ]; then
+        candidate_node=$SYSTEM_NODE
+    else
+        candidate_node=$(command -v node 2>/dev/null || true)
     fi
-    SYSTEM_NODE_MAJOR=${SYSTEM_NODE_VERSION%%.*}
+    SYSTEM_NODE_VERSION=''
+    if [ -n "$candidate_node" ]; then
+        case "$candidate_node" in
+            /*) [ -x "$candidate_node" ] || die "系统 node 不可执行: $candidate_node" 1 ;;
+            *) candidate_node=$(command -v "$candidate_node" 2>/dev/null || true) ;;
+        esac
+        if [ -n "$candidate_node" ]; then
+            SYSTEM_NODE_VERSION=$(node_version_of "$candidate_node" || true)
+        fi
+    fi
     case "$SYSTEM_NODE_VERSION" in
-        "$SYSTEM_NODE_MAJOR".*) ;;
-        *) die "系统 node 返回了无效版本: $SYSTEM_NODE_VERSION" 1 ;;
+        '')
+            echo "install.sh: 未找到可用的系统 Node.js（需要 >= $NODE_MIN_VERSION）。" >&2
+            ;;
+        *[!0123456789.]*)
+            die "系统 node 返回了无效版本: $SYSTEM_NODE_VERSION（$candidate_node）" 1
+            ;;
+        *)
+            case "$SYSTEM_NODE_VERSION" in
+                *.*.*) ;;
+                *) die "系统 node 返回了无效版本: $SYSTEM_NODE_VERSION（$candidate_node）" 1 ;;
+            esac
+            SYSTEM_NODE=$candidate_node
+            ;;
     esac
-    case "$SYSTEM_NODE_MAJOR" in
-        ''|*[!0123456789]*) die "系统 node 返回了无效版本: $SYSTEM_NODE_VERSION" 1 ;;
-    esac
-    [ "${#SYSTEM_NODE_MAJOR}" -le 3 ] && [ "$SYSTEM_NODE_MAJOR" -ge 24 ] || \
-        die "系统 Node.js 版本必须 >= 24（当前 $SYSTEM_NODE_VERSION）" 1
+fi
+
+if [ "$USE_SYSTEM_NODE" -eq 1 ] && ! version_ge "${SYSTEM_NODE_VERSION:-0.0.0}" "$NODE_MIN_VERSION"; then
+    # a. 包内自带 Node：直接改用自带运行时，用户的系统 Node 原样不动。
+    #    显式 --upgrade-node 时尊重用户意图（先走 b 的升级路径），不自动降级到包内。
+    if [ "$BUNDLED_NODE" -eq 1 ] && [ "$UPGRADE_NODE_SET" -eq 0 ]; then
+        use_bundled=yes
+        if [ "$INTERACTIVE" -eq 1 ]; then
+            ask_yes_no "系统 Node.js ${SYSTEM_NODE_VERSION:-未找到} 低于 $NODE_MIN_VERSION：改用包内自带的 Node.js $NODE_MIN_VERSION" yes
+            [ "$REPLY" = yes ] && use_bundled=yes || use_bundled=no
+        else
+            echo "install.sh: 系统 Node.js ${SYSTEM_NODE_VERSION:-未找到} 低于 $NODE_MIN_VERSION，自动改用包内自带的 Node.js。" >&2
+        fi
+        if [ "$use_bundled" = yes ]; then
+            USE_SYSTEM_NODE=0
+            SYSTEM_NODE=''
+            SYSTEM_NODE_VERSION=''
+        fi
+    fi
+fi
+
+if [ "$USE_SYSTEM_NODE" -eq 1 ] && ! version_ge "${SYSTEM_NODE_VERSION:-0.0.0}" "$NODE_MIN_VERSION"; then
+    do_upgrade=no
+    if [ "$UPGRADE_NODE" -eq 1 ]; then
+        do_upgrade=yes
+    elif [ "$INTERACTIVE" -eq 1 ] && [ "$UPGRADE_NODE_SET" -eq 0 ]; then
+        ask_yes_no "是否让安装器自动安装 Node.js $NODE_MIN_VERSION（优先 nvm，其次下载官方发行包到安装目录）" yes
+        [ "$REPLY" = yes ] && do_upgrade=yes
+    fi
+    if [ "$do_upgrade" = yes ]; then
+        upgraded_node=$(nvm_node_path || true)
+        if [ -n "$upgraded_node" ]; then
+            SYSTEM_NODE=$upgraded_node
+            SYSTEM_NODE_VERSION=$(node_version_of "$upgraded_node")
+            echo "install.sh: 已通过 nvm 安装 Node.js $SYSTEM_NODE_VERSION（$SYSTEM_NODE）。" >&2
+        elif fetch_node_runtime; then
+            USE_SYSTEM_NODE=0
+            SYSTEM_NODE=''
+            SYSTEM_NODE_VERSION=''
+            echo "install.sh: 已下载 Node.js $NODE_MIN_VERSION，将随安装复制到 $PREFIX/lib/openwebcode/node。" >&2
+        else
+            echo "install.sh: 自动升级 Node.js 未成功。" >&2
+        fi
+    fi
+fi
+
+if [ "$USE_SYSTEM_NODE" -eq 1 ] && ! version_ge "${SYSTEM_NODE_VERSION:-0.0.0}" "$NODE_MIN_VERSION"; then
+    node_upgrade_hint
+    die "系统 Node.js 版本必须 >= $NODE_MIN_VERSION（当前 ${SYSTEM_NODE_VERSION:-未找到}）" 1
 fi
 
 if ! is_loopback_host "$HOST"; then
@@ -650,6 +860,11 @@ mkdir -p "$LIB_DIR"
 cp -R "$SRC_DIR/bin" "$SRC_DIR/server" "$SRC_DIR/web" "$LIB_DIR/"
 if [ "$USE_SYSTEM_NODE" -eq 0 ] && [ "$BUNDLED_NODE" -eq 1 ]; then
     cp -R "$SRC_DIR/node" "$LIB_DIR/"
+elif [ "$USE_SYSTEM_NODE" -eq 0 ] && [ -n "$NODE_DOWNLOAD_DIR" ]; then
+    # --upgrade-node 下载的运行时：自包含进安装目录（卸载随目录删除）
+    cp -R "$NODE_DOWNLOAD_DIR" "$LIB_DIR/node"
+    rm -rf "$(dirname "$NODE_DOWNLOAD_DIR")"
+    NODE_DOWNLOAD_DIR=''
 fi
 chmod +x "$LIB_DIR/bin/owc-exec" 2>/dev/null || true
 

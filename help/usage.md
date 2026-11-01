@@ -64,7 +64,10 @@ sudo ./install.sh --yes --system --lan --enable-service --open-firewall
 - `--port` 只接受 1–65535；`--host` 默认 `127.0.0.1`，`--lan` 是 `--host 0.0.0.0` 的快捷方式（互斥）。非回环监听只应放在受信网络或认证反向代理后。
 - `--with-systemd` 写服务文件但不启用（root 写 `/etc/systemd/system/openwebcode.service`，否则写用户级 unit）；`--enable-service` 隐含写入并立即 `systemctl enable --now`。用户级服务要开机自启（未登录也运行）需再执行 `loginctl enable-linger $USER`。
 - `--open-firewall` 仅在 root + 非回环监听时可用，检测 firewalld/ufw 放行端口；没检测到就打印手动放行提示。
-- `--use-system-node` 不复制包内 `node/`，并在安装时验证 `PATH` 中的 Node.js 为 24+。
+- `--use-system-node` 不复制包内 `node/`，并在安装时验证 `PATH` 中的 Node.js 为 24.22.1+。
+- `--upgrade-node` 系统 Node.js 低于 24.22.1 时让安装器帮忙升级：优先用 `nvm` 安装该版本，没有 `nvm` 时下载
+  官方发行包（校验 `SHASUMS256.txt`）解到 `<prefix>/lib/openwebcode/node` 自包含使用，不动系统 Node；
+  需要网络。包内自带 Node 时，即使检测到系统 Node 过旧也会自动改用包内运行时，安装不会因此失败。
 - 运行时的 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 始终覆盖安装时写入的默认值。`--with-desktop-entry` 目前会明确失败，尚未提供桌面集成。
 - 服务以 root 运行时，agent 工具执行的命令同样是 root 权限（沙盒不降低这一风险），请只运行可信任务。
 - 卸载：运行安装时落盘的 `<prefix>/bin/owc-uninstall`（发行包根目录也有 `uninstall.sh`），会停止并移除 systemd 服务、删除运行时与启动器；数据目录默认保留，`--purge-data` 一并删除，`--remove-firewall`（root）移除防火墙规则。

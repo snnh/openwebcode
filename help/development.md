@@ -53,7 +53,7 @@ openwebcode/
 
 ## 环境要求
 
-- Node.js ≥ 20.3
+- Node.js ≥ 24.22.1（CI、Docker 镜像、发行包内置 Node 与 `engines.node` 同一版本）
 - CMake ≥ 3.19、C11 编译器（Windows MSVC / Linux gcc 或 clang）
 - Python 3（跑 core 协议测试）
 
@@ -228,7 +228,7 @@ dsh（DeepSeek Harness）兼容层在 `server/src/dsh/`：`loader.ts`（插件�
 
 ## 发布
 
-`release.yml` 产四个包：`openwebcode-<version>-windows-x64.msi`（CPack/WiX）、`linux-x64.tar.gz`、`linux-arm64.tar.gz`（`ubuntu-24.04-arm` 原生构建）、`linux-loongarch64.tar.gz`（x64 runner 交叉编译，不跑测试、不内置 Node.js，安装走 `--use-system-node`）。捆绑的 Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`（当前 24.18.0），升级改这一个常量。
+`release.yml` 产四个包：`openwebcode-<version>-windows-x64.msi`（CPack/WiX）、`linux-x64.tar.gz`、`linux-arm64.tar.gz`（`ubuntu-24.04-arm` 原生构建）、`linux-loongarch64.tar.gz`（x64 runner 交叉编译，不跑测试、不内置 Node.js，安装走 `--use-system-node`）。捆绑的 Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`（当前 24.22.1），升级改这一个常量。
 
 版本号机制：tag 完整版本号进 `CPACK_FULL_VERSION`（文件名），数值基版本进 `CPACK_PACKAGE_VERSION`（MSI ProductVersion 只收数值）；`server/package.json` 存完整版本号，`web/package.json` 跟随，`core/CMakeLists.txt` 的 `project(VERSION)` 存数值基版本，release.yml 校验四方一致。Release 说明从 `CHANGELOG.md` 提取对应版本段落，缺失则阻断发布。
 

@@ -39,7 +39,7 @@ install.sh              Linux installer (tarball only, at archive top level)
 uninstall.sh            Linux uninstaller (tarball only; installed as <prefix>/bin/owc-uninstall)
 ```
 
-The bundled Node version is pinned by `env.NODE_DIST_VERSION` in release.yml (currently 24.18.0); bumping it is a one-line change. CI verifies every Node download against the official `SHASUMS256.txt` from nodejs.org instead of hardcoding hashes. loongarch64 has no official Node build, so `node/` is not created and `install.sh` automatically falls back to the system Node.js.
+The bundled Node version is pinned by `env.NODE_DIST_VERSION` in release.yml (currently 24.22.1); bumping it is a one-line change. CI verifies every Node download against the official `SHASUMS256.txt` from nodejs.org instead of hardcoding hashes. loongarch64 has no official Node build, so `node/` is not created and `install.sh` automatically falls back to the system Node.js.
 
 ## Version numbers
 
@@ -66,7 +66,7 @@ All commands below run from the repository root.
 $ErrorActionPreference = "Stop"
 $Version = "1.5.0"          # full version; prerelease e.g. 1.5.0-beta.1
 $BaseVersion = ($Version -split "-")[0]
-$NodeVersion = "24.18.0"    # keep in sync with NODE_DIST_VERSION in release.yml
+$NodeVersion = "24.22.1"    # keep in sync with NODE_DIST_VERSION in release.yml
 
 npm --prefix server ci
 npm --prefix server run build
@@ -177,7 +177,7 @@ Same test gate and production-only pruning as Windows; the differences are a sin
 set -euo pipefail
 VERSION=1.5.0              # full version; prerelease e.g. 1.5.0-beta.1
 BASE_VERSION=${VERSION%%-*}
-NODE_VERSION=24.18.0
+NODE_VERSION=24.22.1
 
 npm --prefix server ci
 npm --prefix server run build
@@ -241,7 +241,8 @@ cd openwebcode
 | `--host <addr>` | Launcher default for `OWC_HOST` (default `127.0.0.1`; accepts DNS names, IPv4, and unbracketed IPv6). |
 | `--lan` | Shorthand for `--host 0.0.0.0`; mutually exclusive with `--host`. |
 | `--system` | Explicit system-level install (requires root; running as root already defaults to system paths). |
-| `--use-system-node` | Skip the bundled `node/` and require Node.js ≥ 24 on PATH at install time. Also selected automatically when the bundle has no `node/bin/node`. |
+| `--use-system-node` | Skip the bundled `node/` and require Node.js ≥ 24.22.1 on PATH at install time. Also selected automatically when the bundle has no `node/bin/node`. |
+| `--upgrade-node` | Help upgrade an outdated system Node.js: prefer `nvm install 24.22.1`, otherwise download the official release (SHASUMS256-verified) into the install directory as a self-contained runtime. Requires network; installs without changing the user's default version. |
 | `--with-systemd` | Write a systemd unit without enabling it: root writes `/etc/systemd/system/openwebcode.service`, otherwise the user unit `${XDG_CONFIG_HOME:-~/.config}/systemd/user/openwebcode.service` (target directory overridable via `OWC_SYSTEMD_UNIT_DIR`). A prefix containing spaces or systemd-special characters is rejected (in update/switch scenarios the old unit is kept instead of rewritten). |
 | `--enable-service` | Implies `--with-systemd` and runs `systemctl daemon-reload && systemctl enable --now openwebcode` (`systemctl --user` for user installs; boot persistence without login also needs `loginctl enable-linger $USER`). |
 | `--open-firewall` | Root + non-loopback listen only: opens the port via firewalld/ufw, or prints manual instructions if neither exists. |
@@ -301,7 +302,7 @@ The architecture is mapped from `uname -m`: `x86_64→x64`, `aarch64→arm64`, `
 | --- | --- |
 | `--version <x.y.z>` | Target version (semver shape, one prerelease suffix allowed); by default the script queries the `tag_name` of the latest GitHub release (parsed with sed/grep). |
 | `--prefix <dir>` | Install prefix, default `~/.local` for users and `/usr/local` for root; decides fresh install vs update, and is passed through to the bundled `install.sh` on fresh installs. |
-| `--yes` / `--port` / `--host` / `--lan` / `--data-dir` / `--system` / `--with-systemd` / `--enable-service` / `--open-firewall` / `--use-system-node` | Passed through verbatim to the bundled `install.sh`, effective only on fresh installs; update mode does not rebuild the launcher and prints a notice that these arguments were ignored. |
+| `--yes` / `--port` / `--host` / `--lan` / `--data-dir` / `--system` / `--with-systemd` / `--enable-service` / `--open-firewall` / `--use-system-node` / `--upgrade-node` | Passed through verbatim to the bundled `install.sh`, effective only on fresh installs; update mode does not rebuild the launcher and prints a notice that these arguments were ignored. |
 
 - **Fresh install**: delegates to the extracted `install.sh`, identical to an offline install.
 - **Update**: replaces the contents of `<prefix>/lib/openwebcode/` with the new version, keeping the `<prefix>/bin/owc` launcher and any written systemd unit untouched; the data directory is never affected. When the existing launcher pins a system Node.js (`OWC_NODE` not in bundled form), the `node/` directory is not copied (about 100 MB of redundancy, and any stale copy is removed). A non-writable target fails with a clear error (sudo may be required). Afterwards the script suggests a restart based on the actual unit location: `systemctl restart openwebcode` for the system unit (`sudo` suggested when not root), `systemctl --user restart openwebcode` for the user unit, or a manual restart of the running `owc` when there is no unit.
@@ -364,7 +365,7 @@ The Linux `<prefix>/bin/owc` (generated by install.sh) and the Windows `bin\owc.
 2. Port and listen address: explicitly set `OWC_PORT`/`OWC_HOST` win, otherwise the defaults written at install time apply (initially 3210 / `127.0.0.1`);
 3. Data directory: an explicit `OWC_DATA_DIR` wins; otherwise Linux uses the install-time default (initially `${XDG_DATA_HOME:-~/.local/share}/openwebcode`) and Windows injects `%USERPROFILE%\openwebcode`. Only a direct `node server/dist/index.js` run that bypasses the launcher falls back to `../.openwebcode` next to the server directory. `server-settings.json` always stays in that boot/settings directory; with no `OWC_DATA_DIR`, the `dataDir` saved inside it selects the business data directory after a restart. Use absolute paths for both `OWC_DATA_DIR` and `dataDir`.
 
-The bundled `node/` is preferred at runtime. Linux decides at install time: if the bundle is missing or `--use-system-node` was given, the launcher is bound to the system Node.js (validated as ≥ 24 during installation) with no runtime fallback; the Windows `owc.cmd` instead warns at runtime and falls back to `node` from PATH when `node\node.exe` is missing.
+The bundled `node/` is preferred at runtime. Linux decides at install time: if the bundle is missing or `--use-system-node` was given, the launcher is bound to the system Node.js (validated as ≥ 24.22.1; when too old the installer first falls back to the bundled runtime or, with `--upgrade-node`, helps upgrade, and only fails as a last resort) with no runtime fallback; the Windows `owc.cmd` instead warns at runtime and falls back to `node` from PATH when `node\node.exe` is missing.
 
 `owc run ...` goes to the headless CLI (`server/dist/cli.js`); anything else starts the server.
 

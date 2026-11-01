@@ -39,7 +39,7 @@ install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 uninstall.sh            Linux 卸载脚本（仅 tar.gz，位于包顶层；安装时落盘为 <prefix>/bin/owc-uninstall）
 ```
 
-bundled Node 版本固定在 release.yml 的 `env.NODE_DIST_VERSION`（当前 24.18.0），升级只改这一个常量；CI 下载后对照 nodejs.org 官方 `SHASUMS256.txt` 校验，不硬编码哈希。loongarch64 没有官方 Node 包，不创建 `node/`，`install.sh` 会自动改用系统 Node.js。
+bundled Node 版本固定在 release.yml 的 `env.NODE_DIST_VERSION`（当前 24.22.1），升级只改这一个常量；CI 下载后对照 nodejs.org 官方 `SHASUMS256.txt` 校验，不硬编码哈希。loongarch64 没有官方 Node 包，不创建 `node/`，`install.sh` 会自动改用系统 Node.js。
 
 ## 版本号机制
 
@@ -66,7 +66,7 @@ bundled Node 版本固定在 release.yml 的 `env.NODE_DIST_VERSION`（当前 24
 $ErrorActionPreference = "Stop"
 $Version = "1.5.0"          # 完整版本号；预发布如 1.5.0-beta.1
 $BaseVersion = ($Version -split "-")[0]
-$NodeVersion = "24.18.0"    # 与 release.yml 的 NODE_DIST_VERSION 一致
+$NodeVersion = "24.22.1"    # 与 release.yml 的 NODE_DIST_VERSION 一致
 
 npm --prefix server ci
 npm --prefix server run build
@@ -175,7 +175,7 @@ msiexec /x "openwebcode-<version>-windows-x64.msi" PURGE_DATA=1
 set -euo pipefail
 VERSION=1.5.0              # 完整版本号；预发布如 1.5.0-beta.1
 BASE_VERSION=${VERSION%%-*}
-NODE_VERSION=24.18.0
+NODE_VERSION=24.22.1
 
 npm --prefix server ci
 npm --prefix server run build
@@ -238,7 +238,8 @@ cd openwebcode
 | `--host <addr>` | 启动器的 `OWC_HOST` 默认值（默认 `127.0.0.1`；接受 DNS 名、IPv4、不加方括号的 IPv6）。 |
 | `--lan` | `--host 0.0.0.0` 的快捷方式，与 `--host` 互斥。 |
 | `--system` | 显式系统级安装（需要 root；root 运行本就走系统级默认路径）。 |
-| `--use-system-node` | 不复制包内 `node/`，安装时要求 PATH 里有 ≥ 24 的 Node.js。包内没有 `node/bin/node` 时自动走这个模式。 |
+| `--use-system-node` | 不复制包内 `node/`，安装时要求 PATH 里有 ≥ 24.22.1 的 Node.js。包内没有 `node/bin/node` 时自动走这个模式。 |
+| `--upgrade-node` | 系统 Node.js 过低时帮用户升级：优先 `nvm install 24.22.1`，其次下载官方发行包（校验 SHASUMS256）到安装目录自包含运行。需要网络；只安装不改用户默认版本。 |
 | `--with-systemd` | 写 systemd unit 但不启用：root 写 `/etc/systemd/system/openwebcode.service`，否则写用户级 `${XDG_CONFIG_HOME:-~/.config}/systemd/user/openwebcode.service`（目标目录可用 `OWC_SYSTEMD_UNIT_DIR` 覆盖）。prefix 含空格或 systemd 特殊字符时拒绝（更新/切换场景则保留旧 unit 不重写）。 |
 | `--enable-service` | 隐含 `--with-systemd`，并执行 `systemctl daemon-reload && systemctl enable --now openwebcode`（用户级用 `systemctl --user`；未登录也开机自启还需 `loginctl enable-linger $USER`）。 |
 | `--open-firewall` | 仅 root + 非回环监听：用 firewalld/ufw 放行端口，都没有则打印手动放行提示。 |
@@ -298,7 +299,7 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 | --- | --- |
 | `--version <x.y.z>` | 目标版本（semver 形态，可带一个预发布后缀）；缺省查询 GitHub Releases latest 的 `tag_name`（sed/grep 解析）。 |
 | `--prefix <dir>` | 安装前缀，默认普通用户 `~/.local`、root `/usr/local`；用来判定全新安装还是更新，全新安装时透传给包内 `install.sh`。 |
-| `--yes` / `--port` / `--host` / `--lan` / `--data-dir` / `--system` / `--with-systemd` / `--enable-service` / `--open-firewall` / `--use-system-node` | 原样透传给包内 `install.sh`，仅全新安装生效；更新模式不重建启动器，会提示这些参数被忽略。 |
+| `--yes` / `--port` / `--host` / `--lan` / `--data-dir` / `--system` / `--with-systemd` / `--enable-service` / `--open-firewall` / `--use-system-node` / `--upgrade-node` | 原样透传给包内 `install.sh`，仅全新安装生效；更新模式不重建启动器，会提示这些参数被忽略。 |
 
 - **全新安装**：调用解出的 `install.sh`，行为与离线安装一致。
 - **更新**：整体替换 `<prefix>/lib/openwebcode/` 内容为新版，保留 `<prefix>/bin/owc` 启动器和已写好的 systemd unit，数据目录不动。既有启动器 pin 了系统 Node.js（`OWC_NODE` 非包内形式）时跳过 `node/` 复制（约 100MB 冗余，同时清掉旧的冗余目录）。目标目录不可写时明确报错（可能需要 sudo）。完成后按实际 unit 位置提示重启：系统级 `systemctl restart openwebcode`（非 root 提示加 `sudo`），用户级 `systemctl --user restart openwebcode`，没有 unit 则提示手动重启 owc。
@@ -361,7 +362,7 @@ Linux 的 `<prefix>/bin/owc`（install.sh 生成）和 Windows 的 `bin\owc.cmd`
 2. 端口和监听地址：显式设置的 `OWC_PORT`/`OWC_HOST` 优先，否则用安装时写入的默认值（初始 3210 / `127.0.0.1`）；
 3. 数据目录：显式 `OWC_DATA_DIR` 优先；未设置时 Linux 用安装时写入的默认值（初始 `${XDG_DATA_HOME:-~/.local/share}/openwebcode`），Windows 注入 `%USERPROFILE%\openwebcode`。只有绕过启动器直接跑 `node server/dist/index.js` 时才落到 server 旁的 `../.openwebcode`。`server-settings.json` 固定在启动/设置目录；环境变量未设时，其中保存的 `dataDir` 在重启后选择业务数据目录。`OWC_DATA_DIR` 和 `dataDir` 都建议用绝对路径。
 
-运行时优先用包内 `node/`。Linux 在安装时判定：包内缺失或 `--use-system-node` 时把启动器绑定到系统 Node.js（安装时校验 ≥ 24），不做运行时回落；Windows 的 `owc.cmd` 在包内 `node\node.exe` 缺失时打印警告并回落 PATH 里的 `node`。
+运行时优先用包内 `node/`。Linux 在安装时判定：包内缺失或 `--use-system-node` 时把启动器绑定到系统 Node.js（安装时校验 ≥ 24.22.1；过低时先尝试改用包内 Node 或按 `--upgrade-node` 帮助升级，最终仍不满足才报错），不做运行时回落；Windows 的 `owc.cmd` 在包内 `node\node.exe` 缺失时打印警告并回落 PATH 里的 `node`。
 
 `owc run ...` 走 headless CLI（`server/dist/cli.js`），其他参数启动 server。
 

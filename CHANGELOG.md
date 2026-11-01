@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 工程
+
+- **Node.js 最低版本提升到 24.22.1（破坏性变更）**：`engines.node`、CI、Docker 镜像、发行包内置 Node、`install.sh` 校验统一为 Node 24 的最新小版本。低于该版本时服务端启动会打印警告（不退出），安装器与 `npm engines` 为硬门禁。升级方式：`nvm install 24.22.1 && nvm use 24.22.1`，或用发行包自带的 Node（不复制系统 node）。
+- **安装器会帮用户升级 Node，而不是直接失败**：新增 `--upgrade-node`——系统 Node.js 过低时优先用 `nvm` 安装 24.22.1（只安装、不改默认版本），没有 nvm 时下载官方发行包（校验 `SHASUMS256.txt`）解到 `<prefix>/lib/openwebcode/node` 自包含使用，不动系统 Node，卸载随安装目录删除；包内自带 Node 时旧系统 Node 直接自动改用包内运行时，安装不再因版本不足中断。最终仍不满足才报错，并打印 nvm/fnm/发行版三条升级指引。
+- **安装器测试不再可能误停宿主服务**：`packaging/test-install.sh` 默认用退出码 1 的 `systemctl` 桩，并把 systemd unit 目录指向测试工作区（宿主上正在运行 openwebcode 时直接跑测试会把自己停掉）；需要真实验证 systemd 时显式设 `OWC_INSTALL_TEST_REAL_SYSTEMCTL=1`。顺带修正 `install-online.sh` 的 `arm64` 架构别名。
+- 跟进 Node 24 运行时能力：`module.enableCompileCache()`、`import.meta.dirname`、`Promise.withResolvers`、`Error.isError`、TypeScript `target` 提到 ES2024；dsh-sync 的 zstd 提示从「Node ≥22.15」改为最低支持版本 24.22.1（最低版本必然提供，不再作为可选性门槛）。
+
 ### 界面
 
 - **侧栏操作收敛**：会话项只常驻「置顶」与「更多」（⋯）两个入口，重命名、导出分享页、归档/取消归档、移动到分组、删除收进同一个菜单；菜单支持 Esc 关闭并回焦、点击别处关闭，贴近窗口底部时自动向上展开。「新建会话」升为侧栏底部主按钮独占一行，次级入口（本机会话、主题、设置）另起一行。

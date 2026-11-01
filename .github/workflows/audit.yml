@@ -37,7 +37,7 @@ jobs:
           echo "No blobs larger than 10 MiB in history."
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.22.1
           cache: npm
           cache-dependency-path: ${{ matrix.layer }}/package-lock.json
       - name: Install

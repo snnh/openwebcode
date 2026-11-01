@@ -29,7 +29,7 @@ concurrency:
 
 env:
   # bundled Node 24 运行时的具体版本（nodejs.org 发行包），升级时只改这个常量
-  NODE_DIST_VERSION: "24.18.0"
+  NODE_DIST_VERSION: "24.22.1"
 
 jobs:
   windows:
@@ -41,7 +41,7 @@ jobs:
           tag: ${{ inputs.tag }}
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.22.1
           cache: npm
           cache-dependency-path: |
             server/package-lock.json
@@ -227,7 +227,7 @@ jobs:
         if: ${{ matrix.arch != 'loongarch64' }}
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.22.1
           cache: npm
           cache-dependency-path: |
             server/package-lock.json
@@ -506,7 +506,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.22.1
           cache: npm
           cache-dependency-path: |
             server/package-lock.json

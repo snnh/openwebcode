@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 # OpenWebCode 镜像（多阶段构建）
 #
-# builder  阶段：在 node:24-trixie（Debian 13，与项目开发/实测环境一致）上
+# builder  阶段：在 node:24.22.1-trixie（Debian 13，与项目最低支持版本 npm engines 一致）上
 #           编译三层产物 —— core（C，cmake Release）、server（tsc）、web（vite）。
-# runtime  阶段：node:24-trixie-slim 组装最小运行树（与发行版 staging 契约一致，
+# runtime  阶段：node:24.22.1-trixie-slim 组装最小运行树（与发行版 staging 契约一致，
 #           见 core/CMakeLists.txt 的 CPack 注释），以非特权用户 node 运行。
 #
 # 构建：docker build -t openwebcode .
@@ -11,7 +11,7 @@
 #       并推送到 ghcr.io/snnh/openwebcode（vX.Y.Z；稳定版另加 latest）。
 
 ########## builder ##########
-FROM node:24-trixie AS builder
+FROM node:24.22.1-trixie AS builder
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends cmake gcc make \
@@ -52,7 +52,7 @@ RUN node scripts/fetch-dsh-web.mjs \
 RUN npm prune --prefix server --omit=dev
 
 ########## runtime ##########
-FROM node:24-trixie-slim AS runtime
+FROM node:24.22.1-trixie-slim AS runtime
 
 # 运行时依赖：
 #   bubblewrap  完整命名空间沙盒（不可用时 core 自动降级 Landlock，属设计内行为）

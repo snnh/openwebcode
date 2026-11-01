@@ -7,6 +7,24 @@ SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/owc-install-test.XXXXXX")
 trap 'rm -rf "$WORK_DIR"' EXIT HUP INT TERM
 
+# 安全护栏：uninstall.sh 会执行 `systemctl disable --now openwebcode`。
+# 在「本机正在运行 openwebcode」的机器上直接跑本测试会把宿主服务停掉（本地开发很常见）；
+# 因此默认用退出码 1 的 systemctl 桩屏蔽所有服务操作，测试只校验脚本产出的文件与文案。
+# 需要真实验证 systemd 行为时（CI 容器内）显式设 OWC_INSTALL_TEST_REAL_SYSTEMCTL=1。
+# 同一护栏的第二层：把默认 unit 目录指到测试工作区，避免读到/写到宿主真实的 unit
+# （宿主若已安装并运行 openwebcode，默认路径下就有 openwebcode.service）。
+export OWC_SYSTEMD_UNIT_DIR="$WORK_DIR/default-units"
+mkdir -p "$OWC_SYSTEMD_UNIT_DIR"
+
+if [ "${OWC_INSTALL_TEST_REAL_SYSTEMCTL:-0}" != 1 ]; then
+    STUB_BIN="$WORK_DIR/stub-bin"
+    mkdir -p "$STUB_BIN"
+    printf '%s\n' '#!/bin/sh' 'exit 1' > "$STUB_BIN/systemctl"
+    chmod +x "$STUB_BIN/systemctl"
+    PATH="$STUB_BIN:$PATH"
+    export PATH
+fi
+
 fail() {
     echo "test-install.sh: $1" >&2
     exit 1
@@ -57,7 +75,7 @@ IFS= read -r ACTUAL < "$WORK_DIR/launcher.override.env"
 [ "$ACTUAL" = "4999|$WORK_DIR/override|127.0.0.1" ] || fail "runtime override was ignored: $ACTUAL"
 
 # A package without bundled Node.js must work with --use-system-node only after
-# validating a >=24 executable resolved from PATH, and must not copy node/.
+# validating a >= 24.22.1 executable resolved from PATH, and must not copy node/.
 SYSTEM_PACKAGE="$WORK_DIR/system-package"
 SYSTEM_PREFIX="$WORK_DIR/system-prefix"
 SYSTEM_BIN="$WORK_DIR/system-bin"
@@ -67,7 +85,7 @@ printf '%s\n' \
     '#!/bin/sh' \
     'if [ "${1:-}" = "-p" ]; then' \
     '    case "${2:-}" in' \
-    '        process.versions.node) printf "24.18.0\n" ;;' \
+    '        process.versions.node) printf "24.22.1\n" ;;' \
     '        *) printf "%064d\n" 7 ;;' \
     '    esac' \
     '    exit 0' \
@@ -81,6 +99,74 @@ PATH="$SYSTEM_BIN:$PATH" HOME="$WORK_DIR/home" "$SYSTEM_PACKAGE/install.sh" \
 [ ! -e "$SYSTEM_PREFIX/lib/openwebcode/node" ] || fail "--use-system-node copied bundled Node.js"
 grep -F "OWC_NODE='$SYSTEM_BIN/node'" "$SYSTEM_PREFIX/bin/owc" >/dev/null || \
     fail "system Node.js path was not pinned in launcher"
+
+# ---- Node.js 版本不足时的「帮助升级」----
+# 1) 包内自带 Node 时，旧系统 Node 不应让安装失败：非交互直接降级到包内运行时。
+OLD_BIN="$WORK_DIR/old-node-bin"
+mkdir -p "$OLD_BIN"
+printf '%s\n' \
+    '#!/bin/sh' \
+    'if [ "${1:-}" = "-p" ]; then printf "20.11.1\n"; exit 0; fi' \
+    'exit 0' \
+    > "$OLD_BIN/node"
+chmod +x "$OLD_BIN/node"
+BUNDLED_FALLBACK_PREFIX="$WORK_DIR/bundled-fallback-prefix"
+PATH="$OLD_BIN:$PATH" HOME="$WORK_DIR/home" "$PACKAGE/install.sh" \
+    --yes --prefix "$BUNDLED_FALLBACK_PREFIX" --port 3101 --data-dir "$WORK_DIR/bf-data" \
+    --host 127.0.0.1 --use-system-node > "$WORK_DIR/bundled-fallback.out" 2>&1
+[ -d "$BUNDLED_FALLBACK_PREFIX/lib/openwebcode/node" ] || \
+    fail "too-old system Node.js did not fall back to the bundled runtime"
+if grep -q "$OLD_BIN/node" "$BUNDLED_FALLBACK_PREFIX/bin/owc"; then
+    fail "fallback launcher still pins the too-old system Node.js"
+fi
+grep -q '低于 24.22.1' "$WORK_DIR/bundled-fallback.out" || \
+    fail "fallback did not explain the system Node.js version problem"
+
+# 2) 包内没有 Node 且未加 --upgrade-node：给出升级指引后失败，不静默降级。
+if PATH="$OLD_BIN:$PATH" HOME="$WORK_DIR/home" "$SYSTEM_PACKAGE/install.sh" \
+    --yes --prefix "$WORK_DIR/old-prefix" --port 3102 --data-dir "$WORK_DIR/old-data" \
+    --host 127.0.0.1 --use-system-node > "$WORK_DIR/old-node.out" 2>&1; then
+    fail "too-old system Node.js without --upgrade-node was accepted"
+fi
+grep -q -- '--upgrade-node' "$WORK_DIR/old-node.out" || \
+    fail "too-old system Node.js did not point at --upgrade-node"
+grep -q 'nvm install 24.22.1' "$WORK_DIR/old-node.out" || \
+    fail "too-old system Node.js did not print the upgrade command"
+
+# 3) --upgrade-node：没有 nvm 时下载官方发行包到安装目录（自包含），并做 SHASUMS 校验。
+#    用桩 curl 提供本地 fixture，避免测试依赖网络。
+DL_FIXTURE="$WORK_DIR/node-download-fixture"
+mkdir -p "$DL_FIXTURE/node-v24.22.1-linux-x64/bin"
+printf '%s\n' \
+    '#!/bin/sh' \
+    'if [ "${1:-}" = "-p" ]; then printf "24.22.1\n"; exit 0; fi' \
+    'exit 0' \
+    > "$DL_FIXTURE/node-v24.22.1-linux-x64/bin/node"
+chmod +x "$DL_FIXTURE/node-v24.22.1-linux-x64/bin/node"
+( cd "$DL_FIXTURE" && tar -czf node-v24.22.1-linux-x64.tar.gz node-v24.22.1-linux-x64 )
+DL_SHA=$(sha256sum "$DL_FIXTURE/node-v24.22.1-linux-x64.tar.gz" | awk '{ print $1 }')
+printf '%s  %s\n' "$DL_SHA" 'node-v24.22.1-linux-x64.tar.gz' > "$DL_FIXTURE/SHASUMS256.txt"
+CURL_BIN="$WORK_DIR/curl-bin"
+mkdir -p "$CURL_BIN"
+printf '%s\n' \
+    '#!/bin/sh' \
+    'for arg in "$@"; do last=$arg; done' \
+    'case "$last" in' \
+    '    *SHASUMS256.txt) cat "$DL_FIXTURE/SHASUMS256.txt" ;;' \
+    '    *linux-x64.tar.gz) cat "$DL_FIXTURE/node-v24.22.1-linux-x64.tar.gz" ;;' \
+    '    *) exit 1 ;;' \
+    'esac' \
+    > "$CURL_BIN/curl"
+chmod +x "$CURL_BIN/curl"
+DL_PREFIX="$WORK_DIR/download-prefix"
+PATH="$OLD_BIN:$CURL_BIN:$PATH" HOME="$WORK_DIR/home" DL_FIXTURE="$DL_FIXTURE" \
+    "$SYSTEM_PACKAGE/install.sh" --yes --prefix "$DL_PREFIX" --port 3103 \
+    --data-dir "$WORK_DIR/dl-data" --host 127.0.0.1 --use-system-node --upgrade-node \
+    > "$WORK_DIR/download-install.out" 2>&1
+[ -x "$DL_PREFIX/lib/openwebcode/node/bin/node" ] || \
+    fail "--upgrade-node did not install a self-contained Node.js runtime"
+grep -F 'OWC_NODE="$OWC_HOME/node/bin/node"' "$DL_PREFIX/bin/owc" >/dev/null || \
+    fail "--upgrade-node launcher does not use the downloaded runtime"
 
 # 非回环安装不再把令牌写进启动器：访问令牌由服务端首次启动自动生成并持久化到
 # <数据目录>/access-token。启动器保持 755（不含秘密），输出引导用户查看访问链接。
