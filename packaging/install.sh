@@ -308,7 +308,11 @@ fetch_node_runtime() {
     esac
     node_tar="node-v$NODE_MIN_VERSION-$node_arch.tar.gz"
     node_url="https://nodejs.org/dist/v$NODE_MIN_VERSION/$node_tar"
-    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/owc-node.XXXXXX") || return 1
+    # 下载与解压都在安装前缀内的临时目录完成：不把半成品/持久内容落到 /tmp
+    #（/tmp 常是 tmpfs 或被定时清理；解压后的运行时随后复制进安装目录）。
+    mkdir -p "$PREFIX" || return 1
+    rm -rf "$PREFIX"/.owc-node-download.* 2>/dev/null || true
+    tmp_dir=$(mktemp -d "$PREFIX/.owc-node-download.XXXXXX") || return 1
     echo "正在下载 Node.js $NODE_MIN_VERSION（$node_url）..." >&2
     if command -v curl >/dev/null 2>&1; then
         fetch='curl -fsSL'

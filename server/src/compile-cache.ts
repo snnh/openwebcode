@@ -10,7 +10,9 @@
  * 只要本模块是 `index.ts` / `cli.ts` 的第一个 import，后续模块的编译就能命中缓存。
  *
  * 目录选择：优先 `<dataDir>/cache/compile`（`OWC_DATA_DIR` 显式指定时；数据目录内的缓存
- * 随数据一起清理/迁移）；未指定时退回系统临时目录，避免在启动前就依赖 settings 解析结果。
+ * 随数据一起清理/迁移）；数据目录未知时用平台缓存目录（POSIX 的 `$XDG_CACHE_HOME` 或
+ * `~/.cache`，Windows 的 `%LOCALAPPDATA%`）。**绝不落 /tmp**：编译缓存是跨重启复用的持久
+ * 内容，临时目录会被清理/重启清空，放到 tmpfs 上还白占内存。HOME 也解析不到时直接关闭缓存。
  * 关闭方式：`OWC_COMPILE_CACHE=0`（也会被 Node 自带的 `NODE_DISABLE_COMPILE_CACHE=1` 覆盖）。
  */
 import { constants, enableCompileCache } from "node:module";
@@ -31,17 +33,26 @@ function statusName(status: number): string {
   return "failed";
 }
 
-function cacheDirectory(): string {
+/** 解析缓存目录；返回 undefined 表示没有可持久化的位置（此时不启用缓存）。 */
+function cacheDirectory(): string | undefined {
   const configured = process.env.OWC_DATA_DIR?.trim();
   if (configured) {
     try {
       return path.join(path.resolve(configured), "cache", "compile");
     } catch {
-      // 非法路径（例如含 NUL）退回临时目录，编译缓存失败不应影响启动
+      // 非法路径（例如含 NUL）：继续走平台缓存目录
     }
   }
-  const uid = typeof process.getuid === "function" ? process.getuid() : "user";
-  return path.join(os.tmpdir(), `owc-compile-cache-${uid}`);
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA?.trim();
+    if (localAppData) return path.join(localAppData, "openwebcode", "compile-cache");
+    const home = process.env.USERPROFILE?.trim() || os.homedir();
+    return home ? path.join(home, "AppData", "Local", "openwebcode", "compile-cache") : undefined;
+  }
+  const xdgCache = process.env.XDG_CACHE_HOME?.trim();
+  if (xdgCache) return path.join(xdgCache, "openwebcode", "compile-cache");
+  const home = process.env.HOME?.trim() || os.homedir();
+  return home ? path.join(home, ".cache", "openwebcode", "compile-cache") : undefined;
 }
 
 /**
@@ -51,6 +62,7 @@ function cacheDirectory(): string {
 function enableStartupCompileCache(): CompileCacheState {
   if (process.env.OWC_COMPILE_CACHE === "0") return { status: "disabled" };
   const directory = cacheDirectory();
+  if (directory === undefined) return { status: "disabled" };
   try {
     const result = enableCompileCache(directory);
     const status = statusName(result.status);

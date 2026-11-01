@@ -6,7 +6,7 @@
 
 ### 性能与资源
 
-- **冷启动更快（V8 编译缓存）**：入口首条 import 开启 `module.enableCompileCache()`，编译产物按源码哈希写到 `<数据目录>/cache/compile`（`OWC_COMPILE_CACHE=0` 关闭）。实测同一数据目录热启动 335ms → 287ms（约 -14%，磁盘慢的机器/容器更明显），缓存约 3.2MB，首次冷启动多付约 25ms。
+- **冷启动更快（V8 编译缓存）**：入口首条 import 开启 `module.enableCompileCache()`，编译产物按源码哈希写到 `<数据目录>/cache/compile`（数据目录未知时用 `$XDG_CACHE_HOME/openwebcode` 或 `~/.cache/openwebcode`，Windows 用 `%LOCALAPPDATA%`；**不落 /tmp**，`OWC_COMPILE_CACHE=0` 关闭）。实测同一数据目录热启动 335ms → 287ms（约 -14%，磁盘慢的机器/容器更明显），缓存约 3.2MB，首次冷启动多付约 25ms。
 - **启动初始化并行**：会话、定价、汇率、更新检查四步只读各自的快照文件，改为一次 `Promise.all` 并发等待；`core.start()` 与 TOTP 凭据加载同理并行。启动日志新增一行 `[boot] ready in <n>ms (node <版本>, compile-cache <状态>)`，便于定位冷启动回归。
 - **大帧 RPC 少一次整块拷贝**：`FrameDecoder` 在「帧完整落在首块内」时直接交出该块或其前缀视图，32MB 级的 `fs.readBase64` / `index.scan` 不再先分配再复制；跨块拼接仍走原有一次性复制，避免视图长期持有底层缓冲。
 - **会话列表不再逐会话读盘**：`checkRecoveryTail` 按 size+mtime+ctime 指纹缓存（上限 256 条，写路径经 `invalidateMessageIndex` 一并失效）。`GET /api/sessions` 在大会话目录下不再为每个会话 `open + 读最多 256KB 尾窗口`。
@@ -16,7 +16,7 @@
 ### 工程
 
 - **Node.js 最低版本提升到 24.22.1（破坏性变更）**：`engines.node`、CI、Docker 镜像、发行包内置 Node、`install.sh` 校验统一为 Node 24 的最新小版本。低于该版本时服务端启动会打印警告（不退出），安装器与 `npm engines` 为硬门禁。升级方式：`nvm install 24.22.1 && nvm use 24.22.1`，或用发行包自带的 Node（不复制系统 node）。
-- **安装器会帮用户升级 Node，而不是直接失败**：新增 `--upgrade-node`——系统 Node.js 过低时优先用 `nvm` 安装 24.22.1（只安装、不改默认版本），没有 nvm 时下载官方发行包（校验 `SHASUMS256.txt`）解到 `<prefix>/lib/openwebcode/node` 自包含使用，不动系统 Node，卸载随安装目录删除；包内自带 Node 时旧系统 Node 直接自动改用包内运行时，安装不再因版本不足中断。最终仍不满足才报错，并打印 nvm/fnm/发行版三条升级指引。
+- **安装器会帮用户升级 Node，而不是直接失败**：新增 `--upgrade-node`——系统 Node.js 过低时优先用 `nvm` 安装 24.22.1（只安装、不改默认版本），没有 nvm 时下载官方发行包（校验 `SHASUMS256.txt`，下载与解压在安装前缀内的临时目录完成）解到 `<prefix>/lib/openwebcode/node` 自包含使用，不动系统 Node，卸载随安装目录删除；包内自带 Node 时旧系统 Node 直接自动改用包内运行时，安装不再因版本不足中断。最终仍不满足才报错，并打印 nvm/fnm/发行版三条升级指引。
 - **安装器测试不再可能误停宿主服务**：`packaging/test-install.sh` 默认用退出码 1 的 `systemctl` 桩，并把 systemd unit 目录指向测试工作区（宿主上正在运行 openwebcode 时直接跑测试会把自己停掉）；需要真实验证 systemd 时显式设 `OWC_INSTALL_TEST_REAL_SYSTEMCTL=1`。顺带修正 `install-online.sh` 的 `arm64` 架构别名。
 - 跟进 Node 24 运行时能力：`module.enableCompileCache()`、`import.meta.dirname`、`Promise.withResolvers`、`Error.isError`、TypeScript `target` 提到 ES2024；dsh-sync 的 zstd 提示从「Node ≥22.15」改为最低支持版本 24.22.1（最低版本必然提供，不再作为可选性门槛）。
 
