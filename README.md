@@ -21,7 +21,7 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
    - 系统：Windows 10+（Win7 未测试）和 Linux
      - Linux：glibc ≥ 2.28；内核 ≥ 5.13（Landlock 起步，≥ 6.7 支持禁网）。沙盒默认档为 bubblewrap（完整 namespace 隔离）：未安装 bubblewrap 的环境默认档会明确报错，需 `apt install bubblewrap`（或等价包），或将会话沙盒模式显式切换为 Landlock 兼容档（更弱）。开发与实测环境为 Debian 13 / Ubuntu 24.04。
      - 鸿蒙版本正在开发。
-   - 架构：x86-64 / arm64 / loongarch64（龙芯包不内置 Node.js，需系统 Node.js ≥ 24）
+   - 架构：x86-64 / arm64 / loongarch64（龙芯包不内置 Node.js，需系统 Node.js ≥ 24.22.1）
    - CPU：双核 2.0 GHz
    - 内存：≥ 512 MiB 空闲（推荐1GiB空余）
    - 硬盘：≥ 500 MiB 可用
@@ -72,11 +72,11 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 
 2. 手动下载对应架构的 tar.gz，解压后运行 `./install.sh`（交互式终端里会问你安装前缀、端口和数据目录；脚本或 CI 里加 `--yes` 跳过提问）。
 
-注：龙芯包不内置 Node.js，需要系统里有 Node.js ≥ 24。完整的安装选项和 systemd 服务说明见 [`packaging/README.md`](./packaging/README.md)。
+注：龙芯包不内置 Node.js，需要系统里有 Node.js ≥ 24.22.1。完整的安装选项和 systemd 服务说明见 [`packaging/README.md`](./packaging/README.md)。
 
 ### Docker（Linux / macOS，x86_64 / arm64）
 
-发布镜像托管在 GitHub Container Registry（`ghcr.io/snnh/openwebcode`），内置完整运行时（core、Node 24、bubblewrap、git、python3），数据目录可持久化：
+发布镜像托管在 GitHub Container Registry（`ghcr.io/snnh/openwebcode`），内置完整运行时（core、Node 24.22.1、bubblewrap、git、python3），数据目录可持久化：
 
 ```sh
 # 1. 在仓库根目录启动（拉取 GHCR 发布镜像）
@@ -160,7 +160,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 
 ## 从源码构建
 
-需要 Node.js ≥ 20、CMake ≥ 3.19、C11 编译器和 Python 3（core 协议测试用）。三层各自独立构建，仓库根目录没有 `package.json`：
+需要 Node.js ≥ 24.22.1、CMake ≥ 3.19、C11 编译器和 Python 3（core 协议测试用）。三层各自独立构建，仓库根目录没有 `package.json`：
 
 ```sh
 cmake -S core -B build && cmake --build build && ctest --test-dir build   # core（C 执行器）

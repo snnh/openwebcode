@@ -24,7 +24,7 @@ Browser (React 19 + Vite 6) ── HTTP/WebSocket ──► Node service (agent 
    - OS: Windows 10+ (Windows 7 untested) or Linux
      - Linux: glibc ≥ 2.28; kernel ≥ 5.13 (Landlock baseline; ≥ 6.7 adds network denial). The default sandbox backend is bubblewrap (full namespace isolation): where bubblewrap is unavailable, the default backend fails with a clear error — install bubblewrap (e.g. `apt install bubblewrap`) or switch the session sandbox mode to the Landlock compatibility mode explicitly (weaker). Developed and verified on Debian 13 / Ubuntu 24.04.
      - A HarmonyOS port is in development.
-   - Architectures: x86-64 / arm64 / loongarch64 (the Loongson package ships no bundled Node.js and needs system Node.js ≥ 24)
+   - Architectures: x86-64 / arm64 / loongarch64 (the Loongson package ships no bundled Node.js and needs system Node.js ≥ 24.22.1)
    - CPU: dual-core 2.0 GHz
    - Memory: ≥ 512 MiB free (1 GiB free recommended)
    - Disk: ≥ 500 MiB free
@@ -75,11 +75,11 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 
 2. Or download the tar.gz for your architecture, extract it, and run `./install.sh` (an interactive terminal asks for the install prefix, port, and data directory; add `--yes` in scripts or CI to skip the questions).
 
-Note: the loongarch64 package ships no bundled Node.js and requires system Node.js ≥ 24. See [`packaging/README.en.md`](./packaging/README.en.md) for every installer option and the systemd unit.
+Note: the loongarch64 package ships no bundled Node.js and requires system Node.js ≥ 24.22.1. See [`packaging/README.en.md`](./packaging/README.en.md) for every installer option and the systemd unit.
 
 ### Docker (Linux / macOS, x86_64 / arm64)
 
-Release images are hosted on GitHub Container Registry (`ghcr.io/snnh/openwebcode`) with the full runtime baked in (core, Node 24, bubblewrap, git, python3); user data lives in a named volume:
+Release images are hosted on GitHub Container Registry (`ghcr.io/snnh/openwebcode`) with the full runtime baked in (core, Node 24.22.1, bubblewrap, git, python3); user data lives in a named volume:
 
 ```sh
 # 1. Start from the repository root (pulls the GHCR release image)
@@ -163,7 +163,7 @@ Production reference (v1.7.6, Debian 13 x86-64, measured on an always-on instanc
 
 ## Build from source
 
-Requirements: Node.js ≥ 20, CMake ≥ 3.19, a C11 compiler, and Python 3 (for the core protocol tests). Each layer builds independently — there is no root `package.json`:
+Requirements: Node.js ≥ 24.22.1, CMake ≥ 3.19, a C11 compiler, and Python 3 (for the core protocol tests). Each layer builds independently — there is no root `package.json`:
 
 ```sh
 cmake -S core -B build && cmake --build build && ctest --test-dir build   # core (C executor)
