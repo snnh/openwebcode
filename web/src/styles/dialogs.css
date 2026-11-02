@@ -225,3 +225,15 @@
   .wb-overlay-input { font-size: var(--text-l); }
   .shortcuts-table { display: block; overflow-x: auto; white-space: nowrap; }
 }
+
+/* ================= 对话框进出场（统一 160ms，底衬同步淡入） ================= */
+.session-dialog[open] { animation: dialog-in var(--dur-2) var(--ease-enter); }
+.session-dialog[open]::backdrop { animation: dialog-backdrop-in var(--dur-2) var(--ease-enter); }
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+}
+@keyframes dialog-backdrop-in {
+  from { opacity: 0; }
+}
+html[data-motion="reduced"] .session-dialog[open],
+html[data-motion="reduced"] .session-dialog[open]::backdrop { animation: none; }

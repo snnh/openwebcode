@@ -555,3 +555,10 @@
 
 /* 上下文面板驱逐读数：分段归因下的弱化说明行 */
 .ctx-evicted-row { margin: 6px 0 0; color: var(--text-3); font-size: var(--text-2xs); }
+
+/* 面板展开：内容轻微上浮淡入；收起保持瞬切，避免拖拽高度时抖动 */
+.bottom-panel.open .panel-content { animation: panel-content-in var(--dur-2) var(--ease-enter); }
+@keyframes panel-content-in {
+  from { opacity: 0; transform: translateY(4px); }
+}
+html[data-motion="reduced"] .bottom-panel.open .panel-content { animation: none; }
