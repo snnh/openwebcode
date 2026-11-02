@@ -124,8 +124,6 @@ export interface ExtensionInfo extends ExtensionManifest {
   status: "running" | "disabled" | "error";
   config: Record<string, unknown>;
   error?: string;
-  /** Agent 预设专用：可选预设列表（内置 + 用户目录发现），供 UI 下拉渲染。 */
-  availablePresets?: Array<{ id: string; name: string; description: string; category: "minimal" | "mimicry" | "custom"; builtin: boolean; overridden?: boolean }>;
 }
 
 export interface ContextHookPayload {

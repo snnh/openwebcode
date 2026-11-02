@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { EventBus } from "./events/event-bus.js";
 
@@ -114,7 +114,7 @@ export class HookRunner {
     const projectFile = path.join(payload.cwd, ".owc", "hooks.json");
     let project: HooksConfig = {};
     if (this.projectExecConfigEnabled()) {
-      project = await this.readHooksFile(projectFile, payload.sessionId);
+      project = await this.readProjectHooksFile(projectFile, payload.sessionId);
     } else if (await fileHasContent(projectFile)) {
       // 项目级 hooks 存在但未信任：每个会话只发一次 notice（含路径，便于用户定位与决策）。
       if (!this.skippedNoticeSessions.has(payload.sessionId)) {
@@ -132,6 +132,13 @@ export class HookRunner {
     }
     const global = await this.readHooksFile(this.globalPath, payload.sessionId);
     return [...(project[event] ?? []), ...(global[event] ?? [])];
+  }
+
+  /** 项目配置只接受常规目录中的常规文件：`.owc` 或 hooks.json 若为符号链接，
+   *  读取时可能落到工作区外（或 sandbox 通过链接写入的目标），直接按无配置处理。 */
+  private async readProjectHooksFile(file: string, sessionId: string): Promise<HooksConfig> {
+    if (!(await isPlainProjectConfig(file))) return {};
+    return this.readHooksFile(file, sessionId);
   }
 
   private async readHooksFile(file: string, sessionId: string): Promise<HooksConfig> {
@@ -195,9 +202,27 @@ export class HookRunner {
   }
 }
 
-/** 文件存在且含非空白内容（stat+read 合一的最小判定，避免为纯定界去读全文）。 */
-async function fileHasContent(file: string): Promise<boolean> {
+/** 项目配置文件存在、路径不是符号链接且含非空白内容。先 stat 限界：项目里的
+ *  .owc/hooks.json 不可信，每个 hook 事件都读全文会被超大文件放大成持续 IO/内存压力。
+ *  超过阈值时不再读内容，直接视为“有内容”（空文件 size 为 0，仍能准确跳过）。 */
+const HOOK_PROBE_MAX_BYTES = 64 * 1024;
+
+/** 项目 .owc 配置的路径安全判定：父目录与文件都必须是常规项且不是符号链接。 */
+async function isPlainProjectConfig(file: string): Promise<boolean> {
   try {
+    const [parent, entry] = await Promise.all([lstat(path.dirname(file)), lstat(file)]);
+    return parent.isDirectory() && !parent.isSymbolicLink() && entry.isFile() && !entry.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+async function fileHasContent(file: string): Promise<boolean> {
+  if (!(await isPlainProjectConfig(file))) return false;
+  try {
+    const info = await stat(file);
+    if (!info.isFile() || info.size === 0) return false;
+    if (info.size > HOOK_PROBE_MAX_BYTES) return true;
     return (await readFile(file, "utf8")).trim() !== "";
   } catch {
     return false;

@@ -283,6 +283,22 @@ def run_bwrap_e2e(proc, workspace):
         # Nothing outside the write roots may be conjured into existence.
         assert not os.path.exists(missing_outside)
 
+        # A project can ship ".owc" as a symlink; host-side placeholder
+        # creation must not follow it outside the workspace.  Use a dedicated
+        # cwd so the real .owc directory above is not in the way.
+        symlink_workspace = os.path.join(workspace, "symlink-workspace")
+        os.mkdir(symlink_workspace)
+        os.symlink(outside, os.path.join(symlink_workspace, ".owc"))
+        symlink_deny = os.path.join(symlink_workspace, ".owc", "hooks.json")
+        response = configure(proc, 63, symlink_workspace, {
+            "enabled": True, "network": "allow", "denyPaths": [symlink_deny],
+        })
+        assert "result" in response, response
+        result, output = run_exec(proc, 64, symlink_workspace, "printf symlink-deny-ok")
+        assert result["exitCode"] == 0, result
+        assert "symlink-deny-ok" in output, output
+        assert not os.path.lexists(os.path.join(outside, "hooks.json"))
+
         # exec.run gives the command /dev/null as stdin: an interactive
         # reader like cat must see EOF immediately instead of racing the
         # main loop for the RPC pipe (leaking frames across sessions or

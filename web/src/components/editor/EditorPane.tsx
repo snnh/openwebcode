@@ -74,7 +74,10 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [cursorLine, setCursorLine] = useState(line ?? 1);
-  const { mono, ligatures } = useAppearance();
+  const { mono, ligatures, scale } = useAppearance();
+  // Monaco 的 fontSize 不是 CSS 值；用 ref 让异步创建时读到最新缩放，避免为了字号重建编辑器丢草稿。
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
 
   const content = useQuery({
     queryKey: ["file-content", sessionId, path],
@@ -115,7 +118,7 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
       minimap: { enabled: false },
       automaticLayout: true,
       scrollBeyondLastLine: false,
-      fontSize: 13,
+      fontSize: 13 * scaleRef.current / 100,
       ...(monoFontFamily() ? { fontFamily: monoFontFamily() } : {}),
       fontLigatures: ligatures,
     });
@@ -156,8 +159,9 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
     editorRef.current?.updateOptions({
       ...(monoFontFamily() ? { fontFamily: monoFontFamily() } : {}),
       fontLigatures: ligatures,
+      fontSize: 13 * scale / 100,
     });
-  }, [mono, ligatures]);
+  }, [mono, ligatures, scale]);
 
   const save = useCallback((): void => {
     const editor = editorRef.current;

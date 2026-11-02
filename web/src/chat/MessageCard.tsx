@@ -67,9 +67,7 @@ function ToolResultCard({ block, sessionId }: { block: MessageContent; sessionId
           <Icon name={error ? "x" : "check"} size={12} />
         </span>
         <b className="tool-row-name">{error ? t("执行失败", "Execution failed") : t("执行结果", "Result")}</b>
-        {summary
-          ? <span className="tool-row-summary mono" title={summary}>{summary}</span>
-          : !error && <span className="tool-row-summary mono">{t(`${body.length} 字符`, `${body.length} characters`)}</span>}
+        {summary && <span className="tool-row-summary mono" title={summary}>{summary}</span>}
         <span className="tool-row-actions">
           <span className="tool-row-meta mono">{t(`${body.length} 字符`, `${body.length} chars`)}</span>
           <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />

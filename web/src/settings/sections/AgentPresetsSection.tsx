@@ -132,6 +132,7 @@ export function AgentPresetsSection(): ReactElement {
             </button>
             {previewDetail.data && (
               <PresetCreator
+                key={previewDetail.data.id}
                 source={previewDetail.data}
                 autoOpen={editTarget === previewId}
                 onOpened={() => setEditTarget(undefined)}
@@ -171,6 +172,7 @@ export function AgentPresetsSection(): ReactElement {
           inline
           label={t("模拟出站 User-Agent", "Simulate outbound User-Agent")}
           description={configured === "" || configured === "classic" ? t("经典模式没有拟态 UA，切换到带 UA 的预设后才可开启。", "Classic has no simulated UA; switch to a preset that ships one.") : undefined}
+          onLabelClick={uaBusy || configured === "" || configured === "classic" ? undefined : () => void toggleUserAgent(!simulateUserAgent)}
         >
           <Switch
             checked={simulateUserAgent}

@@ -238,6 +238,11 @@ void owc_bwrap_probe(owc_sandbox_result *result) {
     *result = probe_cache;
 }
 
+/* Reject empty, "." and ".." components before mkdirat/openat. */
+static int placeholder_component_invalid(const char *name) {
+    return !name[0] || strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+}
+
 /* Create a missing deny path placeholder (parent chain 0700, file 0600) so
  * the deny mask below pins a real host file instead of being skipped.
  * Only absolute paths inside a write root are created: the sandbox could
@@ -249,34 +254,67 @@ void owc_bwrap_probe(owc_sandbox_result *result) {
 static void deny_create_placeholder(const char *path,
                                     const char *const *write_roots,
                                     size_t write_root_count) {
-    size_t root_index;
+    size_t root_index, root_length;
+    const char *root, *relative;
     char *copy, *cursor;
+    int dirfd;
     if (!path || path[0] != '/') return;
     for (root_index = 0; root_index < write_root_count; ++root_index) {
         if (write_roots[root_index] && owc_path_is_within(path, write_roots[root_index])) break;
     }
     if (root_index == write_root_count) return;
-    copy = (char *)malloc(strlen(path) + 1);
-    if (!copy) return;
-    (void)strcpy(copy, path);
-    /* Skip the leading slash; mkdir each parent component (0700).  The final
-     * component is the file itself, created after the loop. */
+    root = write_roots[root_index];
+    root_length = strlen(root);
+    while (root_length > 1 && root[root_length - 1] == '/') root_length--;
+    relative = path + root_length;
+    while (*relative == '/') relative++;
+    if (!*relative) return; /* deny path is the write root itself */
+
+    /* Open the trusted write root once, then walk the remaining path with
+     * openat(O_NOFOLLOW): a project that ships ".owc" as a symlink must not
+     * make the host-side placeholder creation follow it outside the workspace.
+     * The old mkdir(path)/open(path) pair was lexical-only and followed parent
+     * symlinks. */
+    dirfd = open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dirfd < 0) return;
+    copy = (char *)malloc(strlen(relative) + 1);
+    if (!copy) { (void)close(dirfd); return; }
+    (void)strcpy(copy, relative);
+
     cursor = copy;
-    while (*cursor == '/') cursor++;
     for (;;) {
         char *slash = strchr(cursor, '/');
+        int next;
         if (!slash) break;
         *slash = '\0';
-        if (mkdir(copy, 0700) != 0 && errno != EEXIST) { free(copy); return; }
+        if (placeholder_component_invalid(cursor)) {
+            (void)close(dirfd);
+            free(copy);
+            return;
+        }
+        if (mkdirat(dirfd, cursor, 0700) != 0 && errno != EEXIST) {
+            (void)close(dirfd);
+            free(copy);
+            return;
+        }
+        next = openat(dirfd, cursor, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (next < 0) {
+            (void)close(dirfd);
+            free(copy);
+            return;
+        }
+        (void)close(dirfd);
+        dirfd = next;
         *slash = '/';
         cursor = slash + 1;
     }
-    {
-        int fd = open(copy, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (!placeholder_component_invalid(cursor)) {
+        int fd = openat(dirfd, cursor, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
         if (fd >= 0) (void)close(fd);
         /* EEXIST (a concurrent command won the race, or the file appeared
          * between lstat and open) is fine: the mask pins whatever is there. */
     }
+    (void)close(dirfd);
     free(copy);
 }
 

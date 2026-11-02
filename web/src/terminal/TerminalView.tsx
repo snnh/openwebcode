@@ -53,30 +53,33 @@ function cssVar(name: string): string | undefined {
   return value || undefined;
 }
 
-/** xterm 主题跟随亮/暗：直接取当前 CSS 变量值，切换主题时经 MutationObserver 重取 */
+/** xterm 主题跟随亮/暗：直接取当前 CSS 变量值，切换主题时经 MutationObserver 重取。
+ *  ANSI black/white 不能映射成 surface/text：亮色主题下 surface-card 是白色，
+ *  会把 ANSI black 变成白字；反之 text 在暗色主题下又接近白。这里按主题给固定色阶。 */
 function xtermThemeFromCssVars(): ITheme {
+  const dark = document.documentElement.dataset.theme === "dark";
   return {
     background: cssVar("--surface-inset"),
     foreground: cssVar("--text"),
     cursor: cssVar("--accent"),
     cursorAccent: cssVar("--surface-inset"),
     selectionBackground: cssVar("--accent-soft"),
-    black: cssVar("--surface-card"),
+    black: dark ? "#2b2b2b" : "#1f1f1f",
     red: cssVar("--danger"),
     green: cssVar("--ok"),
     yellow: cssVar("--amber"),
     blue: cssVar("--accent"),
     magenta: "#c678dd",
     cyan: "#56b6c2",
-    white: cssVar("--text"),
-    brightBlack: cssVar("--text-3"),
+    white: dark ? "#e8e8e8" : "#f5f5f5",
+    brightBlack: dark ? "#8a8a8a" : "#6b6b6b",
     brightRed: cssVar("--danger"),
     brightGreen: cssVar("--ok"),
     brightYellow: cssVar("--amber"),
     brightBlue: cssVar("--accent-hover"),
     brightMagenta: "#d7a6f0",
     brightCyan: "#7fd4dd",
-    brightWhite: cssVar("--text"),
+    brightWhite: "#ffffff",
   };
 }
 
@@ -102,7 +105,10 @@ function TerminalGate({ status }: { status: AuthStatus }): ReactElement {
 /** 单个 PTY 终端：xterm 实例 + WS 生命周期；generation 自增即整体重建（重连 = 新 PTY） */
 function PtyTerminal({ sessionId }: { sessionId: string }): ReactElement {
   const { t } = useI18n();
-  const { mono } = useAppearance();
+  const { mono, scale } = useAppearance();
+  // 异步创建终端时读最新缩放；创建后由 [mono, scale] effect 只改 options，不重连 PTY。
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XtermTerminal | undefined>(undefined);
   const fitRef = useRef<FitAddon | undefined>(undefined);
@@ -139,7 +145,7 @@ function PtyTerminal({ sessionId }: { sessionId: string }): ReactElement {
       if (disposed) return;
 
       terminal = new xterm.Terminal({
-        fontSize: 12.5,
+        fontSize: 12.5 * scaleRef.current / 100,
         cursorBlink: true,
         theme: xtermThemeFromCssVars(),
         ...(cssVar("--font-mono") ? { fontFamily: cssVar("--font-mono") } : {}),
@@ -229,8 +235,9 @@ function PtyTerminal({ sessionId }: { sessionId: string }): ReactElement {
     if (!term) return;
     const family = cssVar("--font-mono");
     if (family) term.options.fontFamily = family;
+    term.options.fontSize = 12.5 * scale / 100;
     try { fitRef.current?.fit(); } catch { /* 无布局环境忽略 */ }
-  }, [mono]);
+  }, [mono, scale]);
 
   const reconnect = (): void => {
     setPhase("connecting");

@@ -147,6 +147,9 @@ export function MobileNavMenu({ onClose, activeView, problemsBadge = 0, notifica
   const { t } = useI18n();
   const { reduced } = useMotionPreference();
   const navRef = useRef<HTMLElement>(null);
+  // onClose 通常是父组件内联函数；放进 effect 依赖会让每次父渲染重装监听并重新抢焦点。
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const duration = reduced ? 0 : 0.18;
 
   // 挂载即打开：焦点进菜单；Esc 关闭（遮罩点击由 backdrop onClick 承担）；Tab 在菜单内循环（不逃到遮罩下的内容）
@@ -177,11 +180,11 @@ export function MobileNavMenu({ onClose, activeView, problemsBadge = 0, notifica
         return;
       }
       event.stopPropagation();
-      onClose();
+      onCloseRef.current();
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
+  }, []);
 
   const action = (run: () => void) => (): void => {
     run();

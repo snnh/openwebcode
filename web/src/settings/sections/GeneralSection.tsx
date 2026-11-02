@@ -57,6 +57,7 @@ export function GeneralSection({ onDirtyChange }: {
           inline
           label={t("桌面通知", "Desktop notifications")}
           description={t("页面在后台时弹出系统通知：权限待批、等待回复、任务完成或失败。", "Show system notifications while the page is in the background: permission requests, pending replies, and run completion or failure.")}
+          onLabelClick={notifyPermission === "unsupported" ? undefined : () => onToggleDesktopNotify(!desktopNotify)}
         >
           <Switch checked={desktopNotify} onChange={onToggleDesktopNotify} label={t("桌面通知", "Desktop notifications")} disabled={notifyPermission === "unsupported"} />
         </SettingsRow>

@@ -36,7 +36,7 @@
 
 /* 只读代码视图浮层 */
 .code-overlay { width: min(860px, calc(100vw - 32px)); }
-.code-overlay-path { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 13px var(--font-mono); color: var(--text-2); }
+.code-overlay-path { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-s); line-height: normal; color: var(--text-2); }
 .code-overlay-body { overflow: auto; min-height: 120px; }
 
 /* ================= 编辑器分栏 ================= */
@@ -60,7 +60,7 @@
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
 }
-.editor-breadcrumb { display: inline-flex; align-items: center; min-width: 0; overflow: hidden; white-space: nowrap; font: 12px var(--font-mono); color: var(--text-2); }
+.editor-breadcrumb { display: inline-flex; align-items: center; min-width: 0; overflow: hidden; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-xs); line-height: normal; color: var(--text-2); }
 .editor-breadcrumb-item { display: inline-flex; align-items: center; border: none; background: none; padding: 0; font: inherit; color: inherit; }
 .editor-breadcrumb-item strong { color: var(--text); font-weight: var(--fw-600); }
 .editor-breadcrumb-symbol { cursor: pointer; color: var(--accent); }
@@ -86,7 +86,7 @@
 }
 .diff-hunk { display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); }
 .diff-hunk.current { background: var(--accent-soft); border-radius: var(--radius-s); }
-.diff-hunk-header { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--font-mono); color: var(--text-2); }
+.diff-hunk-header { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-2xs); line-height: normal; color: var(--text-2); }
 .diff-hunk-status { flex-shrink: 0; color: var(--text-2); }
 .diff-hunk[data-status="accepted"] .diff-hunk-status { color: var(--ok); }
 .diff-hunk[data-status="rejected"] .diff-hunk-status { color: var(--danger); }
@@ -94,7 +94,7 @@
 .diff-hunk[data-status="rejected"] .diff-hunk-header { text-decoration: line-through; opacity: 0.6; }
 .diff-all-done { margin: 2px 0; font-size: var(--text-xs); color: var(--text-2); }
 .diff-file-select { max-width: 220px; font-size: var(--text-xs); }
-.diff-fallback { margin: 0; padding: 8px 0; overflow: auto; flex: 1; font: 12px var(--font-mono); }
+.diff-fallback { margin: 0; padding: 8px 0; overflow: auto; flex: 1; font-family: var(--font-mono); font-size: var(--text-xs); line-height: normal; }
 .diff-lines { margin: 0; overflow-x: auto; }
 .diff-line { padding: 0 8px; white-space: pre; color: var(--text-2); }
 .diff-line.add { background: var(--diff-add-bg); color: var(--text); }

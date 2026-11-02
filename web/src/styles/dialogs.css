@@ -30,7 +30,7 @@
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text-3);
-  font: 11px var(--font-mono);
+  font-family: var(--font-mono); font-size: var(--text-2xs); line-height: normal;
 }
 .wb-overlay-empty { padding: 14px; }
 .shortcuts-table { border-collapse: collapse; margin: 8px 14px; }
@@ -41,7 +41,7 @@
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
-  font: 11px var(--font-mono);
+  font-family: var(--font-mono); font-size: var(--text-2xs); line-height: normal;
   background: var(--surface-canvas);
 }
 .shortcuts-table kbd.recording { border-color: var(--accent, #3b82f6); color: var(--accent, #3b82f6); animation: shortcut-recording 1.2s ease-in-out infinite; }
@@ -115,7 +115,7 @@
   max-height: 80vh;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius-m);
+  border-radius: var(--radius-m, var(--radius));
   background: var(--surface-canvas);
   color: var(--text);
   display: flex;

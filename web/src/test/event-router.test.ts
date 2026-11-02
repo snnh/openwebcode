@@ -128,6 +128,15 @@ describe("createEventRouter", () => {
     expect(deps.clearSubagentRuns).toHaveBeenLastCalledWith("s1");
     expect(deps.notify).toHaveBeenCalledWith(expect.stringContaining("子代理列表已清空"));
   });
+  it("hook.project_config_untrusted：即使来自后台会话也进通知中心，并深链到服务信息页签", () => {
+    const { deps, route } = setup("s1");
+    route({ type: "hook.project_config_untrusted", sessionId: "s2", payload: { path: "/repo/.owc/hooks.json" } });
+    expect(deps.pushEventNotification).toHaveBeenCalledWith(
+      expect.stringContaining("/repo/.owc/hooks.json"),
+      "info",
+      { settingsTab: "info" },
+    );
+  });
   it("写事件与 run 终态标脏 SCM/文件树，静默 400ms 后合并重取一次（不逐条重取）", () => {
     vi.useFakeTimers();
     try {

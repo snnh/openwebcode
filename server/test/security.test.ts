@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { brotliCompressSync, brotliDecompressSync } from "node:zlib";
 import os from "node:os";
 import path from "node:path";
@@ -289,6 +289,24 @@ describe("项目级执行配置信任边界", () => {
     const runner = new HookRunner(path.join(root, "hooks.json"), events, { projectExecConfigEnabled: () => true });
     await runner.run("PreToolUse", { sessionId: "s3", cwd, tool: "bash" });
     expect(seen.filter((event) => event.type === "hook.failed")).toHaveLength(0);
+  });
+
+  it.skipIf(process.platform === "win32")("项目 .owc 为符号链接时 hooks/mcp 均按不存在处理", async () => {
+    const root = await tempRoot("owc-project-symlink-");
+    const cwd = path.join(root, "proj");
+    const outside = path.join(root, "outside");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    const marker = path.join(root, "should-not-run");
+    const shell = process.platform === "win32" ? (p: string) => `type nul > ${p}` : (p: string) => `touch ${p}`;
+    await writeFile(path.join(outside, "hooks.json"), JSON.stringify({ PreToolUse: [{ matcher: "*", command: shell(marker) }] }));
+    await writeFile(path.join(outside, "mcp.json"), JSON.stringify({ mcpServers: { project: { command: "project-cmd" } } }));
+    await symlink(outside, path.join(cwd, ".owc"), "dir");
+    const runner = new HookRunner(path.join(root, "hooks.json"), new EventBus(), { projectExecConfigEnabled: () => true });
+    await runner.run("PreToolUse", { sessionId: "s4", cwd, tool: "bash" });
+    await expect(stat(marker)).rejects.toThrow();
+    const loaded = await loadMcpConfig(root, cwd, { includeProject: true });
+    expect(loaded.servers.project).toBeUndefined();
   });
 
   it("loadMcpConfig 仅在显式放行时读取项目 .owc/mcp.json", async () => {

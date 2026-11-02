@@ -1,4 +1,5 @@
 import { useState, type ReactElement } from "react";
+import { LazyMotion, domAnimation } from "motion/react";
 import { MotionPreview } from "../settings/sections/MotionPreview";
 
 /**
@@ -14,7 +15,8 @@ export function LabPage(): ReactElement {
     setTheme(next);
   };
   return (
-    <div className="lab">
+    <LazyMotion features={domAnimation}>
+      <div className="lab">
       <style>{LAB_CSS}</style>
       <header className="lab-bar">
         <strong>OWC UI Lab</strong>
@@ -102,7 +104,8 @@ export function LabPage(): ReactElement {
         <h2>Motion preview</h2>
         <MotionPreview />
       </section>
-    </div>
+      </div>
+    </LazyMotion>
   );
 }
 

@@ -1,5 +1,5 @@
 /* 底部面板与七个面板样式：从旧 styles.css 原样抽取（bottom-panel、panel-*、context、cost、timeline、subagents、perf、eval），视觉零变化。
-   基元（.btn/.input/.pill/.muted-empty/.panel-error/.mono）在 base.css，消息卡侧规则（.copy-btn/.code-block/.subagent-run 系列）在 chat-cards.css，
+   基元（.btn/.input/.pill/.muted-empty/.panel-error/.mono）在 base.css，消息卡侧规则（.action-btn/.code-block/.subagent-run 系列）在 chat-cards.css，
    .status-live/.panel-status-model 在 layout.css；此处不重复定义。
    注意：.inspector-body/.pricing-table 与侧栏视图/设置分区共用，若其他抽取文件含同名规则则内容相同（Phase 4 统一去重）。 */
 
@@ -61,6 +61,7 @@
 }
 .panel-tabs button:hover { color: var(--text); }
 .panel-tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: var(--fw-500); }
+.panel-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .panel-fold { display: inline-flex; align-items: center; margin-left: 0; color: var(--text-3); font-size: var(--text-s); padding: 4px 8px; position: sticky; right: 0; flex: none; background: var(--surface-card); }
 .panel-fold:hover { color: var(--text); }
 .panel-content { overflow: hidden; }
@@ -99,12 +100,12 @@
 .context-artifact { margin-top: 10px; border: 1px solid var(--border); border-radius: var(--radius-s); padding: 8px; }
 .context-artifact summary { cursor: pointer; color: var(--text-2); font-size: var(--text-xs); }
 .context-artifact pre { max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-canvas); padding: 10px; border-radius: var(--radius-s); font-size: var(--text-2xs); }
-.ctx-window-label { margin: 0 0 6px; font: 13px var(--font-mono); color: var(--text); }
+.ctx-window-label { margin: 0 0 6px; font-family: var(--font-mono); font-size: var(--text-s); line-height: normal; color: var(--text); }
 .ctx-window-bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; margin: 0 0 10px; }
 .ctx-window-bar i { display: block; height: 100%; background: var(--accent); }
 .ctx-window-bar.level-warn i { background: var(--amber); }
 .ctx-window-bar.level-danger i { background: var(--danger); }
-.ctx-cache-row { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: -4px 0 10px; font: 12px var(--font-mono); color: var(--text-2); }
+.ctx-cache-row { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: -4px 0 10px; font-family: var(--font-mono); font-size: var(--text-xs); line-height: normal; color: var(--text-2); }
 .segment-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--border); margin: 0 0 8px; }
 .segment-bar i { display: block; height: 100%; }
 .seg-system { background: var(--text-3); }
@@ -136,7 +137,7 @@
 }
 
 /* 时间线 */
-.timeline-summary { margin: 0 0 12px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-s); font: 11px var(--font-mono); color: var(--text-3); }
+.timeline-summary { margin: 0 0 12px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-s); font-family: var(--font-mono); font-size: var(--text-2xs); line-height: normal; color: var(--text-3); }
 .timeline-summary > div { display: flex; gap: 8px; padding: 3px 0; }
 .timeline-summary > div.active { color: var(--accent); font-weight: var(--fw-600); }
 .timeline-summary code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -145,7 +146,19 @@
 .timeline-node.active { color: var(--accent); font-weight: var(--fw-600); }
 .timeline-node.off-path { opacity: 0.45; }
 .timeline-node-actions { margin-left: auto; display: inline-flex; gap: 4px; }
-.timeline-node .copy-btn { opacity: 0; }
+/* 时间线节点的“继续/分叉”按钮沿用旧 .copy-btn 基类（消息卡已改用 .action-btn） */
+.timeline-node .copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-8);
+  border-radius: var(--radius-s);
+  color: var(--text-3);
+  font-size: var(--text-2xs);
+  transition: opacity var(--dur-1) var(--ease-standard), background-color var(--dur-1) var(--ease-standard), color var(--dur-1) var(--ease-standard);
+  opacity: 0;
+}
+.timeline-node .copy-btn:hover { background: var(--surface-inset); color: var(--accent); }
 .timeline-node:hover .copy-btn, .timeline-node .copy-btn:focus-visible { opacity: 1; }
 @media (hover: none) { .timeline-node .copy-btn { opacity: 1; } }
 .checkpoint { border-bottom: 1px solid var(--border); padding: 11px 0; font-size: var(--text-s); }
@@ -161,7 +174,7 @@
 .subagents-group { margin: 0; }
 /* 状态筛选（全部/运行中/完成/失败） */
 .subagents-filter { display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); color: var(--text-2); }
-.subagents-filter select { flex: none; padding: 3px 6px; font-size: var(--text-xs); border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--surface-canvas); color: var(--text); }
+.subagents-filter select { flex: none; padding: 3px 22px 3px 6px; font-size: var(--text-xs); border: 1px solid var(--border); border-radius: var(--radius-s); background-color: var(--surface-canvas); color: var(--text); }
 .subagents-group-header { display: flex; align-items: center; gap: 8px; font-size: var(--text-xs); color: var(--text-2); margin-bottom: 4px; }
 .subagents-open-tab { margin-left: auto; flex: none; font-size: var(--text-2xs); color: var(--accent); padding: 1px 6px; border-radius: var(--radius-s); }
 .subagents-open-tab:hover { text-decoration: underline; }
@@ -284,7 +297,7 @@
 .eval-task-row strong { font-size: var(--text-s); }
 .eval-task-row small { color: var(--text-3); font-size: var(--text-2xs); line-height: var(--lh-tight); }
 .eval-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 12px; color: var(--text-2); font-size: var(--text-xs); }
-.eval-summary strong { color: var(--ok); font: 600 20px/1 var(--font-mono); }
+.eval-summary strong { color: var(--ok); font-family: var(--font-mono); font-size: var(--text-xl); font-weight: var(--fw-600); line-height: 1; }
 .eval-summary strong.danger { color: var(--danger); }
 .eval-result { border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: var(--radius-s); padding: 6px 8px; font-size: var(--text-2xs); }
 .eval-result.pass { border-left-color: var(--ok); }
@@ -460,7 +473,7 @@
   gap: var(--sp-12);
   padding-left: var(--sp-12);
   color: var(--text-3);
-  font: 11px var(--font-mono);
+  font-family: var(--font-mono); font-size: var(--text-2xs); line-height: normal;
   overflow: hidden;
   white-space: nowrap;
 }
@@ -525,7 +538,7 @@
   .panel-tabs-secondary { border-top: 1px solid var(--border); }
   .bottom-panel.open .panel-tabs-secondary { border-bottom: 1px solid var(--border); }
   .panel-status { gap: 6px; padding-left: 6px; min-width: 0; }
-  /* 窄屏隐藏模式/成本/窗口，保留完整模型名；≤480 再把状态文案收成圆点，把宽度让给标签 */
+  /* 窄屏隐藏模式/成本/窗口，保留状态文案与完整模型名；标签文字自身按可用宽度省略 */
   .panel-status .status-optional { display: none; }
   .panel-status .panel-status-model { max-width: 46vw; }
   .panel-status > span { flex: 0 1 auto; overflow: hidden; }

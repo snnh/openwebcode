@@ -5,7 +5,9 @@ html, body { height: 100%; }
 body {
   margin: 0;
   min-width: 320px;
-  font: 14px/1.55 var(--font-ui);
+  font-family: var(--font-ui);
+  font-size: var(--text-m);
+  line-height: 1.55;
   background: var(--surface-canvas);
   color: var(--text);
   font-synthesis: none;
@@ -25,7 +27,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .input {
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
-  background: var(--surface-inset);
+  background-color: var(--surface-inset);
   color: var(--text);
   padding: 7px 9px;
   font-size: var(--text-s);
@@ -35,7 +37,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .input:focus {
   border-color: var(--accent);
   outline: none;
-  background: var(--surface-card);
+  background-color: var(--surface-card);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
@@ -214,7 +216,6 @@ button, a, [role="button"], summary, select, .icon-btn {
   box-shadow: var(--shadow-2);
   padding: 11px 14px;
   font-size: var(--text-s);
-  animation: toast-in var(--dur-2) var(--ease-enter);
 }
 .toast.error { border-color: var(--danger-border); color: var(--danger); }
 .toast button { color: var(--text-3); font-size: var(--text-l); }
@@ -278,7 +279,6 @@ button, a, [role="button"], summary, select, .icon-btn {
 @keyframes blink { 50% { opacity: 0; } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 
 
 /* ================= 主题切换一次性过渡 ================= */
@@ -334,6 +334,9 @@ select {
   cursor: pointer;
   transition: border-color var(--dur-2) var(--ease-standard), box-shadow var(--dur-2) var(--ease-standard), background-color var(--dur-2) var(--ease-standard);
 }
+/* .input 的 padding 简写会覆盖 select 的右内边距；单独补回箭头空间。
+   背景图仍由上面的 select 规则提供，.input 只用 background-color，不能用 background 简写。 */
+select.input { padding-right: 26px; }
 select:hover:not(:disabled) { border-color: var(--border-strong); }
 select:focus {
   border-color: var(--accent);

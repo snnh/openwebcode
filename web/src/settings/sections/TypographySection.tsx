@@ -147,7 +147,7 @@ export function TypographySection(): ReactElement {
         <SettingsRow label={t("代码字体", "Code font")}>
           <FontSelect options={monoOptions} value={appearance.mono} onChange={appearance.setMono} label={t("代码区字体", "Code font")} />
         </SettingsRow>
-        <SettingsRow inline label={t("代码连字", "Code ligatures")} description={t("把 =>、!== 等组合渲染为连字。", "Render combinations such as => and !== as ligatures.")}>
+        <SettingsRow inline label={t("代码连字", "Code ligatures")} description={t("把 =>、!== 等组合渲染为连字。", "Render combinations such as => and !== as ligatures.")} onLabelClick={() => appearance.setLigatures(!appearance.ligatures)}>
           <Switch checked={appearance.ligatures} onChange={appearance.setLigatures} label={t("启用代码连字", "Enable code ligatures")} />
         </SettingsRow>
         <div className="font-note">

@@ -181,8 +181,10 @@ function MicroScene({ dur, reduced }: { dur: number; reduced: boolean }): ReactE
   const [on, setOn] = useState(false);
   const [pressed, setPressed] = useState(false);
   useEffect(() => {
-    const id = window.setTimeout(() => { setOn(true); setPressed(true); }, 300);
-    return () => window.clearTimeout(id);
+    const onTimer = window.setTimeout(() => { setOn(true); setPressed(true); }, 300);
+    // 按下态只演示一小段，不然后续一直停在 scale(0.96)。
+    const releaseTimer = window.setTimeout(() => setPressed(false), 520);
+    return () => { window.clearTimeout(onTimer); window.clearTimeout(releaseTimer); };
   }, []);
   return (
     <div className="scene-micro">

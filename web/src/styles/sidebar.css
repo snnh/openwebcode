@@ -277,12 +277,12 @@
 .session-bulk-move { position: relative; display: inline-flex; }
 .rail-search-wrap { position: relative; display: block; margin: 0 12px 10px; color: var(--text-3); }
 .rail-search-wrap.expanded { flex: 1 1 auto; min-width: 0; margin: 0; }
-.rail-search-wrap.expanded .rail-search { min-height: 32px; padding-right: 30px; }
+.rail-search-wrap.expanded .rail-search { min-height: 32px; padding-right: 36px; }
 .rail-search-wrap.expanded .icon-btn {
   position: absolute; right: 1px; top: 50%; transform: translateY(-50%);
-  width: 26px; height: 26px;
+  width: 32px; height: 32px;
 }
-.rail-search-wrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.rail-search-wrap > svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); pointer-events: none; }
 .rail-search {
   width: 100%;
   min-height: 34px;
@@ -317,7 +317,7 @@
   height: var(--row-h);
   padding: 0 var(--sp-8);
   border-radius: var(--radius-xs);
-  font: var(--text-s) var(--font-mono);
+  font-family: var(--font-mono); font-size: var(--text-s); line-height: normal;
   color: var(--text-2);
 }
 .file-row:hover { background: var(--surface-hover); color: var(--text); }

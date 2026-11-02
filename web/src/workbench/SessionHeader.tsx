@@ -99,7 +99,8 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
   const headerStorageKey = `owc-header-collapsed-${isMobile ? "mobile" : "desktop"}`;
   const [headerCollapsed, setHeaderCollapsed] = useState(() => {
     const storage = typeof globalThis.localStorage !== "undefined" ? globalThis.localStorage : undefined;
-    const stored = storage?.getItem(headerStorageKey);
+    // 旧版本只有一个 owc-header-collapsed 键；新键缺失时回退读取，避免升级丢偏好。
+    const stored = storage?.getItem(headerStorageKey) ?? storage?.getItem("owc-header-collapsed");
     if (stored === "1" || stored === "0") return stored === "1";
     return isMobile;
   });
@@ -130,6 +131,17 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
   const presetEnabled = presetsQuery.data?.enabled === true;
   const presetOptions = presetEnabled ? presetsQuery.data?.presets ?? [] : [];
   const presetActiveName = session.activePreset ? presetLabel(session.activePreset, language).name : t("经典模式", "Classic");
+  // 下拉里的“默认”必须显示全局默认，而不是本会话实际生效的覆盖值；
+  // 两者在会话级覆盖/强制 classic 时可能不同。
+  const defaultPresetId = presetsQuery.data?.config.preset;
+  const defaultPreset = defaultPresetId
+    ? presetsQuery.data?.presets.find((preset) => preset.id === defaultPresetId)
+    : undefined;
+  const presetDefaultName = defaultPreset
+    ? presetLabel(defaultPreset, language).name
+    : defaultPresetId && defaultPresetId !== "classic"
+      ? defaultPresetId
+      : t("经典模式", "Classic");
   // 弹层排序：运行中在前（startedAt 升序），已结束后随（finishedAt 降序，弱化显示）
   const sortedTasks = useMemo(() => {
     const all = tasks.data ?? [];
@@ -205,7 +217,8 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
   // 断点切换时读取该断点自己的偏好；桌面首次进入保持展开
   useEffect(() => {
     const storage = typeof globalThis.localStorage !== "undefined" ? globalThis.localStorage : undefined;
-    const stored = storage?.getItem(headerStorageKey);
+    // 旧版本只有一个 owc-header-collapsed 键；新键缺失时回退读取，避免升级丢偏好。
+    const stored = storage?.getItem(headerStorageKey) ?? storage?.getItem("owc-header-collapsed");
     setHeaderCollapsed(stored === "1" ? true : stored === "0" ? false : isMobile);
   }, [headerStorageKey, isMobile]);
 
@@ -285,7 +298,7 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
         disabled={busy || configPending}
         onChange={(event) => updateMode({ preset: event.target.value })}
       >
-        <option value="">{t(`默认 · ${presetActiveName}`, `Default · ${presetActiveName}`)}</option>
+        <option value="">{t(`默认 · ${presetDefaultName}`, `Default · ${presetDefaultName}`)}</option>
         <option value="classic">{t("经典模式（本会话）", "Classic (this session)")}</option>
         {presetOptions.map((preset) => {
           const name = presetLabel(preset, language).name;

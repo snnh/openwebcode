@@ -15,12 +15,12 @@ export interface FontPreset {
 
 export const LATIN_PRESETS: FontPreset[] = [
   { id: "system", zh: "系统默认", en: "System default", stack: null },
-  { id: "inter", zh: "Inter", en: "Inter", stack: 'Inter, "Segoe UI", Arial, sans-serif' },
+  { id: "inter", zh: "Inter", en: "Inter", stack: 'Inter, "Segoe UI", Arial' },
 ];
 
 export const CJK_PRESETS: FontPreset[] = [
   { id: "system", zh: "系统默认", en: "System default", stack: null },
-  { id: "noto", zh: "思源黑体", en: "Source Han Sans", stack: '"Noto Sans SC", "Source Han Sans SC", sans-serif' },
+  { id: "noto", zh: "思源黑体", en: "Source Han Sans", stack: '"Noto Sans SC", "Source Han Sans SC"' },
 ];
 
 export const MONO_PRESETS: FontPreset[] = [
@@ -80,11 +80,12 @@ function readUserFonts(): string[] {
 
 export const FAMILY = "family:";
 
-export function presetStack(choice: FontChoice, presets: FontPreset[]): string | null {
+export function presetStack(choice: FontChoice, presets: FontPreset[], fallback = ""): string | null {
   if (choice.startsWith(CUSTOM)) return choice.slice(CUSTOM.length).trim() || null;
   if (choice.startsWith(FAMILY)) {
     const family = choice.slice(FAMILY.length).trim();
-    return family ? `"${family}", sans-serif` : null;
+    if (!family) return null;
+    return fallback ? `"${family}", ${fallback}` : `"${family}"`;
   }
   return presets.find((preset) => preset.id === choice)?.stack ?? null;
 }
@@ -116,14 +117,15 @@ const appearanceStore = createStore<AppearanceState>({
 /** 把偏好写入 :root；system 预设移除内联值以回落到 tokens 默认栈 */
 export function applyAppearance(state: AppearanceState = appearanceStore.get()): void {
   const root = document.documentElement;
-  const apply = (name: string, choice: FontChoice, presets: FontPreset[]): void => {
-    const stack = presetStack(choice, presets);
+  const apply = (name: string, choice: FontChoice, presets: FontPreset[], fallback = ""): void => {
+    const stack = presetStack(choice, presets, fallback);
     if (stack) root.style.setProperty(name, stack);
     else root.style.removeProperty(name);
   };
+  // 界面两段不带 generic，由 --font-ui 末尾统一兜底；等宽栈需要自己的 monospace 兜底。
   apply("--font-ui-latin", state.latin, LATIN_PRESETS);
   apply("--font-ui-cjk", state.cjk, CJK_PRESETS);
-  apply("--font-mono", state.mono, MONO_PRESETS);
+  apply("--font-mono", state.mono, MONO_PRESETS, "monospace");
   root.dataset.ligatures = state.ligatures ? "on" : "off";
   root.style.setProperty("--ui-scale", String(state.scale / 100));
 }
@@ -159,9 +161,21 @@ export function useAppearance(): AppearanceState & {
       appearanceStore.set({ userFonts: next });
     },
     removeUserFont: (family) => {
-      const next = appearanceStore.get().userFonts.filter((item) => item !== family);
+      const previous = appearanceStore.get();
+      const next = previous.userFonts.filter((item) => item !== family);
       write(KEY_USER_FONTS, JSON.stringify(next));
-      appearanceStore.set({ userFonts: next });
+      // 删除后不能留下指向已移除字体的 family: 选择：UI 会显示“系统默认”，
+      // 但 CSS 变量仍指向不存在的字体，实际外观与控件不一致。
+      const reset = (choice: FontChoice): FontChoice => choice === `${FAMILY}${family}` ? "system" : choice;
+      const latin = reset(previous.latin);
+      const cjk = reset(previous.cjk);
+      const mono = reset(previous.mono);
+      // 选择也要落盘，否则刷新后 readChoice 会把已删除的字体重新读回来。
+      if (latin !== previous.latin) write(KEY_LATIN, latin);
+      if (cjk !== previous.cjk) write(KEY_CJK, cjk);
+      if (mono !== previous.mono) write(KEY_MONO, mono);
+      appearanceStore.set({ userFonts: next, latin, cjk, mono });
+      applyAppearance();
     },
   };
 }

@@ -213,6 +213,19 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
         deps.pushEventNotification(t(`诊断更新：${failed} 项失败`, `Diagnostics updated: ${failed} failure(s)`), "error", { sessionId: event.sessionId, view: "problems" });
       }
     }
+    // 项目级执行配置默认不信任：server 每个会话只发一次，进通知中心并深链到开关。
+    // 该事件可能属于后台会话，必须在按 currentId 过滤之前处理。
+    if (event.type === "hook.project_config_untrusted") {
+      const path = (event.payload as { path?: string }).path ?? ".owc/hooks.json";
+      deps.pushEventNotification(
+        t(
+          `项目级执行配置未启用：已忽略 ${path}。确认项目可信后，可在 设置 → 服务信息 开启“信任项目级执行配置”。`,
+          `Project-level exec config is off: ${path} was ignored. If you trust this project, enable “Trust project-level exec config” in Settings → Server info.`,
+        ),
+        "info",
+        { settingsTab: "info" },
+      );
+    }
     // SCM 更新：刷新源代码管理面板数据；不弹窗不打断
     if (event.type === "scm.updated" && event.sessionId) {
       // 工具写文件/编辑器保存 → SCM 面板与文件树一起刷新（合并重取，见 scheduleCoalescedRefetch）

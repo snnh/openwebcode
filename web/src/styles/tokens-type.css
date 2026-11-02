@@ -1,23 +1,26 @@
 /* 排版 token：字号阶梯 / 行高 / 字重 / 字体栈 / 缩放。 */
 @layer tokens {
   :root {
-    /* 字体栈：界面 = 西文栈 + CJK 栈（西文优先命中数字与拉丁字母） */
-    --font-ui-latin: "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", -apple-system, "Helvetica Neue", Arial, sans-serif;
-    --font-ui-cjk: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", "Source Han Sans SC", sans-serif;
-    --font-ui: var(--font-ui-latin), var(--font-ui-cjk);
+    /* 字体栈：界面 = 西文栈 + CJK 栈（西文优先命中数字与拉丁字母）。
+       两段组件栈都不带 generic：否则前半段的 sans-serif 会在通用族处提前终止，
+       后半段的 CJK 字体永远轮不到。generic 只放在最终 --font-ui 末尾。 */
+    --font-ui-latin: "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", -apple-system, "Helvetica Neue", Arial;
+    --font-ui-cjk: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", "Source Han Sans SC";
+    --font-ui: var(--font-ui-latin), var(--font-ui-cjk), sans-serif;
     --font-mono: "IBM Plex Mono", "Cascadia Code", "JetBrains Mono", "Sarasa Mono SC", Consolas, "Courier New", monospace;
 
     /* 界面缩放（字体设置页写入） */
     --ui-scale: 1;
 
-    /* 字号七档 */
-    --text-2xs: 11px;
-    --text-xs: 12px;
-    --text-s: 13px;
-    --text-m: 14px;
-    --text-l: 16px;
-    --text-xl: 20px;
-    --text-2xl: 26px;
+    /* 字号七档；乘 --ui-scale 后设置页的 90/110/125 才会真正生效。
+       行高保持无单位倍数，随字号一起缩放。 */
+    --text-2xs: calc(11px * var(--ui-scale));
+    --text-xs: calc(12px * var(--ui-scale));
+    --text-s: calc(13px * var(--ui-scale));
+    --text-m: calc(14px * var(--ui-scale));
+    --text-l: calc(16px * var(--ui-scale));
+    --text-xl: calc(20px * var(--ui-scale));
+    --text-2xl: calc(26px * var(--ui-scale));
 
     /* 行高 */
     --lh-tight: 1.25;
@@ -31,7 +34,7 @@
     --fw-600: 600;
   }
 
-  /* 界面缩放作用于根字号；字号 token 为 px，缩放通过 html 字号与 rem 组合在后续块生效 */
+  /* 根字号同步缩放，供少量 rem 间距使用；文字本身由上面的字号 token 缩放。 */
   :root {
     font-size: calc(16px * var(--ui-scale));
   }

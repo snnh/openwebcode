@@ -585,7 +585,7 @@
   animation: spin 0.8s linear infinite;
 }
 .live-activity-label { white-space: nowrap; }
-.live-activity-elapsed { color: var(--text-3); font: 11px var(--font-mono); }
+.live-activity-elapsed { color: var(--text-3); font-family: var(--font-mono); font-size: var(--text-2xs); line-height: normal; }
 .live-activity-tool {
   max-width: 40%;
   overflow: hidden;
@@ -644,7 +644,7 @@
   font: inherit;
   outline: none;
 }
-.conversation-search-count { color: var(--text-3); font: 11px var(--font-mono); white-space: nowrap; }
+.conversation-search-count { color: var(--text-3); font-family: var(--font-mono); font-size: var(--text-2xs); line-height: normal; white-space: nowrap; }
 .conversation-search-hint {
   color: var(--text-3);
   font-size: var(--text-2xs);
@@ -694,7 +694,7 @@ article.message.conv-search-active { outline: 2px solid color-mix(in srgb, var(-
   background: var(--code-bg);
   border-radius: var(--radius-s);
   padding: 1px 5px;
-  font: 13px var(--font-mono);
+  font-family: var(--font-mono); font-size: var(--text-s); line-height: normal; font-weight: var(--fw-400); font-style: normal;
 }
 .code-block {
   margin: 10px 0;
@@ -706,7 +706,7 @@ article.message.conv-search-active { outline: 2px solid color-mix(in srgb, var(-
 .code-block pre {
   margin: 0;
   padding: var(--sp-12) 14px;
-  font: 13px/1.6 var(--font-mono);
+  font-family: var(--font-mono); font-size: var(--text-s); line-height: 1.6;
   background-color: transparent !important;
 }
 .code-plain { white-space: pre-wrap; overflow-wrap: anywhere; }

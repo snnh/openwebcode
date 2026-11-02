@@ -92,7 +92,6 @@
   border-right: 1px solid var(--border);
   box-shadow: var(--shadow-3);
   outline: none;
-  animation: mobile-nav-in var(--dur-2) var(--ease-enter);
 }
 @keyframes mobile-nav-in { from { transform: translateX(-100%); opacity: 0; } }
 .mobile-nav-group { display: flex; flex-direction: column; gap: 2px; padding: var(--sp-4) var(--sp-8); }
@@ -270,7 +269,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--sp-8);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono); font-size: var(--text-xs); line-height: normal;
   color: var(--text-3);
   white-space: nowrap;
 }
@@ -283,7 +282,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono); font-size: var(--text-xs); line-height: normal;
   color: var(--text-2);
   white-space: nowrap;
 }
@@ -302,13 +301,13 @@
   padding: 0;
   border: none;
   background: none;
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono); font-size: var(--text-xs); line-height: normal;
   color: var(--accent);
   cursor: pointer;
   white-space: nowrap;
 }
 .job-info-btn:hover { text-decoration: underline; }
-.job-info-state { display: inline-flex; align-items: center; gap: 5px; font: 12px var(--font-mono); color: var(--accent); white-space: nowrap; }
+.job-info-state { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: var(--text-xs); line-height: normal; color: var(--accent); white-space: nowrap; }
 .job-info-state.danger { color: var(--danger); }
 .job-info-state.danger .info-dot { background: var(--danger); }
 .job-info-state.amber { color: var(--amber); }
@@ -514,19 +513,7 @@
 .todo-chip li[data-status="done"] { color: var(--text-3); text-decoration: line-through; }
 .todo-chip li[data-status="in_progress"] span { color: var(--accent); }
 
-/* ================= 底部状态条 ================= */
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-12);
-  padding: 3px var(--sp-12);
-  border-top: 1px solid var(--border);
-  background: var(--surface-card);
-  color: var(--text-3);
-  font: 11px var(--font-mono);
-  overflow: hidden;
-  white-space: nowrap;
-}
+/* ================= 底部面板状态（嵌入 panel-tabs） ================= */
 .panel-status-model { overflow: hidden; text-overflow: ellipsis; }
 .status-live { color: var(--text-2); }
 .status-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
@@ -588,7 +575,7 @@
   border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
   border-radius: 999px;
   background: var(--accent-soft);
-  font: 700 10px var(--font-mono);
+  font-family: var(--font-mono); font-size: calc(10px * var(--ui-scale)); font-weight: 700; line-height: normal;
   letter-spacing: 0.14em;
   color: var(--accent);
 }

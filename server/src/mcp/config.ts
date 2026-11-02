@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 
 interface McpServerStdioConfig {
@@ -40,6 +40,16 @@ function validate(value: unknown): McpServerConfig | undefined {
   return undefined;
 }
 
+/** 项目 .owc 配置的路径安全判定：父目录与文件都必须是常规项且不是符号链接。 */
+async function isPlainProjectConfig(filePath: string): Promise<boolean> {
+  try {
+    const [parent, entry] = await Promise.all([lstat(path.dirname(filePath)), lstat(filePath)]);
+    return parent.isDirectory() && !parent.isSymbolicLink() && entry.isFile() && !entry.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 async function readConfigFile(filePath: string, result: McpConfigResult): Promise<void> {
   let parsed: unknown;
   try {
@@ -61,10 +71,15 @@ async function readConfigFile(filePath: string, result: McpConfigResult): Promis
  * 项目级覆盖同名全局 server（与 claude code 的约定一致）。
  * 项目级文件属执行入口配置（可声明任意待 spawn 命令），仅在调用方显式放行
  * （trustProjectExecConfig）时读取；缺省跳过，与 hooks.ts 的信任边界同口径。
+ * `.owc` 或 mcp.json 是符号链接时也跳过，避免经链接读取工作区外的配置。
  */
 export async function loadMcpConfig(dataDir: string, cwd?: string, options: { includeProject?: boolean } = {}): Promise<McpConfigResult> {
   const result: McpConfigResult = { servers: {}, skipped: [] };
   await readConfigFile(path.join(dataDir, "mcp.json"), result);
-  if (cwd && options.includeProject === true) await readConfigFile(path.join(cwd, ".owc", "mcp.json"), result);
+  if (cwd && options.includeProject === true) {
+    const projectFile = path.join(cwd, ".owc", "mcp.json");
+    // 与 hooks.ts 同口径：符号链接项目配置不以宿主身份读取。
+    if (await isPlainProjectConfig(projectFile)) await readConfigFile(projectFile, result);
+  }
   return result;
 }

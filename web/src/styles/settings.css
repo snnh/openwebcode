@@ -67,7 +67,7 @@
 .extension-card > header > div { display: flex; flex-direction: column; gap: 3px; }
 .extension-card > header .mono { color: var(--text-3); font-size: var(--text-2xs); }
 .extension-card > p { margin: 8px 0; color: var(--text-2); font-size: var(--text-s); }
-.extension-switch { display: flex; flex-direction: row; align-items: center; white-space: nowrap; }
+.extension-switch { display: flex; flex-direction: row; align-items: center; gap: 6px; white-space: nowrap; }
 .extension-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
 .extension-card details summary { cursor: pointer; color: var(--text-2); font-size: var(--text-xs); }
 .extension-json { width: 100%; resize: vertical; margin: 8px 0; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--surface-canvas); color: var(--text); padding: 9px; box-sizing: border-box; font-size: var(--text-2xs); }
@@ -449,63 +449,7 @@
 .access-link-row code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: var(--text-xs); }
 
 /* ================= 排版与动效 ================= */
-.typography-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--sp-12);
-  margin-bottom: var(--sp-8);
-}
-.typography-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-4);
-  font-size: var(--text-xs);
-  color: var(--text-2);
-}
 .typography-select { width: 100%; }
-.settings-check {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-8);
-  margin-top: var(--sp-8);
-  font-size: var(--text-s);
-  color: var(--text-2);
-}
-.typography-advanced {
-  margin-top: var(--sp-12);
-  border-top: 1px solid var(--border-subtle);
-  padding-top: var(--sp-8);
-}
-.typography-advanced summary {
-  cursor: pointer;
-  font-size: var(--text-xs);
-  color: var(--text-3);
-  margin-bottom: var(--sp-8);
-}
-.typography-advanced summary:hover { color: var(--text-2); }
-.typography-advanced .typography-field { margin-bottom: var(--sp-8); }
-.typography-scale {
-  display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  overflow: hidden;
-  margin-bottom: var(--sp-8);
-}
-.scale-option {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-4);
-  padding: var(--sp-4) var(--sp-12);
-  font-size: var(--text-xs);
-  color: var(--text-2);
-  cursor: pointer;
-  border-right: 1px solid var(--border);
-  transition: background-color var(--dur-1) var(--ease-standard), color var(--dur-1) var(--ease-standard);
-}
-.scale-option:last-child { border-right: none; }
-.scale-option:hover { background: var(--surface-hover); color: var(--text); }
-.scale-option.active { background: var(--surface-active); color: var(--text); }
-.scale-option input { position: absolute; opacity: 0; pointer-events: none; }
 
 .motion-preview {
   margin-top: var(--sp-12);
@@ -617,18 +561,6 @@
 .scene-micro-label { font-size: var(--text-xs); color: var(--text-3); }
 
 /* 字体扫描与自定义字体 */
-.font-scan {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-12);
-  margin-top: var(--sp-12);
-  padding: var(--sp-8) var(--sp-12);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-s);
-  background: var(--surface-subtle);
-}
-.font-scan-count { font-size: var(--text-xs); color: var(--text-2); }
 .font-add { display: flex; gap: var(--sp-8); margin-top: var(--sp-8); }
 .font-add .input { flex: 1 1 auto; min-width: 0; }
 /* 窄屏：字体族输入与按钮上下排，避免按钮文字折行、占位符被截断 */
@@ -691,10 +623,11 @@
 .settings-card-body > .settings-row:first-of-type { border-top: 0; }
 .settings-card .settings-row-text { flex: 1 1 auto; min-width: 0; }
 .settings-card .settings-row-label { display: block; font-size: var(--text-s); font-weight: var(--fw-500); }
+.settings-card .settings-row-label.clickable { cursor: pointer; }
 .settings-card .settings-row-desc { margin: 3px 0 0; font-size: var(--text-xs); color: var(--text-3); line-height: 1.5; max-width: 62ch; }
 .settings-card .settings-row-control { flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-8); min-width: 0; }
 .settings-card .settings-row.stack { flex-direction: column; align-items: stretch; gap: var(--sp-8); }
-.settings-row.stack .settings-card .settings-row-control { width: 100%; }
+.settings-row.stack .settings-row-control { width: 100%; }
 .settings-panel :is(.input, select, .btn) { min-height: var(--setting-control-h); }
 .settings-panel .btn.small { min-height: var(--setting-control-h); padding-left: var(--sp-12); padding-right: var(--sp-12); }
 .settings-panel select { min-width: 160px; }

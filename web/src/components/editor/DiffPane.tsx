@@ -9,6 +9,7 @@
  * - 窄屏（手机 ≤768px）不降级：同一完整视图由 CSS 分流为覆盖主区的全屏临时视图。
  */
 import { applyMonacoTheme } from "../../lib/monaco-theme";
+import { useAppearance } from "../../lib/appearance-prefs";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
@@ -73,6 +74,10 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, actionsRef, 
   onNotice(message: string, kind?: "info" | "error"): void;
 }): ReactElement {
   const { t } = useI18n();
+  const { scale } = useAppearance();
+  // 与 EditorPane 相同：异步创建时读最新缩放，缩放变化只 updateOptions，不重建 diff 视图。
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
   const hostRef = useRef<HTMLDivElement>(null);
   const diffEditorRef = useRef<import("monaco-editor").editor.IStandaloneDiffEditor | undefined>(undefined);
   const [monaco, setMonaco] = useState<MonacoApi>();
@@ -216,7 +221,7 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, actionsRef, 
       minimap: { enabled: false },
       automaticLayout: true,
       scrollBeyondLastLine: false,
-      fontSize: 13,
+      fontSize: 13 * scaleRef.current / 100,
     });
     editor.setModel({ original: originalModel, modified: modifiedModel });
     diffEditorRef.current = editor;
@@ -235,6 +240,11 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, actionsRef, 
   useEffect(() => {
     if (monaco) applyMonacoTheme(monaco, dark);
   }, [monaco, dark]);
+
+  // 界面缩放实时同步到 diff 编辑器（不重建模型，保留滚动位置）
+  useEffect(() => {
+    diffEditorRef.current?.updateOptions({ fontSize: 13 * scale / 100 });
+  }, [scale]);
 
   const acceptHunk = useCallback((index: number): void => {
     // 接受 = 保留改动：磁盘内容本来就包含该 hunk，只标记

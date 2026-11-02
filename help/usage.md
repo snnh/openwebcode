@@ -550,7 +550,7 @@ description: 审查当前改动
 - exit 0 放行；exit 2 否决（仅 PreToolUse / PreCompact 两个 Pre 类事件，stderr 回填调用方）；其他非零/超时告警不阻断；Notification、Subagent 类、SessionEnd、PostCompact 等通知类事件的失败与退出码均不阻塞主流程
 - 5s 超时杀进程
 - **安全级别等同 yolo**：hooks.json 里的 command 由 server 直接 spawn 执行，不经沙盒与权限链。凡是能写 hooks 配置的人即拥有等同 yolo 的执行能力。
-- **项目级 hooks 默认不信任**：全局 `<数据目录>/hooks.json` 始终读取；项目 `<cwd>/.owc/hooks.json` 仅在设置「信任项目级执行配置」（`trustProjectExecConfig`，环境变量 `OWC_TRUST_PROJECT_EXEC_CONFIG`）开启后才读取，防止克隆来的仓库自带执行入口。跳过时每个会话收到一次 `hook.project_config_untrusted` 通知（含文件路径）。同一开关同时控制项目级 `.owc/mcp.json`（MCP server 配置，可声明任意待 spawn 命令）。
+- **项目级 hooks 默认不信任**：全局 `<数据目录>/hooks.json` 始终读取；项目 `<cwd>/.owc/hooks.json` 仅在设置「信任项目级执行配置」（`trustProjectExecConfig`，环境变量 `OWC_TRUST_PROJECT_EXEC_CONFIG`）开启后才读取，防止克隆来的仓库自带执行入口。跳过时每个会话收到一次 `hook.project_config_untrusted` 通知（含文件路径）。同一开关同时控制项目级 `.owc/mcp.json`（MCP server 配置，可声明任意待 spawn 命令）。出于安全，`.owc` 目录或上述配置文件本身是符号链接时按“不存在”处理，不会跟随链接读取。
 - bash 工具的 `OWC_SESSION_ID` 等会话环境变量（见「运行中操作」）不适用于 hooks——hooks 由 server 直接 spawn，不经过 bash 工具环境
 
 ## 常见问题

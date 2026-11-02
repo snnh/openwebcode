@@ -386,8 +386,8 @@
   .composer-menu-btn { min-height: 30px; padding: 0 6px; gap: 4px; font-size: var(--text-xs); }
   .model-menu-btn-label { max-width: 30vw; gap: 3px; }
   .composer textarea { font-size: var(--text-l); }
-  /* 凹屏安全区：输入卡片避开左右圆角；底部安全区由恒渲染的 StatusBar 承担，
-     composer 不是最底部元素（其下还有面板标签条/状态条），重复叠加会多出约 34px 空档 */
+  /* 凹屏安全区：输入卡片避开左右圆角；底部安全区由恒渲染的底部面板标签条承担，
+     composer 不是最底部元素，重复叠加会多出约 34px 空档 */
   .composer {
     padding-left: calc(12px + env(safe-area-inset-left));
     padding-right: calc(12px + env(safe-area-inset-right));

@@ -54,6 +54,8 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
   const [filter, setFilter] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const searchTriggerRef = useRef<HTMLButtonElement>(null);
+  const restoreSearchFocus = useRef(false);
   const [renamingId, setRenamingId] = useState<string | undefined>();
   const [renameDraft, setRenameDraft] = useState("");
   // 用户是否真正编辑过草稿：区分「清空以清除标题覆盖」与「未改动直接提交」
@@ -88,10 +90,21 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
     }
   }, [collapsed]);
 
-  // 搜索就地展开后聚焦；无输入时失焦/关闭即收起，保留输入则维持展开
+  // 搜索就地展开后聚焦；无输入时失焦/关闭即收起，保留输入则维持展开。
+  // 显式关闭（按钮/Esc）把焦点还给搜索触发钮；失焦收起不抢焦点。
   useEffect(() => {
     if (searchOpen) searchRef.current?.focus();
+    else if (restoreSearchFocus.current) {
+      restoreSearchFocus.current = false;
+      searchTriggerRef.current?.focus();
+    }
   }, [searchOpen]);
+
+  const closeSearch = (): void => {
+    restoreSearchFocus.current = true;
+    setFilter("");
+    setSearchOpen(false);
+  };
 
   // 会话「更多」菜单：外部点击关闭；Esc 关闭并还焦触发钮，避免焦点随菜单卸载丢失。
   useEffect(() => {
@@ -537,7 +550,7 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
               onKeyDown={(event) => {
                 if (event.key !== "Escape") return;
                 if (filter) setFilter("");
-                else setSearchOpen(false);
+                else closeSearch();
               }}
               placeholder={t("搜索会话", "Search sessions")}
               aria-label={t("搜索会话", "Search sessions")}
@@ -547,7 +560,8 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
               className="icon-btn"
               aria-label={t("关闭搜索", "Close search")}
               title={t("关闭搜索（Esc）", "Close search (Esc)")}
-              onClick={() => { setFilter(""); setSearchOpen(false); }}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={closeSearch}
             >
               <Icon name="x" size={14} />
             </button>
@@ -574,7 +588,7 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
                 <Icon name="check-square" size={15} />
               </button>
               <button className="icon-btn" onClick={() => fileInput.current?.click()} aria-label={t("导入会话", "Import session")} title={t("导入会话（JSONL）", "Import session (JSONL)")}><Icon name="upload" size={15} /></button>
-              <button className="icon-btn" onClick={() => setSearchOpen(true)} aria-label={t("搜索会话", "Search sessions")} title={t("搜索会话", "Search sessions")}><Icon name="search" size={15} /></button>
+              <button ref={searchTriggerRef} className="icon-btn" onClick={() => setSearchOpen(true)} aria-label={t("搜索会话", "Search sessions")} title={t("搜索会话", "Search sessions")}><Icon name="search" size={15} /></button>
               <button className="icon-btn" onClick={() => ui.setNewSessionOpen(true)} aria-label={t("新建会话", "New session")} title={t("新建会话", "New session")}><Icon name="plus" size={15} /></button>
             </span>
           </>

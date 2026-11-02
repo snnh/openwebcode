@@ -25,7 +25,7 @@ export function SettingsCard({ title, description, children, className, flush = 
   );
 }
 
-export function SettingsRow({ label, description, children, stack = false, inline = false, htmlFor }: {
+export function SettingsRow({ label, description, children, stack = false, inline = false, htmlFor, onLabelClick }: {
   label: string;
   description?: ReactNode;
   children: ReactNode;
@@ -34,11 +34,13 @@ export function SettingsRow({ label, description, children, stack = false, inlin
   /** 窄屏也保持左右两端（开关行） */
   inline?: boolean | undefined;
   htmlFor?: string | undefined;
+  /** 无 htmlFor 的开关行：点击标签也能切换，而不是只有 38×22 的开关可点 */
+  onLabelClick?: (() => void) | undefined;
 }): ReactElement {
   return (
     <div className={`settings-row${stack ? " stack" : ""}${inline ? " inline" : ""}`}>
       <div className="settings-row-text">
-        <label className="settings-row-label" htmlFor={htmlFor}>{label}</label>
+        <label className={`settings-row-label${onLabelClick ? " clickable" : ""}`} htmlFor={htmlFor} onClick={onLabelClick}>{label}</label>
         {description && <p className="settings-row-desc">{description}</p>}
       </div>
       <div className="settings-row-control">{children}</div>
@@ -46,7 +48,7 @@ export function SettingsRow({ label, description, children, stack = false, inlin
   );
 }
 
-/** 即时生效的布尔项：按钮语义的 switch，整行由调用方包裹点击 */
+/** 即时生效的布尔项：按钮语义的 switch；行标签点击由 SettingsRow.onLabelClick 提供 */
 export function Switch({ checked, onChange, label, disabled = false }: {
   checked: boolean;
   onChange(checked: boolean): void;

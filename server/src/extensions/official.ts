@@ -164,7 +164,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
     official: true,
     defaultEnabled: true,
     // preset 枚举是动态的（内置 + 用户目录发现），不在 schema 写死；可用列表经
-    // ExtensionInfo.availablePresets / GET /api/extensions/agent-presets/presets 暴露。
+    // GET /api/extensions/agent-presets/presets 暴露，设置页按 agent-presets id 动态取。
     configSchema: {
       type: "object",
       additionalProperties: false,
