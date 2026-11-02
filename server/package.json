@@ -38,5 +38,8 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "glob": "^14.0.3"
   }
 }

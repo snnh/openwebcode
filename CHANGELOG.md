@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 安全
+
+- **修复沙盒逃逸（POSIX bubblewrap deny 掩码）**：denyPaths 指向的文件不存在时，旧实现直接跳过掩码——沙盒内 agent 可在可写工作区创建同名文件（如 `.owc/hooks.json`，server 以宿主身份执行其内容），即逃逸为宿主 RCE。现在 core 会为「位于写根之内的缺失 deny 路径」创建占位文件（父链 0700、文件 0600）再挂载 /dev/null 掩码，实测沙盒内无法创建/写入/删除该路径；写根之外的缺失路径（如不存在的 `~/.ssh` 密钥）仍跳过，不会被凭空创建。副作用：默认拒绝清单（`.env`、`.owc/hooks.json`、`.owc/mcp.json`）对应的空文件会出现在工作区，属预期行为。
+- **项目级执行入口配置默认不信任**：新增设置「信任项目级执行配置」（`trustProjectExecConfig`，`OWC_TRUST_PROJECT_EXEC_CONFIG`，热生效，默认关）。开启前 server 不读取工作区的 `.owc/hooks.json`（事件钩子，宿主身份执行 shell）与 `.owc/mcp.json`（MCP server 配置，可 spawn 任意命令）——克隆/下载的仓库可能自带这两个文件。跳过时每个会话收到一次 `hook.project_config_untrusted` 通知（含路径）；全局 `<数据目录>/hooks.json` 与 `<数据目录>/mcp.json` 不受影响。
+- **依赖漏洞修复**：server 升级 fastify（5.12.5 → 修复 header 校验绕过 GHSA-389g-gv7q-r4x8 与 fast-uri 多条 host confusion/scheme 欺骗）、glob override 到 14.0.3（修复 GHSA-3g3m-2fjr-6pw4 与 minimatch globparts 放大）；web 移除未使用的 dompurify 直接依赖并 override 到 3.4.17（修复多条 critical advisory）、katex override 到 0.18.4（收编 rehype-katex 嵌套的 0.16.47，修复 GHSA-238p-pmpm-9mq7 原型污染绕过 trust 限制）。两层 `npm audit --omit=dev` 均为 0 漏洞。
+- **Hooks 空占位文件容错**：core 为缺失 deny 路径创建的空 `.owc/hooks.json` 视为「无配置」，不再每事件刷 `hook.failed`。
+
 ### 新功能
 
 - **Web Fetch 渠道扩充**：新增 Exa Contents、ScrapingBee、ScraperAPI、ZenRows 四个抓取渠道；Exa 由仅搜索升级为 Search + Fetch（`/contents`，默认取最新正文并限制 2 万字符）。ScrapingBee / ScraperAPI 默认渲染 JS 并直接返回 Markdown，ZenRows 使用 `mode=auto`（按需升级 JS 渲染/代理）返回 Markdown；三者均只声明 `fetch` 能力，API Key 分别按 Bearer / `api_key` / `apikey` 传递。设置页「联网服务 → 添加联网服务商」选择对应类型并填 Key，再在「网页抓取」下拉启用。
