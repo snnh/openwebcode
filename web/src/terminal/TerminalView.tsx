@@ -12,6 +12,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import { api } from "../lib/api";
 import type { AuthStatus } from "../lib/contracts";
 import { useI18n } from "../i18n";
+import { useAppearance } from "../lib/appearance-prefs";
 import { useSessionQuery } from "../app/queries";
 import { ui } from "../app/ui-store";
 import { AUTH_STATUS_QUERY_KEY } from "../components/AuthGate";
@@ -101,7 +102,10 @@ function TerminalGate({ status }: { status: AuthStatus }): ReactElement {
 /** 单个 PTY 终端：xterm 实例 + WS 生命周期；generation 自增即整体重建（重连 = 新 PTY） */
 function PtyTerminal({ sessionId }: { sessionId: string }): ReactElement {
   const { t } = useI18n();
+  const { mono } = useAppearance();
   const hostRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<XtermTerminal | undefined>(undefined);
+  const fitRef = useRef<FitAddon | undefined>(undefined);
   const [generation, setGeneration] = useState(0);
   const [phase, setPhase] = useState<PtyPhase>("connecting");
   const [detail, setDetail] = useState<string>();
@@ -143,6 +147,8 @@ function PtyTerminal({ sessionId }: { sessionId: string }): ReactElement {
       const fit: FitAddon = new xterm.FitAddon();
       terminal.loadAddon(fit);
       terminal.open(host);
+      terminalRef.current = terminal;
+      fitRef.current = fit;
       try { fit.fit(); } catch { /* jsdom 等无真实布局环境 */ }
 
       // 亮/暗主题切换 → 重取 CSS 变量值映射进 xterm
@@ -200,6 +206,8 @@ function PtyTerminal({ sessionId }: { sessionId: string }): ReactElement {
 
     return () => {
       disposed = true;
+      terminalRef.current = undefined;
+      fitRef.current = undefined;
       // 标签关闭/组件卸载：先上行 close 帧再关 WS
       send({ type: "close" });
       socketOpen = false;
@@ -214,6 +222,15 @@ function PtyTerminal({ sessionId }: { sessionId: string }): ReactElement {
       terminal?.dispose();
     };
   }, [sessionId, generation]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 外观字体偏好变化 → 已打开的终端即时换字体并重算列宽（无需重连 PTY）
+  useEffect(() => {
+    const term = terminalRef.current;
+    if (!term) return;
+    const family = cssVar("--font-mono");
+    if (family) term.options.fontFamily = family;
+    try { fitRef.current?.fit(); } catch { /* 无布局环境忽略 */ }
+  }, [mono]);
 
   const reconnect = (): void => {
     setPhase("connecting");

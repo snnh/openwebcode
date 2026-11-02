@@ -62,6 +62,12 @@ function PanelStatus({ sessionId, agentState, mobile }: { sessionId: string; age
       <span className={`status-live status-${liveStatus}`}>
         <i aria-hidden /> {liveStatus === "idle" ? t("空闲", "Idle") : t(...stateLabel(liveStatus))}
       </span>
+      {session && (
+        <>
+          <span className="status-optional">{session.agentMode ?? "code"}</span>
+          <span className="panel-status-model" title={`${session.provider}/${session.model}`}>{session.model}</span>
+        </>
+      )}
       {!mobile && costSummary && (
         <span className="status-optional" title={t("本会话 tokens 与成本", "Tokens and cost for this session")}>
           {formatTokensShort(costSummary.tokens)} tok · {costSummary.costLabel}{costSummary.unpricedTokens > 0 ? " *" : ""}

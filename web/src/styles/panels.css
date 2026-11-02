@@ -519,12 +519,14 @@
   /* 子代理：swarm 组头长文允许换行 */
   .panel-content .subagents-group-header { flex-wrap: wrap; }
   /* 底部标签条：不横滚——常驻标签可收缩省略，状态项钉在最右（margin-left:auto 沿用桌面规则） */
-  .panel-tabs { padding: 0 4px; gap: 0; overflow-x: hidden; }
+  .panel-tabs { padding: 0 4px env(safe-area-inset-bottom); gap: 0; overflow-x: hidden; }
   .panel-tabs button { padding: 8px 7px 7px; font-size: var(--text-xs); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .panel-tabs .panel-tabs-more, .panel-tabs .panel-fold { flex: none; }
   .panel-tabs-secondary { border-top: 1px solid var(--border); }
   .bottom-panel.open .panel-tabs-secondary { border-bottom: 1px solid var(--border); }
   .panel-status { gap: 6px; padding-left: 6px; min-width: 0; }
+  /* 窄屏只留状态点：模型在 composer 已展示，把宽度让给面板标签 */
+  .panel-status .status-optional, .panel-status .panel-status-model { display: none; }
   .panel-status > span { flex: 0 1 auto; overflow: hidden; }
   .panel-status .status-live { flex: none; }
 }

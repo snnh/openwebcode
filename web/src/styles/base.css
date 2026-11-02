@@ -214,7 +214,7 @@ button, a, [role="button"], summary, select, .icon-btn {
   box-shadow: var(--shadow-2);
   padding: 11px 14px;
   font-size: var(--text-s);
-  animation: toast-in 0.18s ease;
+  animation: toast-in var(--dur-2) var(--ease-enter);
 }
 .toast.error { border-color: var(--danger-border); color: var(--danger); }
 .toast button { color: var(--text-3); font-size: var(--text-l); }

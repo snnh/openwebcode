@@ -17,7 +17,6 @@ import { layout, layoutStore, type SidebarView } from "./layout";
 import { ActivityBar, MobileNavMenu, type RailActions } from "./Rail";
 import { SidebarViews } from "./SidebarViews";
 import { BottomPanel } from "./BottomPanel";
-import { StatusBar } from "./StatusBar";
 
 interface WorkbenchProps {
   /** 会话列表（undefined = 加载中） */
@@ -98,7 +97,6 @@ export function Workbench({ sessions, agentState, onShowChat, onOpenDsh, main }:
     <SidebarViews sessions={sessions} currentId={currentId} agentStates={agentStates} attention={attention} onSelectSession={selectSession} />
   );
 
-  const currentSession = sessions?.find((session) => session.id === currentId);
 
   return (
     <div
@@ -126,9 +124,6 @@ export function Workbench({ sessions, agentState, onShowChat, onOpenDsh, main }:
         {main}
       </div>
       <BottomPanel sessionId={currentId} agentState={agentState} mobile={isMobile} />
-      <div className="wb-status">
-        <StatusBar sessionId={currentId} session={currentSession} agentState={agentState} mobile={isMobile} />
-      </div>
     </div>
   );
 }

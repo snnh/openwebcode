@@ -179,7 +179,7 @@
   scroll-behavior: smooth;
   scrollbar-gutter: stable;
 }
-.settings-panel > section { animation: settings-panel-in 180ms ease-out; }
+.settings-panel > section { animation: settings-panel-in var(--dur-2) var(--ease-enter); }
 .settings-panel h3 { margin: 0 0 8px; font-size: var(--text-s); font-weight: var(--fw-600); }
 .settings-panel h3:not(:first-child) { margin-top: 18px; }
 .settings-actions {

@@ -6,6 +6,7 @@
  * - 小地图默认关；plan 模式只读；文件被截断（过大）时禁止保存，防止部分内容覆盖原文件。
  */
 import { applyMonacoTheme } from "../../lib/monaco-theme";
+import { useAppearance } from "../../lib/appearance-prefs";
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
@@ -41,6 +42,15 @@ export function symbolAtLine(symbols: Array<{ name: string; startLine: number; e
   return best;
 }
 
+/** 读取当前代码字体栈（外观偏好写入 :root）；空值交由 Monaco 默认 */
+function monoFontFamily(): string | undefined {
+  try {
+    return getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function EditorPane({ sessionId, path, line, column, readOnly = false, dark, actionsRef, onClose, onNotice }: {
   sessionId: string;
   path: string;
@@ -64,6 +74,7 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [cursorLine, setCursorLine] = useState(line ?? 1);
+  const { mono, ligatures } = useAppearance();
 
   const content = useQuery({
     queryKey: ["file-content", sessionId, path],
@@ -105,6 +116,8 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
       automaticLayout: true,
       scrollBeyondLastLine: false,
       fontSize: 13,
+      ...(monoFontFamily() ? { fontFamily: monoFontFamily() } : {}),
+      fontLigatures: ligatures,
     });
     editorRef.current = editor;
     if (line && line >= 1) {
@@ -137,6 +150,14 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
   useEffect(() => {
     if (monaco) applyMonacoTheme(monaco, dark);
   }, [monaco, dark]);
+
+  // 外观字体/连字偏好实时生效（不重建编辑器，保留未保存内容）
+  useEffect(() => {
+    editorRef.current?.updateOptions({
+      ...(monoFontFamily() ? { fontFamily: monoFontFamily() } : {}),
+      fontLigatures: ligatures,
+    });
+  }, [mono, ligatures]);
 
   const save = useCallback((): void => {
     const editor = editorRef.current;

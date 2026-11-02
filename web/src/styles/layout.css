@@ -10,14 +10,13 @@
   background: var(--surface-canvas);
 }
 
-/* 栅格：活动栏 | 侧边栏 | 主区；状态条在主区列下方（侧栏通高） */
-.wb-shell { grid-template-rows: minmax(0, 1fr) auto auto; }
+/* 栅格：活动栏 | 侧边栏 | 主区；面板与状态同处底栏（侧栏通高） */
+.wb-shell { grid-template-rows: minmax(0, 1fr) auto; }
 .wb-zone { min-width: 0; min-height: 0; outline: none; }
 .wb-zone:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .wb-activity { grid-row: 1 / -1; grid-column: 1; display: flex; }
 .wb-sidebar { grid-row: 1 / -1; grid-column: 2; display: flex; min-height: 0; overflow: hidden; }
 .wb-main { grid-row: 1; grid-column: -2 / -1; display: flex; flex-direction: column; overflow: hidden; }
-.wb-status { grid-row: 3; grid-column: -2 / -1; }
 
 /* ================= 活动栏 ================= */
 .activity-bar {
@@ -93,7 +92,7 @@
   border-right: 1px solid var(--border);
   box-shadow: var(--shadow-3);
   outline: none;
-  animation: mobile-nav-in 0.18s ease;
+  animation: mobile-nav-in var(--dur-2) var(--ease-enter);
 }
 @keyframes mobile-nav-in { from { transform: translateX(-100%); opacity: 0; } }
 .mobile-nav-group { display: flex; flex-direction: column; gap: 2px; padding: var(--sp-4) var(--sp-8); }
@@ -526,7 +525,6 @@
   overflow: hidden;
   white-space: nowrap;
 }
-.status-bar > span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }
 .panel-status-model { overflow: hidden; text-overflow: ellipsis; }
 .status-live { color: var(--text-2); }
 .status-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
@@ -733,7 +731,7 @@
     padding-bottom: env(safe-area-inset-bottom);
     background: var(--surface-floating);
     border-right: 1px solid var(--border);
-    animation: mobile-nav-in 0.18s ease;
+    animation: mobile-nav-in var(--dur-2) var(--ease-enter);
   }
   .wb-sidebar .sessions-view { width: 100%; height: 100%; border-right: 0; }
   .wb-sidebar-backdrop { position: fixed; inset: 0; z-index: var(--z-backdrop); background: var(--backdrop); }
@@ -755,7 +753,6 @@
   .mobile-nav-trigger:hover { background: var(--surface-inset); }
   .mobile-nav-trigger:active { transform: translateY(1px); }
   .wb-main { flex: 1 1 0; min-height: 0; }
-  .wb-status { flex: 0 0 auto; }
   .workbench { height: 100%; min-height: 0; display: flex; flex-direction: column; }
   .empty-state { gap: 18px; padding: 24px 16px; }
   .empty-card { padding: 28px 22px; }
@@ -805,7 +802,6 @@
   .mode-switch { font-size: var(--text-2xs); }
   .job-header-toggle { width: 36px; height: 36px; }
   /* 凹屏安全区：底部状态条避开 Home 指示条 */
-  .status-bar { padding-bottom: calc(3px + env(safe-area-inset-bottom)); }
   .toast { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); left: 12px; max-width: none; }
   /* 密度优化：会话信息条纯文本折行显示，单位缩写 tok，不截断不横滚 */
   .unit-full { display: none; }
@@ -819,7 +815,6 @@
 
 @media (max-width: 480px) {
   /* 超窄屏底部状态项再省一档：只留状态点 + 模型名 */
-  .status-bar > span:not(.status-live):not(.panel-status-model) { display: none; }
   /* 空状态卡片降档：超窄屏减小内边距，内容不贴边 */
   .empty-card { padding: 24px 18px; }
 }
