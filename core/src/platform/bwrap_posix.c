@@ -1,4 +1,5 @@
 #include "../bwrap.h"
+#include "../path_policy.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -237,6 +238,48 @@ void owc_bwrap_probe(owc_sandbox_result *result) {
     *result = probe_cache;
 }
 
+/* Create a missing deny path placeholder (parent chain 0700, file 0600) so
+ * the deny mask below pins a real host file instead of being skipped.
+ * Only absolute paths inside a write root are created: the sandbox could
+ * create those anyway, while anything outside the write roots (a deny entry
+ * pointing at an absent ~/.ssh key) must not be conjured into existence.
+ * Every step is best effort and tolerates EEXIST (including create races
+ * with a concurrent command); anything else leaves the path missing and the
+ * deny vacuous, matching the historical behaviour. */
+static void deny_create_placeholder(const char *path,
+                                    const char *const *write_roots,
+                                    size_t write_root_count) {
+    size_t root_index;
+    char *copy, *cursor;
+    if (!path || path[0] != '/') return;
+    for (root_index = 0; root_index < write_root_count; ++root_index) {
+        if (write_roots[root_index] && owc_path_is_within(path, write_roots[root_index])) break;
+    }
+    if (root_index == write_root_count) return;
+    copy = (char *)malloc(strlen(path) + 1);
+    if (!copy) return;
+    (void)strcpy(copy, path);
+    /* Skip the leading slash; mkdir each parent component (0700).  The final
+     * component is the file itself, created after the loop. */
+    cursor = copy;
+    while (*cursor == '/') cursor++;
+    for (;;) {
+        char *slash = strchr(cursor, '/');
+        if (!slash) break;
+        *slash = '\0';
+        if (mkdir(copy, 0700) != 0 && errno != EEXIST) { free(copy); return; }
+        *slash = '/';
+        cursor = slash + 1;
+    }
+    {
+        int fd = open(copy, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd >= 0) (void)close(fd);
+        /* EEXIST (a concurrent command won the race, or the file appeared
+         * between lstat and open) is fine: the mask pins whatever is there. */
+    }
+    free(copy);
+}
+
 char **owc_bwrap_build_argv(const char *cwd,
                             const char *const *read_roots, size_t read_root_count,
                             const char *const *read_only_paths, size_t read_only_count,
@@ -302,16 +345,29 @@ char **owc_bwrap_build_argv(const char *cwd,
     }
     /* Deny masks must mount after every write bind: the later mount shadows
      * the earlier one.  Directories get an inaccessible tmpfs, files a
-     * /dev/null bind.  Paths that do not exist cannot be masked and are
-     * skipped silently: the deny is vacuous for them, and the old stderr
-     * diagnostic ran after the child's dup2, so it polluted the command's
-     * stderr on every run (the default deny paths like .env usually do not
-     * exist yet).  A deny path that is a symlink masks the target, so reads
-     * stay blocked, but the link itself can be removed and recreated in a
-     * writable parent directory: the mask is not a complete deny. */
+     * /dev/null bind.  A deny path that is a symlink masks the target, so
+     * reads stay blocked, but the link itself can be removed and recreated
+     * in a writable parent directory: the mask is not a complete deny. */
     for (i = 0; i < deny_path_count; ++i) {
         struct stat st;
-        if (lstat(deny_paths[i], &st) != 0) continue;
+        if (lstat(deny_paths[i], &st) != 0) {
+            /* A missing deny path used to be skipped, which made the deny
+             * vacuous and opened a sandbox escape: a sandboxed command can
+             * create the file inside its writable workspace bind, and
+             * host-side readers of that exact path (project .owc/hooks.json
+             * and .owc/mcp.json are executed/re-loaded unsandboxed by the
+             * server) then pick up attacker-controlled content.  When the
+             * missing path lies inside a write root - i.e. the sandboxed
+             * command could create it anyway - create the placeholder
+             * ourselves (parent chain 0700, file 0600) so the mask below
+             * pins a real host file.  Paths outside every write root (e.g.
+             * a not-yet-created ~/.ssh key) must never be created here;
+             * masking a path the sandbox cannot reach is meaningless, so
+             * those stay skipped.  Best effort: a failed creation simply
+             * leaves the deny vacuous as before. */
+            deny_create_placeholder(deny_paths[i], write_roots, write_root_count);
+            if (lstat(deny_paths[i], &st) != 0) continue;
+        }
         if (S_ISDIR(st.st_mode)) {
             argv[argc++] = (char *)"--perms"; argv[argc++] = (char *)"000";
             argv[argc++] = (char *)"--tmpfs"; argv[argc++] = (char *)deny_paths[i];

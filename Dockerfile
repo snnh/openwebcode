@@ -55,7 +55,8 @@ RUN npm prune --prefix server --omit=dev
 FROM node:24.22.1-trixie-slim AS runtime
 
 # 运行时依赖：
-#   bubblewrap  完整命名空间沙盒（不可用时 core 自动降级 Landlock，属设计内行为）
+#   bubblewrap  完整命名空间沙盒（宿主不满足 userns/seccomp 要求时 fail-closed，
+#               可显式选 landlock 兼容模式；见 docker-compose.yml 注释）
 #   git         SCM 集成与 git-shadow 快照后端
 #   python3     agent 任务 / Chat 模式 Python 回退环境
 #   bash        POSIX 首选 shell（shell-detect.ts：bash > pwsh > $SHELL）

@@ -31,9 +31,10 @@ services:
     volumes:
       - openwebcode-data:/data
       # - ./workspace:/workspace:rw   # 可选：挂载宿主机工作区（需同时设置 OWC_WORKSPACE）
-    # bubblewrap 完整命名空间沙盒需要放行 mount 等系统调用；不启用时 core 自动
-    # 降级 Landlock（内核 ≥ 5.13 即有），属设计内的诚实降级。宿主机还需允许
-    # 非特权 user namespace（Debian 系默认关闭时需 sysctl 放开）：
+    # bubblewrap 完整命名空间沙盒需要宿主机允许非特权 user namespace 且放行
+    # mount 等系统调用。不满足时 core 对沙盒内命令 fail-closed（拒绝执行并给出
+    # 指引），不会静默降级；可在设置里显式选 landlock 模式（能力 partial：
+    # denyPaths 对命令不生效）。Debian 系宿主机默认关闭 userns 时需 sysctl 放开：
     # security_opt:
     #   - seccomp=unconfined
     # overlayfs 快照等挂载能力才需要（默认快照后端自动探测降级，一般不需要）：

@@ -13,6 +13,7 @@ import base64
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -247,19 +248,40 @@ def run_bwrap_e2e(proc, workspace):
         finally:
             shutil.rmtree(read_only, ignore_errors=True)
 
-        # A deny path that does not exist is skipped silently: the old
-        # diagnostic ran after the child's dup2 and polluted the command's
-        # stderr on every run (default deny paths like .env usually do not
-        # exist yet), and the deny is vacuous for a path nothing can reach.
-        response = configure(proc, 19, workspace, {
+        # A deny path that does not exist used to be skipped silently, which
+        # made the deny vacuous and opened a sandbox escape: a sandboxed
+        # command could create the file inside its writable workspace bind,
+        # and host-side readers of that exact path (project .owc/hooks.json,
+        # executed unsandboxed by the server) would then pick up attacker
+        # content.  Now the core creates a placeholder (parent chain 0700,
+        # file 0600) for a missing deny path inside a write root and masks
+        # that real file; missing paths outside every write root stay
+        # skipped, because conjuring e.g. an absent ~/.ssh key into
+        # existence would be destructive.
+        missing_inside = os.path.join(workspace, ".owc", "hooks.json")
+        missing_outside = os.path.join(outside, "no-such-deny-outside")
+        response = configure(proc, 60, workspace, {
             "enabled": True, "network": "allow",
-            "denyPaths": [os.path.join(workspace, "no-such-deny-path")],
+            "denyPaths": [missing_inside, missing_outside],
         })
         assert "result" in response, response
-        result, output = run_exec(proc, 20, workspace, "printf deny-skip-ok")
+        result, output = run_exec(proc, 61, workspace, "printf deny-placeholder-ok")
         assert result["exitCode"] == 0, result
-        assert "deny-skip-ok" in output, output
+        assert "deny-placeholder-ok" in output, output
         assert "bwrap deny path skipped" not in output, output
+        # The in-workspace placeholder was created on the host with the
+        # documented modes (.owc 0700, hooks.json 0600) ...
+        assert os.path.isfile(missing_inside), os.listdir(os.path.dirname(missing_inside))
+        assert stat.S_IMODE(os.stat(os.path.dirname(missing_inside)).st_mode) == 0o700
+        assert stat.S_IMODE(os.stat(missing_inside).st_mode) == 0o600
+        # ... and the mask pins it: a sandboxed command cannot write through.
+        result, output = run_exec(proc, 62, workspace,
+                                  f"printf injected > '{missing_inside}'")
+        assert result["exitCode"] != 0, result
+        with open(missing_inside, "r", encoding="utf-8") as stored:
+            assert stored.read() == ""
+        # Nothing outside the write roots may be conjured into existence.
+        assert not os.path.exists(missing_outside)
 
         # exec.run gives the command /dev/null as stdin: an interactive
         # reader like cat must see EOF immediately instead of racing the
