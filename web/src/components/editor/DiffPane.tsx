@@ -8,6 +8,7 @@
  *   agent write_file 没有改动前内容，只读展示写入结果；检查点后端只给摘要时按摘要模式展示。
  * - 窄屏（手机 ≤768px）不降级：同一完整视图由 CSS 分流为覆盖主区的全屏临时视图。
  */
+import { applyMonacoTheme } from "../../lib/monaco-theme";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
@@ -204,7 +205,7 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, actionsRef, 
   useEffect(() => {
     if (!monaco || model.original === undefined || modified === undefined || !hostRef.current) return;
     if (model.mode !== "hunks" && model.mode !== "change" && model.mode !== "readonly") return;
-    monaco.editor.setTheme(dark ? "vs-dark" : "vs");
+    applyMonacoTheme(monaco, dark);
     const language = monacoLanguageForPath(monaco, model.path ?? "");
     const originalModel = monaco.editor.createModel(model.original, language);
     const modifiedModel = monaco.editor.createModel(modified, language);
@@ -232,7 +233,7 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, actionsRef, 
 
   // 主题切换实时生效
   useEffect(() => {
-    monaco?.editor.setTheme(dark ? "vs-dark" : "vs");
+    if (monaco) applyMonacoTheme(monaco, dark);
   }, [monaco, dark]);
 
   const acceptHunk = useCallback((index: number): void => {

@@ -55,11 +55,27 @@ function cssVar(name: string): string | undefined {
 /** xterm 主题跟随亮/暗：直接取当前 CSS 变量值，切换主题时经 MutationObserver 重取 */
 function xtermThemeFromCssVars(): ITheme {
   return {
-    background: cssVar("--panel"),
+    background: cssVar("--surface-inset"),
     foreground: cssVar("--text"),
     cursor: cssVar("--accent"),
-    cursorAccent: cssVar("--panel"),
+    cursorAccent: cssVar("--surface-inset"),
     selectionBackground: cssVar("--accent-soft"),
+    black: cssVar("--surface-card"),
+    red: cssVar("--danger"),
+    green: cssVar("--ok"),
+    yellow: cssVar("--amber"),
+    blue: cssVar("--accent"),
+    magenta: "#c678dd",
+    cyan: "#56b6c2",
+    white: cssVar("--text"),
+    brightBlack: cssVar("--text-3"),
+    brightRed: cssVar("--danger"),
+    brightGreen: cssVar("--ok"),
+    brightYellow: cssVar("--amber"),
+    brightBlue: cssVar("--accent-hover"),
+    brightMagenta: "#d7a6f0",
+    brightCyan: "#7fd4dd",
+    brightWhite: cssVar("--text"),
   };
 }
 

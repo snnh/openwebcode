@@ -5,6 +5,7 @@
  * - 面包屑：路径段 + 光标处符号（符号数据来自 0.4.0 索引 /api/workspaces/symbols?file=）。
  * - 小地图默认关；plan 模式只读；文件被截断（过大）时禁止保存，防止部分内容覆盖原文件。
  */
+import { applyMonacoTheme } from "../../lib/monaco-theme";
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
@@ -93,7 +94,7 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
   // 创建/销毁编辑器实例（每个 path 一个 model）
   useEffect(() => {
     if (!monaco || code === undefined || !hostRef.current) return;
-    monaco.editor.setTheme(dark ? "vs-dark" : "vs");
+    applyMonacoTheme(monaco, dark);
     const model = monaco.editor.createModel(code, monacoLanguageForPath(monaco, path));
     savedValueRef.current = code;
     revisionRef.current = content.data?.revision;
@@ -134,7 +135,7 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
 
   // 主题切换实时生效
   useEffect(() => {
-    monaco?.editor.setTheme(dark ? "vs-dark" : "vs");
+    if (monaco) applyMonacoTheme(monaco, dark);
   }, [monaco, dark]);
 
   const save = useCallback((): void => {
