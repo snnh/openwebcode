@@ -4,18 +4,18 @@
     color-scheme: light;
 
     /* 表面阶梯（亮色） */
-    --surface-canvas: #f3f3f3;
+    --surface-canvas: #fafafa;
     --surface-card: #ffffff;
-    --surface-inset: #ebebeb;
+    --surface-inset: #f2f2f2;
     --surface-floating: #ffffff;
     --surface-subtle: #f7f7f7;
-    --surface-hover: rgb(0 0 0 / 0.05);
-    --surface-active: rgb(0 0 0 / 0.08);
+    --surface-hover: rgb(0 0 0 / 0.04);
+    --surface-active: rgb(0 0 0 / 0.06);
 
     /* 边框三档 */
-    --border-subtle: #ebebeb;
-    --border: #d4d4d4;
-    --border-strong: #b8b8b8;
+    --border-subtle: #ededed;
+    --border: #dcdcdc;
+    --border-strong: #c2c2c2;
 
     /* 文本三级 */
     --text: #1f1f1f;
