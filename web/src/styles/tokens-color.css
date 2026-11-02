@@ -1,0 +1,109 @@
+/* 色彩 token：语义七级 surface + 三档边框 + 文本三级 + 语义色 / 代码高亮 / diff。 */
+@layer tokens {
+  :root {
+    color-scheme: light;
+
+    /* 表面阶梯（亮色） */
+    --surface-canvas: #f3f3f3;
+    --surface-card: #ffffff;
+    --surface-inset: #ebebeb;
+    --surface-floating: #ffffff;
+    --surface-subtle: #f7f7f7;
+    --surface-hover: rgb(0 0 0 / 0.05);
+    --surface-active: rgb(0 0 0 / 0.08);
+
+    /* 边框三档 */
+    --border-subtle: #ebebeb;
+    --border: #d4d4d4;
+    --border-strong: #b8b8b8;
+
+    /* 文本三级 */
+    --text: #1f1f1f;
+    --text-2: #4d4d4d;
+    --text-3: #666666;
+
+    /* 语义色 */
+    --amber: #8a5a00;
+    --amber-bg: #fdf3e2;
+    --amber-border: #e3c28f;
+    --danger: #b42332;
+    --danger-bg: #fcecee;
+    --danger-border: #eab3bb;
+    --on-danger: #ffffff;
+    --ok: #0f7b6c;
+    --ok-bg: #dff4f1;
+
+    /* 代码 / 遮罩 / diff */
+    --code-bg: var(--surface-inset);
+    --backdrop: rgb(8 12 16 / 0.5);
+    --diff-add-bg: rgb(46 160 67 / 0.15);
+    --diff-del-bg: rgb(248 81 73 / 0.15);
+    --diff-add-text: #0f7b6c;
+    --diff-del-text: #b42332;
+
+    /* 滚动条间接层 */
+    --scrollbar-thumb: var(--border-strong);
+    --scrollbar-thumb-hover: var(--text-3);
+
+    /* 强调色默认 graphite */
+    --accent: #3c3c3c;
+    --accent-hover: #2a2a2a;
+    --on-accent: #ffffff;
+    --accent-soft: #e8e8e8;
+  }
+
+  [data-theme="dark"] {
+    color-scheme: dark;
+
+    --surface-canvas: #181818;
+    --surface-card: #1f1f1f;
+    --surface-inset: #141414;
+    --surface-floating: #252526;
+    --surface-subtle: #232323;
+    --surface-hover: rgb(255 255 255 / 0.06);
+    --surface-active: rgb(255 255 255 / 0.10);
+
+    --border-subtle: #2a2a2a;
+    --border: #3c3c3c;
+    --border-strong: #4a4a4a;
+
+    --text: #e8e8e8;
+    --text-2: #b8b8b8;
+    --text-3: #909090;
+
+    --amber: #d29922;
+    --amber-bg: #2b2312;
+    --amber-border: #55411c;
+    --danger: #f85149;
+    --danger-bg: #331f21;
+    --danger-border: #5a3336;
+    --on-danger: #1f1f1f;
+    --ok: #3fb950;
+    --ok-bg: #12312b;
+
+    --backdrop: rgb(0 0 0 / 0.6);
+    --diff-add-text: #3fb950;
+    --diff-del-text: #f85149;
+
+    --accent: #d4d4d4;
+    --accent-hover: #e8e8e8;
+    --on-accent: #1f1f1f;
+    --accent-soft: #333333;
+  }
+
+  /* ===== 主题强调色预设（亮色） ===== */
+  :root[data-accent="teal"] { --accent: #0b7285; --accent-hover: #095f70; --on-accent: #ffffff; --accent-soft: #dcedf0; }
+  :root[data-accent="violet"] { --accent: #5b4cdb; --accent-hover: #4a3ecb; --on-accent: #ffffff; --accent-soft: #ebe8fb; }
+  :root[data-accent="blue"] { --accent: #0b62c4; --accent-hover: #0952a6; --on-accent: #ffffff; --accent-soft: #dbeafe; }
+  :root[data-accent="orange"] { --accent: #a84e00; --accent-hover: #8f4200; --on-accent: #ffffff; --accent-soft: #fde8d8; }
+  :root[data-accent="rose"] { --accent: #b8184f; --accent-hover: #9c1242; --on-accent: #ffffff; --accent-soft: #fce0e8; }
+  :root[data-accent="green"] { --accent: #2b7238; --accent-hover: #235e2e; --on-accent: #ffffff; --accent-soft: #def3e2; }
+
+  /* ===== 主题强调色预设（暗色） ===== */
+  [data-theme="dark"][data-accent="teal"] { --accent: #4ec9b0; --accent-hover: #6ad8c2; --on-accent: #10201d; --accent-soft: #153b3d; }
+  [data-theme="dark"][data-accent="violet"] { --accent: #b392f0; --accent-hover: #c6aaf5; --on-accent: #1a1547; --accent-soft: #2a2350; }
+  [data-theme="dark"][data-accent="blue"] { --accent: #4a9eff; --accent-hover: #6bb0ff; --on-accent: #0d2240; --accent-soft: #1a334f; }
+  [data-theme="dark"][data-accent="orange"] { --accent: #e8912d; --accent-hover: #f0a552; --on-accent: #2a1300; --accent-soft: #3a2010; }
+  [data-theme="dark"][data-accent="rose"] { --accent: #f06292; --accent-hover: #f47ea6; --on-accent: #2d0a16; --accent-soft: #3a1827; }
+  [data-theme="dark"][data-accent="green"] { --accent: #6cc070; --accent-hover: #86ce8a; --on-accent: #0a2912; --accent-soft: #143020; }
+}

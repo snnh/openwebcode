@@ -1,0 +1,79 @@
+/* 形态 token：圆角 / 阴影 / 间距 / 尺寸 / 层级。
+   本文件同时声明全局 @layer 顺序，必须最先引入。 */
+@layer tokens, base, components, utilities;
+
+@layer tokens {
+  :root {
+    /* 圆角：控件收紧、容器保持 */
+    --radius-xs: 4px;
+    --radius-s: 6px;
+    --radius: 8px;
+    --radius-l: 12px;
+    --radius-xl: 16px;
+    --radius-full: 999px;
+
+    /* 阴影四档：亮色按层级递进，暗色在 tokens-color 中覆写 */
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 0.06);
+    --shadow-2: 0 4px 12px rgb(0 0 0 / 0.10);
+    --shadow-3: 0 12px 32px rgb(0 0 0 / 0.18);
+    --shadow-focus: 0 0 0 2px var(--surface-card), 0 0 0 4px var(--accent);
+
+    /* 间距八档，按 px 值命名（旧 --space-1..6 在迁移期后删除） */
+    --sp-2: 2px;
+    --sp-4: 4px;
+    --sp-8: 8px;
+    --sp-12: 12px;
+    --sp-16: 16px;
+    --sp-20: 20px;
+    --sp-24: 24px;
+    --sp-32: 32px;
+
+    /* 尺寸 */
+    --control-h: 32px;
+    --row-h: 26px;
+    --icon-col: 16px;
+    --gutter: clamp(20px, 3vw, 52px);
+    --content-max: 960px;
+    --reading-max: 800px;
+
+    /* z-index 分层：近值同语义归一档 */
+    --z-base: 3;
+    --z-sticky: 10;
+    --z-panel: 20;
+    --z-overlay: 30;
+    --z-backdrop: 34;
+    --z-drawer: 36;
+    --z-popover: 40;
+    --z-menu: 41;
+    --z-sheet: 45;
+    --z-nav: 59;
+    --z-top: 60;
+  }
+
+  /* 迁移期兼容：旧变量名指向新语义 token；第 2 块全量替换后删除本段 */
+  :root {
+    --bg: var(--surface-canvas);
+    --panel: var(--surface-card);
+    --panel-2: var(--surface-inset);
+    --panel-subtle: var(--surface-subtle);
+    --hover-bg: var(--surface-hover);
+    --space-1: var(--sp-4);
+    --space-2: var(--sp-8);
+    --space-3: var(--sp-12);
+    --space-4: var(--sp-16);
+    --space-5: var(--sp-24);
+    --space-6: var(--sp-32);
+    --radius-s-legacy: 6px;
+    --shadow: 0 1px 2px rgb(23 32 42 / 0.06), 0 8px 24px rgb(23 32 42 / 0.08);
+    --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.16);
+    --control-h-legacy: 32px;
+  }
+
+  [data-theme="dark"] {
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow-2: 0 4px 12px rgb(0 0 0 / 0.45);
+    --shadow-3: 0 12px 32px rgb(0 0 0 / 0.5);
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.5), 0 8px 24px rgb(0 0 0 / 0.45);
+    --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.4);
+  }
+}

@@ -1,0 +1,38 @@
+/* 排版 token：字号阶梯 / 行高 / 字重 / 字体栈 / 缩放。 */
+@layer tokens {
+  :root {
+    /* 字体栈：界面 = 西文栈 + CJK 栈（西文优先命中数字与拉丁字母） */
+    --font-ui-latin: "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --font-ui-cjk: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+    --font-ui: var(--font-ui-latin), var(--font-ui-cjk);
+    --font-mono: "IBM Plex Mono", "Cascadia Code", "JetBrains Mono", "Sarasa Mono SC", Consolas, "Courier New", monospace;
+
+    /* 界面缩放（字体设置页写入） */
+    --ui-scale: 1;
+
+    /* 字号七档 */
+    --text-2xs: 11px;
+    --text-xs: 12px;
+    --text-s: 13px;
+    --text-m: 14px;
+    --text-l: 16px;
+    --text-xl: 20px;
+    --text-2xl: 26px;
+
+    /* 行高 */
+    --lh-tight: 1.25;
+    --lh-normal: 1.5;
+    --lh-relaxed: 1.7;
+    --lh-code: 1.55;
+
+    /* 字重 */
+    --fw-400: 400;
+    --fw-500: 500;
+    --fw-600: 600;
+  }
+
+  /* 界面缩放作用于根字号；字号 token 为 px，缩放通过 html 字号与 rem 组合在后续块生效 */
+  :root {
+    font-size: calc(16px * var(--ui-scale));
+  }
+}
