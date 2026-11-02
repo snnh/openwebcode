@@ -280,6 +280,13 @@ const PATHS = {
   // 实心圆点/方块用 fill（状态点、图例色块），viewBox 与描边图标一致
   "circle-filled": <circle cx="12" cy="12" r="7" fill="currentColor" stroke="none" />,
   square: <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" />,
+  // 多选入口：勾选方框，常驻同一个按钮，激活态由按钮底色表达
+  "check-square": (
+    <>
+      <path d="m9 11 3 3L22 4" />
+      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof PATHS;

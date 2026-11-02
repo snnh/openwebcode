@@ -56,22 +56,10 @@
 }
 .brand { font-size: var(--text-m); font-weight: var(--fw-600); letter-spacing: -0.01em; margin-right: auto; }
 .brand b { color: var(--accent); font-weight: var(--fw-600); }
-/* 顶部一行：工作区胶囊 + 搜索 / 新建等图标；搜索展开时整行让给输入框 */
-.workspace-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  padding: 5px 8px;
-  border-radius: var(--radius-s);
-  background: var(--surface-subtle);
-  color: var(--text-2);
-  font-size: var(--text-xs);
-}
-.workspace-chip svg { flex: none; color: var(--text-3); }
-.workspace-chip b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--fw-500); }
+/* 顶部一行：固定品牌 + 搜索 / 新建等图标；搜索展开时整行让给输入框 */
 .sessions-head-actions { display: flex; align-items: center; gap: 0; margin-left: auto; flex: none; }
 .sessions-head-actions .icon-btn { width: 26px; height: 26px; }
+.sessions-head-actions .icon-btn[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
 .sessions-view > header.searching { gap: 4px; }
 /* 会话行只让出「状态 + 置顶 + 更多」的空间；待回答角标出现时再增加一档。 */
 .sessions-view .session-link { padding: 6px 66px 6px var(--sp-8); }

@@ -511,9 +511,6 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
     );
   };
 
-  const workspaceCwd = sessions?.find((session) => session.id === currentId)?.cwd;
-  const workspaceName = workspaceCwd?.split(/[\\/]/).filter(Boolean).pop() ?? "OpenWebCode";
-
   return (
     <aside className="sessions-view" aria-label={t("会话", "Sessions")}>
       <header className={searchOpen ? "searching" : undefined}>
@@ -557,28 +554,24 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
           </span>
         ) : (
           <>
-            <span className="workspace-chip" title={workspaceCwd ?? "OpenWebCode"}>
-              <Icon name="folder" size={13} />
-              <b>{workspaceName}</b>
-            </span>
+            <span className="brand">Open<b>WebCode</b></span>
             <span className="sessions-head-actions">
               <button
+                type="button"
                 className="icon-btn"
-                onClick={() => { setMultiSelect(false); setSelection(new Set()); closeSessionActions(); setBulkMoveOpen(false); }}
-                aria-label={t("退出多选", "Exit multi-select")}
-                title={t("退出多选", "Exit multi-select")}
-                hidden={!multiSelect}
+                aria-pressed={multiSelect}
+                aria-label={multiSelect ? t("退出多选", "Exit multi-select") : t("多选会话", "Select sessions")}
+                title={multiSelect
+                  ? t("退出多选", "Exit multi-select")
+                  : t("多选（批量删除/归档/置顶；单个会话的分组在「更多操作」里）", "Multi-select (bulk delete/archive/pin; per-session grouping lives under More actions)")}
+                onClick={() => {
+                  setMultiSelect((value) => !value);
+                  setSelection(new Set());
+                  closeSessionActions();
+                  setBulkMoveOpen(false);
+                }}
               >
-                <Icon name="x" size={15} />
-              </button>
-              <button
-                className="icon-btn"
-                onClick={() => { setMultiSelect(true); setSelection(new Set()); closeSessionActions(); setBulkMoveOpen(false); }}
-                aria-label={t("多选会话", "Select sessions")}
-                title={t("多选（批量删除/归档/置顶；单个会话的分组在「更多操作」里）", "Multi-select (bulk delete/archive/pin; per-session grouping lives under More actions)")}
-                hidden={multiSelect}
-              >
-                <Icon name="check" size={15} />
+                <Icon name="check-square" size={15} />
               </button>
               <button className="icon-btn" onClick={() => fileInput.current?.click()} aria-label={t("导入会话", "Import session")} title={t("导入会话（JSONL）", "Import session (JSONL)")}><Icon name="upload" size={15} /></button>
               <button className="icon-btn" onClick={() => setSearchOpen(true)} aria-label={t("搜索会话", "Search sessions")} title={t("搜索会话", "Search sessions")}><Icon name="search" size={15} /></button>
