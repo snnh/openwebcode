@@ -575,3 +575,44 @@
 .scene-switch.on { background: var(--accent); }
 .scene-switch.on span { transform: translateX(14px); }
 .scene-micro-label { font-size: var(--text-xs); color: var(--text-3); }
+
+/* 字体扫描与自定义字体 */
+.font-scan {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-12);
+  margin-top: var(--sp-12);
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-s);
+  background: var(--surface-subtle);
+}
+.font-scan-count { font-size: var(--text-xs); color: var(--text-2); }
+.font-add { display: flex; gap: var(--sp-8); margin-top: var(--sp-8); }
+.font-add .input { flex: 1 1 auto; min-width: 0; }
+.font-add-error { margin: var(--sp-4) 0 0; font-size: var(--text-2xs); color: var(--danger); }
+.font-chips { display: flex; flex-wrap: wrap; gap: var(--sp-4); margin-top: var(--sp-8); }
+.font-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  height: 22px;
+  padding: 0 var(--sp-4) 0 var(--sp-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  background: var(--surface-inset);
+  font-size: var(--text-2xs);
+  color: var(--text-2);
+}
+.font-chip .missing { color: var(--text-3); text-decoration: line-through; }
+.font-chip button {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--text-3);
+}
+.font-chip button:hover { background: var(--surface-hover); color: var(--text); }

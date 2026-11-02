@@ -15,26 +15,23 @@ export interface FontPreset {
 
 export const LATIN_PRESETS: FontPreset[] = [
   { id: "system", zh: "系统默认", en: "System default", stack: null },
-  { id: "segoe", zh: "Segoe UI", en: "Segoe UI", stack: '"Segoe UI Variable Text", "Segoe UI", Arial, sans-serif' },
-  { id: "sf", zh: "SF Pro Text", en: "SF Pro Text", stack: '"SF Pro Text", -apple-system, "Helvetica Neue", Arial, sans-serif' },
   { id: "inter", zh: "Inter", en: "Inter", stack: 'Inter, "Segoe UI", Arial, sans-serif' },
 ];
 
 export const CJK_PRESETS: FontPreset[] = [
   { id: "system", zh: "系统默认", en: "System default", stack: null },
-  { id: "pingfang", zh: "苹方", en: "PingFang SC", stack: '"PingFang SC", "Noto Sans SC", sans-serif' },
-  { id: "yahei", zh: "微软雅黑", en: "Microsoft YaHei", stack: '"Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif' },
-  { id: "noto", zh: "思源黑体", en: "Noto Sans SC", stack: '"Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif' },
+  { id: "noto", zh: "思源黑体", en: "Source Han Sans", stack: '"Noto Sans SC", "Source Han Sans SC", sans-serif' },
 ];
 
 export const MONO_PRESETS: FontPreset[] = [
   { id: "system", zh: "系统默认", en: "System default", stack: null },
+  { id: "source", zh: "思源等宽（内嵌）", en: "Noto Sans Mono (bundled)", stack: '"OWC Noto Sans Mono", "Cascadia Code", Consolas, monospace' },
   { id: "jetbrains", zh: "JetBrains Mono", en: "JetBrains Mono", stack: '"JetBrains Mono", "Cascadia Code", Consolas, monospace' },
   { id: "cascadia", zh: "Cascadia Code", en: "Cascadia Code", stack: '"Cascadia Code", "Cascadia Mono", Consolas, monospace' },
   { id: "fira", zh: "Fira Code", en: "Fira Code", stack: '"Fira Code", "Cascadia Code", Consolas, monospace' },
 ];
 
-export type FontChoice = string; // 预设 id 或 custom:<font-family>
+export type FontChoice = string; // 预设 id、family:<字体族名> 或 custom:<font-family>
 export type UiScale = 90 | 100 | 110 | 125;
 
 const KEY_LATIN = "owc-font-ui-latin";
@@ -42,6 +39,7 @@ const KEY_CJK = "owc-font-ui-cjk";
 const KEY_MONO = "owc-font-mono";
 const KEY_LIGATURES = "owc-font-ligatures";
 const KEY_SCALE = "owc-ui-scale";
+const KEY_USER_FONTS = "owc-font-user";
 
 const CUSTOM = "custom:";
 
@@ -61,16 +59,33 @@ function write(key: string, value: string): void {
   }
 }
 
-function readChoice(key: string, presets: FontPreset[]): FontChoice {
+function readChoice(key: string, presets: FontPreset[], fallback = "system"): FontChoice {
   const stored = read(key);
-  if (!stored) return "system";
+  if (!stored) return fallback;
   if (presets.some((preset) => preset.id === stored)) return stored;
   if (stored.startsWith(CUSTOM) && stored.length > CUSTOM.length) return stored;
-  return "system";
+  if (stored.startsWith(FAMILY) && stored.length > FAMILY.length) return stored;
+  return fallback;
 }
+
+function readUserFonts(): string[] {
+  try {
+    const parsed = JSON.parse(read(KEY_USER_FONTS) ?? "[]") as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0))].slice(0, 50);
+  } catch {
+    return [];
+  }
+}
+
+export const FAMILY = "family:";
 
 export function presetStack(choice: FontChoice, presets: FontPreset[]): string | null {
   if (choice.startsWith(CUSTOM)) return choice.slice(CUSTOM.length).trim() || null;
+  if (choice.startsWith(FAMILY)) {
+    const family = choice.slice(FAMILY.length).trim();
+    return family ? `"${family}", sans-serif` : null;
+  }
   return presets.find((preset) => preset.id === choice)?.stack ?? null;
 }
 
@@ -85,12 +100,15 @@ interface AppearanceState {
   mono: FontChoice;
   ligatures: boolean;
   scale: UiScale;
+  /** 用户添加并通过探测的字体族名（三组下拉共用） */
+  userFonts: string[];
 }
 
 const appearanceStore = createStore<AppearanceState>({
   latin: readChoice(KEY_LATIN, LATIN_PRESETS),
   cjk: readChoice(KEY_CJK, CJK_PRESETS),
-  mono: readChoice(KEY_MONO, MONO_PRESETS),
+  mono: readChoice(KEY_MONO, MONO_PRESETS, "source"),
+  userFonts: readUserFonts(),
   ligatures: read(KEY_LIGATURES) === "1",
   scale: readScale(),
 });
@@ -122,6 +140,8 @@ export function useAppearance(): AppearanceState & {
   setMono(value: FontChoice): void;
   setLigatures(value: boolean): void;
   setScale(value: UiScale): void;
+  addUserFont(family: string): void;
+  removeUserFont(family: string): void;
 } {
   const state = useStore(appearanceStore, (current) => current);
   return {
@@ -131,5 +151,17 @@ export function useAppearance(): AppearanceState & {
     setMono: (value) => commit(KEY_MONO, value, { mono: value }),
     setLigatures: (value) => commit(KEY_LIGATURES, value ? "1" : "0", { ligatures: value }),
     setScale: (value) => commit(KEY_SCALE, String(value), { scale: value }),
+    addUserFont: (family) => {
+      const trimmed = family.trim();
+      if (!trimmed) return;
+      const next = [...new Set([...appearanceStore.get().userFonts, trimmed])].slice(0, 50);
+      write(KEY_USER_FONTS, JSON.stringify(next));
+      appearanceStore.set({ userFonts: next });
+    },
+    removeUserFont: (family) => {
+      const next = appearanceStore.get().userFonts.filter((item) => item !== family);
+      write(KEY_USER_FONTS, JSON.stringify(next));
+      appearanceStore.set({ userFonts: next });
+    },
   };
 }

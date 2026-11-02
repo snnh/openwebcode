@@ -1,0 +1,9 @@
+/* 内嵌字体：思源等宽（Noto Sans Mono）拉丁子集，仅用于代码区。
+   完整 CJK 字形仍由系统等宽字体回退；文件仅 32KB，按需加载。 */
+@font-face {
+  font-family: "OWC Noto Sans Mono";
+  src: url("/fonts/NotoSansMono-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}

@@ -12,6 +12,7 @@ import { LabPage } from "./lab/LabPage";
 import { LazyMotion, domAnimation } from "motion/react";
 import { applyAppearance } from "./lib/appearance-prefs";
 import { installMotionPreference } from "./lib/motion-pref";
+import "./styles/fonts.css";
 import "./styles/tokens-shape.css";
 import "./styles/tokens-color.css";
 import "./styles/tokens-type.css";
