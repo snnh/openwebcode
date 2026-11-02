@@ -40,6 +40,7 @@ describe("SessionsView 列表与选中", () => {
     const empty = renderView([]); expect(screen.getByText("还没有会话")).toBeInTheDocument();
     empty.unmount();
     renderView([session("a", { title: "修 bug" }), session("b", { title: "写文档", provider: "openai" })]);
+    fireEvent.click(screen.getByRole("button", { name: "搜索会话" }));
     const search = screen.getByRole("textbox", { name: "搜索会话" });
     fireEvent.change(search, { target: { value: "openai" } }); expect(screen.queryByText("修 bug")).not.toBeInTheDocument();
     fireEvent.change(search, { target: { value: "不存在" } }); expect(screen.getByText("无匹配会话")).toBeInTheDocument();
@@ -62,7 +63,8 @@ describe("SessionsView 列表与选中", () => {
     fireEvent.click(screen.getByRole("button", { name: "取消置顶 已置顶" })); await waitFor(() => expect(patch).toHaveBeenCalledWith("b", { pinned: false }));
     openSessionActions("旧标题");
     fireEvent.click(screen.getByRole("menuitem", { name: "删除会话 旧标题" })); expect(uiStore.get().deleteTarget).toBe("a");
-    fireEvent.click(screen.getByRole("button", { name: "新建会话" })); expect(uiStore.get().newSessionOpen).toBe(true);
+    const newSessionButtons = screen.getAllByRole("button", { name: "新建会话" });
+    fireEvent.click(newSessionButtons[newSessionButtons.length - 1]!); expect(uiStore.get().newSessionOpen).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "设置" })); expect(uiStore.get().settingsOpen).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "切换主题" })); expect(["light", "dark"]).toContain(window.localStorage.getItem("owc-theme"));
   });

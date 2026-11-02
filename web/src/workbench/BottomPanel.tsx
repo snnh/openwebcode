@@ -60,7 +60,7 @@ function PanelStatus({ sessionId, agentState, mobile }: { sessionId: string; age
   return (
     <div className="panel-status" aria-label={t("会话状态", "Session status")}>
       <span className={`status-live status-${liveStatus}`}>
-        <i aria-hidden /> {liveStatus === "idle" ? t("空闲", "Idle") : t(...stateLabel(liveStatus))}
+        <i aria-hidden /> <span className="status-live-text">{liveStatus === "idle" ? t("空闲", "Idle") : t(...stateLabel(liveStatus))}</span>
       </span>
       {session && (
         <>

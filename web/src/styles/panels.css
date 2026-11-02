@@ -525,10 +525,16 @@
   .panel-tabs-secondary { border-top: 1px solid var(--border); }
   .bottom-panel.open .panel-tabs-secondary { border-bottom: 1px solid var(--border); }
   .panel-status { gap: 6px; padding-left: 6px; min-width: 0; }
-  /* 窄屏只留状态点：模型在 composer 已展示，把宽度让给面板标签 */
-  .panel-status .status-optional, .panel-status .panel-status-model { display: none; }
+  /* 窄屏隐藏模式/成本/窗口，保留完整模型名；≤480 再把状态文案收成圆点，把宽度让给标签 */
+  .panel-status .status-optional { display: none; }
+  .panel-status .panel-status-model { max-width: 46vw; }
   .panel-status > span { flex: 0 1 auto; overflow: hidden; }
   .panel-status .status-live { flex: none; }
+}
+
+@media (max-width: 480px) {
+  .panel-status .status-live-text { display: none; }
+  .panel-status .panel-status-model { max-width: 52vw; }
 }
 
 /* 触屏：拖拽柄只有 onMouseDown，触屏不可用且占位（移动端 sheet 全屏也不可拖） */

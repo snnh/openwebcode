@@ -52,6 +52,8 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
   const queryClient = useQueryClient();
   const defaults = useSessionDefaults();
   const [filter, setFilter] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [renamingId, setRenamingId] = useState<string | undefined>();
   const [renameDraft, setRenameDraft] = useState("");
   // 用户是否真正编辑过草稿：区分「清空以清除标题覆盖」与「未改动直接提交」
@@ -85,6 +87,11 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
       // 隐私模式：折叠记忆失效不影响使用
     }
   }, [collapsed]);
+
+  // 搜索就地展开后聚焦；无输入时失焦/关闭即收起，保留输入则维持展开
+  useEffect(() => {
+    if (searchOpen) searchRef.current?.focus();
+  }, [searchOpen]);
 
   // 会话「更多」菜单：外部点击关闭；Esc 关闭并还焦触发钮，避免焦点随菜单卸载丢失。
   useEffect(() => {
@@ -504,10 +511,12 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
     );
   };
 
+  const workspaceCwd = sessions?.find((session) => session.id === currentId)?.cwd;
+  const workspaceName = workspaceCwd?.split(/[\\/]/).filter(Boolean).pop() ?? "OpenWebCode";
+
   return (
     <aside className="sessions-view" aria-label={t("会话", "Sessions")}>
-      <header>
-        <span className="brand">Open<b>WebCode</b></span>
+      <header className={searchOpen ? "searching" : undefined}>
         <input
           ref={fileInput}
           type="file"
@@ -519,39 +528,65 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
             event.target.value = "";
           }}
         />
-        <button
-          className="icon-btn"
-          onClick={() => { setMultiSelect(false); setSelection(new Set()); closeSessionActions(); setBulkMoveOpen(false); }}
-          aria-label={t("退出多选", "Exit multi-select")}
-          title={t("退出多选", "Exit multi-select")}
-          hidden={!multiSelect}
-        >
-          <Icon name="x" size={15} />
-        </button>
-        <button
-          className="icon-btn"
-          onClick={() => { setMultiSelect(true); setSelection(new Set()); closeSessionActions(); setBulkMoveOpen(false); }}
-          aria-label={t("多选会话", "Select sessions")}
-          title={t("多选（批量删除/归档/置顶；单个会话的分组在「更多操作」里）", "Multi-select (bulk delete/archive/pin; per-session grouping lives under More actions)")}
-          hidden={multiSelect}
-        >
-          <Icon name="check" size={15} />
-        </button>
-        <button className="icon-btn" onClick={() => fileInput.current?.click()} aria-label={t("导入会话", "Import session")} title={t("导入会话（JSONL）", "Import session (JSONL)")}><Icon name="upload" size={15} /></button>
+        {searchOpen ? (
+          <span className="rail-search-wrap expanded">
+            <Icon name="search" size={13} />
+            <input
+              ref={searchRef}
+              className="input rail-search"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              onBlur={() => { if (!filter) setSearchOpen(false); }}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                if (filter) setFilter("");
+                else setSearchOpen(false);
+              }}
+              placeholder={t("搜索会话", "Search sessions")}
+              aria-label={t("搜索会话", "Search sessions")}
+            />
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label={t("关闭搜索", "Close search")}
+              title={t("关闭搜索（Esc）", "Close search (Esc)")}
+              onClick={() => { setFilter(""); setSearchOpen(false); }}
+            >
+              <Icon name="x" size={14} />
+            </button>
+          </span>
+        ) : (
+          <>
+            <span className="workspace-chip" title={workspaceCwd ?? "OpenWebCode"}>
+              <Icon name="folder" size={13} />
+              <b>{workspaceName}</b>
+            </span>
+            <span className="sessions-head-actions">
+              <button
+                className="icon-btn"
+                onClick={() => { setMultiSelect(false); setSelection(new Set()); closeSessionActions(); setBulkMoveOpen(false); }}
+                aria-label={t("退出多选", "Exit multi-select")}
+                title={t("退出多选", "Exit multi-select")}
+                hidden={!multiSelect}
+              >
+                <Icon name="x" size={15} />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => { setMultiSelect(true); setSelection(new Set()); closeSessionActions(); setBulkMoveOpen(false); }}
+                aria-label={t("多选会话", "Select sessions")}
+                title={t("多选（批量删除/归档/置顶；单个会话的分组在「更多操作」里）", "Multi-select (bulk delete/archive/pin; per-session grouping lives under More actions)")}
+                hidden={multiSelect}
+              >
+                <Icon name="check" size={15} />
+              </button>
+              <button className="icon-btn" onClick={() => fileInput.current?.click()} aria-label={t("导入会话", "Import session")} title={t("导入会话（JSONL）", "Import session (JSONL)")}><Icon name="upload" size={15} /></button>
+              <button className="icon-btn" onClick={() => setSearchOpen(true)} aria-label={t("搜索会话", "Search sessions")} title={t("搜索会话", "Search sessions")}><Icon name="search" size={15} /></button>
+              <button className="icon-btn" onClick={() => ui.setNewSessionOpen(true)} aria-label={t("新建会话", "New session")} title={t("新建会话", "New session")}><Icon name="plus" size={15} /></button>
+            </span>
+          </>
+        )}
       </header>
-      <span className="rail-search-wrap">
-        <Icon name="search" size={13} />
-        <input
-          className="input rail-search"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") setFilter("");
-          }}
-          placeholder={t("搜索会话", "Search sessions")}
-          aria-label={t("搜索会话", "Search sessions")}
-        />
-      </span>
       {multiSelect && (
         <div className="session-bulk-bar" role="toolbar" aria-label={t("批量操作", "Bulk actions")}>
           <span className="session-bulk-count">{t(`已选 ${selection.size}`, `${selection.size} selected`)}</span>
