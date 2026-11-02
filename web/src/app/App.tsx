@@ -3,6 +3,7 @@
  * 会话区细节在 chat/ChatView.tsx；外壳在 workbench/Workbench.tsx。
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, type ReactElement } from "react";
+import { AnimatePresence } from "motion/react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { SessionDetail } from "../lib/contracts";
@@ -522,7 +523,9 @@ export function App(): ReactElement {
         onCancel={() => ui.setDeleteTarget(undefined)}
         onConfirm={confirmDelete}
       />
-      {notice && <Toast notice={notice} onDismiss={() => ui.setNotice(undefined)} />}
+      <AnimatePresence>
+        {notice && <Toast key="notice" notice={notice} onDismiss={() => ui.setNotice(undefined)} />}
+      </AnimatePresence>
       {/* 只读代码浮层（Quick Open 打开；与编辑器/diff 互斥由 aux-views 保证） */}
       {aux.codeOverlay && sessionId && (
         <Suspense fallback={null}>

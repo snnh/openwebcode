@@ -16,6 +16,7 @@ import { useI18n } from "../i18n";
 import { layout, layoutStore, type SidebarView } from "./layout";
 import { ActivityBar, MobileNavMenu, type RailActions } from "./Rail";
 import { SidebarViews } from "./SidebarViews";
+import { AnimatePresence } from "motion/react";
 import { BottomPanel } from "./BottomPanel";
 
 interface WorkbenchProps {
@@ -110,7 +111,11 @@ export function Workbench({ sessions, agentState, onShowChat, onOpenDsh, main }:
         </div>
       )}
       {isMobile && (
-        <MobileNavMenu open={layoutState.mobileNavOpen} onClose={() => layout.setMobileNavOpen(false)} {...railActions} />
+        <AnimatePresence>
+          {layoutState.mobileNavOpen && (
+            <MobileNavMenu key="mobile-nav" onClose={() => layout.setMobileNavOpen(false)} {...railActions} />
+          )}
+        </AnimatePresence>
       )}
       {isMobile && sidebarVisible && (
         <div className="wb-sidebar-backdrop" aria-hidden onClick={() => layout.setMobileSidebarOpen(false)} />

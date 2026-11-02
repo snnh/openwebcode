@@ -3,9 +3,11 @@
  * 上部为侧栏视图切换（会话/文件/SCM/问题），下部为帮助/通知/设置入口。
  */
 import { useEffect, useRef, type ReactElement } from "react";
+import { m } from "motion/react";
 import { Icon, type IconName } from "../components/Icon";
 import { useI18n } from "../i18n";
 import type { SidebarView } from "./layout";
+import { useMotionPreference } from "../lib/motion-pref";
 
 /** 侧栏视图元信息（桌面活动栏与移动端导航共用） */
 const VIEW_META: Record<SidebarView, { zh: string; en: string; icon: IconName }> = {
@@ -141,13 +143,14 @@ export function MobileNavTrigger({ onOpen }: { onOpen(): void }): ReactElement {
  * 移动端导航菜单（手机 ≤768px）：左上角触发、左侧滑出的竖向列表。
  * 替代窄屏上的桌面活动栏；Esc/遮罩关闭，Tab 焦点在菜单内循环。
  */
-export function MobileNavMenu({ open, onClose, activeView, problemsBadge = 0, notificationsBadge = 0, onShowView, onShowHelp, onShowNotifications, onOpenSettings, onShowChat, onOpenDsh }: RailActions & { open: boolean; onClose(): void }): ReactElement | null {
+export function MobileNavMenu({ onClose, activeView, problemsBadge = 0, notificationsBadge = 0, onShowView, onShowHelp, onShowNotifications, onOpenSettings, onShowChat, onOpenDsh }: RailActions & { onClose(): void }): ReactElement {
   const { t } = useI18n();
+  const { reduced } = useMotionPreference();
   const navRef = useRef<HTMLElement>(null);
+  const duration = reduced ? 0 : 0.18;
 
-  // 打开时焦点进菜单；Esc 关闭（遮罩点击由 backdrop onClick 承担）；Tab 在菜单内循环（不逃到遮罩下的内容）
+  // 挂载即打开：焦点进菜单；Esc 关闭（遮罩点击由 backdrop onClick 承担）；Tab 在菜单内循环（不逃到遮罩下的内容）
   useEffect(() => {
-    if (!open) return undefined;
     const nav = navRef.current;
     nav?.focus();
     const onKey = (event: KeyboardEvent): void => {
@@ -178,9 +181,7 @@ export function MobileNavMenu({ open, onClose, activeView, problemsBadge = 0, no
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [open, onClose]);
-
-  if (!open) return null;
+  }, [onClose]);
 
   const action = (run: () => void) => (): void => {
     run();
@@ -189,8 +190,27 @@ export function MobileNavMenu({ open, onClose, activeView, problemsBadge = 0, no
 
   return (
     <>
-      <div className="mobile-nav-backdrop" aria-hidden onClick={onClose} />
-      <nav ref={navRef} className="mobile-nav" tabIndex={-1} aria-label={t("导航菜单", "Navigation menu")}>
+      <m.div
+        key="backdrop"
+        className="mobile-nav-backdrop"
+        aria-hidden
+        onClick={onClose}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration }}
+      />
+      <m.nav
+        key="nav"
+        ref={navRef}
+        className="mobile-nav"
+        tabIndex={-1}
+        aria-label={t("导航菜单", "Navigation menu")}
+        initial={reduced ? false : { x: -24, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        exit={reduced ? { opacity: 0 } : { x: -24, opacity: 0 }}
+        transition={{ duration, ease: [0.2, 0, 0, 1] }}
+      >
         <div className="mobile-nav-group">
           {(Object.keys(VIEW_META) as SidebarView[]).map((view) => {
             const meta = VIEW_META[view];
@@ -241,7 +261,7 @@ export function MobileNavMenu({ open, onClose, activeView, problemsBadge = 0, no
             {t("设置", "Settings")}
           </button>
         </div>
-      </nav>
+      </m.nav>
     </>
   );
 }
