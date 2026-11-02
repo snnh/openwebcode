@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useTheme, type AccentPreference, type ThemePreference } from "../../theme";
 import { isValidHexColor } from "../../lib/accent-color";
 import { useI18n, type Language } from "../../i18n";
+import { TypographySection } from "./TypographySection";
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; zh: string; en: string }> = [
   { value: "light", zh: "浅色", en: "Light" },
@@ -111,6 +112,7 @@ export function AppearanceSection(): ReactElement {
         )}
       </div>
       <p className="settings-note">{t("强调色影响按钮、链接、高亮等元素；浅色与深色模式各自适配。自定义色支持任意 RGB，悬停/底色/文字色自动派生。", "The accent color applies to buttons, links, highlights, and related elements in both light and dark themes. Custom colors accept any RGB value; hover, tint, and text colors are derived automatically.")}</p>
+      <TypographySection />
     </>
   );
 }

@@ -16,7 +16,6 @@ import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { useI18n } from "../i18n";
 import { SETTING_GROUP_TAB, SETTINGS_FIELD_EN } from "./sections/shared";
 import { AppearanceSection } from "./sections/AppearanceSection";
-import { TypographySection } from "./sections/TypographySection";
 import { GeneralSection } from "./sections/GeneralSection";
 import { DefaultsSection } from "./sections/DefaultsSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
@@ -52,8 +51,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
     zh: "个人偏好",
     en: "Preferences",
     tabs: [
-      { id: "appearance", zh: "外观", en: "Appearance", descriptionZh: "语言、主题与界面强调色", descriptionEn: "Language, theme, and interface accent", icon: "sun" },
-      { id: "typography", zh: "排版与动效", en: "Typography & motion", descriptionZh: "字体、缩放与动画模式", descriptionEn: "Fonts, scale, and motion", icon: "type" },
+      { id: "appearance", zh: "外观", en: "Appearance", descriptionZh: "语言、主题、强调色、字体与动效", descriptionEn: "Language, theme, accent, fonts, and motion", icon: "sun" },
       { id: "general", zh: "通用", en: "General", descriptionZh: "输入方式、模型语言货币与工作区布局", descriptionEn: "Input behavior, model language & currency, and workspace layout", icon: "settings" },
       { id: "defaults", zh: "会话默认", en: "Session defaults", descriptionZh: "新会话的模型与运行参数", descriptionEn: "Model and runtime defaults for new sessions", icon: "history" },
       { id: "shortcuts", zh: "快捷键", en: "Shortcuts", descriptionZh: "查看可用的键盘操作", descriptionEn: "Browse available keyboard actions", icon: "keyboard" },
@@ -308,11 +306,6 @@ export function SettingsDialog(): ReactElement | null {
           {activeTab === "appearance" && (
             <section>
               <AppearanceSection />
-            </section>
-          )}
-          {activeTab === "typography" && (
-            <section>
-              <TypographySection />
             </section>
           )}
           {activeTab === "general" && (
