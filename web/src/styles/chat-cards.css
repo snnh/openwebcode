@@ -139,17 +139,19 @@
 /* 执行过程折叠段（ProcessFold）：连续过程消息（thinking/工具调用/工具结果）收进默认折叠的 details */
 .turn-process {
   max-width: min(100%, var(--content-max));
-  margin: 0 0 var(--sp-24);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-l);
-  background: var(--surface-subtle);
+  margin: 0 0 var(--sp-16);
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  background: transparent;
   overflow: clip;
 }
 .turn-process > summary {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: var(--sp-8) var(--sp-12);
+  gap: var(--sp-8);
+  min-height: 28px;
+  padding: 0 var(--sp-8);
+  border-radius: var(--radius-s);
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -157,10 +159,10 @@
   color: var(--text-3);
 }
 .turn-process > summary::-webkit-details-marker { display: none; }
-.turn-process > summary:hover { color: var(--text-2); }
-.turn-process[open] > summary { border-bottom: 1px solid var(--border); }
+.turn-process > summary:hover { color: var(--text); background: var(--surface-hover); }
+.turn-process[open] > summary { border-bottom: 1px solid var(--border-subtle); border-radius: var(--radius-s) var(--radius-s) 0 0; }
 .turn-process.danger > summary { color: var(--danger); }
-.turn-process-body { padding: 4px 12px 12px; }
+.turn-process-body { padding: var(--sp-4) 0 var(--sp-4) var(--sp-12); }
 .turn-process-body .message { margin-bottom: 12px; }
 .turn-process-body .message:last-child { margin-bottom: 0; }
 
@@ -301,11 +303,10 @@
 
 /* 相邻工具调用合并组：标题行「N 个工具调用 · 状态」+ 组内一调用一行紧凑卡 */
 .tool-group {
-  background: var(--surface-inset);
-  background: color-mix(in srgb, var(--surface-inset) 55%, transparent);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin: 5px 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  margin: 2px 0;
   max-width: min(100%, var(--content-max));
 }
 .tool-group.error { border-color: var(--danger-border); }
@@ -313,12 +314,12 @@
 .tool-group-state { flex: 1 1 auto; min-width: 0; font-size: var(--text-xs); color: var(--text-3); }
 .tool-group.error .tool-group-state { color: var(--danger); }
 .tool-group-body {
-  border-top: 1px solid var(--border);
-  padding: 6px var(--sp-8);
+  border-top: 1px solid var(--border-subtle);
+  padding: var(--sp-4) 0;
   display: grid;
-  gap: var(--sp-4);
+  gap: 2px;
 }
-.tool-group-body .tool-row { margin: 0; background: var(--surface-card); }
+.tool-group-body .tool-row { margin: 0; background: transparent; }
 .tool-group-row-result { margin-top: 8px; }
 .tool-group-row-result-label { margin: 0 0 4px; font-size: var(--text-xs); color: var(--text-3); }
 .tool-group-row-result-label.error { color: var(--danger); }
