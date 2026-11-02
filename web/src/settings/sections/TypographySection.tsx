@@ -132,7 +132,7 @@ export function TypographySection(): ReactElement {
         </label>
       </div>
       <p className="settings-note">
-        {t("西文在前、CJK 兜底：数字与英文优先命中西文字体。默认列表只包含可免费商用的字体，且只显示本机已安装项。", "Latin comes first with CJK fallback. The default list contains free-for-commercial-use fonts only, limited to what is installed on this device.")}
+        {t("西文在前、CJK 兜底：数字与英文优先命中西文字体。「系统默认」使用操作系统自带字体（不受免费商用筛选影响）；其余列表只显示可免费商用且本机已安装的字体。", "Latin comes first with CJK fallback. “System default” uses the operating system fonts and is exempt from the free-for-commercial-use filter; every other entry is free for commercial use and installed locally.")}
       </p>
 
       <h3>{t("代码字体", "Code font")}</h3>
