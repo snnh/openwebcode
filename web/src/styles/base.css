@@ -6,7 +6,7 @@ body {
   margin: 0;
   min-width: 320px;
   font: 14px/1.55 var(--font-ui);
-  background: var(--bg);
+  background: var(--surface-canvas);
   color: var(--text);
   font-synthesis: none;
   font-feature-settings: "cv02", "cv03", "cv04";
@@ -25,17 +25,17 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .input {
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
-  background: var(--panel-subtle);
+  background: var(--surface-inset);
   color: var(--text);
   padding: 7px 9px;
-  font-size: 13px;
-  transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out), background-color 0.15s var(--ease-out);
+  font-size: var(--text-s);
+  transition: border-color 0.15s var(--ease-standard), box-shadow 0.15s var(--ease-standard), background-color 0.15s var(--ease-standard);
 }
 .input:hover:not(:disabled) { border-color: var(--border-strong); }
 .input:focus {
   border-color: var(--accent);
   outline: none;
-  background: var(--panel);
+  background: var(--surface-card);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
@@ -66,21 +66,21 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   padding: 6px 14px;
   border-radius: var(--radius-s);
   border: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--surface-card);
   color: var(--text);
-  font-size: 13px;
-  font-weight: 500;
-  transition: color 0.15s var(--ease-out), background-color 0.15s var(--ease-out), border-color 0.15s var(--ease-out), transform 0.1s var(--ease-out);
+  font-size: var(--text-s);
+  font-weight: var(--fw-500);
+  transition: color 0.15s var(--ease-standard), background-color 0.15s var(--ease-standard), border-color 0.15s var(--ease-standard), transform 0.1s var(--ease-standard);
 }
 .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .btn:active:not(:disabled) { transform: translateY(1px); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: var(--fw-600); }
 .btn.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
 .btn.danger { border-color: var(--danger-border); color: var(--danger); }
 .btn.danger:hover:not(:disabled) { background: var(--danger); border-color: var(--danger); color: var(--on-danger); }
 .btn.danger-outline { border-color: var(--danger-border); color: var(--danger); background: transparent; }
 .btn.danger-outline:hover:not(:disabled) { background: var(--danger-bg); }
-.btn.small { min-height: 28px; padding: 4px 10px; font-size: 12px; }
+.btn.small { min-height: 28px; padding: 4px 10px; font-size: var(--text-xs); }
 
 .icon-btn {
   display: inline-flex;
@@ -91,9 +91,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   flex: none;
   border-radius: var(--radius-s);
   color: var(--text-2);
-  transition: color 0.15s var(--ease-out), background-color 0.15s var(--ease-out), transform 0.1s var(--ease-out);
+  transition: color 0.15s var(--ease-standard), background-color 0.15s var(--ease-standard), transform 0.1s var(--ease-standard);
 }
-.icon-btn:hover { background: var(--hover-bg); color: var(--text); }
+.icon-btn:hover { background: var(--surface-hover); color: var(--text); }
 .icon-btn:active:not(:disabled) { transform: translateY(1px); }
 .icon-btn svg, .btn svg { display: block; flex-shrink: 0; }
 
@@ -101,10 +101,10 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .collapse-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
+  gap: var(--sp-8);
+  padding: 0 var(--sp-12);
   min-height: 40px;
-  font-size: 13px;
+  font-size: var(--text-s);
   cursor: pointer;
   user-select: none;
   min-width: 0;
@@ -127,13 +127,13 @@ button, a, [role="button"], summary, select, .icon-btn {
   transform: translateX(-50%);
   z-index: var(--z-drawer);
   pointer-events: none;
-  font-size: 12px;
+  font-size: var(--text-xs);
   color: var(--amber);
-  background: var(--panel);
+  background: var(--surface-card);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 3px 14px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-1);
 }
 
 /* Composer 上弹建议层基类：技能(/）与文件引用(@)建议共用；skill-popup/mention-popup 为语义钩子 */
@@ -142,7 +142,7 @@ button, a, [role="button"], summary, select, .icon-btn {
   left: 0;
   bottom: calc(100% + 6px);
   margin: 0;
-  padding: 4px;
+  padding: var(--sp-4);
   list-style: none;
   /* min 与移动端 max-width（composer.css calc(100vw - 32px)）同口径：
      320px 视口下 min(296px) > max(288px) 会让 min 胜出、右侧溢出 8px */
@@ -150,16 +150,16 @@ button, a, [role="button"], summary, select, .icon-btn {
   max-width: 100%;
   max-height: 260px;
   overflow-y: auto;
-  background: var(--panel);
+  background: var(--surface-floating);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-2);
   z-index: var(--z-overlay);
 }
 .composer-popup button {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-8);
   width: 100%;
   border: 0;
   background: transparent;
@@ -168,34 +168,34 @@ button, a, [role="button"], summary, select, .icon-btn {
   border-radius: var(--radius-s);
   cursor: pointer;
   text-align: left;
-  font-size: 13px;
+  font-size: var(--text-s);
 }
-.composer-popup button.active, .composer-popup button:hover { background: var(--panel-2); }
+.composer-popup button.active, .composer-popup button:hover { background: var(--surface-inset); }
 
-.muted-empty { color: var(--text-3); font-size: 13px; }
+.muted-empty { color: var(--text-3); font-size: var(--text-s); }
 /* 面板错误态：加载失败/操作失败的行内错误提示（TSX 侧配 role="alert"） */
-.panel-error { color: var(--danger); font-size: 13px; }
+.panel-error { color: var(--danger); font-size: var(--text-s); }
 
 /* ================= 徽标（pill 统一基类 + 语义修饰） ================= */
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  padding: 2px 8px;
+  gap: var(--sp-4);
+  font-size: var(--text-2xs);
+  font-weight: var(--fw-500);
+  padding: var(--sp-2) var(--sp-8);
   border-radius: 999px;
   white-space: nowrap;
-  background: var(--panel-2);
+  background: var(--surface-inset);
   color: var(--text-2);
 }
 .pill.accent { background: var(--accent-soft); color: var(--accent); }
 .pill.ok { background: var(--ok-bg); color: var(--ok); }
 .pill.danger { background: var(--danger-bg); color: var(--danger); }
 .pill.amber { background: var(--amber-bg); color: var(--amber); }
-.pill.small { font-size: 10px; padding: 1px 6px; gap: 3px; }
+.pill.small { font-size: var(--text-2xs); padding: 1px 6px; gap: 3px; }
 /* 可交互 pill（下拉触发钮）：边框常态透明，hover/open 描边 */
-.pill.interactive { border: 1px solid transparent; cursor: pointer; font-size: 12px; font-weight: 600; padding: 3px 10px; }
+.pill.interactive { border: 1px solid transparent; cursor: pointer; font-size: var(--text-xs); font-weight: var(--fw-600); padding: 3px 10px; }
 .pill.interactive.open, .pill.interactive:hover { border-color: var(--accent); }
 
 /* ================= Toast ================= */
@@ -208,16 +208,16 @@ button, a, [role="button"], summary, select, .icon-btn {
   display: flex;
   align-items: center;
   gap: 14px;
-  background: var(--panel);
+  background: var(--surface-floating);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-2);
   padding: 11px 14px;
-  font-size: 13px;
+  font-size: var(--text-s);
   animation: toast-in 0.18s ease;
 }
 .toast.error { border-color: var(--danger-border); color: var(--danger); }
-.toast button { color: var(--text-3); font-size: 15px; }
+.toast button { color: var(--text-3); font-size: var(--text-l); }
 .toast button:hover { color: var(--text); }
 
 /* ================= 崩溃兜底（ErrorBoundary：渲染失败不再白屏） ================= */
@@ -225,24 +225,24 @@ button, a, [role="button"], summary, select, .icon-btn {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin: 12px;
-  padding: 14px 16px;
-  background: var(--panel);
+  margin: var(--sp-12);
+  padding: 14px var(--sp-16);
+  background: var(--surface-card);
   border: 1px solid var(--danger-border);
   border-radius: var(--radius);
   color: var(--text-2);
-  font-size: 13px;
+  font-size: var(--text-s);
   overflow: auto;
 }
 /* 面板区兜底时占满可用高度，操作按钮始终可见 */
 .panel-content > .crash-fallback { margin: 8px; }
 .crash-fallback-head { display: flex; flex-direction: column; gap: 4px; }
-.crash-fallback-head b { color: var(--danger); font-size: 13px; }
+.crash-fallback-head b { color: var(--danger); font-size: var(--text-s); }
 .crash-fallback-hint { color: var(--text-3); font-size: var(--text-xs); }
 .crash-fallback-message {
   margin: 0;
-  padding: 8px 10px;
-  background: var(--panel-2);
+  padding: var(--sp-8) 10px;
+  background: var(--surface-inset);
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
   color: var(--text);
@@ -253,11 +253,11 @@ button, a, [role="button"], summary, select, .icon-btn {
 .crash-fallback-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .crash-fallback-details summary { cursor: pointer; color: var(--text-3); font-size: var(--text-xs); }
 .crash-fallback-details pre {
-  margin: 8px 0 0;
+  margin: var(--sp-8) 0 0;
   max-height: 240px;
   overflow: auto;
-  padding: 8px 10px;
-  background: var(--panel-2);
+  padding: var(--sp-8) 10px;
+  background: var(--surface-inset);
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
   font-size: var(--text-xs);

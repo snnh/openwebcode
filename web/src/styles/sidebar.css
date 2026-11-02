@@ -12,18 +12,18 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: var(--panel);
+  background: var(--surface-card);
   border-right: 1px solid var(--border);
   position: relative;
 }
 .sidebar-views-header {
-  padding: 12px 16px 8px;
+  padding: var(--sp-12) var(--sp-16) var(--sp-8);
   border-bottom: 1px solid var(--border);
 }
 .sidebar-views-header h2 {
   margin: 0;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--fw-600);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -51,26 +51,26 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 4px;
+  gap: var(--sp-4);
   min-height: 52px;
-  padding: 10px 12px;
+  padding: 10px var(--sp-12);
 }
-.brand { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; margin-right: auto; }
-.brand b { color: var(--accent); font-weight: 700; }
+.brand { font-size: var(--text-m); font-weight: var(--fw-600); letter-spacing: -0.01em; margin-right: auto; }
+.brand b { color: var(--accent); font-weight: var(--fw-600); }
 /* 会话行只让出「状态 + 置顶 + 更多」的空间；待回答角标出现时再增加一档。 */
 .sessions-view .session-link { padding: 9px 66px 9px 10px; }
 .sessions-view .session-item.has-attention .session-link { padding-right: 100px; }
 .session-rename {
   flex: 1;
   min-width: 0;
-  margin: 2px 4px;
+  margin: var(--sp-2) var(--sp-4);
   padding: 7px 10px;
   border: 1px solid var(--accent);
   border-radius: var(--radius-s);
-  background: var(--bg);
+  background: var(--surface-canvas);
   color: var(--text);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--text-s);
+  font-weight: var(--fw-600);
 }
 .session-rename:focus { outline: none; }
 /* 会话项操作按钮组：单一绝对定位容器 + flex 行内排布（取代逐个 right 魔数偏移） */
@@ -79,7 +79,7 @@
   right: 6px;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--sp-2);
   /* 容器不拦截点击：它压在 .session-link 让出的右侧空白上，若吞掉事件，
      点在标题右侧就会落空（E2E 点击链接中心时被按钮图标 intercept）。按钮自身恢复可点。 */
   pointer-events: none;
@@ -99,7 +99,7 @@
   background: var(--amber-bg);
   border: 1px solid var(--amber-border);
   color: var(--amber);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
 }
 .session-pin,
@@ -112,10 +112,10 @@
   flex: none;
   border-radius: var(--radius-s);
   color: var(--text-3);
-  font-size: 14px;
+  font-size: var(--text-m);
   opacity: 0;
   cursor: pointer;
-  transition: opacity 0.15s var(--ease-out), color 0.15s var(--ease-out), background-color 0.15s var(--ease-out);
+  transition: opacity 0.15s var(--ease-standard), color 0.15s var(--ease-standard), background-color 0.15s var(--ease-standard);
 }
 .session-item:hover .session-pin,
 .session-item:focus-within .session-pin,
@@ -137,9 +137,9 @@
   padding: 5px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--panel);
-  box-shadow: var(--shadow-lg);
-  animation: session-menu-in 0.14s var(--ease-out);
+  background: var(--surface-floating);
+  box-shadow: var(--shadow-2);
+  animation: session-menu-in 0.14s var(--ease-standard);
 }
 @keyframes session-menu-in { from { opacity: 0; transform: translateY(-3px); } }
 /* 触发器靠近视口底部时向上展开（SessionsView 依 getBoundingClientRect 决定） */
@@ -155,12 +155,12 @@
   padding: 7px 9px;
   border-radius: var(--radius-s);
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--text-xs);
   text-align: left;
   white-space: nowrap;
 }
 .session-menu-item:hover,
-.session-menu-item:focus-visible { color: var(--text); background: var(--hover-bg); }
+.session-menu-item:focus-visible { color: var(--text); background: var(--surface-hover); }
 .session-menu-item.danger { color: var(--danger); }
 .session-menu-item.danger:hover { background: var(--danger-bg); }
 .session-menu-item > svg:last-child:not(:first-child) { margin-left: auto; }
@@ -194,16 +194,16 @@
   min-width: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 5px 4px;
-  font-size: 11px;
+  gap: var(--sp-4);
+  padding: 5px var(--sp-4);
+  font-size: var(--text-2xs);
   color: var(--text-3);
   border-radius: var(--radius-s);
   text-align: left;
   cursor: pointer;
 }
-.session-group-toggle:hover { color: var(--text); background: var(--panel-2); }
-.session-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; letter-spacing: 0.02em; }
+.session-group-toggle:hover { color: var(--text); background: var(--surface-inset); }
+.session-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--fw-600); letter-spacing: 0.02em; }
 .session-group-count { flex: none; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .session-group-actions { display: inline-flex; align-items: center; gap: 2px; flex: none; opacity: 0; }
 .session-group:hover .session-group-actions, .session-group-actions:focus-within { opacity: 1; }
@@ -212,7 +212,7 @@
   width: 20px; height: 20px; border-radius: var(--radius-s); color: var(--text-3);
 }
 .session-group-actions button:hover { color: var(--accent); background: var(--accent-soft); }
-.session-group-rename { flex: 1 1 auto; min-width: 0; padding: 2px 6px; font-size: 11px; }
+.session-group-rename { flex: 1 1 auto; min-width: 0; padding: 2px 6px; font-size: var(--text-2xs); }
 .session-group[data-collapsed="true"] .session-group-header { margin-bottom: 2px; }
 .session-group-items { display: flex; flex-direction: column; gap: 2px; }
 /* 多选：勾选框占位 + 点击整行切换选择 */
@@ -230,39 +230,39 @@
   max-height: 260px;
   overflow-y: auto;
   margin: 0;
-  padding: 4px;
+  padding: var(--sp-4);
   list-style: none;
-  background: var(--panel);
+  background: var(--surface-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-1);
 }
 .session-move-menu li { display: flex; }
 .session-move-menu button {
   flex: 1;
   min-width: 0;
-  padding: 6px 8px;
+  padding: 6px var(--sp-8);
   border-radius: var(--radius-s);
-  font-size: 12px;
+  font-size: var(--text-xs);
   color: var(--text-2);
   text-align: left;
 }
-.session-move-menu button:hover { background: var(--panel-2); color: var(--text); }
+.session-move-menu button:hover { background: var(--surface-inset); color: var(--text); }
 .session-move-new { padding: 4px 4px 2px; }
-.session-move-new .input { width: 100%; padding: 4px 6px; font-size: 12px; }
+.session-move-new .input { width: 100%; padding: 4px 6px; font-size: var(--text-xs); }
 /* 批量操作条：多选模式下固定在搜索框之下 */
 .session-bulk-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin: 0 12px 8px;
-  padding: 6px 8px;
+  margin: 0 var(--sp-12) var(--sp-8);
+  padding: 6px var(--sp-8);
   border: 1px solid var(--amber-border);
   border-radius: var(--radius);
   background: var(--amber-bg);
 }
-.session-bulk-count { font-size: 12px; color: var(--amber); font-variant-numeric: tabular-nums; margin-right: auto; }
+.session-bulk-count { font-size: var(--text-xs); color: var(--amber); font-variant-numeric: tabular-nums; margin-right: auto; }
 /* 批量条里的「移动到组」下拉：与其他浮层同款样式，锚在按钮下方 */
 .session-bulk-move { position: relative; display: inline-flex; }
 .rail-search-wrap { position: relative; display: block; margin: 0 12px 10px; color: var(--text-3); }
@@ -278,8 +278,8 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 5px;
-  padding: 8px 10px;
-  background: var(--panel-subtle);
+  padding: var(--sp-8) 10px;
+  background: var(--surface-subtle);
 }
 .sessions-new-btn { flex: 1 1 100%; min-width: 0; }
 .sessions-new-btn svg { flex: none; }
@@ -298,33 +298,33 @@
   gap: 6px;
   width: 100%;
   text-align: left;
-  padding: 5px 8px;
+  padding: 5px var(--sp-8);
   border-radius: var(--radius-s);
   font: 13px var(--font-mono);
   color: var(--text);
 }
-.file-row:hover { background: var(--panel-2); }
+.file-row:hover { background: var(--surface-inset); }
 .file-row.active { background: var(--accent-soft); color: var(--accent); }
-.file-row.dir { font-weight: 600; }
+.file-row.dir { font-weight: var(--fw-600); }
 .tree-arrow { display: inline-flex; align-items: center; width: 12px; color: var(--text-3); flex-shrink: 0; }
 .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-row small { margin-left: auto; color: var(--text-3); font-size: 10px; flex-shrink: 0; }
+.file-row small { margin-left: auto; color: var(--text-3); font-size: var(--text-2xs); flex-shrink: 0; }
 .file-preview {
   position: absolute;
   inset: 0;
-  background: var(--panel);
+  background: var(--surface-card);
   z-index: var(--z-base);
-  padding: 12px 16px;
+  padding: var(--sp-12) var(--sp-16);
   overflow: auto;
 }
 .file-preview header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding-bottom: 8px;
+  gap: var(--sp-8);
+  padding-bottom: var(--sp-8);
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 .file-preview header .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-note .btn { margin-left: 8px; }
@@ -335,20 +335,20 @@
 /* Problems 视图 */
 .problems-panel .panel-head { align-items: flex-start; gap: 8px; flex-wrap: wrap; }
 .problems-filters { display: inline-flex; gap: 6px; }
-.problems-summary { margin: 0 0 10px; color: var(--text-2); font-size: 13px; }
-.problems-summary code { font-family: var(--font-mono); font-size: 12px; }
+.problems-summary { margin: 0 0 10px; color: var(--text-2); font-size: var(--text-s); }
+.problems-summary code { font-family: var(--font-mono); font-size: var(--text-xs); }
 .problems-group { margin-bottom: 12px; }
 .problems-file {
   display: flex; align-items: center; gap: 6px;
-  margin: 0 0 4px; font-size: 13px; font-weight: 600;
+  margin: 0 0 var(--sp-4); font-size: var(--text-s); font-weight: var(--fw-600);
   color: var(--text);
 }
-.problems-file small { color: var(--text-3); font-weight: 400; }
+.problems-file small { color: var(--text-3); font-weight: var(--fw-400); }
 .problems-list { list-style: none; margin: 0; padding: 0; }
 .problems-item {
   display: flex; align-items: baseline; gap: 6px;
   width: 100%; padding: 4px 6px;
-  font-size: 13px; text-align: left;
+  font-size: var(--text-s); text-align: left;
   border-radius: var(--radius);
   color: var(--text-2);
 }
@@ -357,29 +357,29 @@
 .problems-item.error svg { color: var(--danger); }
 .problems-item.warning svg { color: var(--amber); }
 .problems-item svg { flex: none; align-self: center; }
-.problems-name { font-weight: 600; color: var(--text); }
-.problems-loc { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); }
+.problems-name { font-weight: var(--fw-600); color: var(--text); }
+.problems-loc { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--text-3); }
 .problems-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* SCM 视图：分支状态、只读 diff、提交辅助与 worktree 管理 */
-.scm-branch { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 13px; color: var(--text); }
-.scm-branch .mono { font-family: var(--font-mono); font-weight: 600; }
-.scm-sync { display: inline-flex; gap: 6px; color: var(--text-3); font-family: var(--font-mono); font-size: 12px; }
+.scm-branch { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; font-size: var(--text-s); color: var(--text); }
+.scm-branch .mono { font-family: var(--font-mono); font-weight: var(--fw-600); }
+.scm-sync { display: inline-flex; gap: 6px; color: var(--text-3); font-family: var(--font-mono); font-size: var(--text-xs); }
 .scm-status-code {
   flex: none; align-self: center;
   min-width: 16px; text-align: center;
-  font-family: var(--font-mono); font-size: 11px; font-weight: 700;
+  font-family: var(--font-mono); font-size: var(--text-2xs); font-weight: var(--fw-600);
   color: var(--accent);
 }
 .scm-commit { margin-top: 12px; }
 .scm-commit-input {
   width: 100%; resize: vertical;
-  margin-bottom: 4px;
+  margin-bottom: var(--sp-4);
 }
 .scm-worktrees { margin-top: 12px; }
 .scm-worktree-item {
   display: flex; align-items: center; gap: 6px;
-  padding: 4px 6px; font-size: 13px; color: var(--text-2);
+  padding: var(--sp-4) 6px; font-size: var(--text-s); color: var(--text-2);
 }
 .scm-worktree-item .mono { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scm-worktree-item small { color: var(--text-3); }
@@ -397,7 +397,7 @@
 /* 触屏设备无悬停：行内操作常显 */
 @media (hover: none) { .scm-row-actions { display: inline-flex; } }
 .scm-row-actions .icon-btn { padding: 2px; }
-.scm-status-row .scm-confirm { font-size: 11px; color: var(--text-3); }
+.scm-status-row .scm-confirm { font-size: var(--text-2xs); color: var(--text-3); }
 
 /* SCM 历史折叠区：一行式 shortHash + subject + author · relTime */
 .scm-history { margin-top: 12px; }
@@ -407,11 +407,11 @@
 }
 .scm-log-item {
   display: flex; align-items: baseline; gap: 6px;
-  padding: 3px 6px; font-size: 13px; color: var(--text-2);
+  padding: 3px 6px; font-size: var(--text-s); color: var(--text-2);
 }
-.scm-log-hash { flex: none; font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+.scm-log-hash { flex: none; font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--accent); }
 .scm-log-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.scm-log-meta { margin-left: auto; flex: none; color: var(--text-3); font-size: 11px; white-space: nowrap; }
+.scm-log-meta { margin-left: auto; flex: none; color: var(--text-3); font-size: var(--text-2xs); white-space: nowrap; }
 
 /* worktree 合回：合回按钮与冲突列表 */
 .scm-worktree-item .scm-merge-btn { margin-left: auto; }
@@ -420,16 +420,16 @@
 .scm-merge-conflicts {
   margin-top: 6px; padding: 8px;
   border: 1px solid var(--danger); border-radius: var(--radius);
-  background: var(--panel-2); font-size: 13px;
+  background: var(--surface-inset); font-size: var(--text-s);
 }
 .scm-merge-conflicts-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  margin-bottom: 4px; color: var(--danger); font-weight: 600;
+  margin-bottom: var(--sp-4); color: var(--danger); font-weight: var(--fw-600);
 }
-.scm-merge-conflicts code { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+.scm-merge-conflicts code { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-2); }
 
 /* 只读 unified diff 渲染：+/- 行着色 */
-.diff-view { font-family: var(--font-mono); font-size: 12px; }
+.diff-view { font-family: var(--font-mono); font-size: var(--text-xs); }
 .diff-stat { margin: 0 0 8px; white-space: pre-wrap; word-break: break-all; color: var(--text-2); }
 .diff-lines { margin: 0; overflow-x: auto; }
 .diff-line { padding: 0 8px; white-space: pre; color: var(--text-2); }

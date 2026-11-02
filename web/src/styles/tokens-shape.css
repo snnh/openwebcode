@@ -29,7 +29,7 @@
     --sp-32: 32px;
 
     /* 尺寸 */
-    --control-h: 32px;
+    --control-h: 30px;
     --row-h: 26px;
     --icon-col: 16px;
     --gutter: clamp(20px, 3vw, 52px);
@@ -48,25 +48,6 @@
     --z-sheet: 45;
     --z-nav: 59;
     --z-top: 60;
-  }
-
-  /* 迁移期兼容：旧变量名指向新语义 token；第 2 块全量替换后删除本段 */
-  :root {
-    --bg: var(--surface-canvas);
-    --panel: var(--surface-card);
-    --panel-2: var(--surface-inset);
-    --panel-subtle: var(--surface-subtle);
-    --hover-bg: var(--surface-hover);
-    --space-1: var(--sp-4);
-    --space-2: var(--sp-8);
-    --space-3: var(--sp-12);
-    --space-4: var(--sp-16);
-    --space-5: var(--sp-24);
-    --space-6: var(--sp-32);
-    --radius-s-legacy: 6px;
-    --shadow: 0 1px 2px rgb(23 32 42 / 0.06), 0 8px 24px rgb(23 32 42 / 0.08);
-    --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.16);
-    --control-h-legacy: 32px;
   }
 
   [data-theme="dark"] {

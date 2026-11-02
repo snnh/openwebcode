@@ -3,9 +3,9 @@
    弹层基类 .composer-popup 已在 base.css，此处只放 skill/mention 语义钩子与弹层菜单。 */
 
 .composer {
-  background: var(--bg);
+  background: var(--surface-canvas);
   border-top: 1px solid var(--border);
-  padding: 10px var(--gutter) var(--space-3);
+  padding: 10px var(--gutter) var(--sp-12);
 }
 /* 输入区大圆角卡片：与消息列同宽同轴，textarea 融入其中。 */
 .composer-card {
@@ -13,14 +13,14 @@
   max-width: var(--content-max);
   margin: 0 auto;
   border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  background: var(--panel);
+  border-radius: var(--radius-l);
+  background: var(--surface-floating);
   padding: 10px 14px 10px;
   display: flex;
   flex-direction: column;
   gap: 5px;
-  box-shadow: 0 1px 2px rgb(23 32 42 / 0.025);
-  transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
+  box-shadow: var(--shadow-2);
+  transition: border-color 0.15s var(--ease-standard), box-shadow 0.15s var(--ease-standard);
 }
 .composer-card:focus-within {
   border-color: var(--accent);
@@ -32,7 +32,7 @@
   gap: 6px;
   flex-wrap: nowrap;
   min-width: 0;
-  margin-top: 2px;
+  margin-top: var(--sp-2);
 }
 .composer-toolbar-spacer { flex: 1 1 auto; }
 /* 权限按钮文字用琥珀色，提示当前确认级别 */
@@ -49,7 +49,7 @@
   color: var(--on-accent);
 }
 .composer-send:hover:not(:disabled) { background: var(--accent-hover); }
-.composer-send:disabled { background: var(--border-strong); color: var(--panel); opacity: 1; }
+.composer-send:disabled { background: var(--border-strong); color: var(--surface-card); opacity: 1; }
 /* 右侧菜单的弹层右对齐，避免溢出视口右缘 */
 .composer-menu-right { display: inline-flex; }
 .composer-menu-right .popover-menu { left: auto; right: 0; }
@@ -57,7 +57,7 @@
 .composer-queue-menu { display: inline-flex; align-items: center; }
 .queue-option {
   min-height: 32px;
-  padding: 0 8px;
+  padding: 0 var(--sp-8);
   font-size: var(--text-xs);
   color: var(--text-3);
   white-space: nowrap;
@@ -66,7 +66,7 @@
 .queue-option:first-child { border: 1px solid var(--border); border-right: none; border-radius: var(--radius-s) 0 0 var(--radius-s); }
 .queue-option:last-child { border: 1px solid var(--border); border-left: none; border-radius: 0 var(--radius-s) var(--radius-s) 0; }
 .queue-option.selected { color: var(--accent); background: var(--accent-soft); }
-.queue-option:hover:not(.selected) { color: var(--text); background: var(--panel-2); }
+.queue-option:hover:not(.selected) { color: var(--text); background: var(--surface-inset); }
 /* 工具条空间不足时只允许模型选择器收缩（模型名带省略号，让它先让位）：
    收缩链逐层放行（右锚 span → .composer-menu → 按钮 → 文字 label），任一环缺
    min-width:0 都会让外层先缩、内容不缩而溢出盒子，盖住右侧队列/发送按钮。
@@ -88,11 +88,11 @@
   gap: 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
-  background: var(--panel-subtle);
+  background: var(--surface-subtle);
   color: var(--text-2);
   font-size: var(--text-s);
   white-space: nowrap;
-  transition: color 0.15s var(--ease-out), border-color 0.15s var(--ease-out), background-color 0.15s var(--ease-out);
+  transition: color 0.15s var(--ease-standard), border-color 0.15s var(--ease-standard), background-color 0.15s var(--ease-standard);
 }
 .composer-menu-btn:hover,
 .composer-menu-btn.open { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
@@ -124,8 +124,8 @@
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--panel);
-  box-shadow: var(--shadow-lg);
+  background: var(--surface-floating);
+  box-shadow: var(--shadow-2);
 }
 /* 锚定态：JS 测量触发按钮位置后改 fixed，left/top 由内联样式给出；
    specificity 与 .composer-menu-right .popover-menu 持平且位置更靠后，覆盖其 right:0 */
@@ -140,9 +140,9 @@
 .popover-item {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--sp-8);
   width: 100%;
-  padding: 7px 8px;
+  padding: 7px var(--sp-8);
   border: none;
   border-radius: var(--radius-s);
   background: transparent;
@@ -156,7 +156,7 @@
 .popover-item.disabled { cursor: default; color: var(--text-3); }
 .popover-item-check { flex: 0 0 16px; display: inline-flex; justify-content: center; color: var(--accent); padding-top: 1px; }
 .popover-item-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.popover-item-label { font-weight: 500; display: inline-flex; align-items: center; gap: 6px; }
+.popover-item-label { font-weight: var(--fw-500); display: inline-flex; align-items: center; gap: 6px; }
 .popover-item-desc { font-size: var(--text-xs); color: var(--text-3); white-space: normal; }
 .popover-section + .popover-section { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
 .popover-section-label { font-size: var(--text-xs); color: var(--text-3); display: block; margin: 2px 8px 6px; }
@@ -164,7 +164,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px;
+  padding: var(--sp-8);
   border-radius: var(--radius-s);
 }
 .popover-toggle.selected { background: var(--accent-soft); }
@@ -180,7 +180,7 @@
   width: 30px;
   height: 17px;
   border-radius: 999px;
-  background: var(--panel-2);
+  background: var(--surface-inset);
   border: 1px solid var(--border);
   transition: background 0.15s ease;
 }
@@ -204,20 +204,20 @@
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 6px 8px;
+  padding: 6px var(--sp-8);
   border: none;
   border-radius: var(--radius-s);
   background: transparent;
   color: var(--text-2);
   font-size: var(--text-xs);
-  font-weight: 600;
+  font-weight: var(--fw-600);
   cursor: pointer;
 }
 .popover-group-header:hover { background: var(--accent-soft); }
 .popover-group-chevron { display: inline-flex; transition: transform 0.15s ease; }
 .popover-group-chevron.collapsed { transform: rotate(-90deg); }
 .popover-group-name { flex: 1; text-align: left; }
-.popover-group-count { color: var(--text-3); font-weight: 400; }
+.popover-group-count { color: var(--text-3); font-weight: var(--fw-400); }
 /* 思考开关行与程度滑块（模型弹层底部固定区） */
 .popover-thinking-row { display: flex; align-items: center; justify-content: space-between; padding: 0 8px; }
 .popover-thinking-row .popover-section-label { margin: 2px 0 4px; }
@@ -232,7 +232,7 @@
   padding: 0;
   border: 1px solid var(--border);
   border-radius: 3px;
-  background: var(--panel-2);
+  background: var(--surface-inset);
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
 }
@@ -240,14 +240,14 @@
 .thinking-cell.filled { background: var(--accent); border-color: var(--accent); }
 .thinking-cell:disabled { cursor: default; }
 .thinking-slider-current { flex: 0 0 auto; min-width: 34px; text-align: right; font-size: var(--text-xs); color: var(--text-3); }
-.thinking-slider-current.active { color: var(--accent); font-weight: 600; }
+.thinking-slider-current.active { color: var(--accent); font-weight: var(--fw-600); }
 .popover-footer { padding: 2px 4px; }
 .popover-more {
   border: none;
   background: transparent;
   color: var(--accent);
   font-size: var(--text-s);
-  padding: 6px 8px;
+  padding: 6px var(--sp-8);
   cursor: pointer;
 }
 .popover-more:hover { text-decoration: underline; }
@@ -261,15 +261,15 @@
   flex: none;
   display: inline-flex;
   align-items: center;
-  padding: 2px 4px;
+  padding: var(--sp-2) var(--sp-4);
   border: none;
   background: transparent;
   color: var(--text-3);
   cursor: pointer;
   border-radius: 4px;
 }
-.composer-hint-dismiss:hover { color: var(--text); background: var(--panel-2); }
-.composer-editing-banner { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--panel-2); color: var(--text-2); font-size: var(--text-s); }
+.composer-hint-dismiss:hover { color: var(--text); background: var(--surface-inset); }
+.composer-editing-banner { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--surface-inset); color: var(--text-2); font-size: var(--text-s); }
 .composer-editing-text { flex: 1; }
 .composer-conversion { margin-top: 6px; color: var(--accent); font-size: var(--text-s); }
 .composer textarea {
@@ -277,10 +277,10 @@
   resize: none;
   border: none;
   background: transparent;
-  padding: 6px 2px 2px;
-  line-height: 1.55;
+  padding: 6px var(--sp-2) var(--sp-2);
+  line-height: var(--lh-normal);
   max-height: 200px;
-  font-size: 15px;
+  font-size: var(--text-s);
   /* 默认无纵向滚动条轨道；JS 自动增高检测到真实溢出（达 max-height）后改回 auto */
   overflow-y: hidden;
 }
@@ -298,7 +298,7 @@
   height: 18px;
   border-radius: 50%;
   border: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--surface-floating);
   color: var(--text-2);
   display: flex;
   align-items: center;
@@ -311,9 +311,9 @@
 .mention-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 6px 3px 8px;
-  background: var(--panel-2);
+  gap: var(--sp-4);
+  padding: 3px 6px 3px var(--sp-8);
+  background: var(--surface-inset);
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
   font-size: var(--text-s);
@@ -333,7 +333,7 @@
 .mention-remove:hover { color: var(--danger); }
 
 /* ================= / 技能与 @ 文件引用建议弹层（基类 .composer-popup 在 base.css） ================= */
-.skill-popup .skill-name { font-family: var(--font-mono); font-weight: 600; flex-shrink: 0; }
+.skill-popup .skill-name { font-family: var(--font-mono); font-weight: var(--fw-600); flex-shrink: 0; }
 .skill-popup .skill-desc { color: var(--text-3); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skill-popup .skill-source { color: var(--text-3); font-size: var(--text-xs); flex-shrink: 0; }
 .skill-popup .skill-empty, .mention-popup .mention-empty { padding: 10px 12px; font-size: var(--text-s); color: var(--text-3); }
@@ -373,13 +373,13 @@
   /* 控制行紧凑化：菜单按钮降档、模型名收缩省略（不顶爆布局、不折行溢出） */
   .composer-menu-btn { min-height: 30px; padding: 0 6px; gap: 4px; font-size: var(--text-xs); }
   .model-menu-btn-label { max-width: 30vw; gap: 3px; }
-  .composer textarea { font-size: 16px; }
+  .composer textarea { font-size: var(--text-l); }
   /* 凹屏安全区：输入卡片避开左右圆角；底部安全区由恒渲染的 StatusBar 承担，
      composer 不是最底部元素（其下还有面板标签条/状态条），重复叠加会多出约 34px 空档 */
   .composer {
     padding-left: calc(12px + env(safe-area-inset-left));
     padding-right: calc(12px + env(safe-area-inset-right));
-    padding-bottom: var(--space-3);
+    padding-bottom: var(--sp-12);
   }
   /* 弹层窄屏收边：min-width 不再顶出视口（弹层锚定触发按钮，形态接近底栏弹层） */
   .composer-popup { max-width: calc(100vw - 32px); }

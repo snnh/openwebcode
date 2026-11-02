@@ -22,18 +22,18 @@
 .chat-loading-row {
   display: flex;
   justify-content: center;
-  padding: 8px 0;
+  padding: var(--sp-8) 0;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 /* 无 IntersectionObserver 环境的兜底按钮 */
 .load-more-bar { display: flex; justify-content: center; padding: 8px 0; }
 .load-more-btn {
-  background: var(--panel); color: var(--text-2); border: 1px solid var(--border);
-  border-radius: var(--radius-s); padding: 4px 14px; font-size: 12px; cursor: pointer;
+  background: var(--surface-card); color: var(--text-2); border: 1px solid var(--border);
+  border-radius: var(--radius-s); padding: 4px 14px; font-size: var(--text-xs); cursor: pointer;
   transition: background 0.15s;
 }
-.load-more-btn:hover:not(:disabled) { background: var(--panel-2); }
+.load-more-btn:hover:not(:disabled) { background: var(--surface-inset); }
 .load-more-btn:disabled { opacity: 0.6; cursor: default; }
 
 /* 回到底部浮钮：脱离跟随时显示，固定于滚动容器右下 */
@@ -46,12 +46,12 @@
   gap: 6px;
   padding: 7px 14px;
   border-radius: 999px;
-  background: var(--panel);
+  background: var(--surface-card);
   backdrop-filter: blur(8px);
   border: 1px solid var(--border);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-1);
   color: var(--text-2);
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 .scroll-bottom:hover { color: var(--accent); border-color: var(--accent); }
 
@@ -69,16 +69,16 @@
 /* 上下文压缩检查点行（/compact 与 85% 强制压缩的消息流投影；与 context-cleared-divider 同族） */
 .compaction-row {
   max-width: min(100%, var(--content-max));
-  margin: 2px 0 22px;
-  font-size: 12px;
+  margin: var(--sp-2) 0 22px;
+  font-size: var(--text-xs);
   color: var(--text-3);
 }
 .compaction-head {
   min-height: 28px;
-  padding: 0 4px;
+  padding: 0 var(--sp-4);
   gap: 6px;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: var(--text-xs);
   width: 100%;
   background: none;
   border: none;
@@ -89,7 +89,7 @@
 .compaction-head[aria-disabled="true"] { cursor: default; }
 .compaction-head[aria-disabled="true"]:hover { color: var(--text-3); }
 .compaction-title { color: var(--text-2); flex: none; }
-.compaction-badge { font-size: 10px; padding: 0 6px; }
+.compaction-badge { font-size: var(--text-2xs); padding: 0 6px; }
 .compaction-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .compaction-chevron { margin-left: auto; flex: none; display: inline-flex; }
 /* 静止只留图标与标题，箭头在 hover/键盘聚焦时显现（与工具卡同交互） */
@@ -98,27 +98,27 @@
 .compaction-head:focus-visible .compaction-chevron,
 .compaction-settled.open .compaction-chevron { opacity: 1; }
 .compaction-detail {
-  margin: 4px 0 0 22px;
-  padding: 8px 12px;
+  margin: var(--sp-4) 0 0 22px;
+  padding: var(--sp-8) var(--sp-12);
   border-left: 2px solid var(--accent);
   background: var(--accent-soft);
   border-radius: 0 var(--radius-s) var(--radius-s) 0;
   color: var(--text-2);
 }
-.compaction-detail-label { margin: 0 0 4px; font-size: 11px; color: var(--text-3); }
+.compaction-detail-label { margin: 0 0 4px; font-size: var(--text-2xs); color: var(--text-3); }
 .compaction-instructions ul { margin: 0 0 8px; padding-left: 18px; }
-.compaction-time { margin: 8px 0 0; font-size: 11px; color: var(--text-3); }
+.compaction-time { margin: 8px 0 0; font-size: var(--text-2xs); color: var(--text-3); }
 .compaction-running {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 4px;
+  gap: var(--sp-8);
+  padding: 0 var(--sp-4);
   min-height: 28px;
 }
 .compaction-failed {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-8);
 }
 .compaction-error-text { flex: 1; min-width: 0; }
 .compaction-dismiss { flex: none; }
@@ -128,10 +128,10 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 8px;
-  margin: 4px 0 10px;
-  padding-left: 2px;
-  font-size: 12px;
+  gap: 6px var(--sp-8);
+  margin: var(--sp-4) 0 10px;
+  padding-left: var(--sp-2);
+  font-size: var(--text-xs);
   color: var(--text-3);
 }
 .produced-files-label {
@@ -145,12 +145,12 @@
   align-items: center;
   gap: 6px;
   max-width: 100%;
-  padding: 2px 8px;
+  padding: var(--sp-2) var(--sp-8);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--panel);
+  background: var(--surface-card);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: var(--text-2xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -160,7 +160,7 @@ button.produced-file-chip:hover, button.produced-file-chip:focus-visible {
   border-color: var(--border-strong);
   color: var(--text);
 }
-.produced-file-action { flex: none; font-size: 10px; }
+.produced-file-action { flex: none; font-size: var(--text-2xs); }
 .produced-file-write { color: var(--ok); }
 .produced-file-edit { color: var(--amber); }
 
