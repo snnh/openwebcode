@@ -164,10 +164,12 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
             key={item}
             className={tab === item && bottomOpen ? "active" : ""}
             aria-pressed={tab === item && bottomOpen}
+            aria-label={t(TAB_META[item].zh, TAB_META[item].en)}
+            title={t(TAB_META[item].zh, TAB_META[item].en)}
             onClick={() => selectTab(item)}
           >
             <Icon name={TAB_META[item].icon} size={13} />
-            {t(TAB_META[item].zh, TAB_META[item].en)}
+            <span className="panel-tab-label">{t(TAB_META[item].zh, TAB_META[item].en)}</span>
           </button>
         ))}
         {secondaryTabs.length > 0 && (

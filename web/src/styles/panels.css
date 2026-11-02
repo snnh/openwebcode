@@ -532,6 +532,13 @@
   .panel-status .status-live { flex: none; }
 }
 
+/* 窄屏面板标签只留图标（名称在 aria-label/title），把整行让给完整模型名 */
+@media (max-width: 560px) {
+  .panel-tabs:not(.panel-tabs-secondary) > button { padding-left: 8px; padding-right: 8px; }
+  .panel-tabs:not(.panel-tabs-secondary) .panel-tab-label { display: none; }
+  .panel-tabs .panel-tabs-more, .panel-tabs .panel-fold { width: 30px; min-width: 30px; }
+}
+
 @media (max-width: 480px) {
   .panel-status .status-live-text { display: none; }
   .panel-status .panel-status-model { max-width: 52vw; }
