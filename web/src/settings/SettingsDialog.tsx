@@ -76,7 +76,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
     en: "Capabilities",
     tabs: [
       { id: "skills", zh: "技能", en: "Skills", descriptionZh: "查看内置与工作区技能", descriptionEn: "Browse built-in and workspace skills", icon: "check" },
-      { id: "agentPresets", zh: "Agent 预设", en: "Agent presets", descriptionZh: "选择提示词与工具集预设（经典/精简/拟态/自定义）", descriptionEn: "Pick a prompt and tool-set preset (classic, minimal, mimicry, custom)", icon: "layers" },
+      { id: "agentPresets", zh: "Agent 预设", en: "Agent presets", descriptionZh: "先预览再应用；每个预设都可提前编辑", descriptionEn: "Preview before applying; edit any preset ahead of time", icon: "layers" },
       { id: "extensions", zh: "扩展", en: "Extensions", descriptionZh: "安装、启用与配置扩展", descriptionEn: "Install, enable, and configure extensions", icon: "plus" },
       { id: "remote", zh: "远程访问", en: "Remote access", descriptionZh: "检查网络暴露与访问安全", descriptionEn: "Review network exposure and access security", icon: "shield" },
     ],

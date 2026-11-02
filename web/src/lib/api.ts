@@ -284,7 +284,7 @@ export const api = {
   configureExtension: (id: string, body: { enabled?: boolean; config?: Record<string, unknown> }) =>
     request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ id, ...body }) }),
   installExtension: (path: string) => request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ action: "install", path }) }),
-  agentPresets: () => request<{ presets: PresetSummary[]; directory: string; enabled: boolean }>("/api/extensions/agent-presets/presets"),
+  agentPresets: () => request<{ presets: PresetSummary[]; directory: string; enabled: boolean; config: { preset: string; simulateUserAgent: boolean } }>("/api/extensions/agent-presets/presets"),
   agentPreset: (id: string) => request<PresetDetail>(`/api/extensions/agent-presets/presets/${encodeURIComponent(id)}`),
   agentPresetTools: () => request<{ tools: import("./contracts").PresetToolInfo[]; groups: import("./contracts").PresetToolGroup[] }>("/api/extensions/agent-presets/tools"),
   saveAgentPreset: (body: import("./contracts").PresetInput) =>

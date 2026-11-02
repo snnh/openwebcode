@@ -11,7 +11,6 @@ const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string 
   "attention-optimizer": { name: "Attention Optimizer", description: "Copies critical constraints and the current task into a context anchor to reduce lost-in-the-middle effects." },
   "content-lens": { name: "Content Lens", description: "Translates messages and explains selected text without adding content to the model context." },
   "pdf-to-image": { name: "PDF to Image", description: "Converts PDF pages into image attachments for models that support image input." },
-  "agent-presets": { name: "Agent Presets", description: "Switch the system prompt and tool set between classic, minimal, mimicry, and custom presets; supports a global default plus per-session overrides." },
   "session-format-upgrade": { name: "Session Format Upgrade", description: "Offline upgrade of legacy sessions to the latest message format (OpenAI Responses thinking replay fields). Manual trigger, session locked while upgrading, backup before write." },
   "dsh-sync": { name: "dsh Sync", description: "Two-way sync of model configuration and sessions with the dsh (DeepSeek Harness) data directory — manual trigger, diff preview, per-item selection." },
 };
@@ -37,9 +36,6 @@ const OFFICIAL_FIELD_EN: Record<string, Record<string, { title: string; descript
     maxPages: { title: "Max pages", description: "Maximum PDF pages converted per attachment, also bounded by the attachment slot limit." },
     dpi: { title: "Render DPI", description: "Page rendering resolution; higher is sharper but larger. Capped at 300." },
     maxDimension: { title: "Longest edge (px)", description: "Pixel cap for the longest output edge; larger pages are scaled down. Capped at 2048." },
-  },
-  "agent-presets": {
-    preset: { title: "Default preset", description: "Default Agent preset; empty or classic means classic mode." },
   },
   "dsh-sync": {
     dshHome: { title: "dsh data directory", description: "The dsh data directory (defaults to ~/.dsh)." },

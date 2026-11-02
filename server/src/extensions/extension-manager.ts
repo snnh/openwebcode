@@ -106,6 +106,8 @@ export class ExtensionManager {
   private busListenerAttached = false;
   /** 已发出的工具形态警告（去重，避免每轮重复刷事件）。 */
   private readonly shapingWarningsIssued = new Set<string>();
+  /** 内建且不提供停用入口的扩展：始终启用（Agent 预设由专属设置页管理）。 */
+  private static readonly ALWAYS_ENABLED_EXTENSIONS = new Set(["agent-presets"]);
   /** UA 模拟刷新序号：连续 configure 时只让最后一次异步解析落地。 */
   private userAgentSimulationSeq = 0;
   /** dsh 兼容模式（M2）：上次同步聚合的插件状态，供 REST/UI 读取。 */
@@ -217,7 +219,7 @@ export class ExtensionManager {
     if (!manifest) throw new Error("Extension not found");
     const previous = this.stateFor(manifest);
     this.states[id] = {
-      enabled: update.enabled ?? previous.enabled,
+      enabled: ExtensionManager.ALWAYS_ENABLED_EXTENSIONS.has(id) ? true : (update.enabled ?? previous.enabled),
       config: update.config ? { ...previous.config, ...update.config } : previous.config,
     };
     await this.saveStates();
@@ -520,12 +522,22 @@ export class ExtensionManager {
   }
 
   /** agent-presets 预设清单 + 用户预设目录绝对路径（UI 展示「把分享的预设 JSON 放到这里」）。 */
-  async listAgentPresets(): Promise<{ presets: PresetSummary[]; directory: string; enabled: boolean }> {
+  async listAgentPresets(): Promise<{
+    presets: PresetSummary[];
+    directory: string;
+    enabled: boolean;
+    config: { preset: string; simulateUserAgent: boolean };
+  }> {
     const manifest = this.manifests.find((item) => item.id === "agent-presets");
+    const config = manifest ? this.stateFor(manifest).config : {};
     return {
       presets: await listPresets(this.dataDir, (message) => this.warnShaping(message)),
       directory: presetsDir(this.dataDir),
       enabled: Boolean(manifest && this.stateFor(manifest).enabled),
+      config: {
+        preset: typeof config.preset === "string" ? config.preset : "",
+        simulateUserAgent: config.simulateUserAgent === true,
+      },
     };
   }
 
@@ -928,10 +940,12 @@ export class ExtensionManager {
   };
 
   private stateFor(manifest: ExtensionManifest): ExtensionState {
-    return this.states[manifest.id] ?? {
+    const state = this.states[manifest.id] ?? {
       enabled: manifest.defaultEnabled === true,
       config: { ...(OFFICIAL_DEFAULT_CONFIG[manifest.id] ?? {}) },
     };
+    // Agent 预设没有停用入口：即使旧配置写入了 enabled:false，也按启用处理。
+    return ExtensionManager.ALWAYS_ENABLED_EXTENSIONS.has(manifest.id) ? { ...state, enabled: true } : state;
   }
 
   private async loadStates(): Promise<Record<string, ExtensionState>> {

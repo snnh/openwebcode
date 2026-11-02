@@ -4,12 +4,12 @@
  * 用户自定义预设按用户填写的原文显示。
  */
 const PRESET_EN: Record<string, { name: string; description: string }> = {
-  minimal: { name: "Minimal", description: "OWC's native trimmed prompt with an on-demand tool set." },
-  "claude-code": { name: "Claude Code", description: "Mimics Claude Code's prompt style and tool naming." },
-  "kimi-code": { name: "Kimi Code", description: "Mimics Kimi Code's prompt style and tool naming." },
-  zcode: { name: "ZCode", description: "Mimics ZCode's prompt style and tool naming." },
-  codex: { name: "Codex", description: "Mimics Codex's prompt style and tool naming." },
-  "dsh-minimal": { name: "DSH Minimal", description: "Mimics DeepSeek Harness minimal mode." },
+  minimal: { name: "Minimal", description: "A short prompt with an on-demand tool set. Saves tokens, but asks more of the model." },
+  "claude-code": { name: "Claude Code", description: "Mimics Claude Code's prompts, tool names, and conventions." },
+  "kimi-code": { name: "Kimi Code", description: "Mimics Kimi Code's prompts, tool names, and conventions." },
+  zcode: { name: "ZCode", description: "Mimics ZCode's prompts, tool names, and conventions." },
+  codex: { name: "Codex", description: "Mimics Codex's prompts, tool names, and conventions." },
+  "dsh-minimal": { name: "DSH Minimal", description: "Based on DeepSeek Harness Minimal's prompt and initial setup; more tools join in the second turn." },
 };
 
 /** 按界面语言取预设显示名/描述（内置项在英文界面用本地化文案，自定义项原样返回）。 */

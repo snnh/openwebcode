@@ -64,7 +64,8 @@ describe("dsh 插件宿主集成", () => {
     for (const item of manager.list()) {
       if (item.enabled) await manager.configure(item.id, { enabled: false });
     }
-    expect(manager.list().some((item) => item.enabled)).toBe(false);
+    // Agent 预设始终启用（hostless），不参与宿主回收判定
+    expect(manager.list().some((item) => item.enabled && item.id !== "agent-presets")).toBe(false);
     expect(await manager.hostMemory()).toBeNull();
     // 重新启用 → 按需拉起；再次关闭 → 再次回收
     await manager.configure("context-saver", { enabled: true });

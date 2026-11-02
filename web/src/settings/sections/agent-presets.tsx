@@ -2,12 +2,14 @@
  * Agent 预设子 UI：选择卡片（平铺）、选前预览、删除/还原、复制新建与精简模式工具编辑器。
  * 由设置页「Agent 预设」页签与（精简形态的）扩展配置表单共用。
  */
-import { useMemo, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { PresetCategory, PresetDetail, PresetInput, PresetToolGroup, PresetToolInfo } from "../../lib/contracts";
 import { useI18n } from "../../i18n";
 import { presetLabel } from "../../lib/preset-labels";
+import { Icon } from "../../components/Icon";
+import { useConfirmDialog } from "../../components/ConfirmDialog";
 
 const NO_TOOLS: PresetToolInfo[] = [];
 const NO_GROUPS: PresetToolGroup[] = [];
@@ -18,53 +20,58 @@ const CATEGORY_LABEL: Record<PresetCategory, { zh: string; en: string }> = {
   custom: { zh: "自定义", en: "Custom" },
 };
 
-/** 预设卡片：平铺展示（经典 / 精简 / 拟态 / 自定义同级），点选即设为默认预设。 */
-export function PresetCards({ selected, disabled, onSelect }: {
-  selected: string;
+/** 预设卡片：点主区域先预览，编辑按钮直接进入编辑器；不改变全局默认。 */
+export function PresetCards({ current, previewed, disabled, onPreview, onEdit }: {
+  current: string;
+  previewed: string;
   disabled?: boolean;
-  onSelect(value: string): void;
+  onPreview(value: string): void;
+  onEdit(value: string): void;
 }): ReactElement {
   const { t, language } = useI18n();
   const presets = useQuery({ queryKey: ["agent-presets"], queryFn: api.agentPresets });
   const list = presets.data?.presets ?? [];
   return (
     <div className="preset-grid" data-testid="preset-cards">
-      <button
-        type="button"
-        className={`preset-card${selected === "" ? " active" : ""}`}
-        aria-pressed={selected === ""}
-        disabled={disabled}
-        onClick={() => onSelect("")}
-      >
-        <span className="preset-card-head">
-          <strong>{t("经典模式", "Classic")}</strong>
-          <span className="preset-badge">{t("默认", "Default")}</span>
-        </span>
-        <span className="preset-card-desc">{t("OWC 现有提示词框架与全量工具，不做任何裁剪。", "The existing OWC prompt framework and full tool set, unchanged.")}</span>
-      </button>
+      <div className={`preset-card${previewed === "" ? " active" : ""}${current === "" ? " current" : ""}`}>
+        <button type="button" className="preset-card-main" aria-pressed={previewed === ""} disabled={disabled} onClick={() => onPreview("")}>
+          <span className="preset-card-head">
+            <strong>{t("经典", "Classic")}</strong>
+          </span>
+          {current === "" && <span className="preset-card-status"><span className="preset-badge accent">{t("全局默认", "Global default")}</span></span>}
+          <span className="preset-card-desc">{t("基于 PI v1 优化的 OWC 经典提示词框架与全量工具", "OWC's classic prompt framework, tuned from PI v1, with the full tool set.")}</span>
+        </button>
+      </div>
       {list.map((preset) => {
         const label = presetLabel(preset, language);
         return (
-          <button
-            key={preset.id}
-            type="button"
-            className={`preset-card${selected === preset.id ? " active" : ""}`}
-            aria-pressed={selected === preset.id}
-            disabled={disabled}
-            onClick={() => onSelect(preset.id)}
-          >
-            <span className="preset-card-head">
-              <strong>{label.name}</strong>
-              <span className="preset-badge">{t(CATEGORY_LABEL[preset.category].zh, CATEGORY_LABEL[preset.category].en)}</span>
-              {preset.overridden === true && <span className="preset-badge subtle">{t("已自定义", "Customized")}</span>}
-            </span>
-            <span className="preset-card-desc">{label.description}</span>
-          </button>
+          <div key={preset.id} className={`preset-card${previewed === preset.id ? " active" : ""}${current === preset.id ? " current" : ""}`}>
+            <button type="button" className="preset-card-main" aria-pressed={previewed === preset.id} disabled={disabled} onClick={() => onPreview(preset.id)}>
+              <span className="preset-card-head">
+                <strong>{label.name}</strong>
+                <span className="preset-badge">{t(CATEGORY_LABEL[preset.category].zh, CATEGORY_LABEL[preset.category].en)}</span>
+              </span>
+              {(preset.overridden === true || current === preset.id) && (
+                <span className="preset-card-status">
+                  {preset.overridden === true && <span className="preset-badge subtle">{t("已自定义", "Customized")}</span>}
+                  {current === preset.id && <span className="preset-badge accent">{t("全局默认", "Global default")}</span>}
+                </span>
+              )}
+              <span className="preset-card-desc">{label.description}</span>
+            </button>
+            <button
+              type="button"
+              className="icon-btn preset-card-edit"
+              aria-label={t(`编辑 ${label.name}`, `Edit ${label.name}`)}
+              title={preset.builtin ? t("编辑内置预设（保存为覆盖）", "Edit built-in preset (saved as an override)") : t("编辑此预设", "Edit this preset")}
+              disabled={disabled}
+              onClick={() => onEdit(preset.id)}
+            >
+              <Icon name="edit" size={14} />
+            </button>
+          </div>
         );
       })}
-      {presets.isSuccess && list.length === 0 && (
-        <p className="settings-note">{t("暂无自定义预设。", "No custom presets yet.")}</p>
-      )}
     </div>
   );
 }
@@ -97,11 +104,16 @@ export function PresetPreview({ id }: { id: string }): ReactElement | null {
   );
 }
 
-/** 删除自定义预设（两段确认）；overridden 时为「还原内置」（删除覆盖文件）。 */
-export function DeletePresetButton({ id, overridden = false, onDeleted }: { id: string; overridden?: boolean; onDeleted(): void }): ReactElement {
+/** 删除自定义预设；overridden 时为「还原内置」（删除覆盖文件）。确认走统一对话框。 */
+export function DeletePresetButton({ id, name, overridden = false, onDeleted }: {
+  id: string;
+  name: string;
+  overridden?: boolean;
+  onDeleted(): void;
+}): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  const [confirming, setConfirming] = useState(false);
+  const { ask, dialogElement } = useConfirmDialog();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -118,27 +130,28 @@ export function DeletePresetButton({ id, overridden = false, onDeleted }: { id: 
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
-      setConfirming(false);
     }
   };
 
   return (
-    <div className="preset-preview">
+    <>
       <button
-        className={confirming ? "btn small danger" : "btn small"}
+        className="btn small danger"
         disabled={busy}
-        title={overridden ? t("删除覆盖文件，恢复官方内置内容", "Remove the override file and restore the official built-in") : undefined}
-        onClick={() => (confirming ? void remove() : setConfirming(true))}
+        onClick={() => ask({
+          title: overridden ? t("还原内置预设？", "Restore the built-in preset?") : t("删除自定义预设？", "Delete this custom preset?"),
+          body: overridden
+            ? t(`「${name}」的覆盖文件将被删除，恢复官方内置内容；使用该预设的会话会在下一轮回到内置版本。`, `The override for “${name}” will be removed and the official built-in restored. Sessions using it return to the built-in version on their next turn.`)
+            : t(`「${name}」删除后不可恢复；使用该预设的会话将回退到经典模式。`, `“${name}” cannot be restored after deletion. Sessions using it will fall back to classic mode.`),
+          confirmLabel: overridden ? t("还原", "Restore") : t("删除", "Delete"),
+          onConfirm: () => void remove(),
+        })}
       >
-        {busy ? t("处理中…", "Working…") : confirming
-          ? (overridden ? t("再次点击确认还原", "Click again to confirm restore") : t("再次点击确认删除", "Click again to confirm"))
-          : (overridden ? t("还原内置预设", "Restore built-in preset") : t("删除此自定义预设", "Delete this preset"))}
+        {busy ? t("处理中…", "Working…") : overridden ? t("还原内置预设", "Restore built-in") : t("删除此预设", "Delete preset")}
       </button>
-      {confirming && !busy && (
-        <button className="btn small" onClick={() => setConfirming(false)}>{t("取消", "Cancel")}</button>
-      )}
       {error && <p className="error">{error}</p>}
-    </div>
+      {dialogElement}
+    </>
   );
 }
 
@@ -170,7 +183,7 @@ const EMPTY_DRAFT: PresetDraft = {
  * 新建/编辑预设：工具名严格校验，精简形态预设走工具编辑器（allowedBuiltIns），
  * 拟态形态预设走 aliases JSON 高级编辑。
  */
-export function PresetCreator({ source, onCreated }: { source?: PresetDetail; onCreated(id: string): void }): ReactElement {
+export function PresetCreator({ source, onSaved, autoOpen = false, onOpened }: { source?: PresetDetail; onSaved(id: string): void; autoOpen?: boolean; onOpened?(): void }): ReactElement {
   const { t, language } = useI18n();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -208,6 +221,15 @@ export function PresetCreator({ source, onCreated }: { source?: PresetDetail; on
     setExternalTools(source?.externalTools !== false);
     setOpen(true);
   };
+
+  useEffect(() => {
+    if (autoOpen) {
+      start();
+      onOpened?.();
+    }
+    // autoOpen 只在外部请求打开时变化；start/onOpened 引用变化不应重复触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpen]);
 
   const toggleTool = (name: string): void => {
     if (name === "bash") return; // bash 必选
@@ -266,7 +288,7 @@ export function PresetCreator({ source, onCreated }: { source?: PresetDetail; on
       await queryClient.invalidateQueries({ queryKey: ["agent-presets"] });
       await queryClient.invalidateQueries({ queryKey: ["agent-preset", saved.id] });
       await queryClient.invalidateQueries({ queryKey: ["extensions"] });
-      onCreated(saved.id);
+      onSaved(saved.id);
       setDraft(EMPTY_DRAFT);
       setOpen(false);
     } catch (err) {
@@ -278,7 +300,7 @@ export function PresetCreator({ source, onCreated }: { source?: PresetDetail; on
 
   if (!open) {
     return (
-      <div className="preset-preview">
+      <div className="preset-create-trigger">
         <button className="btn small" onClick={start}>
           {source
             ? (source.builtin ? t("编辑内置预设（保存为覆盖）", "Edit built-in preset (saved as an override)") : t("编辑此预设", "Edit this preset"))
@@ -287,8 +309,15 @@ export function PresetCreator({ source, onCreated }: { source?: PresetDetail; on
       </div>
     );
   }
+  const sourceName = source ? presetLabel(source, language).name : "";
+  const saveLabel = !source
+    ? t("创建预设", "Create preset")
+    : source.builtin
+      ? (draft.id.trim() === source.id ? t("保存为覆盖", "Save as override") : t("另存为新预设", "Save as new preset"))
+      : t("保存自定义预设", "Save custom preset");
   return (
     <div className="preset-preview" data-testid="preset-creator">
+      <h4>{source ? t(`编辑：${sourceName}`, `Edit: ${sourceName}`) : t("新建预设", "New preset")}</h4>
       <label className="settings-field">
         <span>{t("预设 id（小写字母/数字/-/_）", "Preset id (lowercase letters/digits/-/_)")}</span>
         <input className="input" type="text" value={draft.id} spellCheck={false} onChange={setDraftField("id")} placeholder="my-preset" />
@@ -368,7 +397,7 @@ export function PresetCreator({ source, onCreated }: { source?: PresetDetail; on
       </details>
       <div className="dialog-actions">
         <button className="btn small primary" disabled={saving} onClick={() => void save()}>
-          {saving ? t("保存中…", "Saving…") : t("保存预设", "Save preset")}
+          {saving ? t("保存中…", "Saving…") : saveLabel}
         </button>
         <button className="btn small" disabled={saving} onClick={() => { setOpen(false); setError(undefined); }}>{t("取消", "Cancel")}</button>
       </div>

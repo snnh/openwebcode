@@ -52,7 +52,7 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
     id: "minimal",
     name: "精简模式",
     category: "minimal",
-    description: "OWC 原生精简提示词与按需工具集。",
+    description: "精简提示词与按需工具集，更省 token，但对模型能力有一定要求。",
     identity: "",
     basePrompt: "You are an expert coding assistant.",
     productSections: [],
@@ -77,7 +77,7 @@ export const BUILTIN_PRESETS: AgentPreset[] = [
     id: "claude-code",
     name: "Claude Code",
     category: "mimicry",
-    description: "拟态 Claude Code 的提示词与工具命名。",
+    description: "拟态 Claude Code 的提示词与工具命名和规范。",
     userAgent: "claude-code/2.1.260",
     identity: "You are Claude Code, Anthropic's official CLI for Claude.",
     basePrompt: [
@@ -463,7 +463,7 @@ Rules: be brief; keep file paths, command names and error strings verbatim; neve
     id: "kimi-code",
     name: "Kimi Code",
     category: "mimicry",
-    description: "拟态 Kimi Code 的提示词与工具命名。",
+    description: "拟态 Kimi Code 的提示词与工具命名和规范。",
     userAgent: "kimi-code/0.40.1",
     identity: "You are Kimi Code CLI, an interactive general AI agent running on a user's computer.",
     basePrompt: [
@@ -768,7 +768,7 @@ Popular sections usually written in \`AGENTS.md\`:
     id: "zcode",
     name: "ZCode",
     category: "mimicry",
-    description: "拟态 ZCode 的提示词与工具命名。",
+    description: "拟态 ZCode 的提示词与工具命名和规范。",
     userAgent: "zcode/3.10.1",
     identity: "You are ZCode, an interactive coding agent.",
     basePrompt: [
@@ -1069,7 +1069,7 @@ Keep it small: short bullets only; file paths, commands and error text verbatim;
     id: "codex",
     name: "Codex",
     category: "mimicry",
-    description: "拟态 Codex 的提示词与工具命名。",
+    description: "拟态 Codex 的提示词与工具命名和规范。",
     userAgent: "codex/0.153.2",
     identity: "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful.",
     basePrompt: [
@@ -1478,7 +1478,7 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
     id: "dsh-minimal",
     name: "DSH Minimal",
     category: "mimicry",
-    description: "拟态 DeepSeek Harness 极简模式。",
+    description: "基于 DeepSeek Harness Minimal 的提示词与初始设定，第二轮再引入更多工具。",
     userAgent: "dsh/0.1.2-rc.1",
     identity: "You are a helpful software engineer assistant.",
     // basePrompt 在 DSH 原文基础上追加人称约定（The personal pronoun is us/we.），

@@ -10,11 +10,8 @@ export function registerExtensionRoutes(app: FastifyInstance, ctx: RouteContext)
   // ── 目录浏览结束 ────────────────────────────────────────────────────────
   app.get("/api/extensions", async (_request, reply) => {
     if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
-    const list = dependencies.extensions.list();
-    // Agent 预设：附加可选预设列表供 UI 平铺卡片/下拉（内置 + 用户目录发现）
-    const presets = list.find((item) => item.id === "agent-presets");
-    if (presets) presets.availablePresets = (await dependencies.extensions.listAgentPresets()).presets;
-    return list;
+    // Agent 预设由「设置 → Agent 预设」专属页管理，不再出现在扩展列表。
+    return dependencies.extensions.list().filter((item) => item.id !== "agent-presets");
   });
   app.get("/api/extensions/agent-presets/presets", async (_request, reply) => {
     if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });

@@ -146,7 +146,7 @@ describe("Agent 预设 REST", () => {
     try {
       const list = await app.inject({ method: "GET", url: "/api/extensions/agent-presets/presets" });
       expect(list.statusCode).toBe(200);
-      expect(list.json()).toMatchObject({ directory: path.join(dataDir, "agent-presets", "presets"), enabled: true });
+      expect(list.json()).toMatchObject({ directory: path.join(dataDir, "agent-presets", "presets"), enabled: true, config: { preset: "" } });
       const detail = await app.inject({ method: "GET", url: "/api/extensions/agent-presets/presets/minimal" });
       expect(detail.json()).toMatchObject({ id: "minimal", builtin: true, promptStyle: "minimal" });
       const tools = await app.inject({ method: "GET", url: "/api/extensions/agent-presets/tools" });
