@@ -304,14 +304,15 @@
   gap: 6px;
   width: 100%;
   text-align: left;
-  padding: 5px var(--sp-8);
-  border-radius: var(--radius-s);
-  font: 13px var(--font-mono);
-  color: var(--text);
+  height: var(--row-h);
+  padding: 0 var(--sp-8);
+  border-radius: var(--radius-xs);
+  font: var(--text-s) var(--font-mono);
+  color: var(--text-2);
 }
-.file-row:hover { background: var(--surface-inset); }
-.file-row.active { background: var(--accent-soft); color: var(--accent); }
-.file-row.dir { font-weight: var(--fw-600); }
+.file-row:hover { background: var(--surface-hover); color: var(--text); }
+.file-row.active { background: var(--surface-active); color: var(--text); box-shadow: inset 1px 0 0 var(--accent); }
+.file-row.dir { font-weight: var(--fw-500); color: var(--text); }
 .tree-arrow { display: inline-flex; align-items: center; width: 12px; color: var(--text-3); flex-shrink: 0; }
 .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-row small { margin-left: auto; color: var(--text-3); font-size: var(--text-2xs); flex-shrink: 0; }

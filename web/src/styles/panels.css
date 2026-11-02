@@ -50,19 +50,22 @@
   align-items: center;
   gap: 5px;
   flex: none;
-  padding: var(--sp-8) 10px 7px;
-  font-size: var(--text-s);
-  color: var(--text-2);
+  height: 32px;
+  padding: 0 10px;
+  font-size: var(--text-xs);
+  font-weight: var(--fw-500);
+  color: var(--text-3);
   border-bottom: 2px solid transparent;
   white-space: nowrap;
+  transition: color var(--dur-1) var(--ease-standard), background-color var(--dur-1) var(--ease-standard);
 }
 .panel-tabs button:hover { color: var(--text); }
-.panel-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: var(--fw-600); }
+.panel-tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: var(--fw-500); }
 .panel-fold { display: inline-flex; align-items: center; margin-left: 0; color: var(--text-3); font-size: var(--text-s); padding: 4px 8px; position: sticky; right: 0; flex: none; background: var(--surface-card); }
 .panel-fold:hover { color: var(--text); }
 .panel-content { overflow: hidden; }
 .panel-content .inspector-body { height: 100%; overflow-y: auto; }
-.inspector-body { flex: 1; overflow: auto; padding: 14px 18px; position: relative; }
+.inspector-body { flex: 1; overflow: auto; padding: var(--sp-12) var(--sp-16); position: relative; }
 .inspector-body h2 { margin: 0 0 12px; font-size: var(--text-s); font-weight: var(--fw-600); }
 .inspector-body h2:not(:first-child) { margin-top: 20px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
