@@ -11,6 +11,14 @@
 - **依赖漏洞修复**：server 升级 fastify（5.12.5 → 修复 header 校验绕过 GHSA-389g-gv7q-r4x8 与 fast-uri 多条 host confusion/scheme 欺骗）、glob override 到 14.0.3（修复 GHSA-3g3m-2fjr-6pw4 与 minimatch globparts 放大）；web 移除未使用的 dompurify 直接依赖并 override 到 3.4.17（修复多条 critical advisory）、katex override 到 0.18.4（收编 rehype-katex 嵌套的 0.16.47，修复 GHSA-238p-pmpm-9mq7 原型污染绕过 trust 限制）。两层 `npm audit --omit=dev` 均为 0 漏洞。
 - **Hooks 空占位文件容错**：core 为缺失 deny 路径创建的空 `.owc/hooks.json` 视为「无配置」，不再每事件刷 `hook.failed`。
 
+### 界面与动效
+
+- **设计 token 重铸**：色彩拆为语义七级 surface（canvas/card/inset/floating/subtle/hover/active）+ 三档边框，亮/暗双主题独立校色；排版收敛为 11–26 七档字号、四档行高与 400/500/600 三档字重；圆角 4–16、阴影四档、间距八档、动效时长与曲线全部 token 化，CSS 引入 `@layer tokens, base, components, utilities` 分层。
+- **聊天区重做**：助手/工具消息改为左侧 72px 元信息列，用户消息去气泡化（右对齐浅底块）；复制/翻译/解析/编辑/重发/分叉收进正文下方悬停操作条；工具调用压成 28px 单行轨道，结果并入行尾；思考过程改为左轨单行摘要。
+- **排版与动效设置页**：新增「设置 → 排版与动效」，支持界面西文 / CJK / 代码字体三组预设（含未安装标注与自定义栈）、代码连字、界面缩放四档、动画三态（跟随系统 / 标准 / 精简），并提供四幕动画预览（弹层 / 消息 / 工具轨道 / 微交互，可播放或循环）。
+- **动效体系**：100/160/240/360/500ms 五档时长 + standard/enter/exit/spring 四条曲线；引入 motion（LazyMotion + domAnimation），动画预览已用真实进出与高度动画；主题切换做一次性 240ms 颜色过渡；`prefers-reduced-motion` 全局兜底保留，「精简」模式下预览即时切变。弹层与消息列表的库级编排仍在推进。
+- **组件统一**：顶栏环境控件改为无边框 chip + 组间竖线；空态改单列居中；侧栏 240–420px 可拖拽、两行会话行、hover 才显示操作；面板标签与文件树统一 VS Code 行语法；composer 发送态、工具栏 chip 与思考档位胶囊重绘；终端与 Monaco 配色对齐新色板。双状态栏合并与顶栏两行压缩仍在推进。
+
 ### 新功能
 
 - **Web Fetch 渠道扩充**：新增 Exa Contents、ScrapingBee、ScraperAPI、ZenRows 四个抓取渠道；Exa 由仅搜索升级为 Search + Fetch（`/contents`，默认取最新正文并限制 2 万字符）。ScrapingBee / ScraperAPI 默认渲染 JS 并直接返回 Markdown，ZenRows 使用 `mode=auto`（按需升级 JS 渲染/代理）返回 Markdown；三者均只声明 `fetch` 能力，API Key 分别按 Bearer / `api_key` / `apikey` 传递。设置页「联网服务 → 添加联网服务商」选择对应类型并填 Key，再在「网页抓取」下拉启用。
