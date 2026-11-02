@@ -289,14 +289,35 @@ export function IconSprite(): ReactElement {
   );
 }
 
-export function Icon({ name, size = 14 }: { name: IconName; size?: number }): ReactElement {
+/**
+ * 光学描边：24 网格下小尺寸放大线宽、大尺寸略收，保持跨尺寸视觉重量一致。
+ * 16px 维持 1.8，与旧观感对齐。
+ */
+function opticalStroke(size: number): number {
+  if (size <= 12) return 2;
+  if (size <= 14) return 1.9;
+  if (size <= 16) return 1.8;
+  if (size <= 20) return 1.7;
+  return 1.6;
+}
+
+export function Icon({
+  name,
+  size = 14,
+  strokeWidth,
+}: {
+  name: IconName;
+  size?: number;
+  /** 覆盖光学描边（特殊场景如图标按钮内的粗描边） */
+  strokeWidth?: number;
+}): ReactElement {
   return (
     <svg
       width={size}
       height={size}
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.8"
+      strokeWidth={strokeWidth ?? opticalStroke(size)}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden
