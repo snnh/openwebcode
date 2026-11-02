@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { createStore, useStore } from "./app/store";
 import { deriveAccentVars } from "./lib/accent-color";
 
@@ -70,8 +70,16 @@ export function useTheme(): {
   const state = useStore(themeStore, (current) => current);
   const theme: Theme = state.preference === "system" ? (state.systemDark ? "dark" : "light") : state.preference;
 
+  const firstTheme = useRef(true);
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    const root = document.documentElement;
+    // 主题切换做一次性 200ms 颜色过渡，避免亮暗闪切；首帧与精简动效不参与
+    if (firstTheme.current) firstTheme.current = false;
+    else if (root.dataset.motion !== "reduced") {
+      root.classList.add("theme-transition");
+      window.setTimeout(() => root.classList.remove("theme-transition"), 240);
+    }
+    root.dataset.theme = theme;
     // theme-color 跟随主题：内容取解析后的 body 背景（token 仍是唯一色值来源），
     // 持有一个自有 meta 节点（index.html 引导脚本已写入初值，这里接管后续切换）
     const meta = document.querySelector('meta[name="theme-color"]') ?? (() => {

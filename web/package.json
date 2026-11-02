@@ -20,6 +20,7 @@
     "@xterm/xterm": "^6.0.0",
     "katex": "^0.18.4",
     "monaco-editor": "^0.56.0",
+    "motion": "^12.43.0",
     "pdfjs-dist": "4.10.38",
     "qrcode-generator": "^2.0.4",
     "react": "^19.0.0",

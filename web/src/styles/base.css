@@ -279,3 +279,38 @@ button, a, [role="button"], summary, select, .icon-btn {
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+
+
+/* ================= 主题切换一次性过渡 ================= */
+/* 仅切换瞬间挂载 240ms；常驻过渡会拖慢布局与滚动。 */
+html.theme-transition,
+html.theme-transition *,
+html.theme-transition *::before,
+html.theme-transition *::after {
+  transition:
+    background-color var(--dur-2) var(--ease-standard),
+    color var(--dur-2) var(--ease-standard),
+    border-color var(--dur-2) var(--ease-standard),
+    fill var(--dur-2) var(--ease-standard),
+    stroke var(--dur-2) var(--ease-standard) !important;
+}
+html[data-motion="reduced"].theme-transition *,
+html[data-motion="reduced"].theme-transition *::before,
+html[data-motion="reduced"].theme-transition *::after {
+  transition: none !important;
+}
+
+/* ================= 代码连字开关 ================= */
+html[data-ligatures="off"] code,
+html[data-ligatures="off"] pre,
+html[data-ligatures="off"] textarea,
+html[data-ligatures="off"] .monaco-editor,
+html[data-ligatures="off"] .xterm {
+  font-variant-ligatures: none;
+}
+html[data-ligatures="on"] code,
+html[data-ligatures="on"] pre,
+html[data-ligatures="on"] .monaco-editor,
+html[data-ligatures="on"] .xterm {
+  font-variant-ligatures: common-ligatures contextual;
+}

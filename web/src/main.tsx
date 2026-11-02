@@ -8,6 +8,9 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { LoadingFallback } from "./components/LoadingFallback";
 import { installBootGuards } from "./lib/crash-log";
 import { I18nProvider } from "./i18n";
+import { LazyMotion, domAnimation } from "motion/react";
+import { applyAppearance } from "./lib/appearance-prefs";
+import { installMotionPreference } from "./lib/motion-pref";
 import "./styles/tokens-shape.css";
 import "./styles/tokens-color.css";
 import "./styles/tokens-type.css";
@@ -62,11 +65,16 @@ function Shell(): ReactElement {
 
 // 早于首次渲染：吞掉分块加载失败并节流重载、记录未捕获异常（白屏现场线索）
 installBootGuards();
+// 外观偏好（字体/缩放/连字）与动效偏好先落 :root，避免首帧闪烁
+applyAppearance();
+installMotionPreference();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <Shell />
+      <LazyMotion features={domAnimation} strict>
+        <Shell />
+      </LazyMotion>
     </QueryClientProvider>
   </StrictMode>,
 );
