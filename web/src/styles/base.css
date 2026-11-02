@@ -314,3 +314,33 @@ html[data-ligatures="on"] .monaco-editor,
 html[data-ligatures="on"] .xterm {
   font-variant-ligatures: common-ligatures contextual;
 }
+
+/* ================= 表单基元：select / checkbox / radio ================= */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background-color: var(--surface-inset);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-3) 50%),
+    linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+  background-position: calc(100% - 13px) calc(50% - 2px), calc(100% - 8px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--text);
+  padding: 7px 26px 7px 9px;
+  font-size: var(--text-s);
+  cursor: pointer;
+  transition: border-color var(--dur-2) var(--ease-standard), box-shadow var(--dur-2) var(--ease-standard), background-color var(--dur-2) var(--ease-standard);
+}
+select:hover:not(:disabled) { border-color: var(--border-strong); }
+select:focus {
+  border-color: var(--accent);
+  outline: none;
+  background-color: var(--surface-card);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+select:disabled { opacity: 0.6; cursor: not-allowed; }
+input[type="checkbox"],
+input[type="radio"] { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; flex: none; }

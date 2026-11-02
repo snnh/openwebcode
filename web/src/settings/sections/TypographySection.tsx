@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   CJK_PRESETS,
   FAMILY,
@@ -13,6 +13,7 @@ import { fontAvailable } from "../../lib/font-detect";
 import { useMotionPreference, type MotionPreference } from "../../lib/motion-pref";
 import { useI18n } from "../../i18n";
 import { MotionPreview } from "./MotionPreview";
+import { Segmented, SettingsCard, SettingsRow, Switch } from "../controls";
 
 const SCALES: UiScale[] = [90, 100, 110, 125];
 
@@ -82,6 +83,10 @@ export function TypographySection(): ReactElement {
   const [scanning, setScanning] = useState(true);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | undefined>();
+  const [notice, setNotice] = useState<{ kind: "ok" | "removed"; text: string }>();
+  const [removedFamily, setRemovedFamily] = useState<string>();
+  const undoTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => { if (undoTimer.current !== undefined) window.clearTimeout(undoTimer.current); }, []);
 
   const scan = useCallback((): void => {
     setScanning(true);
@@ -116,90 +121,117 @@ export function TypographySection(): ReactElement {
     appearance.addUserFont(family);
     setDraft("");
     setError(undefined);
+    setNotice({ kind: "ok", text: t(`已添加 ${family}`, `Added ${family}`) });
+  };
+
+  const removeFont = (family: string): void => {
+    appearance.removeUserFont(family);
+    setRemovedFamily(family);
+    setNotice({ kind: "removed", text: t(`已移除 ${family}`, `Removed ${family}`) });
+    if (undoTimer.current !== undefined) window.clearTimeout(undoTimer.current);
+    undoTimer.current = window.setTimeout(() => { setNotice(undefined); setRemovedFamily(undefined); }, 6000);
   };
 
   return (
     <>
-      <h3>{t("界面字体", "Interface font")}</h3>
-      <div className="typography-grid">
-        <label className="typography-field">
-          <span>{t("西文", "Latin")}</span>
+      <SettingsCard
+        title={t("字体", "Fonts")}
+        description={t("西文优先、CJK 兜底。默认只列出免费商用且本机已安装的字体；「系统默认」直接使用操作系统字体，不受筛选影响。", "Latin first with CJK fallback. Only free-for-commercial-use fonts installed locally are listed; “System default” uses the operating system fonts and is exempt from the filter.")}
+      >
+        <SettingsRow label={t("界面西文", "Interface Latin")}>
           <FontSelect options={latinOptions} value={appearance.latin} onChange={appearance.setLatin} label={t("界面西文字体", "Interface Latin font")} />
-        </label>
-        <label className="typography-field">
-          <span>{t("中文 / CJK", "Chinese / CJK")}</span>
+        </SettingsRow>
+        <SettingsRow label={t("界面中文", "Interface CJK")}>
           <FontSelect options={cjkOptions} value={appearance.cjk} onChange={appearance.setCjk} label={t("界面 CJK 字体", "Interface CJK font")} />
-        </label>
-      </div>
-      <p className="settings-note">
-        {t("西文在前、CJK 兜底：数字与英文优先命中西文字体。「系统默认」使用操作系统自带字体（不受免费商用筛选影响）；其余列表只显示可免费商用且本机已安装的字体。", "Latin comes first with CJK fallback. “System default” uses the operating system fonts and is exempt from the free-for-commercial-use filter; every other entry is free for commercial use and installed locally.")}
-      </p>
-
-      <h3>{t("代码字体", "Code font")}</h3>
-      <FontSelect options={monoOptions} value={appearance.mono} onChange={appearance.setMono} label={t("代码区字体", "Code font")} />
-      <label className="settings-check">
-        <input type="checkbox" checked={appearance.ligatures} onChange={(event) => appearance.setLigatures(event.target.checked)} />
-        {t("启用代码连字（=>、!== 等）", "Enable code ligatures (=>, !==)")}
-      </label>
-      <p className="settings-note">
-        {t("「思源等宽（内嵌）」随应用分发，只含拉丁字形；中文代码仍回退到系统等宽字体。", "Noto Sans Mono (bundled) ships with the app and covers Latin only; Chinese code falls back to the system monospace font.")}
-      </p>
-
-      <div className="font-scan">
-        <span className="font-scan-count">
-          {scanning ? t("正在检测本机字体…", "Detecting local fonts…") : t(`已检测到 ${count} 个可用字体`, `${count} available fonts detected`)}
-        </span>
-        <button type="button" className="btn small" disabled={scanning} onClick={scan}>
-          {t("重新扫描", "Rescan")}
-        </button>
-      </div>
-
-      <div className="font-add">
-        <input
-          className="input"
-          value={draft}
-          placeholder={t("字体族名，如 OPPO Sans", "Font family name, e.g. OPPO Sans")}
-          aria-label={t("添加系统字体", "Add a system font")}
-          onChange={(event) => { setDraft(event.target.value); setError(undefined); }}
-          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addFont(); } }}
-        />
-        <button type="button" className="btn small" onClick={addFont}>{t("添加并检测", "Add & detect")}</button>
-      </div>
-      <p className="settings-note">
-        {t("手动添加的字体仅做本机可用性探测，商用授权需自行确认。", "Manually added fonts are only probed for availability; commercial licensing is your responsibility.")}
-      </p>
-      {error && <p className="font-add-error">{error}</p>}
-      {appearance.userFonts.length > 0 && (
-        <div className="font-chips">
-          {appearance.userFonts.map((family) => (
-            <span key={family} className="font-chip">
-              <span className={fontAvailable(family) ? "" : "missing"}>{family}</span>
-              <button type="button" aria-label={t(`移除 ${family}`, `Remove ${family}`)} title={t("移除", "Remove")} onClick={() => appearance.removeUserFont(family)}>×</button>
-            </span>
-          ))}
+        </SettingsRow>
+        <SettingsRow label={t("代码字体", "Code font")}>
+          <FontSelect options={monoOptions} value={appearance.mono} onChange={appearance.setMono} label={t("代码区字体", "Code font")} />
+        </SettingsRow>
+        <SettingsRow inline label={t("代码连字", "Code ligatures")} description={t("把 =>、!== 等组合渲染为连字。", "Render combinations such as => and !== as ligatures.")}>
+          <Switch checked={appearance.ligatures} onChange={appearance.setLigatures} label={t("启用代码连字", "Enable code ligatures")} />
+        </SettingsRow>
+        <div className="font-note">
+          {t("「思源等宽（内嵌）」随应用分发，只含拉丁字形；中文代码仍回退到系统等宽字体。", "Noto Sans Mono (bundled) ships with the app and covers Latin only; Chinese code falls back to the system monospace font.")}
         </div>
-      )}
+      </SettingsCard>
 
-      <h3>{t("界面缩放", "Interface scale")}</h3>
-      <div className="typography-scale" role="radiogroup" aria-label={t("界面缩放", "Interface scale")}>
-        {SCALES.map((scale) => (
-          <label key={scale} className={`scale-option${appearance.scale === scale ? " active" : ""}`}>
-            <input type="radio" name="ui-scale" checked={appearance.scale === scale} onChange={() => appearance.setScale(scale)} />
-            {scale}%
-          </label>
-        ))}
-      </div>
-      <p className="settings-note">{t("只缩放文字与行高，不缩放图标与固定控件高度。", "Scales text and line height only, not icons or fixed control heights.")}</p>
+      <SettingsCard
+        title={t("本机字体", "Local fonts")}
+        description={t("只扫描可免费商用的字体。手动添加仅检测本机可用性，商用授权需自行确认。", "Only free-for-commercial-use fonts are scanned. Manual additions are probed for availability; commercial licensing is your responsibility.")}
+      >
+        <SettingsRow label={scanning ? t("正在检测本机字体…", "Detecting local fonts…") : t(`已检测到 ${count} 个可用字体`, `${count} available fonts detected`)}>
+          <button type="button" className="btn small" disabled={scanning} onClick={scan}>
+            {t("重新扫描", "Rescan")}
+          </button>
+        </SettingsRow>
+        <SettingsRow
+          stack
+          label={t("手动添加字体族", "Add a font family")}
+          description={t("例如 OPPO Sans、HarmonyOS Sans；添加后仅检测本机可用性。", "For example OPPO Sans or HarmonyOS Sans; additions are only probed locally.")}
+        >
+          <div className="font-add">
+            <input
+              className="input"
+              value={draft}
+              placeholder={t("字体族名", "Font family name")}
+              aria-label={t("添加系统字体", "Add a system font")}
+              onChange={(event) => { setDraft(event.target.value); setError(undefined); }}
+              onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addFont(); } }}
+            />
+            <button type="button" className="btn small" onClick={addFont}>{t("添加并检测", "Add & detect")}</button>
+          </div>
+          {error && <p className="font-add-error">{error}</p>}
+          {notice && (
+            <p className={`font-notice${notice.kind === "removed" ? " removed" : ""}`} role="status">
+              {notice.text}
+              {notice.kind === "removed" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (removedFamily) appearance.addUserFont(removedFamily);
+                    setNotice(undefined);
+                    setRemovedFamily(undefined);
+                  }}
+                >
+                  {t("撤销", "Undo")}
+                </button>
+              )}
+            </p>
+          )}
+          {appearance.userFonts.length > 0 && (
+            <div className="font-chips">
+              {appearance.userFonts.map((family) => (
+                <span key={family} className="font-chip">
+                  <span className={fontAvailable(family) ? "" : "missing"}>{family}</span>
+                  <button type="button" aria-label={t(`移除 ${family}`, `Remove ${family}`)} title={t("移除", "Remove")} onClick={() => removeFont(family)}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
+        </SettingsRow>
+      </SettingsCard>
 
-      <h3>{t("动画模式", "Motion")}</h3>
-      <div className="typography-scale" role="radiogroup" aria-label={t("动画模式", "Motion")}>
-        {MOTION_OPTIONS.map((option) => (
-          <label key={option.value} className={`scale-option${motion === option.value ? " active" : ""}`}>
-            <input type="radio" name="motion-pref" checked={motion === option.value} onChange={() => setMotion(option.value)} />
-            {t(option.zh, option.en)}
-          </label>
-        ))}
-      </div>
+      <SettingsCard title={t("显示与动效", "Display & motion")}>
+        <SettingsRow label={t("界面缩放", "Interface scale")} description={t("只缩放文字与行高，不缩放图标与固定控件高度。", "Scales text and line height only, not icons or fixed control heights.")}>
+          <Segmented
+            ariaLabel={t("界面缩放", "Interface scale")}
+            value={appearance.scale}
+            onChange={appearance.setScale}
+            options={SCALES.map((scale) => ({ value: scale, label: `${scale}%` }))}
+          />
+        </SettingsRow>
+        <SettingsRow label={t("动画模式", "Motion")}>
+          <Segmented
+            ariaLabel={t("动画模式", "Motion")}
+            value={motion}
+            onChange={setMotion}
+            options={MOTION_OPTIONS.map((option) => ({ value: option.value, label: t(option.zh, option.en) }))}
+          />
+        </SettingsRow>
+        <SettingsRow stack label={t("动画预览", "Motion preview")}>
+          <MotionPreview />
+        </SettingsRow>
+      </SettingsCard>
       <MotionPreview />
     </>
   );

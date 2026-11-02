@@ -4,6 +4,8 @@ import { useSendKey, setSendKey, useDesktopNotify, setDesktopNotify } from "../.
 import { layout } from "../../workbench/layout";
 import { useI18n } from "../../i18n";
 import { ServerSettingsFields } from "./ServerSettingsFields";
+import { useConfirmDialog } from "../../components/ConfirmDialog";
+import { Segmented, SettingsCard, SettingsRow, Switch } from "../controls";
 
 export function GeneralSection({ onDirtyChange }: {
   onDirtyChange?(dirty: boolean): void;
@@ -13,51 +15,84 @@ export function GeneralSection({ onDirtyChange }: {
   const desktopNotify = useDesktopNotify();
   // 浏览器通知权限：渲染时读一次，请求后刷新；denied 时如实展示「浏览器已拒绝」
   const [notifyPermission, setNotifyPermission] = useState<DesktopNotifyPermission>(() => desktopNotifyPermission());
-  const onToggleDesktopNotify = (checked: boolean): void => {
-    if (!checked) {
-      setDesktopNotify(false);
-      return;
-    }
+  const { ask: askResetLayout, dialogElement: resetLayoutDialog } = useConfirmDialog();
+  const requestNotify = (): void => {
     void requestDesktopNotifyPermission().then((permission) => {
       setNotifyPermission(permission);
       if (permission === "granted") setDesktopNotify(true);
     });
   };
+  const onToggleDesktopNotify = (checked: boolean): void => {
+    if (!checked) {
+      setDesktopNotify(false);
+      return;
+    }
+    requestNotify();
+  };
+  const permissionLabel = notifyPermission === "granted"
+    ? t("浏览器已允许", "Allowed in this browser")
+    : notifyPermission === "denied"
+      ? t("浏览器已拒绝", "Blocked by this browser")
+      : notifyPermission === "unsupported"
+        ? t("当前浏览器不支持", "Not supported in this browser")
+        : t("尚未授权", "Not granted yet");
   return (
     <>
-      <h3>{t("发送方式", "Send shortcut")}</h3>
-      <div className="settings-row" role="radiogroup" aria-label={t("发送方式", "Send shortcut")}>
-        <label className="theme-option">
-          <input type="radio" name="send-key" checked={sendKey === "enter"} onChange={() => setSendKey("enter")} />
-          {t("Enter 发送", "Send with Enter")}
-        </label>
-        <label className="theme-option">
-          <input type="radio" name="send-key" checked={sendKey === "ctrl-enter"} onChange={() => setSendKey("ctrl-enter")} />
-          {t("Ctrl+Enter 发送", "Send with Ctrl+Enter")}
-        </label>
-      </div>
-      <h3>{t("桌面通知", "Desktop notifications")}</h3>
-      <div className="settings-row">
-        <label className="theme-option">
-          <input type="checkbox" checked={desktopNotify} onChange={(event) => onToggleDesktopNotify(event.target.checked)} />
-          {t("页面在后台时弹出系统通知（权限待批、等待回复、任务完成/失败）", "Show system notifications while the page is in the background (permission requests, pending replies, run finished/failed)")}
-        </label>
-      </div>
-      {notifyPermission === "denied" && (
-        <p className="settings-note">{t("浏览器已拒绝桌面通知权限，需在浏览器站点设置中手动允许。", "Desktop notifications are blocked by the browser; allow them in the browser's site settings.")}</p>
-      )}
-      {notifyPermission === "unsupported" && (
-        <p className="settings-note">{t("当前浏览器不支持桌面通知。", "This browser does not support desktop notifications.")}</p>
-      )}
-      <h3>{t("布局", "Layout")}</h3>
-      <p className="settings-note">{t("会话栏宽度/折叠、底部面板高度与开合保存在本机。", "The session rail width and collapsed state, plus bottom-panel height and visibility, are saved locally.")}</p>
-      <button className="btn small" onClick={() => layout.resetLayout()}>{t("重置布局为默认", "Reset layout")}</button>
-      <h3>{t("语言、货币与模式", "Language, currency, and mode")}</h3>
-      <ServerSettingsFields
-        showGroup={(groupId) => groupId === "general"}
-        note={["模型回复的默认语言、计费币种与 Chat 模式开关（界面语言在「外观」页签切换，两者相互独立）。", "Default language for model replies, the billing currency, and the Chat mode toggle (the interface language is switched in the Appearance tab; the two are independent)."]}
-        onDirtyChange={onDirtyChange}
-      />
+      <SettingsCard title={t("输入", "Input")}>
+        <SettingsRow label={t("发送方式", "Send shortcut")}>
+          <Segmented
+            ariaLabel={t("发送方式", "Send shortcut")}
+            value={sendKey}
+            onChange={(value) => setSendKey(value)}
+            options={[
+              { value: "enter", label: t("Enter 发送", "Enter") },
+              { value: "ctrl-enter", label: t("Ctrl+Enter 发送", "Ctrl+Enter") },
+            ]}
+          />
+        </SettingsRow>
+      </SettingsCard>
+
+      <SettingsCard title={t("通知", "Notifications")}>
+        <SettingsRow
+          inline
+          label={t("桌面通知", "Desktop notifications")}
+          description={t("页面在后台时弹出系统通知：权限待批、等待回复、任务完成或失败。", "Show system notifications while the page is in the background: permission requests, pending replies, and run completion or failure.")}
+        >
+          <Switch checked={desktopNotify} onChange={onToggleDesktopNotify} label={t("桌面通知", "Desktop notifications")} disabled={notifyPermission === "unsupported"} />
+        </SettingsRow>
+        <SettingsRow label={t("浏览器权限", "Browser permission")} description={permissionLabel}>
+          {(notifyPermission === "denied" || notifyPermission === "default") && (
+            <button type="button" className="btn small" onClick={requestNotify}>{t("重新请求", "Request again")}</button>
+          )}
+        </SettingsRow>
+      </SettingsCard>
+
+      <SettingsCard title={t("布局", "Layout")}>
+        <SettingsRow label={t("复原界面布局", "Reset layout")} description={t("会话栏宽度与折叠、底部面板高度与开合保存在本机。", "The session rail width and collapsed state, plus bottom-panel height and visibility, are saved locally.")}>
+          <button
+            type="button"
+            className="btn small"
+            onClick={() => askResetLayout({
+              title: t("复原界面布局？", "Reset layout?"),
+              body: t("会话栏、侧边栏与底部面板将回到默认尺寸和开合状态。", "The session rail, sidebar, and bottom panel will return to their default size and visibility."),
+              confirmLabel: t("复原", "Reset"),
+              danger: false,
+              onConfirm: () => layout.resetLayout(),
+            })}
+          >
+            {t("重置布局为默认", "Reset layout")}
+          </button>
+        </SettingsRow>
+      </SettingsCard>
+
+      <SettingsCard className="settings-card-server" title={t("语言、货币与模式", "Language, currency, and mode")}>
+        <ServerSettingsFields
+          showGroup={(groupId) => groupId === "general"}
+          note={["模型回复的默认语言、计费币种与 Chat 模式开关（界面语言在「外观」页签切换，两者相互独立）。", "Default language for model replies, the billing currency, and the Chat mode toggle (the interface language is switched in the Appearance tab; the two are independent)."]}
+          onDirtyChange={onDirtyChange}
+        />
+      </SettingsCard>
+      {resetLayoutDialog}
     </>
   );
 }

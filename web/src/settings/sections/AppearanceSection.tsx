@@ -3,6 +3,7 @@ import { useTheme, type AccentPreference, type ThemePreference } from "../../the
 import { isValidHexColor } from "../../lib/accent-color";
 import { useI18n, type Language } from "../../i18n";
 import { TypographySection } from "./TypographySection";
+import { Segmented, SettingsCard, SettingsRow } from "../controls";
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; zh: string; en: string }> = [
   { value: "light", zh: "浅色", en: "Light" },
@@ -31,6 +32,8 @@ export function AppearanceSection(): ReactElement {
   useEffect(() => {
     setHexDraft((previous) => (previous.toLowerCase() === (customHex ?? "").toLowerCase() ? previous : (customHex ?? "")));
   }, [customHex]);
+  const normalizedHex = hexDraft.startsWith("#") ? hexDraft : `#${hexDraft}`;
+  const hexInvalid = hexDraft.trim() !== "" && !isValidHexColor(normalizedHex);
   const applyHexDraft = (value: string): void => {
     setHexDraft(value);
     const normalized = value.startsWith("#") ? value : `#${value}`;
@@ -38,80 +41,84 @@ export function AppearanceSection(): ReactElement {
   };
   return (
     <>
-      <h3>{t("语言", "Language")}</h3>
-      <select className="input" value={language} aria-label={t("界面语言", "Interface language")} onChange={(event) => setLanguage(event.target.value as Language)}>
-        <option value="zh-CN">简体中文</option>
-        <option value="en">English</option>
-      </select>
-      <p className="settings-note">{t("语言设置立即生效并保存在本机。", "The language changes immediately and is saved on this device.")}</p>
-      <h3>{t("主题", "Theme")}</h3>
-      <div className="settings-row" role="radiogroup" aria-label={t("主题", "Theme")}>
-        {THEME_OPTIONS.map((option) => (
-          <label key={option.value} className="theme-option">
-            <input
-              type="radio"
-              name="theme"
-              checked={preference === option.value}
-              onChange={() => setPreference(option.value)}
-            />
-            {t(option.zh, option.en)}
-          </label>
-        ))}
-      </div>
-      <h3>{t("强调色", "Accent color")}</h3>
-      <div className="settings-row accent-row" role="radiogroup" aria-label={t("强调色", "Accent color")}>
-        {ACCENT_OPTIONS.map((option) => (
-          <label key={option.value} className="accent-option">
-            <input
-              type="radio"
-              name="accent"
-              checked={accent === option.value}
-              onChange={() => setAccent(option.value)}
-            />
-            <span className="accent-swatch" style={{ background: option.swatch }} />
-            {t(option.zh, option.en)}
-          </label>
-        ))}
-        {/* 自定义任意 RGB：点色卡打开原生取色器；选中后展示 hex 文本框 */}
-        <label className="accent-option accent-option-custom">
-          <input
-            type="radio"
-            name="accent"
-            checked={customHex !== undefined}
-            onChange={() => colorInputRef.current?.click()}
+      <SettingsCard title={t("界面", "Interface")}>
+        <SettingsRow label={t("语言", "Language")} description={t("语言设置立即生效并保存在本机。", "The language changes immediately and is saved on this device.")} htmlFor="setting-language">
+          <select id="setting-language" className="input" value={language} aria-label={t("界面语言", "Interface language")} onChange={(event) => setLanguage(event.target.value as Language)}>
+            <option value="zh-CN">简体中文</option>
+            <option value="en">English</option>
+          </select>
+        </SettingsRow>
+        <SettingsRow label={t("主题", "Theme")}>
+          <Segmented
+            ariaLabel={t("主题", "Theme")}
+            value={preference}
+            onChange={setPreference}
+            options={THEME_OPTIONS.map((option) => ({ value: option.value, label: t(option.zh, option.en) }))}
           />
-          <span
-            className={`accent-swatch accent-swatch-custom${customHex ? "" : " unset"}`}
-            style={customHex ? { background: customHex } : undefined}
-            onClick={(event) => {
-              event.preventDefault();
-              colorInputRef.current?.click();
-            }}
-          />
-          {t("自定义", "Custom")}
-          <input
-            ref={colorInputRef}
-            type="color"
-            className="accent-color-input"
-            aria-label={t("自定义强调色", "Custom accent color")}
-            value={customHex ?? "#3d444c"}
-            onChange={(event) => setAccent(`custom:${event.target.value}`)}
-          />
-        </label>
-        {customHex !== undefined && (
-          <input
-            type="text"
-            className="input accent-hex-input mono"
-            aria-label={t("强调色 hex 值（#rrggbb）", "Accent hex value (#rrggbb)")}
-            value={hexDraft}
-            onChange={(event) => applyHexDraft(event.target.value)}
-            spellCheck={false}
-            maxLength={7}
-            placeholder="#rrggbb"
-          />
-        )}
-      </div>
-      <p className="settings-note">{t("强调色影响按钮、链接、高亮等元素；浅色与深色模式各自适配。自定义色支持任意 RGB，悬停/底色/文字色自动派生。", "The accent color applies to buttons, links, highlights, and related elements in both light and dark themes. Custom colors accept any RGB value; hover, tint, and text colors are derived automatically.")}</p>
+        </SettingsRow>
+        <SettingsRow
+          stack
+          label={t("强调色", "Accent color")}
+          description={t("影响按钮、链接与高亮；浅色/深色主题各自适配。自定义色支持任意 RGB，悬停、底色与文字色自动派生。", "Applies to buttons, links, and highlights in both themes. Custom colors accept any RGB value; hover, tint, and text colors are derived automatically.")}
+        >
+          <div className="accent-row" role="radiogroup" aria-label={t("强调色", "Accent color")}>
+            {ACCENT_OPTIONS.map((option) => (
+              <label key={option.value} className="accent-option">
+                <input
+                  type="radio"
+                  name="accent"
+                  checked={accent === option.value}
+                  onChange={() => setAccent(option.value)}
+                />
+                <span className="accent-swatch" style={{ background: option.swatch }} />
+                {t(option.zh, option.en)}
+              </label>
+            ))}
+            {/* 自定义任意 RGB：点色卡打开原生取色器；选中后展示 hex 文本框 */}
+            <label className="accent-option accent-option-custom">
+              <input
+                type="radio"
+                name="accent"
+                checked={customHex !== undefined}
+                onChange={() => colorInputRef.current?.click()}
+              />
+              <span
+                className={`accent-swatch accent-swatch-custom${customHex ? "" : " unset"}`}
+                style={customHex ? { background: customHex } : undefined}
+                onClick={(event) => {
+                  event.preventDefault();
+                  colorInputRef.current?.click();
+                }}
+              />
+              {t("自定义", "Custom")}
+              <input
+                ref={colorInputRef}
+                type="color"
+                className="accent-color-input"
+                aria-label={t("自定义强调色", "Custom accent color")}
+                value={customHex ?? "#3d444c"}
+                onChange={(event) => setAccent(`custom:${event.target.value}`)}
+              />
+            </label>
+            {customHex !== undefined && (
+              <>
+                <input
+                  type="text"
+                  className={`input accent-hex-input mono${hexInvalid ? " invalid" : ""}`}
+                  aria-label={t("强调色 hex 值（#rrggbb）", "Accent hex value (#rrggbb)")}
+                  aria-invalid={hexInvalid}
+                  value={hexDraft}
+                  onChange={(event) => applyHexDraft(event.target.value)}
+                  spellCheck={false}
+                  maxLength={7}
+                  placeholder="#rrggbb"
+                />
+                {hexInvalid && <span className="hex-error">{t("格式应为 #rrggbb", "Use #rrggbb")}</span>}
+              </>
+            )}
+          </div>
+        </SettingsRow>
+      </SettingsCard>
       <TypographySection />
     </>
   );
