@@ -63,8 +63,8 @@ describe("SessionsView 列表与选中", () => {
     fireEvent.click(screen.getByRole("button", { name: "取消置顶 已置顶" })); await waitFor(() => expect(patch).toHaveBeenCalledWith("b", { pinned: false }));
     openSessionActions("旧标题");
     fireEvent.click(screen.getByRole("menuitem", { name: "删除会话 旧标题" })); expect(uiStore.get().deleteTarget).toBe("a");
-    const newSessionButtons = screen.getAllByRole("button", { name: "新建会话" });
-    fireEvent.click(newSessionButtons[newSessionButtons.length - 1]!); expect(uiStore.get().newSessionOpen).toBe(true);
+    expect(screen.getAllByRole("button", { name: "新建会话" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "新建会话（快捷）" })); expect(uiStore.get().newSessionOpen).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "设置" })); expect(uiStore.get().settingsOpen).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "切换主题" })); expect(["light", "dark"]).toContain(window.localStorage.getItem("owc-theme"));
   });

@@ -151,7 +151,7 @@ export function DirectoryBrowser({ initialPath, onSelect, onClose }: DirectoryBr
         <span className="dir-browser__current-path" title={currentPath}>{currentPath}</span>
         <div className="dir-browser__actions">
           <button type="button" className="btn" onClick={onClose}>{t("取消", "Cancel")}</button>
-          <button type="button" className="btn btn--primary" onClick={() => onSelect(currentPath)} disabled={!currentPath}>
+          <button type="button" className="btn primary" onClick={() => onSelect(currentPath)} disabled={!currentPath}>
             {t("选择此目录", "Select this directory")}
           </button>
         </div>

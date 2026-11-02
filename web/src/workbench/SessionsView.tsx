@@ -589,7 +589,7 @@ export function SessionsView({ sessions, currentId, agentStates, attention, onSe
               </button>
               <button className="icon-btn" onClick={() => fileInput.current?.click()} aria-label={t("导入会话", "Import session")} title={t("导入会话（JSONL）", "Import session (JSONL)")}><Icon name="upload" size={15} /></button>
               <button ref={searchTriggerRef} className="icon-btn" onClick={() => setSearchOpen(true)} aria-label={t("搜索会话", "Search sessions")} title={t("搜索会话", "Search sessions")}><Icon name="search" size={15} /></button>
-              <button className="icon-btn" onClick={() => ui.setNewSessionOpen(true)} aria-label={t("新建会话", "New session")} title={t("新建会话", "New session")}><Icon name="plus" size={15} /></button>
+              <button className="icon-btn" onClick={() => ui.setNewSessionOpen(true)} aria-label={t("新建会话（快捷）", "New session (quick)")} title={t("新建会话（快捷）", "New session (quick)")}><Icon name="plus" size={15} /></button>
             </span>
           </>
         )}
