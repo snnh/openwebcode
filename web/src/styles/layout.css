@@ -243,10 +243,10 @@
   vertical-align: 1px;
   white-space: nowrap;
 }
-.job-header-info { display: flex; align-items: center; gap: 12px; justify-content: space-between; min-width: 0; }
+.job-header-info { display: flex; align-items: center; gap: 12px; justify-content: space-between; min-width: 0; flex-wrap: wrap; row-gap: 4px; }
 /* 标题保底宽度：指标再多也只挤指标行，不会把会话名压成 0 宽 */
 .job-header-info .job-title { flex: 1 1 200px; min-width: 140px; }
-.job-info { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.job-info { flex: 0 0 auto; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
 .job-header > .job-actions { flex: none; }
 .job-header-toggle {
   display: inline-flex; align-items: center; justify-content: center;
@@ -318,14 +318,14 @@
 /* 展开的高级设置按用途分组；控件有明确边界，不再用竖线串联整行。 */
 .job-actions {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: var(--sp-12);
   min-width: 0;
   border-top: 1px solid var(--border);
   padding-top: var(--sp-8);
 }
-.job-actions-group { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-width: 0; }
+.job-actions-group { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-4); min-width: 0; }
 .job-actions-group + .job-actions-group { position: relative; padding-left: var(--sp-8); }
 .job-actions-group + .job-actions-group::before {
   content: "";
@@ -351,6 +351,7 @@
 }
 .mode-switch {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 5px;
   min-height: 24px;
@@ -368,7 +369,7 @@
 .mode-switch.advisory { color: var(--amber); }
 .mode-switch select {
   min-width: 0;
-  max-width: 132px;
+  max-width: 240px;
   padding: 1px 14px 1px var(--sp-2);
   border: 0;
   border-radius: var(--radius-s);
@@ -383,8 +384,9 @@
 .mode-switch select:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .mode-switch select:disabled { cursor: not-allowed; opacity: 0.65; }
 .mode-switch option { color: var(--text); background: var(--surface-card); }
+.preset-switch select { max-width: 260px; }
 /* FitSelect 外壳：appearance:none 的原生箭头由 Icon chevron 顶替（指针穿透，点击仍落在 select 上） */
-.fit-select { position: relative; display: inline-flex; align-items: center; min-width: 0; }
+.fit-select { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; min-width: 0; }
 .fit-select > svg { position: absolute; right: 3px; pointer-events: none; color: var(--text-3); }
 /* 栏位定宽时选项文本横向省略号截断（appearance:none 后 text-overflow 生效） */
 .fit-select select { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -701,7 +703,6 @@
   .job-header-info .job-info { flex: 1 0 100%; order: 3; justify-content: flex-start; gap: 6px 14px; }
   .job-header-info .job-header-toggle { order: 2; }
   .job-actions { flex-direction: column; align-items: stretch; }
-  .job-session-actions { justify-content: flex-start; }
 }
 
 /* ================= 移动端（≤768px，手机；平板 ≥768px 直接用桌面布局） ================= */
@@ -767,8 +768,7 @@
   .job-header-info .job-title { flex: 1 1 auto; min-width: 0; }
   .job-header-info .job-info { flex: 0 1 auto; min-width: 0; overflow: hidden; gap: 8px; flex-wrap: nowrap; line-height: var(--lh-tight); }
   .job-header.compact .job-info .cost-summary,
-  .job-header.compact .job-info .cache-usage,
-  .job-header.compact .job-info .preset-switch { display: none; }
+  .job-header.compact .job-info .cache-usage { display: none; }
   .job-header:not(.compact) .job-header-info { flex-wrap: wrap; row-gap: 4px; }
   .job-header:not(.compact) .job-header-info .job-info {
     flex: 1 0 100%;
@@ -790,6 +790,8 @@
   .job-actions-label {
   display: none; grid-column: 1 / -1; }
   .job-actions .mode-switch { display: flex; width: 100%; min-width: 0; min-height: 32px; padding: 0 var(--sp-8); gap: 4px; border-color: transparent; background: var(--surface-subtle); border-radius: var(--radius-s); }
+  .job-actions .preset-switch { grid-column: 1 / -1; }
+  .job-actions .snapshot-mode-switch { grid-column: 1 / -1; }
   .job-actions-group + .job-actions-group { padding-left: 0; }
   .job-actions-group + .job-actions-group::before { display: none; }
   .job-actions .fit-select { flex: 1 1 auto; min-width: 0; }

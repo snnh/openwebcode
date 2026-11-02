@@ -38,7 +38,7 @@ const SANDBOX_LABELS: Record<SandboxMode, [string, string]> = {
   off: ["关闭", "Off"],
 };
 
-/** 原生 select 按最长 option 撑宽，顶栏会留出大片空白；桌面端按选中项实测文本宽度收缩（+18px 箭头余量）。移动端由 CSS 百分比栏位铺满，清掉内联宽度 */
+/** 原生 select 按最长 option 撑宽，顶栏会留出大片空白；桌面端按选中项实测文本宽度收缩（+30px：左右内边距与箭头余量）。移动端由 CSS 百分比栏位铺满，清掉内联宽度 */
 let measureCanvas: HTMLCanvasElement | undefined;
 function fitSelectWidth(select: HTMLSelectElement, isMobile: boolean): void {
   if (isMobile) {
@@ -50,7 +50,7 @@ function fitSelectWidth(select: HTMLSelectElement, isMobile: boolean): void {
   if (!context) return; // jsdom 等无 canvas 环境跳过
   const style = getComputedStyle(select);
   context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-  select.style.width = `${Math.ceil(context.measureText(text).width) + 18}px`;
+  select.style.width = `${Math.ceil(context.measureText(text).width) + 30}px`;
 }
 
 /** 宽度自适应选中项的 select：挂载/每次渲染后重测，onChange 时立即重测；appearance:none + 自带 chevron，规避原生箭头布局的平台差异 */
@@ -94,10 +94,12 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
   const [tasksOpen, setTasksOpen] = useState(false);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [configPending, setConfigPending] = useState(false);
-  // 移动端顶栏默认紧凑（下拉与导出收进展开区），本地已有记录时以用户选择为准
+  // 桌面默认展开（横向空间充足），移动端默认紧凑；两个断点分别记忆，
+  // 避免手机上收起的记录把桌面顶栏也带成收起状态。
+  const headerStorageKey = `owc-header-collapsed-${isMobile ? "mobile" : "desktop"}`;
   const [headerCollapsed, setHeaderCollapsed] = useState(() => {
     const storage = typeof globalThis.localStorage !== "undefined" ? globalThis.localStorage : undefined;
-    const stored = storage?.getItem("owc-header-collapsed");
+    const stored = storage?.getItem(headerStorageKey);
     if (stored === "1" || stored === "0") return stored === "1";
     return isMobile;
   });
@@ -200,9 +202,20 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
     ...(isWindows || session.shellBackend === "cmd" ? [{ value: "cmd" as const, label: ["CMD", "CMD"] as [string, string] }] : []),
   ];
 
+  // 断点切换时读取该断点自己的偏好；桌面首次进入保持展开
   useEffect(() => {
-    try { globalThis.localStorage?.setItem("owc-header-collapsed", headerCollapsed ? "1" : "0"); } catch { /* storage unavailable */ }
-  }, [headerCollapsed]);
+    const storage = typeof globalThis.localStorage !== "undefined" ? globalThis.localStorage : undefined;
+    const stored = storage?.getItem(headerStorageKey);
+    setHeaderCollapsed(stored === "1" ? true : stored === "0" ? false : isMobile);
+  }, [headerStorageKey, isMobile]);
+
+  const toggleHeader = (): void => {
+    const next = !headerCollapsed;
+    setHeaderCollapsed(next);
+    try {
+      globalThis.localStorage?.setItem(headerStorageKey, next ? "1" : "0");
+    } catch { /* storage unavailable */ }
+  };
 
   const openTask = (taskId: string): void => {
     if (expandedTask === taskId) {
@@ -259,13 +272,78 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
       {STATE_LABELS[agentState] ? t(...STATE_LABELS[agentState]!) : agentState}
     </span>
   ) : null;
+  // Agent 预设从指标行挪到控制行：指标行只留用量，预设与运行环境一起排布，长名称不再被挤没
+  const presetControl = presetEnabled && (presetOptions.length > 0 || session.activePreset) ? (
+    <label
+      className="mode-switch preset-switch"
+      title={t(`本会话 Agent 预设：${presetActiveName}（点击切换；会话级覆盖优先于全局默认）`, `Agent preset for this session: ${presetActiveName} (click to switch; session overrides beat the global default)`)}
+    >
+      <Icon name="layers" size={11} />
+      <FitSelect
+        aria-label={t("Agent 预设", "Agent preset")}
+        value={session.preset ?? ""}
+        disabled={busy || configPending}
+        onChange={(event) => updateMode({ preset: event.target.value })}
+      >
+        <option value="">{t(`默认 · ${presetActiveName}`, `Default · ${presetActiveName}`)}</option>
+        <option value="classic">{t("经典模式（本会话）", "Classic (this session)")}</option>
+        {presetOptions.map((preset) => {
+          const name = presetLabel(preset, language).name;
+          return <option key={preset.id} value={preset.id}>{preset.overridden === true ? t(`${name}（已自定义）`, `${name} (customized)`) : name}</option>;
+        })}
+      </FitSelect>
+    </label>
+  ) : null;
+  // 会话操作（导出、快照、中断）：桌面放在标题行右侧，移动端留在展开后的控制区
+  const sessionActions = (
+    <div className="job-actions-group job-session-actions" role="group" aria-label={t("会话操作", "Session actions")}>
+      <span className="job-actions-label" aria-hidden>{t("会话操作", "Actions")}</span>
+      {session.workspace?.mode === "managed" && (
+        <button
+          type="button"
+          className="btn small manual-snapshot-btn"
+          aria-label={t("创建虚拟磁盘快照", "Create virtual disk snapshot")}
+          title={checkpointPending
+            ? t("正在创建虚拟磁盘快照", "Creating virtual disk snapshot")
+            : busy || configPending
+              ? t("会话运行或配置更新时无法创建快照", "Cannot create a snapshot while the session is running or being updated")
+              : t("立即为当前虚拟磁盘创建手动差分链快照", "Create a manual differential-disk snapshot now")}
+          disabled={busy || configPending || checkpointPending}
+          onClick={onCreateCheckpoint}
+        >
+          <Icon name="history" size={12} /> {checkpointPending ? t("创建中…", "Creating…") : t("手动快照", "Snapshot now")}
+        </button>
+      )}
+      <a
+        className="icon-btn"
+        href={`/api/sessions/${session.id}/export`}
+        download
+        aria-label={t("导出会话", "Export session")}
+        title={t("导出会话（JSONL，不含账本与 artifacts）", "Export session (JSONL, excluding ledger and artifacts)")}
+      >
+        <Icon name="download" size={14} />
+      </a>
+      <a
+        className="icon-btn"
+        href={`/api/sessions/${session.id}/export.md`}
+        download
+        aria-label={t("导出 Markdown", "Export Markdown")}
+        title={t("导出会话为 Markdown 文档", "Export session as a Markdown document")}
+      >
+        <Icon name="file" size={14} />
+      </a>
+      {busy && (
+        <button className="btn danger-outline" onClick={onAbort}>{t("中断", "Stop")}</button>
+      )}
+    </div>
+  );
   const toggleButton = (
     <button
       type="button"
       className="job-header-toggle"
       aria-label={headerCollapsed ? t("展开顶栏", "Expand header") : t("收起顶栏", "Collapse header")}
       title={headerCollapsed ? t("展开顶栏", "Expand header") : t("收起顶栏", "Collapse header")}
-      onClick={() => setHeaderCollapsed((value) => !value)}
+      onClick={toggleHeader}
     >
       <Icon name={headerCollapsed ? "chevron-down" : "chevron-up"} size={12} />
     </button>
@@ -344,28 +422,8 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
           </button>
         )}
         {!isMobile && stateItem}
-        {presetEnabled && (presetOptions.length > 0 || session.activePreset) && (
-          <label
-            className="mode-switch preset-switch"
-            title={t(`本会话 Agent 预设：${presetActiveName}（点击切换；会话级覆盖优先于全局默认）`, `Agent preset for this session: ${presetActiveName} (click to switch; session overrides beat the global default)`)}
-          >
-            <Icon name="layers" size={11} />
-            <FitSelect
-              aria-label={t("Agent 预设", "Agent preset")}
-              value={session.preset ?? ""}
-              disabled={busy || configPending}
-              onChange={(event) => updateMode({ preset: event.target.value })}
-            >
-              <option value="">{t(`跟随全局默认（${presetActiveName}）`, `Follow global default (${presetActiveName})`)}</option>
-              <option value="classic">{t("经典模式（本会话）", "Classic (this session)")}</option>
-              {presetOptions.map((preset) => {
-                const name = presetLabel(preset, language).name;
-                return <option key={preset.id} value={preset.id}>{preset.overridden === true ? t(`${name}（已自定义）`, `${name} (customized)`) : name}</option>;
-              })}
-            </FitSelect>
-          </label>
-        )}
         </div>
+        {!isMobile && !headerCollapsed && sessionActions}
         {!isMobile && toggleButton}
       </div>
       {isMobile && (
@@ -376,8 +434,9 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
         </div>
       )}
       {!headerCollapsed && <div className="job-actions">
-        <div className="job-actions-group job-environment" role="group" aria-label={t("运行环境", "Runtime environment")}>
+        <div className="job-actions-group job-environment" role="group" aria-label={t("会话运行设置", "Session runtime settings")}>
           <span className="job-actions-label" aria-hidden>{t("运行环境", "Environment")}</span>
+          {presetControl}
           {/* 本机会话固定 off 沙盒：不提供切换（服务端也拒绝变更） */}
           {session.kind !== "local" && (
           <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "appcontainer") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
@@ -459,46 +518,7 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
             </FitSelect>
           </label>
         </div>
-        <div className="job-actions-group job-session-actions" role="group" aria-label={t("会话操作", "Session actions")}>
-          <span className="job-actions-label" aria-hidden>{t("会话操作", "Actions")}</span>
-          {session.workspace?.mode === "managed" && (
-            <button
-              type="button"
-              className="btn small manual-snapshot-btn"
-              aria-label={t("创建虚拟磁盘快照", "Create virtual disk snapshot")}
-              title={checkpointPending
-                ? t("正在创建虚拟磁盘快照", "Creating virtual disk snapshot")
-                : busy || configPending
-                  ? t("会话运行或配置更新时无法创建快照", "Cannot create a snapshot while the session is running or being updated")
-                  : t("立即为当前虚拟磁盘创建手动差分链快照", "Create a manual differential-disk snapshot now")}
-              disabled={busy || configPending || checkpointPending}
-              onClick={onCreateCheckpoint}
-            >
-              <Icon name="history" size={12} /> {checkpointPending ? t("创建中…", "Creating…") : t("手动快照", "Snapshot now")}
-            </button>
-          )}
-          <a
-            className="icon-btn"
-            href={`/api/sessions/${session.id}/export`}
-            download
-            aria-label={t("导出会话", "Export session")}
-            title={t("导出会话（JSONL，不含账本与 artifacts）", "Export session (JSONL, excluding ledger and artifacts)")}
-          >
-            <Icon name="download" size={14} />
-          </a>
-          <a
-            className="icon-btn"
-            href={`/api/sessions/${session.id}/export.md`}
-            download
-            aria-label={t("导出 Markdown", "Export Markdown")}
-            title={t("导出会话为 Markdown 文档", "Export session as a Markdown document")}
-          >
-            <Icon name="file" size={14} />
-          </a>
-          {busy && (
-            <button className="btn danger-outline" onClick={onAbort}>{t("中断", "Stop")}</button>
-          )}
-        </div>
+        {isMobile && sessionActions}
       </div>}
       {tasksOpen && sortedTasks.length > 0 && (
         <div className="task-dropdown" ref={tasksDropdownRef}>
