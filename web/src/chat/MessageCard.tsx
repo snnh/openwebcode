@@ -71,7 +71,7 @@ function ToolResultCard({ block, sessionId }: { block: MessageContent; sessionId
           ? <span className="tool-row-summary mono" title={summary}>{summary}</span>
           : !error && <span className="tool-row-summary mono">{t(`${body.length} 字符`, `${body.length} characters`)}</span>}
         <span className="tool-row-actions">
-          <button type="button" className="tool-row-view" onClick={(event) => { event.stopPropagation(); toggle(); }}>{t("查看", "View")}</button>
+          <span className="tool-row-meta mono">{t(`${body.length} 字符`, `${body.length} chars`)}</span>
           <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
         </span>
       </div>
@@ -194,14 +194,22 @@ function MessageCard({ message, turn, toolResults, liveSubagents, shellCmd }: Me
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contentLens?.enabled, message.id, sessionId, targetLanguage, text, translateMode]);
 
-  // 元信息行：assistant/tool 在正文上方；user 放到气泡外下方（右对齐，hover/触屏显示）
-  const meta = (
+  // 元信息（作者/时间）与操作条分离：元信息固定左列，操作条在正文下方预留 24px 内悬停显现
+  const metaLabel = (
     <div className="message-meta">
       {message.role !== "user" && <span className="message-author">{ROLE_LABELS[message.role] ? t(...ROLE_LABELS[message.role]!) : message.role}</span>}
       <time dateTime={message.createdAt} title={formatDateTime(createdAt, locale)}>{formatTime(createdAt, locale)}</time>
+    </div>
+  );
+
+  const actionBar = (
+    <div className="message-actions">
       {text && (
         <button
-          className="copy-btn"
+          type="button"
+          className="action-btn"
+          aria-label={copied ? t("已复制", "Copied") : t("复制", "Copy")}
+          title={copied ? t("已复制", "Copied") : t("复制", "Copy")}
           onClick={() => {
             void writeClipboard(text).then((ok) => {
               if (!ok) return;
@@ -211,70 +219,92 @@ function MessageCard({ message, turn, toolResults, liveSubagents, shellCmd }: Me
             });
           }}
         >
-          <Icon name={copied ? "check" : "copy"} size={12} />
-          {copied ? t("已复制", "Copied") : t("复制", "Copy")}
+          <Icon name={copied ? "check" : "copy"} size={14} />
         </button>
       )}
       {text && contentLens?.enabled && (
         <>
-          {translateMode !== "off" && <button className="copy-btn" disabled={lensBusy} onClick={() => {
-            setLensBusy(true);
-            api.translateMessage(sessionId, message.id, targetLanguage, glossary)
-              .then((value) => setTranslation(value.text))
-              .catch((error: unknown) => actions.onNotice(error instanceof Error ? error.message : t("翻译失败", "Translation failed"), "error"))
-              .finally(() => setLensBusy(false));
-          }}>{translateMode === "auto" && translation ? t("重译", "Translate again") : t("译", "Translate")}</button>}
-          <button className="copy-btn" disabled={lensBusy} title={t("先在本条消息中选择不超过 200 字符", "Select up to 200 characters in this message first")} onClick={() => {
-            const selection = window.getSelection();
-            const selected = selection?.toString().trim() ?? "";
-            if (!selected || selected.length > 200 || !articleRef.current?.contains(selection?.anchorNode ?? null) || !articleRef.current?.contains(selection?.focusNode ?? null)) {
-              actions.onNotice(t("请先在本条消息中选择 1–200 个字符", "Select 1–200 characters in this message first"), "error"); return;
-            }
-            setLensBusy(true);
-            api.explainSelection(sessionId, selected, targetLanguage)
-              .then((value) => setExplanation({ selection: selected, text: value.text }))
-              .catch((error: unknown) => actions.onNotice(error instanceof Error ? error.message : t("解析失败", "Explanation failed"), "error"))
-              .finally(() => setLensBusy(false));
-          }}>{t("解析选中", "Explain selection")}</button>
+          {translateMode !== "off" && (
+            <button
+              type="button"
+              className="action-btn"
+              disabled={lensBusy}
+              aria-label={translateMode === "auto" && translation ? t("重译", "Translate again") : t("译", "Translate")}
+              title={translateMode === "auto" && translation ? t("重译", "Translate again") : t("译", "Translate")}
+              onClick={() => {
+                setLensBusy(true);
+                api.translateMessage(sessionId, message.id, targetLanguage, glossary)
+                  .then((value) => setTranslation(value.text))
+                  .catch((error: unknown) => actions.onNotice(error instanceof Error ? error.message : t("翻译失败", "Translation failed"), "error"))
+                  .finally(() => setLensBusy(false));
+              }}
+            >
+              <Icon name="globe" size={14} />
+            </button>
+          )}
+          <button
+            type="button"
+            className="action-btn"
+            disabled={lensBusy}
+            aria-label={t("解析选中", "Explain selection")}
+            title={t("先在本条消息中选择不超过 200 字符", "Select up to 200 characters in this message first")}
+            onClick={() => {
+              const selection = window.getSelection();
+              const selected = selection?.toString().trim() ?? "";
+              if (!selected || selected.length > 200 || !articleRef.current?.contains(selection?.anchorNode ?? null) || !articleRef.current?.contains(selection?.focusNode ?? null)) {
+                actions.onNotice(t("请先在本条消息中选择 1–200 个字符", "Select 1–200 characters in this message first"), "error"); return;
+              }
+              setLensBusy(true);
+              api.explainSelection(sessionId, selected, targetLanguage)
+                .then((value) => setExplanation({ selection: selected, text: value.text }))
+                .catch((error: unknown) => actions.onNotice(error instanceof Error ? error.message : t("解析失败", "Explanation failed"), "error"))
+                .finally(() => setLensBusy(false));
+            }}
+          >
+            <Icon name="search" size={14} />
+          </button>
         </>
       )}
       {message.role === "user" && text && (
         <button
-          className="copy-btn"
+          type="button"
+          className="action-btn"
           disabled={running}
+          aria-label={t("编辑重发", "Edit & resend")}
           title={running ? t("运行中不可用", "Unavailable while running") : t("编辑该消息并重新发送", "Edit this message and resend")}
           onClick={() => actions.onEditMessage(message)}
         >
-          <Icon name="edit" size={12} />
-          {t("编辑重发", "Edit & resend")}
+          <Icon name="edit" size={14} />
         </button>
       )}
       {message.role === "user" && text && (
         <button
-          className="copy-btn"
+          type="button"
+          className="action-btn"
           disabled={running}
+          aria-label={t("重新生成", "Regenerate")}
           title={running ? t("运行中不可用", "Unavailable while running") : t("检出到该消息之前并重新生成回复", "Check out to before this message and regenerate the reply")}
           onClick={() => actions.onRegenerate(message)}
         >
-          <Icon name="history" size={12} />
-          {t("重新生成", "Regenerate")}
+          <Icon name="history" size={14} />
         </button>
       )}
       {message.role === "user" && (
         <button
-          className="copy-btn"
+          type="button"
+          className="action-btn"
+          aria-label={t("分叉", "Fork")}
           title={t("从该消息分叉为新会话", "Fork a new session from this message")}
           onClick={() => actions.onFork(message)}
         >
-          <Icon name="git" size={12} />
-          {t("分叉", "Fork")}
+          <Icon name="git" size={14} />
         </button>
       )}
     </div>
   );
   return (
     <article className={`message ${message.role} turn-${turn % 2 === 0 ? "even" : "odd"}`} ref={articleRef} data-message-id={message.id}>
-      {message.role !== "user" && meta}
+      {message.role !== "user" && metaLabel}
       {groupContentBlocks(content).map((group, index) => group.kind === "tool-group"
         ? <ToolCallListGroup key={index} calls={groupCallsFromBlocks(group.blocks, toolResults, running)} />
         : <ContentBlock key={index} block={group.block} toolResults={toolResults} liveSubagents={liveSubagents} />)}
@@ -289,7 +319,8 @@ function MessageCard({ message, turn, toolResults, liveSubagents, shellCmd }: Me
           <Icon name="send" size={11} /> {t("发给 agent", "Send to agent")}
         </button>
       )}
-      {message.role === "user" && meta}
+      {message.role === "user" && metaLabel}
+      {actionBar}
     </article>
   );
 }

@@ -114,7 +114,7 @@ export function ToolCallGroupRow({ call }: { call: ToolGroupCall }): ReactElemen
         <b className="mono tool-row-name">{call.name || t("执行结果", "Result")}</b>
         {summary && <span className="tool-row-summary mono" title={summary}>{summary}</span>}
         <span className="tool-row-actions">
-          <button type="button" className="tool-row-view" onClick={(event) => { event.stopPropagation(); toggle(); }}>{t("查看", "View")}</button>
+          {call.result && <span className="tool-row-meta mono">{t(`${call.result.body.length} 字符`, `${call.result.body.length} chars`)}</span>}
           <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
         </span>
       </div>

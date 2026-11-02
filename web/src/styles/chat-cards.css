@@ -1,45 +1,80 @@
 /* 消息渲染与卡片样式：从旧 styles.css 抽取适配（消息卡/思考/工具行/子代理/权限/交互/错误卡/活动条/队列/搜索）。
    差异：.send-to-agent 去掉负边距重叠（正常流内间距）；.live-activity 改文档流内占位（不再 sticky 覆盖消息）。 */
 
-/* ================= 消息卡 ================= */
-.message, .permission-card { position: relative; max-width: min(100%, var(--content-max)); margin: 0 0 26px; }
+/* ================= 消息卡（去气泡化 + 左侧元信息列） ================= */
+.message, .permission-card { position: relative; max-width: min(100%, var(--content-max)); margin: 0 0 var(--sp-24); }
+/* 助手/工具消息：左侧 72px 固定元信息列，内容列与之对齐 */
+.message.assistant, .message.tool { padding-left: 72px; }
 .message.assistant > .markdown { max-width: var(--reading-max); font-size: var(--text-m); line-height: var(--lh-relaxed); }
-/* user 消息：右对齐气泡列（气泡 + 下方右对齐的元信息行） */
-.message.user { margin-top: 8px; display: flex; flex-direction: column; align-items: flex-end; }
-.message-meta {
+.message > .message-meta {
+  position: absolute;
+  left: 0;
+  top: 2px;
+  width: 64px;
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 7px;
-  font-size: var(--text-xs);
-  color: var(--text-3);
-}
-.message.user .message-meta { justify-content: flex-end; flex-wrap: wrap; row-gap: 4px; max-width: 100%; margin: 6px 2px 0; }
-.message-author { font-weight: var(--fw-600); color: var(--text-2); font-size: var(--text-xs); letter-spacing: 0.01em; }
-.message-meta time { font-family: var(--font-mono); font-size: var(--text-2xs); }
-.copy-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-4);
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
   font-size: var(--text-2xs);
   color: var(--text-3);
-  padding: var(--sp-2) var(--sp-8);
-  border-radius: var(--radius-s);
-  opacity: 0;
-  transition: opacity 0.15s;
+  line-height: var(--lh-tight);
 }
-.message:hover .copy-btn, .message:focus-within .copy-btn, .copy-btn:focus-visible { opacity: 1; }
-@media (hover: none) { .message .copy-btn { opacity: 1; } }
-.copy-btn:hover { background: var(--surface-inset); color: var(--accent); }
+.message-author { font-weight: var(--fw-500); color: var(--text-2); font-size: var(--text-2xs); }
+.message-meta time { font-family: var(--font-mono); font-size: var(--text-2xs); }
+/* 用户消息：右对齐浅底块，元信息在块下方 */
+.message.user { margin-top: var(--sp-8); display: flex; flex-direction: column; align-items: flex-end; }
+.message.user .message-meta {
+  position: static;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--sp-8);
+  width: auto;
+  max-width: 100%;
+  margin: var(--sp-4) var(--sp-2) 0;
+}
+.message-actions {
+  display: flex;
+  gap: 2px;
+  height: 24px;
+  margin-top: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-standard);
+}
+.message.user .message-actions { justify-content: flex-end; }
+.message:hover .message-actions,
+.message:focus-within .message-actions { opacity: 1; }
+@media (hover: none) { .message-actions { opacity: 1; } }
+.action-btn {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  color: var(--text-3);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-standard), color var(--dur-1) var(--ease-standard);
+}
+.action-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .message.user .markdown {
   display: inline-block;
   max-width: min(80%, 720px);
-  background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 12%, transparent);
-  border-radius: 14px 14px 5px 14px;
-  padding: 10px 15px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius) var(--radius) var(--radius-xs) var(--radius);
+  padding: var(--sp-8) var(--sp-12);
+  font-size: var(--text-m);
+  line-height: var(--lh-normal);
 }
-@media (max-width: 768px) { .message.user .markdown { max-width: 92%; padding: 9px 12px; } }
+@media (max-width: 768px) {
+  .message.assistant, .message.tool { padding-left: 0; }
+  .message > .message-meta { position: static; flex-direction: row; gap: var(--sp-8); width: auto; margin-bottom: var(--sp-4); }
+  .message.user .markdown { max-width: 92%; padding: var(--sp-8) var(--sp-12); }
+}
 /* 紧凑密度：表格降档 */
 @media (max-width: 768px) { .markdown th, .markdown td { padding: 3px 6px; } }
 .message-image { max-width: 320px; max-height: 240px; border-radius: var(--radius-s); border: 1px solid var(--border); display: block; margin: 4px 0; }
@@ -131,18 +166,17 @@
 
 /* ================= 思考块 ================= */
 .thinking {
-  background: var(--surface-inset);
-  background: color-mix(in srgb, var(--surface-inset) 58%, transparent);
-  border-left: 3px solid var(--border);
-  border-radius: 0 var(--radius-s) var(--radius-s) 0;
-  padding: var(--sp-8) var(--sp-12);
+  background: transparent;
+  border-left: 2px solid var(--border-subtle);
+  border-radius: 0;
+  padding: var(--sp-2) 0 var(--sp-2) var(--sp-12);
   margin: var(--sp-8) 0;
   max-width: min(100%, var(--content-max));
   color: var(--text-3);
 }
-.thinking summary { cursor: pointer; font-size: var(--text-xs); font-weight: var(--fw-600); color: var(--text-3); }
+.thinking summary { cursor: pointer; font-size: var(--text-xs); font-weight: var(--fw-400); color: var(--text-3); }
 .thinking summary:hover { color: var(--text-2); }
-.thinking[open] summary { margin-bottom: 8px; }
+.thinking[open] summary { margin-bottom: var(--sp-8); }
 .thinking .markdown { color: var(--text-3); font-size: var(--text-s); line-height: var(--lh-normal); }
 .thinking.live summary::after { content: "…"; }
 
@@ -184,14 +218,16 @@
 /* 工具调用/结果紧凑折叠行（默认折叠，「查看」/chevron 展开；同消息内连续多行成组紧凑） */
 .tool-row {
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  margin: 6px 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  margin: 2px 0;
   max-width: min(100%, var(--content-max));
-  transition: border-color 0.15s var(--ease-standard), background-color 0.15s var(--ease-standard);
+  transition: background-color var(--dur-1) var(--ease-standard), border-color var(--dur-1) var(--ease-standard);
 }
-.tool-row:hover { border-color: var(--border-strong); }
-.tool-row.open { background: var(--surface-subtle); }
+.tool-row .collapse-row { min-height: 28px; padding: 0 var(--sp-8); }
+.tool-row .collapse-row:hover { color: var(--text); }
+.tool-row:hover { background: var(--surface-hover); }
+.tool-row.open { background: var(--surface-subtle); border-color: var(--border-subtle); }
 .tool-row.error { border-color: var(--danger-border); }
 .tool-row-status { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--text-3); }
 .tool-row-status.done { color: var(--text-3); }
@@ -205,14 +241,14 @@
   background: var(--accent);
   animation: pulse 1.6s ease-in-out infinite;
 }
-.tool-row-name { flex: 0 0 auto; }
+.tool-row-name { flex: 0 0 auto; font-size: var(--text-s); font-weight: var(--fw-500); }
 /* 不可展开的单行（如服务端联网搜索）：与 .collapse-row 同排布，但无指针/hover 交互暗示 */
 .tool-row-static {
   display: flex;
   align-items: center;
   gap: var(--sp-8);
-  padding: 0 var(--sp-12);
-  min-height: 40px;
+  padding: 0 var(--sp-8);
+  min-height: 28px;
   font-size: var(--text-s);
   min-width: 0;
 }
@@ -226,7 +262,8 @@
   color: var(--text-2);
   font-size: var(--text-xs);
 }
-.tool-row-actions { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; color: var(--text-3); }
+.tool-row-actions { display: inline-flex; align-items: center; gap: var(--sp-8); flex: 0 0 auto; color: var(--text-3); }
+.tool-row-meta { font-size: var(--text-2xs); color: var(--text-3); white-space: nowrap; }
 .tool-row-view {
   border: none;
   background: transparent;

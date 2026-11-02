@@ -263,6 +263,13 @@ const PATHS = {
       <circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" />
     </>
   ),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18" />
+    </>
+  ),
   // 实心圆点/方块用 fill（状态点、图例色块），viewBox 与描边图标一致
   "circle-filled": <circle cx="12" cy="12" r="7" fill="currentColor" stroke="none" />,
   square: <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" />,
