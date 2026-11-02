@@ -232,7 +232,6 @@ export function TypographySection(): ReactElement {
           <MotionPreview />
         </SettingsRow>
       </SettingsCard>
-      <MotionPreview />
     </>
   );
 }

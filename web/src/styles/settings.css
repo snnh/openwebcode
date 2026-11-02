@@ -33,7 +33,7 @@
   flex-direction: column;
   gap: var(--sp-4);
   width: 100%;
-  padding: var(--sp-10) var(--sp-12);
+  padding: 10px var(--sp-12);
   text-align: left;
   color: inherit;
 }
@@ -225,7 +225,7 @@
   align-items: center;
   gap: 7px;
   height: var(--setting-control-h);
-  padding: 0 var(--sp-10);
+  padding: 0 10px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-full);
   background: var(--surface-inset);
@@ -769,10 +769,10 @@
   .segmented-item { flex: 1 1 0; padding: 0 var(--sp-8); }
 }
 .font-note { padding: 0 0 var(--sp-12); margin-top: calc(var(--sp-8) * -1); font-size: var(--text-2xs); color: var(--text-3); line-height: 1.5; }
-.settings-card .notifications-actions { padding: var(--sp-10) var(--sp-12) 0; margin: 0; }
+.settings-card .notifications-actions { padding: 10px var(--sp-12) 0; margin: 0; }
 .settings-card .notifications-list { padding: var(--sp-8); max-height: 52vh; }
 .notifications-empty { padding: var(--sp-16); margin: 0; }
-.font-notice { display: flex; align-items: center; gap: var(--sp-8); margin: var(--sp-6) 0 0; font-size: var(--text-xs); color: var(--ok); }
+.font-notice { display: flex; align-items: center; gap: var(--sp-8); margin: 6px 0 0; font-size: var(--text-xs); color: var(--ok); }
 .font-notice.removed { color: var(--text-2); }
 .font-notice button { color: var(--accent); font-size: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .accent-hex-input.invalid { border-color: var(--danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent); }
