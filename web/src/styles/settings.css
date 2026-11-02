@@ -407,3 +407,171 @@
 .notification-dismiss { margin-top: 6px; min-width: 32px; min-height: 32px; }
 .access-link-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .access-link-row code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: var(--text-xs); }
+
+/* ================= 排版与动效 ================= */
+.typography-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-12);
+  margin-bottom: var(--sp-8);
+}
+.typography-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+.typography-select { width: 100%; }
+.settings-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  margin-top: var(--sp-8);
+  font-size: var(--text-s);
+  color: var(--text-2);
+}
+.typography-advanced {
+  margin-top: var(--sp-12);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--sp-8);
+}
+.typography-advanced summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  margin-bottom: var(--sp-8);
+}
+.typography-advanced summary:hover { color: var(--text-2); }
+.typography-advanced .typography-field { margin-bottom: var(--sp-8); }
+.typography-scale {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  margin-bottom: var(--sp-8);
+}
+.scale-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-12);
+  font-size: var(--text-xs);
+  color: var(--text-2);
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+  transition: background-color var(--dur-1) var(--ease-standard), color var(--dur-1) var(--ease-standard);
+}
+.scale-option:last-child { border-right: none; }
+.scale-option:hover { background: var(--surface-hover); color: var(--text); }
+.scale-option.active { background: var(--surface-active); color: var(--text); }
+.scale-option input { position: absolute; opacity: 0; pointer-events: none; }
+
+.motion-preview {
+  margin-top: var(--sp-12);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--surface-card);
+  padding: var(--sp-12);
+}
+.motion-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-12);
+  flex-wrap: wrap;
+}
+.motion-preview-scenes {
+  display: inline-flex;
+  gap: var(--sp-4);
+}
+.motion-scene {
+  height: 24px;
+  padding: 0 var(--sp-8);
+  border-radius: var(--radius-xs);
+  font-size: var(--text-2xs);
+  color: var(--text-3);
+  transition: background-color var(--dur-1) var(--ease-standard), color var(--dur-1) var(--ease-standard);
+}
+.motion-scene:hover { background: var(--surface-hover); color: var(--text); }
+.motion-scene.active { background: var(--surface-active); color: var(--text); }
+.motion-preview-actions { display: inline-flex; align-items: center; gap: var(--sp-8); }
+.motion-loop { display: inline-flex; align-items: center; gap: var(--sp-4); font-size: var(--text-2xs); color: var(--text-3); }
+.motion-preview-stage {
+  height: 180px;
+  margin-top: var(--sp-8);
+  border-radius: var(--radius-s);
+  background: var(--surface-inset);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+.motion-preview-note { margin: var(--sp-8) 0 0; font-size: var(--text-2xs); color: var(--text-3); }
+
+/* 预览幕 1：弹层 */
+.scene-popover { position: relative; display: flex; flex-direction: column; align-items: center; gap: var(--sp-8); }
+.scene-popover-panel {
+  width: 220px;
+  padding: var(--sp-8) var(--sp-12);
+  border-radius: var(--radius);
+  background: var(--surface-floating);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.scene-popover-panel strong { font-size: var(--text-s); font-weight: var(--fw-600); }
+.scene-popover-panel span { font-size: var(--text-2xs); color: var(--text-3); }
+
+/* 预览幕 2：消息 */
+.scene-messages { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: var(--sp-8); padding: 0 var(--sp-12); }
+.scene-bubble { font-size: var(--text-s); line-height: var(--lh-normal); padding: var(--sp-8) var(--sp-12); border-radius: var(--radius); max-width: 80%; }
+.scene-bubble.user { align-self: flex-end; background: var(--surface-card); border: 1px solid var(--border-subtle); }
+.scene-bubble.assistant { align-self: flex-start; color: var(--text-2); }
+
+/* 预览幕 3：工具轨道 */
+.scene-tool { width: 100%; max-width: 460px; padding: 0 var(--sp-12); }
+.scene-tool-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--sp-8);
+  border-radius: var(--radius-s);
+  font-size: var(--text-s);
+  text-align: left;
+}
+.scene-tool-row:hover { background: var(--surface-hover); }
+.scene-tool-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+.scene-tool-summary { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: var(--text-xs); }
+.scene-tool-meta { font-size: var(--text-2xs); color: var(--text-3); }
+.scene-tool-body { overflow: hidden; background: var(--surface-subtle); border-radius: var(--radius-s); }
+.scene-tool-body pre { margin: 0; padding: var(--sp-8); font-size: var(--text-2xs); color: var(--text-2); }
+
+/* 预览幕 4：微交互 */
+.scene-micro { display: flex; align-items: center; gap: var(--sp-12); }
+.scene-switch {
+  width: 32px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--border-strong);
+  position: relative;
+  transition: background-color var(--dur-2) var(--ease-standard);
+}
+.scene-switch span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface-card);
+  transition: transform var(--dur-2) var(--ease-standard);
+}
+.scene-switch.on { background: var(--accent); }
+.scene-switch.on span { transform: translateX(14px); }
+.scene-micro-label { font-size: var(--text-xs); color: var(--text-3); }

@@ -263,6 +263,13 @@ const PATHS = {
       <circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" />
     </>
   ),
+  type: (
+    <>
+      <path d="M4 7V5h16v2" />
+      <path d="M12 5v14" />
+      <path d="M9 19h6" />
+    </>
+  ),
   globe: (
     <>
       <circle cx="12" cy="12" r="9" />
