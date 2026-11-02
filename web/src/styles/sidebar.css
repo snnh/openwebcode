@@ -58,7 +58,7 @@
 .brand { font-size: var(--text-m); font-weight: var(--fw-600); letter-spacing: -0.01em; margin-right: auto; }
 .brand b { color: var(--accent); font-weight: var(--fw-600); }
 /* 会话行只让出「状态 + 置顶 + 更多」的空间；待回答角标出现时再增加一档。 */
-.sessions-view .session-link { padding: 9px 66px 9px 10px; }
+.sessions-view .session-link { padding: 6px 66px 6px var(--sp-8); }
 .sessions-view .session-item.has-attention .session-link { padding-right: 100px; }
 .session-rename {
   flex: 1;
@@ -80,11 +80,17 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-standard);
   /* 容器不拦截点击：它压在 .session-link 让出的右侧空白上，若吞掉事件，
      点在标题右侧就会落空（E2E 点击链接中心时被按钮图标 intercept）。按钮自身恢复可点。 */
   pointer-events: none;
 }
 .session-actions > * { pointer-events: auto; }
+.session-item:hover .session-actions,
+.session-item:focus-within .session-actions,
+.session-item.active .session-actions { opacity: 1; }
+@media (hover: none) { .session-actions { opacity: 1; } }
 /* 运行点收进操作钮容器内随排（覆盖 layout.css 的绝对定位极简版） */
 .session-actions .running-dot { position: static; flex: none; }
 /* 待回答角标：别的会话在等你操作时比「运行中」更需要被看见（琥珀底 + 数字） */

@@ -15,8 +15,8 @@ export type BottomTab = "context" | "timeline" | "cost" | "subagents" | "sandbox
 
 const BOTTOM_TABS: readonly BottomTab[] = ["context", "timeline", "cost", "subagents", "sandbox", "perf", "eval", "dshSync"];
 
-export const RAIL_MIN_WIDTH = 200;
-export const RAIL_MAX_WIDTH = 380;
+export const RAIL_MIN_WIDTH = 240;
+export const RAIL_MAX_WIDTH = 420;
 export const PANEL_MIN_HEIGHT = 140;
 export const PANEL_MAX_HEIGHT = 600;
 
@@ -75,7 +75,7 @@ function loadBottomTab(): BottomTab {
 const INITIAL_STATE: LayoutState = {
   sidebarView: loadSidebarView(),
   sidebarVisible: readStored(COLLAPSED_KEY) !== "1",
-  sidebarWidth: clampRailWidth(Number(readStored(WIDTH_KEY)) || 250),
+  sidebarWidth: clampRailWidth(Number(readStored(WIDTH_KEY)) || 280),
   bottomOpen: readStored(PANEL_OPEN_KEY) === "1",
   bottomTab: loadBottomTab(),
   bottomHeight: clampPanelHeight(Number(readStored(PANEL_HEIGHT_KEY)) || 260),
