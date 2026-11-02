@@ -532,17 +532,21 @@
   .panel-status .status-live { flex: none; }
 }
 
-/* 窄屏面板标签只留图标（名称在 aria-label/title），把整行让给完整模型名 */
+/* 窄屏底栏两行：第一行标签完整文字，第二行状态 + 完整模型名 */
 @media (max-width: 560px) {
-  .panel-tabs:not(.panel-tabs-secondary) > button { padding-left: 8px; padding-right: 8px; }
-  .panel-tabs:not(.panel-tabs-secondary) .panel-tab-label { display: none; }
-  .panel-tabs .panel-tabs-more, .panel-tabs .panel-fold { width: 30px; min-width: 30px; }
+  .panel-tabs { flex-wrap: wrap; row-gap: 0; padding-bottom: 0; }
+  .panel-tabs > button { padding-left: 7px; padding-right: 7px; }
+  .panel-tabs .panel-fold { order: 4; }
+  .panel-tabs .panel-status {
+    order: 5;
+    flex: 1 0 100%;
+    margin-left: 0;
+    padding: 4px 8px calc(4px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border-subtle);
+    justify-content: flex-start;
+  }
 }
 
-@media (max-width: 480px) {
-  .panel-status .status-live-text { display: none; }
-  .panel-status .panel-status-model { max-width: 52vw; }
-}
 
 /* 触屏：拖拽柄只有 onMouseDown，触屏不可用且占位（移动端 sheet 全屏也不可拖） */
 @media (hover: none) {
