@@ -15,11 +15,12 @@
   flex-direction: column;
   gap: 2px;
   margin: 0;
+  overflow: hidden;
   font-size: var(--text-2xs);
   color: var(--text-3);
   line-height: var(--lh-tight);
 }
-.message-author { font-weight: var(--fw-500); color: var(--text-2); font-size: var(--text-2xs); }
+.message-author { font-weight: var(--fw-500); color: var(--text-2); font-size: var(--text-2xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-meta time { font-family: var(--font-mono); font-size: var(--text-2xs); }
 /* 用户消息：右对齐浅底块，元信息在块下方 */
 .message.user { margin-top: var(--sp-8); display: flex; flex-direction: column; align-items: flex-end; }

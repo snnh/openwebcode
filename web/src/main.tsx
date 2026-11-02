@@ -8,6 +8,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { LoadingFallback } from "./components/LoadingFallback";
 import { installBootGuards } from "./lib/crash-log";
 import { I18nProvider } from "./i18n";
+import { LabPage } from "./lab/LabPage";
 import { LazyMotion, domAnimation } from "motion/react";
 import { applyAppearance } from "./lib/appearance-prefs";
 import { installMotionPreference } from "./lib/motion-pref";
@@ -69,12 +70,15 @@ installBootGuards();
 applyAppearance();
 installMotionPreference();
 
+const lab = import.meta.env.DEV && window.location.pathname === "/__lab";
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
+    {lab ? <I18nProvider><LabPage /></I18nProvider> : (
     <QueryClientProvider client={queryClient}>
       <LazyMotion features={domAnimation} strict>
         <Shell />
       </LazyMotion>
-    </QueryClientProvider>
+    </QueryClientProvider>)}
   </StrictMode>,
 );
