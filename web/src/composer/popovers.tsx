@@ -319,7 +319,7 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, eff
         onClick={() => setOpen((v) => !v)}
       >
         <span className="model-menu-btn-label">
-          {/* 只显模型名（provider 前缀在底部状态栏有完整展示）；思考程度徽标始终完整显示，
+          {/* 只显模型名（provider 前缀在底部状态栏有完整展示）；思考程度文本始终完整显示，
               空间不足时被收缩省略的是模型名（model-menu-btn-name） */}
           <span className="model-menu-btn-name">
             {(current.model || t("未选择模型", "No model")).includes("/")

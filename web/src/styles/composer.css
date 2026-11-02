@@ -101,7 +101,7 @@
 .composer-menu-btn.open { color: var(--text); border-color: var(--border-subtle); background: var(--surface-hover); }
 .composer-menu-btn.active { color: var(--text); }
 /* .composer-menu-badge 仅作窄屏隐藏的功能钩子，视觉样式由 .pill 提供 */
-/* 模型按钮文字：模型名可收缩省略，思考程度徽标始终完整显示 */
+/* 模型按钮文字：模型名可收缩省略，思考程度与模型名同色同字号，仅以「 · 」分隔 */
 .model-menu-btn-label {
   max-width: 220px;
   min-width: 0;
@@ -113,12 +113,12 @@
 }
 .model-menu-btn-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-menu-btn-thinking {
-  color: var(--accent);
-  background: var(--accent-soft);
-  font-size: var(--text-2xs);
-  line-height: 1;
-  padding: 3px 6px;
-  border-radius: var(--radius-full);
+  color: inherit;
+  background: none;
+  font-size: inherit;
+  line-height: inherit;
+  padding: 0;
+  border-radius: 0;
   flex-shrink: 0;
   white-space: nowrap;
 }
@@ -371,7 +371,7 @@
   /* 分段控件窄屏紧凑化：两段文字短（补充/续跑），保持触达可点 */
   .queue-option { min-height: 30px; padding: 0 6px; }
   .composer-send { margin-left: auto; }
-  /* 思考程度徽标窄屏仍完整显示（flex-shrink:0 由基础规则保证）；收缩压力全由模型名承担 */
+  /* 思考程度文本窄屏仍完整显示（flex-shrink:0 由基础规则保证）；收缩压力全由模型名承担 */
   /* 折叠钮：输入框右下小箭头（向下=折叠、向上=展开），与 textarea 底部对齐不挤压内容 */
   .composer-fold {
     flex: none;
