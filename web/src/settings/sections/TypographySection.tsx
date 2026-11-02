@@ -158,7 +158,7 @@ export function TypographySection(): ReactElement {
         <input
           className="input"
           value={draft}
-          placeholder={t("输入字体族名，如 HarmonyOS Sans SC", "Font family name, e.g. HarmonyOS Sans SC")}
+          placeholder={t("字体族名，如 OPPO Sans", "Font family name, e.g. OPPO Sans")}
           aria-label={t("添加系统字体", "Add a system font")}
           onChange={(event) => { setDraft(event.target.value); setError(undefined); }}
           onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addFont(); } }}
