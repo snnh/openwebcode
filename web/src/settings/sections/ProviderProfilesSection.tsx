@@ -64,6 +64,8 @@ interface WebProviderForm {
   searchBaseURL: string;
   fetchBaseURL: string;
   searchDepth: string;
+  searchEdition: string;
+  complianceScene: string;
   resultCount: string;
   clearApiKey: boolean;
 }
@@ -76,6 +78,8 @@ const emptyWebProvider = (): WebProviderForm => ({
   searchBaseURL: "",
   fetchBaseURL: "",
   searchDepth: "",
+  searchEdition: "",
+  complianceScene: "domestic",
   resultCount: "",
   clearApiKey: false,
 });
@@ -297,15 +301,20 @@ export function WebProvidersSection(): ReactElement {
     searchBaseURL: profile.searchBaseURL ?? "",
     fetchBaseURL: profile.fetchBaseURL ?? "",
     searchDepth: profile.searchDepth ?? "",
+    searchEdition: profile.searchEdition ?? "",
+    complianceScene: profile.complianceScene ?? "domestic",
     resultCount: profile.resultCount ? String(profile.resultCount) : "",
     clearApiKey: false,
   });
   const normalizedCapabilities = (provider: WebProviderType, selected: WebCapability[]): WebCapability[] =>
-    provider === "jina" || provider === "tavily" || provider === "firecrawl"
+    provider === "jina" || provider === "tavily" || provider === "firecrawl" || provider === "exa"
       ? ["search", "fetch"]
-      : provider === "brave" || provider === "bing" || provider === "exa" || provider === "linkup" || provider === "bocha" || provider === "searxng"
-        ? ["search"]
-        : selected;
+      : provider === "scrapingbee" || provider === "scraperapi" || provider === "zenrows"
+        ? ["fetch"]
+        : provider === "brave" || provider === "bing" || provider === "linkup" || provider === "bocha" || provider === "searxng" || provider === "baidu"
+          ? ["search"]
+          : selected;
+  const webCapabilities = normalizedCapabilities(webForm.provider, webForm.capabilities);
   const saveWebProvider = (): void => {
     const id = webForm.id.trim();
     if (!id) { setError(t("联网服务商名称不能为空", "Web provider name is required")); return; }
@@ -316,6 +325,10 @@ export function WebProvidersSection(): ReactElement {
       ...(webForm.searchBaseURL.trim() ? { searchBaseURL: webForm.searchBaseURL.trim() } : { searchBaseURL: null }),
       ...(webForm.fetchBaseURL.trim() ? { fetchBaseURL: webForm.fetchBaseURL.trim() } : { fetchBaseURL: null }),
       ...(webForm.searchDepth === "advanced" || webForm.searchDepth === "basic" ? { searchDepth: webForm.searchDepth } : { searchDepth: null }),
+      ...(webForm.searchEdition === "turbo" || webForm.searchEdition === "pro" ? { searchEdition: webForm.searchEdition } : { searchEdition: null }),
+      ...(webForm.provider === "baidu" && webForm.searchEdition === "turbo"
+        ? { complianceScene: webForm.complianceScene === "abroad" || webForm.complianceScene === "auto" ? webForm.complianceScene : "domestic" }
+        : { complianceScene: null }),
       ...(webForm.resultCount.trim() && Number.isSafeInteger(Number(webForm.resultCount)) && Number(webForm.resultCount) > 0 ? { resultCount: Number(webForm.resultCount) } : { resultCount: null }),
       ...(webForm.clearApiKey ? { apiKey: null } : webForm.apiKey.trim() ? { apiKey: webForm.apiKey.trim() } : {}),
     };
@@ -354,7 +367,7 @@ export function WebProvidersSection(): ReactElement {
         <h4>{webForm.originalId ? t("编辑联网服务商", "Edit web provider") : t("添加联网服务商", "Add web provider")}</h4>
         <div className="catalog-form">
           <input className="input" value={webForm.id} disabled={Boolean(webForm.originalId)} placeholder={t("配置名称", "Profile name")} onChange={(event) => setWebForm((current) => ({ ...current, id: event.target.value }))} />
-          <select className="input" value={webForm.provider} onChange={(event) => { const provider = event.target.value as WebProviderType; setWebForm((current) => ({ ...current, provider, capabilities: normalizedCapabilities(provider, current.capabilities) })); }}><option value="brave">Brave</option><option value="tavily">Tavily</option><option value="bing">Bing</option><option value="exa">Exa</option><option value="linkup">LinkUp</option><option value="bocha">Bocha</option><option value="searxng">SearXNG</option><option value="jina">Jina</option><option value="firecrawl">Firecrawl</option><option value="custom">Custom</option></select>
+          <select className="input" value={webForm.provider} onChange={(event) => { const provider = event.target.value as WebProviderType; setWebForm((current) => ({ ...current, provider, capabilities: normalizedCapabilities(provider, current.capabilities), ...(provider === "baidu" && current.searchDepth === "basic" ? { searchDepth: "" } : {}) })); }}><option value="brave">Brave</option><option value="tavily">Tavily</option><option value="bing">Bing</option><option value="exa">Exa</option><option value="linkup">LinkUp</option><option value="bocha">Bocha</option><option value="baidu">{t("百度 AI 搜索（千帆）", "Baidu AI Search (Qianfan)")}</option><option value="searxng">SearXNG</option><option value="jina">Jina</option><option value="firecrawl">Firecrawl</option><option value="scrapingbee">ScrapingBee</option><option value="scraperapi">ScraperAPI</option><option value="zenrows">ZenRows</option><option value="custom">Custom</option></select>
           <input className="input" type="password" value={webForm.apiKey} placeholder={webForm.originalId ? t("API Key（留空保留）", "API Key (blank keeps current)") : "API Key"} onChange={(event) => setWebForm((current) => ({ ...current, apiKey: event.target.value, clearApiKey: false }))} autoComplete="off" />
         </div>
         {webForm.provider === "custom" && <div className="settings-row"><label className="theme-option"><input type="checkbox" checked={webForm.capabilities.includes("search")} onChange={() => toggleWebCapability("search")} />{t("搜索", "Search")}</label><label className="theme-option"><input type="checkbox" checked={webForm.capabilities.includes("fetch")} onChange={() => toggleWebCapability("fetch")} />{t("抓取", "Fetch")}</label></div>}
@@ -363,7 +376,9 @@ export function WebProvidersSection(): ReactElement {
           {(webForm.provider === "custom" && webForm.capabilities.includes("search")) && <input className="input" value={webForm.searchBaseURL} placeholder={t("Search Base URL", "Search Base URL")} onChange={(event) => setWebForm((current) => ({ ...current, searchBaseURL: event.target.value }))} spellCheck={false} />}
           {(webForm.provider === "custom" && webForm.capabilities.includes("fetch")) && <input className="input" value={webForm.fetchBaseURL} placeholder={t("Fetch Base URL（含 {url}）", "Fetch Base URL (contains {url})")} onChange={(event) => setWebForm((current) => ({ ...current, fetchBaseURL: event.target.value }))} spellCheck={false} />}
           {(webForm.provider === "tavily" || webForm.provider === "linkup" || webForm.provider === "exa") && <select className="input" value={webForm.searchDepth} onChange={(event) => setWebForm((current) => ({ ...current, searchDepth: event.target.value }))}><option value="">{t("搜索深度（默认）", "Search depth (default)")}</option><option value="basic">Basic</option><option value="advanced">Advanced</option></select>}
-          {(webForm.provider !== "custom" || webForm.capabilities.includes("search")) && <input className="input" value={webForm.resultCount} placeholder={t("结果数量上限（可选）", "Result count limit (optional)")} type="number" min="1" onChange={(event) => setWebForm((current) => ({ ...current, resultCount: event.target.value }))} />}
+          {webForm.provider === "baidu" && <select className="input" value={webForm.searchEdition} onChange={(event) => setWebForm((current) => ({ ...current, searchEdition: event.target.value }))}><option value="">{t("标准版（默认）", "Standard edition (default)")}</option><option value="turbo">{t("增强版 turbo（支持国内外内容）", "Turbo edition (domestic & overseas)")}</option><option value="pro">{t("旗舰版 pro（仅国内内容）", "Flagship pro (domestic only)")}</option></select>}
+          {webForm.provider === "baidu" && webForm.searchEdition === "turbo" && <select className="input" value={webForm.complianceScene} onChange={(event) => setWebForm((current) => ({ ...current, complianceScene: event.target.value }))}><option value="domestic">{t("国内内容（默认）", "Domestic content (default)")}</option><option value="abroad">{t("国外内容", "Overseas content")}</option><option value="auto">{t("按 query 语言自动", "Auto by query language")}</option></select>}
+          {webCapabilities.includes("search") && <input className="input" value={webForm.resultCount} placeholder={t("结果数量上限（可选）", "Result count limit (optional)")} type="number" min="1" onChange={(event) => setWebForm((current) => ({ ...current, resultCount: event.target.value }))} />}
         </div>
         {webForm.originalId && <label className="theme-option"><input type="checkbox" checked={webForm.clearApiKey} onChange={(event) => setWebForm((current) => ({ ...current, clearApiKey: event.target.checked, apiKey: "" }))} />{t("清除 API Key", "Clear API key")}</label>}
         <div className="dialog-actions"><button className="btn small" disabled={busy} onClick={() => setWebForm(emptyWebProvider())}>{t("取消", "Cancel")}</button><button className="btn small primary" disabled={busy} onClick={saveWebProvider}>{t("保存服务商", "Save provider")}</button></div>

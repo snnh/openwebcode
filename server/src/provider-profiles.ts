@@ -6,7 +6,7 @@ import { ensureDirWithMode } from "./fs-utils.js";
 
 type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses";
 export type WebCapability = "search" | "fetch";
-type WebProviderType = "jina" | "brave" | "tavily" | "custom" | "bing" | "searxng" | "exa" | "linkup" | "bocha" | "firecrawl";
+type WebProviderType = "jina" | "brave" | "tavily" | "custom" | "bing" | "searxng" | "exa" | "linkup" | "bocha" | "firecrawl" | "baidu" | "scrapingbee" | "scraperapi" | "zenrows";
 
 export interface ModelProviderProfile {
   id: string;
@@ -30,6 +30,10 @@ export interface WebProviderProfile {
   searchBaseURL?: string;
   fetchBaseURL?: string;
   searchDepth?: "basic" | "advanced";
+  /** 百度 AI 搜索版本：standard 标准版（默认）/ turbo 增强版 / pro 旗舰版（计费与能力不同）。 */
+  searchEdition?: "standard" | "turbo" | "pro";
+  /** 百度 AI 搜索国内外内容控制（仅 turbo 生效）：domestic 国内（默认）/ abroad 国外 / auto 按 query 语言自动。 */
+  complianceScene?: "domestic" | "abroad" | "auto";
   resultCount?: number;
 }
 
@@ -105,8 +109,9 @@ function uniqueCapabilities(value: unknown): WebCapability[] {
 }
 
 function capabilitiesFor(provider: WebProviderType, requested?: unknown): WebCapability[] {
-  if (provider === "jina" || provider === "tavily" || provider === "firecrawl") return ["search", "fetch"];
-  if (provider === "brave" || provider === "bing" || provider === "exa" || provider === "linkup" || provider === "bocha" || provider === "searxng") return ["search"];
+  if (provider === "jina" || provider === "tavily" || provider === "firecrawl" || provider === "exa") return ["search", "fetch"];
+  if (provider === "brave" || provider === "bing" || provider === "linkup" || provider === "bocha" || provider === "searxng" || provider === "baidu") return ["search"];
+  if (provider === "scrapingbee" || provider === "scraperapi" || provider === "zenrows") return ["fetch"];
   return uniqueCapabilities(requested);  // custom
 }
 
@@ -168,7 +173,7 @@ function normalizeWeb(value: unknown): WebProviderProfile {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ProviderProfilesValidationError("联网服务商配置必须是对象");
   const raw = value as Record<string, unknown>;
   const id = requireId(raw.id);
-  const VALID_PROVIDERS: readonly string[] = ["jina", "brave", "tavily", "custom", "bing", "searxng", "exa", "linkup", "bocha", "firecrawl"];
+  const VALID_PROVIDERS: readonly string[] = ["jina", "brave", "tavily", "custom", "bing", "searxng", "exa", "linkup", "bocha", "firecrawl", "baidu", "scrapingbee", "scraperapi", "zenrows"];
   if (typeof raw.provider !== "string" || !VALID_PROVIDERS.includes(raw.provider)) {
     throw new ProviderProfilesValidationError(`联网服务类型必须是 ${VALID_PROVIDERS.join(" / ")}`);
   }
@@ -178,9 +183,15 @@ function normalizeWeb(value: unknown): WebProviderProfile {
   const searchBaseURL = optionalHttpUrl(raw.searchBaseURL, "Search Base URL");
   const fetchBaseURL = optionalHttpUrl(raw.fetchBaseURL, "Fetch Base URL");
   const searchDepth = raw.searchDepth === "advanced" ? "advanced" as const : raw.searchDepth === "basic" ? "basic" as const : undefined;
+  const searchEdition = raw.searchEdition === "turbo" ? "turbo" as const
+    : raw.searchEdition === "pro" ? "pro" as const
+      : raw.searchEdition === "standard" ? "standard" as const : undefined;
+  const complianceScene = raw.complianceScene === "abroad" ? "abroad" as const
+    : raw.complianceScene === "auto" ? "auto" as const
+      : raw.complianceScene === "domestic" ? "domestic" as const : undefined;
   const resultCount = raw.resultCount !== undefined ? (Number.isSafeInteger(raw.resultCount) && (raw.resultCount as number) > 0 ? raw.resultCount as number : undefined) : undefined;
-  // API Key 要求：brave/tavily/exa/linkup/bocha/firecrawl 必须配置；bing 可选（用 Ocp-Apim-Subscription-Key）；searxng 可无认证
-  const requiresKey = provider === "brave" || provider === "tavily" || provider === "exa" || provider === "linkup" || provider === "bocha" || provider === "firecrawl";
+  // API Key 要求：brave/tavily/exa/linkup/bocha/firecrawl/baidu/scrapingbee/scraperapi/zenrows 必须配置；bing 可选（用 Ocp-Apim-Subscription-Key）；searxng 可无认证
+  const requiresKey = provider === "brave" || provider === "tavily" || provider === "exa" || provider === "linkup" || provider === "bocha" || provider === "firecrawl" || provider === "baidu" || provider === "scrapingbee" || provider === "scraperapi" || provider === "zenrows";
   if (requiresKey && !apiKey) {
     throw new ProviderProfilesValidationError(`${provider} 必须配置 API Key`);
   }
@@ -201,6 +212,8 @@ function normalizeWeb(value: unknown): WebProviderProfile {
     ...(searchBaseURL ? { searchBaseURL } : {}),
     ...(fetchBaseURL ? { fetchBaseURL } : {}),
     ...(searchDepth ? { searchDepth } : {}),
+    ...(searchEdition ? { searchEdition } : {}),
+    ...(complianceScene ? { complianceScene } : {}),
     ...(resultCount ? { resultCount } : {}),
   };
 }

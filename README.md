@@ -45,7 +45,7 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 - **本机会话**：侧栏「终端」图标一键创建，以 server 身份直接在宿主机管理本机文件/服务（HOME 外访问需人工批准）。
 - **内置工具面板**：符号索引（`repo_map` / `code_search`）、测试诊断（Problems 面板）、SCM 面板（diff、stage、worktree 合回、生成提交信息）。
 - **任务清单**：标签栏右端折叠 chip，随时查看 agent 当前任务与进度；落盘跨重启存活（`/clear` 同步清空）。
-- **联网搜索与抓取**：Web Search / Web Fetch 走可配置的联网服务商（Jina / Brave / Tavily / Bing / SearXNG / Exa / LinkUp / Bocha / Firecrawl / Custom 共 10 种），或由模型服务商在服务端执行搜索（仅 OpenAI Responses）。
+- **联网搜索与抓取**：Web Search / Web Fetch 走可配置的联网服务商（Jina / Brave / Tavily / Bing / 百度 AI 搜索（千帆）/ SearXNG / Exa / LinkUp / Bocha / Firecrawl / ScrapingBee / ScraperAPI / ZenRows / Custom 共 14 种），或由模型服务商在服务端执行搜索（仅 OpenAI Responses）。
 - **定时任务（cron）**：会话内创建定时任务，到点自动注入 prompt 续跑；5 字段 cron 语法，持久化跨重启。
 - **移动端与远程访问**：响应式适配手机/平板；非回环监听强制访问令牌（自动生成或 `OWC_ACCESS_TOKEN`），可选 TOTP 全局登录。
 - **`owc run` CLI**：Headless NDJSON 事件流，支持 CI 集成。

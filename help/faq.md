@@ -122,7 +122,7 @@ ChatGPT 风格的纯对话模式（1.6.0 新增），适合问答、写作、数
 
 ### Q: 为什么没有 `web_fetch` 或 `web_search`？
 
-联网工具不默认注入，避免模型反复调用必然失败的工具。先在「设置 → 联网服务」页签保存联网服务商配置：共 10 种服务商（Jina / Brave / Tavily / Bing / SearXNG / Exa / LinkUp / Bocha / Firecrawl / Custom），每项声明 Search / Fetch 能力，再分别选当前配置。Jina、Tavily、Firecrawl 两项能力都支持（Tavily 的 Fetch 走 Extract API），Brave 等其余内置服务商只有 Search，Custom 可自行声明能力且 Fetch URL 必须含 `{url}`。没选对应能力就不提供该工具，不影响普通对话。
+联网工具不默认注入，避免模型反复调用必然失败的工具。先在「设置 → 联网服务」页签保存联网服务商配置：共 14 种服务商（Jina / Brave / Tavily / Bing / 百度 AI 搜索（千帆）/ SearXNG / Exa / LinkUp / Bocha / Firecrawl / ScrapingBee / ScraperAPI / ZenRows / Custom），每项声明 Search / Fetch 能力，再分别选当前配置。Jina、Tavily、Firecrawl、Exa 两项能力都支持（Tavily Fetch 走 Extract API，Exa Fetch 走 Contents API）；ScrapingBee、ScraperAPI、ZenRows 只提供 Fetch；Brave、百度 AI 搜索等其余内置服务商只有 Search，Custom 可自行声明能力且 Fetch URL 必须含 `{url}`。百度 AI 搜索填千帆 API Key 即可（每月免费额度 1500 次，可选标准版/增强版 turbo/旗舰版 pro；增强版还能选国内/国外/自动内容）。没选对应能力就不提供该工具，不影响普通对话。
 
 `https://mcp.tavily.com/mcp/?tavilyApiKey=...` 是 Tavily 的远程 MCP 地址；要用 Tavily 的完整工具集，把它写进 `<数据目录>/mcp.json`，别填进搜索 Base URL。
 

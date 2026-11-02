@@ -405,6 +405,73 @@ class ExaSearchProvider implements SearchProvider {
   }
 }
 
+class ExaContentsProvider implements WebFetchProvider {
+  constructor(readonly name: string, private readonly apiKey: string, private readonly fetchImpl: typeof fetch) {}
+
+  async fetchUrl(value: string, options: { signal?: AbortSignal } = {}): Promise<WebFetchResult> {
+    const requested = assertSafeWebUrl(value);
+    const response = await this.fetchImpl("https://api.exa.ai/contents", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+        "User-Agent": getUserAgent(),
+      },
+      body: JSON.stringify({
+        ids: [requested.href],
+        text: { maxCharacters: 20_000 },
+        maxAgeHours: 0,
+      }),
+      signal: withTimeout(options.signal, DEFAULT_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`Exa Contents returned HTTP ${response.status}`);
+    const body = await readJsonLimited(response, DEFAULT_MAX_BYTES) as {
+      results?: Array<{ text?: unknown; url?: unknown }>;
+      statuses?: Array<{ status?: unknown; error?: unknown }>;
+    };
+    const result = body.results?.[0];
+    if (!result || typeof result.text !== "string" || result.text.trim() === "") {
+      const failure = body.statuses?.find((item) => typeof item?.error === "string")?.error;
+      throw new Error(`Exa Contents returned no content${typeof failure === "string" && failure ? `: ${failure}` : ""}`);
+    }
+    return {
+      url: requested.href,
+      finalUrl: typeof result.url === "string" ? result.url : requested.href,
+      contentType: "text/markdown; charset=utf-8",
+      text: result.text,
+    };
+  }
+}
+
+/** ScrapingBee HTML API：默认渲染 JS 并直接返回 Markdown。 */
+function scrapingBeeEndpoint(requested: URL): URL {
+  const url = new URL("https://app.scrapingbee.com/api/v1");
+  url.searchParams.set("url", requested.href);
+  url.searchParams.set("return_page_markdown", "true");
+  url.searchParams.set("render_js", "true");
+  return url;
+}
+
+/** ScraperAPI Standard API：output_format=markdown 直接返回可读正文。 */
+function scraperApiEndpoint(requested: URL, apiKey: string): URL {
+  const url = new URL("https://api.scraperapi.com/");
+  url.searchParams.set("api_key", apiKey);
+  url.searchParams.set("url", requested.href);
+  url.searchParams.set("output_format", "markdown");
+  url.searchParams.set("render", "true");
+  return url;
+}
+
+/** ZenRows Fetch API：mode=auto 由服务端按需升级 JS 渲染/代理，返回 Markdown。 */
+function zenRowsEndpoint(requested: URL, apiKey: string): URL {
+  const url = new URL("https://api.zenrows.com/v1/");
+  url.searchParams.set("apikey", apiKey);
+  url.searchParams.set("url", requested.href);
+  url.searchParams.set("response_type", "markdown");
+  url.searchParams.set("mode", "auto");
+  return url;
+}
+
 class LinkUpSearchProvider implements SearchProvider {
   constructor(readonly name: string, private readonly apiKey: string, private readonly fetchImpl: typeof fetch, private readonly depth: string) {}
 
@@ -422,6 +489,72 @@ class LinkUpSearchProvider implements SearchProvider {
     if (!response.ok) throw new Error(`LinkUp returned HTTP ${response.status}`);
     return normalizeResults(await readJsonLimited(response, DEFAULT_MAX_BYTES), limit);
   }
+}
+
+/** 百度 AI 搜索（千帆）：POST /v2/ai_search/web_search，结果在 references[]。 */
+class BaiduSearchProvider implements SearchProvider {
+  constructor(
+    readonly name: string,
+    private readonly apiKey: string,
+    private readonly fetchImpl: typeof fetch,
+    private readonly edition: "standard" | "turbo" | "pro" = "standard",
+    private readonly complianceScene: "domestic" | "abroad" | "auto" = "domestic",
+  ) {}
+
+  async search(query: string, limit: number, options: { signal?: AbortSignal } = {}): Promise<SearchResult[]> {
+    const response = await this.fetchImpl("https://qianfan.baidubce.com/v2/ai_search/web_search", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+        "User-Agent": getUserAgent(),
+      },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: query }],
+        search_source: "baidu_search_v2",
+        edition: this.edition,
+        // compliance_scene 仅 turbo 版生效，standard 下不发送。
+        ...(this.edition === "turbo" ? { compliance_scene: this.complianceScene } : {}),
+        resource_type_filter: [{ type: "web", top_k: limit }],
+      }),
+      signal: withTimeout(options.signal, DEFAULT_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      // 错误体可能含千帆错误码/说明（如 216003 鉴权失败）；能解析就带进错误消息。
+      let detail = "";
+      try {
+        const body = await readJsonLimited(response, DEFAULT_MAX_BYTES) as { code?: unknown; message?: unknown };
+        if (typeof body.message === "string" && body.message.trim()) {
+          const code = typeof body.code === "string" || typeof body.code === "number" ? `${body.code}: ` : "";
+          detail = ` (${code}${body.message.trim()})`;
+        }
+      } catch { /* 非 JSON 错误体：只保留 HTTP 状态 */ }
+      throw new Error(`Baidu AI Search returned HTTP ${response.status}${detail}`);
+    }
+    const body = await readJsonLimited(response, DEFAULT_MAX_BYTES) as { references?: unknown; code?: unknown; message?: unknown };
+    // 少数错误以 HTTP 200 + code 返回。
+    if (body.code !== undefined && body.code !== null) {
+      const message = typeof body.message === "string" && body.message.trim() ? `: ${body.message.trim()}` : "";
+      throw new Error(`Baidu AI Search error ${String(body.code)}${message}`);
+    }
+    const items = Array.isArray(body.references) ? body.references : [];
+    return items.slice(0, limit).flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const entry = item as Record<string, unknown>;
+      const title = typeof entry.title === "string" ? entry.title.trim() : "";
+      const url = typeof entry.url === "string" ? entry.url : "";
+      if (!title || !url) return [];
+      const snippet = baiduSnippet(entry.snippet) || baiduSnippet(entry.content);
+      return [{ title, url, snippet }];
+    });
+  }
+}
+
+/** 百度摘要可能带 \u0004/\u0005 等控制字符，压成单行可读文本。 */
+function baiduSnippet(value: unknown): string {
+  if (typeof value !== "string") return "";
+  // eslint-disable-next-line no-control-regex -- 百度摘要里的 \u0004/\u0005 等控制字符本身就是清理目标
+  return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 class FirecrawlFetchProvider implements WebFetchProvider {
@@ -470,6 +603,11 @@ export function createProfileSearchProvider(
   if (profile.provider === "bocha") {
     return apiKey ? new HttpSearchProvider(profile.id, "https://api.bochaai.com/v1/web-search", apiKey, fetchImpl) : undefined;
   }
+  if (profile.provider === "baidu") {
+    return apiKey
+      ? new BaiduSearchProvider(profile.id, apiKey, fetchImpl, profile.searchEdition ?? "standard", profile.complianceScene ?? "domestic")
+      : undefined;
+  }
   if (profile.provider === "searxng") {
     const baseURL = profile.searchBaseURL?.trim();
     if (!baseURL) return undefined;
@@ -507,6 +645,18 @@ export function createProfileWebFetchProvider(
   }
   if (profile.provider === "firecrawl") {
     return apiKey ? new FirecrawlFetchProvider(profile.id, apiKey, fetchImpl) : undefined;
+  }
+  if (profile.provider === "exa") {
+    return apiKey ? new ExaContentsProvider(profile.id, apiKey, fetchImpl) : undefined;
+  }
+  if (profile.provider === "scrapingbee") {
+    return apiKey ? new HttpReaderProvider(profile.id, scrapingBeeEndpoint, apiKey, fetchImpl) : undefined;
+  }
+  if (profile.provider === "scraperapi") {
+    return apiKey ? new HttpReaderProvider(profile.id, (requested) => scraperApiEndpoint(requested, apiKey), undefined, fetchImpl) : undefined;
+  }
+  if (profile.provider === "zenrows") {
+    return apiKey ? new HttpReaderProvider(profile.id, (requested) => zenRowsEndpoint(requested, apiKey), undefined, fetchImpl) : undefined;
   }
   if (profile.provider !== "custom") return undefined;
   const template = profile.fetchBaseURL?.trim();

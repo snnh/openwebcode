@@ -2,6 +2,13 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [Unreleased]
+
+### 新功能
+
+- **Web Fetch 渠道扩充**：新增 Exa Contents、ScrapingBee、ScraperAPI、ZenRows 四个抓取渠道；Exa 由仅搜索升级为 Search + Fetch（`/contents`，默认取最新正文并限制 2 万字符）。ScrapingBee / ScraperAPI 默认渲染 JS 并直接返回 Markdown，ZenRows 使用 `mode=auto`（按需升级 JS 渲染/代理）返回 Markdown；三者均只声明 `fetch` 能力，API Key 分别按 Bearer / `api_key` / `apikey` 传递。设置页「联网服务 → 添加联网服务商」选择对应类型并填 Key，再在「网页抓取」下拉启用。
+- **联网搜索新增百度 AI 搜索（千帆）**：联网服务商新增 `baidu` 类型，直接调用千帆 `/v2/ai_search/web_search`，使用千帆 API Key（Bearer 鉴权），按 `top_k` 取网页结果并归一化为标题 / 链接 / 摘要（自动清理百度摘要中的控制字符）；可选标准版（默认）、增强版 `turbo` 与旗舰版 `pro`（计费与能力不同）；增强版支持国内内容（默认）/ 国外内容 / 按 query 语言自动的 `compliance_scene` 选择，旗舰版按官方计费仅提供国内内容，标准版/旗舰版不下发 `compliance_scene`。设置页「联网服务 → 添加联网服务商」选择「百度 AI 搜索（千帆）」，填 API Key 后在「联网搜索」下拉启用即可。
+
 ## [1.14.0]
 
 ### 新功能

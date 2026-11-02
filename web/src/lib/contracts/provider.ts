@@ -1,6 +1,6 @@
 export type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses";
 export type WebCapability = "search" | "fetch";
-export type WebProviderType = "jina" | "brave" | "tavily" | "custom" | "bing" | "searxng" | "exa" | "linkup" | "bocha" | "firecrawl";
+export type WebProviderType = "jina" | "brave" | "tavily" | "custom" | "bing" | "searxng" | "exa" | "linkup" | "bocha" | "firecrawl" | "baidu" | "scrapingbee" | "scraperapi" | "zenrows";
 
 export interface ModelProviderProfileView {
   id: string;
@@ -21,6 +21,10 @@ export interface WebProviderProfileView {
   searchBaseURL?: string;
   fetchBaseURL?: string;
   searchDepth?: "basic" | "advanced";
+  /** 百度 AI 搜索版本：standard 标准版（默认）/ turbo 增强版 / pro 旗舰版（计费与能力不同）。 */
+  searchEdition?: "standard" | "turbo" | "pro";
+  /** 百度 AI 搜索国内外内容控制（仅 turbo 生效）：domestic 国内（默认）/ abroad 国外 / auto 按 query 语言自动。 */
+  complianceScene?: "domestic" | "abroad" | "auto";
   resultCount?: number;
   hasApiKey: boolean;
   maskedApiKey?: string;

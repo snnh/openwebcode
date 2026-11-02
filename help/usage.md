@@ -306,8 +306,12 @@ agent 运行期间的状态指示与干预手段：
 Web Search / Web Fetch 两个工具的数据来源在 **设置 → 联网服务** 页签配置：
 
 - **联网搜索模式**（页签顶部）：`local`（默认）= 本地 `web_search` 工具经下方联网服务商执行；`model-api` = 由模型服务商在服务端执行搜索（请求级下发，仅 **OpenAI Responses** 接口类型的服务商生效；此时本地 `web_search` 不再注入，使用其他接口类型的会话将没有搜索能力）。`web_fetch` 两种模式下都可用。对应环境变量：`OWC_WEB_SEARCH_MODE`。
-- Search 与 Fetch 使用同一套「联网服务商」配置。支持 10 种服务商：Jina / Brave / Tavily / Bing / SearXNG / Exa / LinkUp / Bocha / Firecrawl / Custom，每种可保存多个配置，每项声明 `search` / `fetch` 能力，再分别选择当前用于 Web Search 和 Web Fetch 的配置。
-- Jina、Tavily 与 Firecrawl 同时支持 Search 与 Fetch（Tavily Fetch 使用 Extract API）；Brave、Bing、SearXNG、Exa、LinkUp、Bocha 仅支持 Search；Custom 可自行声明能力。Custom Fetch URL 必须包含 `{url}` 占位符，Custom Search URL 接收 `q` 与 `count` 查询参数。
+- Search 与 Fetch 使用同一套「联网服务商」配置。支持 14 种服务商：Jina / Brave / Tavily / Bing / 百度 AI 搜索（千帆）/ SearXNG / Exa / LinkUp / Bocha / Firecrawl / ScrapingBee / ScraperAPI / ZenRows / Custom，每种可保存多个配置，每项声明 `search` / `fetch` 能力，再分别选择当前用于 Web Search 和 Web Fetch 的配置。
+- Jina、Tavily、Firecrawl 与 Exa 同时支持 Search 与 Fetch（Tavily Fetch 使用 Extract API，Exa Fetch 使用 Contents API）；Brave、Bing、百度 AI 搜索、SearXNG、LinkUp、Bocha 仅支持 Search；ScrapingBee、ScraperAPI、ZenRows 仅支持 Fetch（分别返回 Markdown / Markdown / Markdown，前两者默认渲染 JS，ZenRows 使用 `mode=auto`）；Custom 可自行声明能力。Custom Fetch URL 必须包含 `{url}` 占位符，Custom Search URL 接收 `q` 与 `count` 查询参数。
+- 百度 AI 搜索使用千帆平台的 API Key（`Authorization: Bearer <API Key>`），调用 `/v2/ai_search/web_search` 只取网页结果，结果按 `top_k` 返回标题、链接与摘要。版本三档（计费以[官方文档](https://cloud.baidu.com/doc/qianfan/s/1mh4sv6c4)为准）：
+  - 标准版 `standard`（默认）：国内 ¥0.036/次；官方接口支持网页/视频/图片/阿拉丁，本工具仅请求网页。
+  - 增强版 `turbo`：国内 ¥0.04/次、国外 ¥0.072/次；仅网页；支持国内/国外/按 query 语言自动（`compliance_scene`）与 `chunks_per_doc`。
+  - 旗舰版 `pro`（即旗舰版 Pro）：国内 ¥0.072/次；仅国内内容；支持 `chunks_per_doc`。
 - 未选中具备相应能力的配置时，对应工具不会注入模型。Tavily 的 API Key 由同一个联网服务商配置同时用于 Search 与 Fetch。
 - 联网调用仍遵循会话权限模式；`ask` 下会请求确认，且内网/本地 URL 会被拒绝。
 

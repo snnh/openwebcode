@@ -48,7 +48,7 @@ Browser (React 19 + Vite 6) ── HTTP/WebSocket ──► Node service (agent 
 - **Local sessions**: create one with a single click from the sidebar "Terminal" icon to manage local files and services directly on the host as the server user (access outside HOME requires manual approval).
 - **Built-in panels**: symbol index (`repo_map` / `code_search`), test diagnostics (Problems panel), and an SCM panel (diffs, staging, worktree merges, generated commit messages).
 - **Task list**: a collapsible chip on the right side of the main tab bar shows the agent's current tasks and progress; persisted across restarts (`/clear` clears it too).
-- **Web search and fetch**: Web Search / Web Fetch over configurable search providers (Jina / Brave / Tavily / Bing / SearXNG / Exa / LinkUp / Bocha / Firecrawl / Custom — 10 in total), or search executed server-side by the model provider (OpenAI Responses only).
+- **Web search and fetch**: Web Search / Web Fetch over configurable search providers (Jina / Brave / Tavily / Bing / Baidu AI Search (Qianfan) / SearXNG / Exa / LinkUp / Bocha / Firecrawl / ScrapingBee / ScraperAPI / ZenRows / Custom — 14 in total), or search executed server-side by the model provider (OpenAI Responses only).
 - **Scheduled tasks (cron)**: create scheduled tasks in a session that auto-inject a prompt to continue running; 5-field cron syntax, persisted across restarts.
 - **Mobile and remote access**: responsive adaptation for phones/tablets; off-loopback listening enforces an access token (auto-generated or `OWC_ACCESS_TOKEN`), with optional TOTP global login.
 - **The `owc run` CLI**: headless NDJSON event stream for CI integration.
