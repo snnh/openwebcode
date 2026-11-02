@@ -58,6 +58,8 @@ export interface ServerConfig {
   pythonEnv: PythonEnv;
   /** bash 工具 node 运行环境的全局默认（会话可覆盖）；global = 本机环境。 */
   nodeEnv: NodeEnv;
+  /** 项目级执行入口配置（.owc/hooks.json / .owc/mcp.json）是否读取；默认 false（不信任）。 */
+  trustProjectExecConfig: boolean;
   exchangeRate: {
     url?: string;
     timeoutMs: number;
@@ -318,6 +320,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     defaultCurrency: currency(env.OWC_DEFAULT_CURRENCY),
     pythonEnv: pythonEnv(env.OWC_PYTHON_ENV),
     nodeEnv: nodeEnv(env.OWC_NODE_ENV),
+    trustProjectExecConfig: env.OWC_TRUST_PROJECT_EXEC_CONFIG === "1" || env.OWC_TRUST_PROJECT_EXEC_CONFIG === "true",
     exchangeRate: {
       ...(env.OWC_EXCHANGE_RATE_URL ? { url: env.OWC_EXCHANGE_RATE_URL } : {}),
       timeoutMs: positiveInteger(env.OWC_EXCHANGE_RATE_TIMEOUT_MS, 5_000),

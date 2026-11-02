@@ -57,6 +57,10 @@ interface HookOutcome {
  * <dataDir>/hooks.json——数组按项目在前合并；每次事件现读两份配置（热更新免重启），
  * 坏 JSON 告警跳过不阻断。
  *
+ * 项目级执行入口默认不信任（trustProjectExecConfig=false）：克隆来的仓库可能自带
+ * .owc/hooks.json，打开会话即会在宿主身份执行任意 shell。开启设置后才读取项目文件；
+ * 跳过时每个会话只发一次 notice 事件，避免事件刷屏。
+ *
  * 执行语义：shell 命令 stdin=JSON 事件负载，5s 超时杀进程。exit 0=放行；
  * exit 2=否决（仅 Pre* 类 PreToolUse/PreCompact 有意义，stderr 回填调用方）；其他非零/超时=告警不阻断（hook.failed 事件）。
  * Notification、Subagent 类、SessionEnd、PostCompact 等通知类事件失败与退出码均不阻塞主流程。
@@ -64,8 +68,20 @@ interface HookOutcome {
 export class HookRunner {
   private static readonly TIMEOUT_MS = 5000;
   private static readonly MAX_STDERR = 4000;
+  /** 跳过通知按会话去重的上限：超过后最旧的会话记录被淘汰，可能再次通知一次。 */
+  private static readonly NOTICE_DEDUPE_CAP = 512;
 
-  constructor(private readonly globalPath: string, private readonly events?: EventBus) {}
+  private readonly projectExecConfigEnabled: () => boolean;
+  private readonly skippedNoticeSessions = new Set<string>();
+
+  constructor(
+    private readonly globalPath: string,
+    private readonly events?: EventBus,
+    options: { projectExecConfigEnabled?: () => boolean } = {},
+  ) {
+    // 缺省不信任：生产装配必须显式传入设置项；测试与内嵌方不传时取安全默认。
+    this.projectExecConfigEnabled = options.projectExecConfigEnabled ?? (() => false);
+  }
 
   async run(event: HookEvent, payload: HookPayload): Promise<HookOutcome> {
     const entries = await this.loadEntries(event, payload);
@@ -95,7 +111,25 @@ export class HookRunner {
 
   /** 项目级在前、全局在后合并；坏 JSON 告警并按空配置处理 */
   private async loadEntries(event: HookEvent, payload: HookPayload): Promise<HookEntry[]> {
-    const project = await this.readHooksFile(path.join(payload.cwd, ".owc", "hooks.json"), payload.sessionId);
+    const projectFile = path.join(payload.cwd, ".owc", "hooks.json");
+    let project: HooksConfig = {};
+    if (this.projectExecConfigEnabled()) {
+      project = await this.readHooksFile(projectFile, payload.sessionId);
+    } else if (await fileHasContent(projectFile)) {
+      // 项目级 hooks 存在但未信任：每个会话只发一次 notice（含路径，便于用户定位与决策）。
+      if (!this.skippedNoticeSessions.has(payload.sessionId)) {
+        if (this.skippedNoticeSessions.size >= HookRunner.NOTICE_DEDUPE_CAP) {
+          this.skippedNoticeSessions.delete(this.skippedNoticeSessions.values().next().value!);
+        }
+        this.skippedNoticeSessions.add(payload.sessionId);
+        this.events?.publish({
+          source: "server",
+          type: "hook.project_config_untrusted",
+          sessionId: payload.sessionId,
+          payload: { path: projectFile, setting: "trustProjectExecConfig" },
+        });
+      }
+    }
     const global = await this.readHooksFile(this.globalPath, payload.sessionId);
     return [...(project[event] ?? []), ...(global[event] ?? [])];
   }
@@ -107,6 +141,7 @@ export class HookRunner {
     } catch {
       return {}; // 不存在：正常路径
     }
+    if (raw.trim() === "") return {}; // 空占位文件（core 为缺失 deny 路径创建的 0600 占位）：视为无配置
     try {
       return normalizeHooksConfig(JSON.parse(raw) as unknown);
     } catch (error) {
@@ -157,6 +192,15 @@ export class HookRunner {
         // stdin 写入失败不影响命令执行与退出码判定
       }
     });
+  }
+}
+
+/** 文件存在且含非空白内容（stat+read 合一的最小判定，避免为纯定界去读全文）。 */
+async function fileHasContent(file: string): Promise<boolean> {
+  try {
+    return (await readFile(file, "utf8")).trim() !== "";
+  } catch {
+    return false;
   }
 }
 

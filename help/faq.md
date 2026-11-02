@@ -269,7 +269,7 @@ Windows 选 WSB 沙盒：一会话一 VM，关闭即销毁，仅工作目录留�
 
 ### Q: Hooks 安全吗？
 
-Hooks 配置等同 yolo。`.owc/hooks.json` 里的 command 由 server 直接 spawn，不过沙盒也不过权限链。只在自己信任的项目里配 hooks，共享或不可信仓库别启用。
+Hooks 配置等同 yolo。`.owc/hooks.json` 里的 command 由 server 直接 spawn，不过沙盒也不过权限链。因此**项目级 hooks 默认不生效**：只有开启设置「信任项目级执行配置」（`trustProjectExecConfig`）后，server 才会读取工作区里的 `.owc/hooks.json`（同一开关控制 `.owc/mcp.json`）；全局 `<数据目录>/hooks.json` 不受此限制。只在自己信任的项目里打开该开关，共享或不可信仓库别启用。
 
 ### Q: MCP 工具能写文件吗？
 

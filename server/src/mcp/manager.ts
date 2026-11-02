@@ -38,10 +38,19 @@ export class McpManager {
   private readonly bindingsByCwd = new Map<string, Map<string, Binding>>();
   /** 配置解析缓存（canonicalCwd → 两个配置文件的 mtimeMs+size 指纹 + 解析结果）：
    * toolsFor 每轮调用，指纹未变不重读盘；配置无专用写入方，靠指纹检测外部修改。 */
-  private readonly configCache = new Map<string, { files: Array<{ mtimeMs: number; size: number } | null>; result: McpConfigResult }>();
+  private readonly configCache = new Map<string, { files: Array<{ mtimeMs: number; size: number } | null>; result: McpConfigResult; includeProject: boolean }>();
   private readonly sweeper: NodeJS.Timeout;
 
-  constructor(private readonly dataDir: string, private readonly options: { idleMs?: number; timeoutMs?: number; sweepMs?: number } = {}) {
+  constructor(
+    private readonly dataDir: string,
+    private readonly options: {
+      idleMs?: number;
+      timeoutMs?: number;
+      sweepMs?: number;
+      /** 项目级 <cwd>/.owc/mcp.json（执行入口配置）是否读取；缺省不信任，与 hooks.ts 同口径。 */
+      projectExecConfigEnabled?: () => boolean;
+    } = {},
+  ) {
     this.sweeper = setInterval(() => void this.sweepIdle().catch(() => { /* idle sweep errors are non-fatal */ }), this.options.sweepMs ?? 60_000);
     this.sweeper.unref();
   }
@@ -93,18 +102,20 @@ export class McpManager {
 
   /** 带指纹缓存的 loadMcpConfig：全局 <dataDir>/mcp.json 与项目 <cwd>/.owc/mcp.json 都未变时复用上次解析结果。 */
   private async loadConfigCached(canonicalCwd: string): Promise<McpConfigResult> {
-    const files = [path.join(this.dataDir, "mcp.json"), path.join(canonicalCwd, ".owc", "mcp.json")];
+    // 信任开关是热生效的现读值：不启用时项目文件既不读也不进指纹，避免「关→开」时被旧缓存挡住。
+    const includeProject = this.options.projectExecConfigEnabled?.() ?? false;
+    const files = [path.join(this.dataDir, "mcp.json"), ...(includeProject ? [path.join(canonicalCwd, ".owc", "mcp.json")] : [])];
     const fingerprints = await Promise.all(files.map((file) => McpManager.fingerprint(file)));
     const cached = this.configCache.get(canonicalCwd);
-    if (cached && cached.files.length === fingerprints.length && cached.files.every((fp, index) => {
+    if (cached && cached.includeProject === includeProject && cached.files.length === fingerprints.length && cached.files.every((fp, index) => {
       const next = fingerprints[index];
       if (!fp || !next) return fp === (next ?? null);
       return fp.mtimeMs === next.mtimeMs && fp.size === next.size;
     })) {
       return cached.result;
     }
-    const result = await loadMcpConfig(this.dataDir, canonicalCwd);
-    this.configCache.set(canonicalCwd, { files: fingerprints, result });
+    const result = await loadMcpConfig(this.dataDir, canonicalCwd, { includeProject });
+    this.configCache.set(canonicalCwd, { files: fingerprints, result, includeProject });
     return result;
   }
 

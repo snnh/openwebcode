@@ -12,6 +12,8 @@ import { loadConfig } from "../src/config.js";
 import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
+import { HookRunner } from "../src/hooks.js";
+import { loadMcpConfig } from "../src/mcp/config.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { defaultSandboxPolicy } from "../src/sessions/default-sandbox.js";
 import { SessionStore } from "../src/sessions/session-store.js";
@@ -235,6 +237,70 @@ describe("WebUI 静态服务", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe("项目级执行配置信任边界", () => {
+  /** 搭一个带全局+项目 hooks.json 的临时工程，返回 marker 路径与 runner 工厂。 */
+  async function hooksFixture(trusted: boolean) {
+    const root = await tempRoot("owc-hooks-");
+    const cwd = path.join(root, "proj");
+    await mkdir(path.join(cwd, ".owc"), { recursive: true });
+    const projectMarker = path.join(root, "project-ran");
+    const globalMarker = path.join(root, "global-ran");
+    const shell = process.platform === "win32" ? (p: string) => `type nul > ${p}` : (p: string) => `touch ${p}`;
+    await writeFile(path.join(cwd, ".owc", "hooks.json"), JSON.stringify({ PreToolUse: [{ matcher: "*", command: shell(projectMarker) }] }));
+    await writeFile(path.join(root, "hooks.json"), JSON.stringify({ PreToolUse: [{ matcher: "*", command: shell(globalMarker) }] }));
+    const events = new EventBus();
+    const seen: Array<{ type: string; sessionId?: string }> = [];
+    events.on("event", (event) => seen.push(event));
+    const runner = new HookRunner(path.join(root, "hooks.json"), events, trusted ? { projectExecConfigEnabled: () => true } : {});
+    return { runner, seen, cwd, projectMarker, globalMarker, root };
+  }
+
+  it("默认不信任：项目 hooks 不执行、全局照常执行、每会话只通知一次", async () => {
+    const { runner, seen, cwd, projectMarker, globalMarker } = await hooksFixture(false);
+    for (const tool of ["bash", "readFile", "bash"]) {
+      await runner.run("PreToolUse", { sessionId: "s1", cwd, tool });
+    }
+    await expect(stat(projectMarker)).rejects.toThrow(); // 项目 hook 未执行
+    await stat(globalMarker); // 全局 hook 执行了
+    const notices = seen.filter((event) => event.type === "hook.project_config_untrusted" && event.sessionId === "s1");
+    expect(notices).toHaveLength(1); // 三个事件只通知一次
+    expect(seen.some((event) => event.type === "hook.failed")).toBe(false); // 跳过不算失败
+  });
+
+  it("开启信任后项目 hooks 正常参与执行", async () => {
+    const { runner, seen, cwd, projectMarker, globalMarker } = await hooksFixture(true);
+    await runner.run("PreToolUse", { sessionId: "s2", cwd, tool: "bash" });
+    await stat(projectMarker);
+    await stat(globalMarker);
+    expect(seen.some((event) => event.type === "hook.project_config_untrusted")).toBe(false);
+  });
+
+  it("空占位文件（core 为缺失 deny 路径创建）视为无配置，不刷 hook.failed", async () => {
+    const root = await tempRoot("owc-hooks-empty-");
+    const cwd = path.join(root, "proj");
+    await mkdir(path.join(cwd, ".owc"), { recursive: true });
+    await writeFile(path.join(cwd, ".owc", "hooks.json"), "   \n");
+    const events = new EventBus();
+    const seen: Array<{ type: string }> = [];
+    events.on("event", (event) => seen.push(event));
+    const runner = new HookRunner(path.join(root, "hooks.json"), events, { projectExecConfigEnabled: () => true });
+    await runner.run("PreToolUse", { sessionId: "s3", cwd, tool: "bash" });
+    expect(seen.filter((event) => event.type === "hook.failed")).toHaveLength(0);
+  });
+
+  it("loadMcpConfig 仅在显式放行时读取项目 .owc/mcp.json", async () => {
+    const root = await tempRoot("owc-mcp-trust-");
+    const cwd = path.join(root, "proj");
+    await mkdir(path.join(cwd, ".owc"), { recursive: true });
+    await writeFile(path.join(root, "mcp.json"), JSON.stringify({ mcpServers: { global: { command: "global-cmd" } } }));
+    await writeFile(path.join(cwd, ".owc", "mcp.json"), JSON.stringify({ mcpServers: { project: { command: "project-cmd" } } }));
+    const skipped = await loadMcpConfig(root, cwd);
+    expect(Object.keys(skipped.servers)).toEqual(["global"]); // 缺省跳过项目文件
+    const trusted = await loadMcpConfig(root, cwd, { includeProject: true });
+    expect(Object.keys(trusted.servers).sort()).toEqual(["global", "project"]); // 放行后项目 server 覆盖/合并
   });
 });
 

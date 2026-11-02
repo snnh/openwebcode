@@ -153,12 +153,18 @@ const usageLog = new UsageLog(dataDir);
 const skills = new SkillRegistry(path.join(dataDir, "skills"));
 const agents = new AgentRegistry(path.join(dataDir, "agents"));
 const commands = new CommandRegistry(path.join(dataDir, "commands"));
-const mcp = new McpManager(dataDir);
+// 项目级 .owc/mcp.json 与项目 hooks 同属执行入口配置：同一信任开关控制（缺省不信任）
+const mcp = new McpManager(dataDir, {
+  projectExecConfigEnabled: () => settings.effective().trustProjectExecConfig === true,
+});
 const fastModel = new FastModelClient(providers, config.fastModel);
 // 子代理角色档解析器（settings 热更新现读生效）：premium/balanced/fast/cheap → provider+model
 const modelRoles = new ModelRoleResolver(settings, providers);
-// Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
-const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
+// Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json 始终读取；项目 <cwd>/.owc/hooks.json
+// 属执行入口配置，默认不信任（trustProjectExecConfig，热生效现读），开启后才读取
+const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events, {
+  projectExecConfigEnabled: () => settings.effective().trustProjectExecConfig === true,
+});
 const compactor = new Compactor(sessions, fastModel, { usageLog, pricing, exchangeRates, hooks });
 // 档案库压缩（compact-vault 官方扩展的 server 侧服务）：归档完整上下文 + 目录索引 + 按需召回
 const vaultService: CompactVaultService = new CompactVaultService(sessions, fastModel, providers, {

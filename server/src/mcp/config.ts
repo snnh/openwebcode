@@ -59,10 +59,12 @@ async function readConfigFile(filePath: string, result: McpConfigResult): Promis
 /**
  * 加载 MCP 配置：全局 <dataDir>/mcp.json + 项目级 <cwd>/.owc/mcp.json。
  * 项目级覆盖同名全局 server（与 claude code 的约定一致）。
+ * 项目级文件属执行入口配置（可声明任意待 spawn 命令），仅在调用方显式放行
+ * （trustProjectExecConfig）时读取；缺省跳过，与 hooks.ts 的信任边界同口径。
  */
-export async function loadMcpConfig(dataDir: string, cwd?: string): Promise<McpConfigResult> {
+export async function loadMcpConfig(dataDir: string, cwd?: string, options: { includeProject?: boolean } = {}): Promise<McpConfigResult> {
   const result: McpConfigResult = { servers: {}, skipped: [] };
   await readConfigFile(path.join(dataDir, "mcp.json"), result);
-  if (cwd) await readConfigFile(path.join(cwd, ".owc", "mcp.json"), result);
+  if (cwd && options.includeProject === true) await readConfigFile(path.join(cwd, ".owc", "mcp.json"), result);
   return result;
 }

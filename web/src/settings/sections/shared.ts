@@ -96,6 +96,7 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   corePath: { label: "Executor path" },
   coreRequestTimeoutMs: { label: "Executor request timeout (ms)" },
   sandboxAllowPaths: { label: "Additional allowed directories", description: "One directory per line, up to 16; merged with the session working directory at execution time" },
+  trustProjectExecConfig: { label: "Trust project-level exec config", description: "When enabled, the workspace's .owc/hooks.json (event hooks executed as the host user) and .owc/mcp.json (MCP server definitions spawning arbitrary commands) are honored. Off by default: a cloned repository may ship these execution-entry configs. Skipped files raise one hook.project_config_untrusted notice per session" },
   jobObjectMemoryMB: { label: "Job memory limit (MB)", description: "Process-tree commit-memory limit; defaults to 4096; only applied on Windows (Job Object)" },
   jobObjectMaxProcesses: { label: "Job process limit", description: "Process-tree active-process limit; defaults to 64; only applied on Windows (Job Object)" },
   gcMaxBytes: { label: "Storage limit (bytes)", description: "Global LRU limit for session artifacts; oldest data is removed first" },

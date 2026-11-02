@@ -433,6 +433,9 @@ const FIELDS: FieldSpec[] = [
   { key: "browseRoots", group: "executor", label: "目录浏览根", type: "pathList", env: "OWC_BROWSE_ROOTS", defaultValue: [], restartRequired: false, fromEnv: envPathList, validate: requirePathList, description: "新建会话时目录浏览器可遍历的根目录列表，每行一个绝对路径；留空则默认为用户家目录" },
   // filtered 网络档（Windows AppContainer）的 sidecar 代理拦截清单：热生效，sidecar 按 mtime 自重读
   { key: "sandboxProxyDenyList", group: "executor", label: "沙盒代理拦截域名", type: "pathList", env: "OWC_SANDBOX_PROXY_DENY_LIST", defaultValue: [], restartRequired: false, fromEnv: envDomainList, validate: requireDomainList, description: "filtered 网络档生效：每行一个域名（如 example.com，含其子域名），最多 64 个；命中的请求被沙盒代理拒绝（403），保存后对活跃会话热生效" },
+  // 项目级执行入口配置（热生效）：.owc/hooks.json（宿主身份执行 shell）与 .owc/mcp.json（spawn 任意命令）
+  // 默认不信任——克隆/下载的仓库可能自带这两个文件，打开会话即执行。开启前确认项目来源可信。
+  { key: "trustProjectExecConfig", group: "executor", label: "信任项目级执行配置", type: "boolean", env: "OWC_TRUST_PROJECT_EXEC_CONFIG", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "开启后才读取工作区内 .owc/hooks.json（事件钩子，宿主身份执行 shell）与 .owc/mcp.json（MCP server 配置，spawn 任意命令）；默认关闭，防止克隆来的恶意仓库携带执行入口配置。跳过时每个会话收到一次 hook.project_config_untrusted 通知" },
   { key: "pythonEnv", group: "executor", label: "Python 环境", type: "select", env: "OWC_PYTHON_ENV", defaultValue: "global", restartRequired: false, options: PYTHON_ENV_OPTIONS, description: "全局默认：bash 工具的 python 运行环境。global = 本机已有环境；uv-workspace = 在项目工作区 .owc/venv 创建 uv 虚拟环境；uv-config = 在数据目录 venvs/ 创建 uv 虚拟环境（POSIX 沙盒内读写挂载该 venv 目录，pip install 仅落进 venv，无法写入系统环境）。会话可在顶栏单独覆盖" },
   { key: "nodeEnv", group: "executor", label: "Node 环境", type: "select", env: "OWC_NODE_ENV", defaultValue: "global", restartRequired: false, options: NODE_ENV_OPTIONS, description: "全局默认：bash 工具的 node 运行环境。global = 本机已有环境；project = 工作区 node_modules/.bin 前置 PATH；fnm / nvm = 版本管理器激活（fnm 不支持 cmd；nvm 仅 POSIX bash/sh），POSIX 沙盒内读写挂载版本管理器目录，npm i -g 等安装仅落进该目录，无法写入整机环境。会话可在顶栏单独覆盖" },
   // Job Object 资源限制（仅 Windows，重启生效）：注入 CoreRouter 全局下发，留空由 core 用默认值
@@ -669,6 +672,7 @@ export class SettingsService {
       defaultCurrency: value("defaultCurrency") as "USD" | "CNY",
       pythonEnv: value("pythonEnv") as PythonEnv,
       nodeEnv: value("nodeEnv") as NodeEnv,
+      trustProjectExecConfig: value("trustProjectExecConfig") as boolean,
       exchangeRate: {
         ...(typeof exchangeRateUrl === "string" ? { url: exchangeRateUrl } : {}),
         timeoutMs: value("exchangeRateTimeoutMs") as number,
