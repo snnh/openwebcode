@@ -356,6 +356,9 @@ static size_t async_exec_running=0;
 static CRITICAL_SECTION async_exec_mutex;
 static owc_cond_t async_exec_cond;
 static int async_exec_ready=0;
+/* Workers run for the process lifetime; this flag keeps the loop exit
+ * reachable for compilers that reject unreachable code (MSVC C4702). */
+static volatile int async_exec_stop=0;
 
 static char *async_exec_copy_text(const char *value) {
     size_t length;
@@ -497,7 +500,7 @@ static int async_exec_queue_remove(owc_async_exec *exec) {
 
 static DWORD WINAPI async_exec_worker(void *unused) {
     (void)unused;
-    for(;;) {
+    while(!async_exec_stop) {
         owc_async_exec *exec;
         EnterCriticalSection(&async_exec_mutex);
         while(!async_exec_queue_head) owc_cond_wait(&async_exec_cond,&async_exec_mutex);
@@ -516,14 +519,7 @@ static DWORD WINAPI async_exec_worker(void *unused) {
         LeaveCriticalSection(&async_exec_mutex);
         async_exec_free(exec);
     }
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable: 4702) /* unreachable code: worker loop is intentionally infinite */
-#endif
     return 0;
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
 }
 
 static int async_exec_init(void) {
