@@ -4,6 +4,8 @@
 
 ## [1.16.0] - 2026-11-03
 
+> 本次发布合并了原 1.15.0 与 1.16.0 的全部变更；v1.15.0 未单独发版。
+
 ### 性能与资源
 
 - **控制面不再被长命令卡住**：core `exec.run` 改为异步 worker 池（默认 8 worker、有界队列），新增 `exec.cancel`；`core.ping` 广告 `features.asyncExec`，server 启动强制要求新 core。会话 A 跑 2 秒长命令时，B 的创建/加载/发消息/文件工具 p50 从约 **1900ms 降到 0.45–1.4ms**。
@@ -15,6 +17,18 @@
 - **性能面板重做**：模式切换、总内存/执行队列/会话加载/FPS 四张 KPI、内存与预算、多轮耗时汇总与折叠明细；浏览器堆、DOM 节点与长任务采样仅在面板打开时运行。
 - **代码精简与空转**：删除/降级一批未引用导出与死常量；空转 60 秒 CPU 24ms（0.04%），关闭进阶上限时不再每 60 秒广播一次 `system.memory`。
 - **加载与浏览器基线**：会话打开保持 100 条尾部窗口，首屏 39–52ms；Playwright 5000 消息会话滚动 59.88fps、输入回显 30.5ms、堆增长 0.1–0.3%。
+
+### 安全
+
+- **修复沙盒逃逸（POSIX bubblewrap deny 掩码）**：denyPaths 指向的文件不存在时，旧实现直接跳过掩码——沙盒内 agent 可在可写工作区创建同名文件（如 `.owc/hooks.json`，server 以宿主身份执行其内容），即逃逸为宿主 RCE。现在 core 会为「位于写根之内的缺失 deny 路径」创建占位文件（父链 0700、文件 0600）再挂载 /dev/null 掩码，实测沙盒内无法创建/写入/删除该路径；写根之外的缺失路径（如不存在的 `~/.ssh` 密钥）仍跳过，不会被凭空创建。副作用：默认拒绝清单（`.env`、`.owc/hooks.json`、`.owc/mcp.json`）对应的空文件会出现在工作区，属预期行为。
+- **项目级执行入口配置默认不信任**：新增设置「信任项目级执行配置」（`trustProjectExecConfig`，`OWC_TRUST_PROJECT_EXEC_CONFIG`，热生效，默认关）。开启前 server 不读取工作区的 `.owc/hooks.json`（事件钩子，宿主身份执行 shell）与 `.owc/mcp.json`（MCP server 配置，可 spawn 任意命令）——克隆/下载的仓库可能自带这两个文件。跳过时每个会话收到一次 `hook.project_config_untrusted` 通知（含路径）；全局 `<数据目录>/hooks.json` 与 `<数据目录>/mcp.json` 不受影响。
+- **依赖漏洞修复**：server 升级 fastify（5.12.5 → 修复 header 校验绕过 GHSA-389g-gv7q-r4x8 与 fast-uri 多条 host confusion/scheme 欺骗）、glob override 到 14.0.3（修复 GHSA-3g3m-2fjr-6pw4 与 minimatch globparts 放大）；web 移除未使用的 dompurify 直接依赖并 override 到 3.4.17（修复多条 critical advisory）、katex override 到 0.18.4（收编 rehype-katex 嵌套的 0.16.47，修复 GHSA-238p-pmpm-9mq7 原型污染绕过 trust 限制）。两层 `npm audit --omit=dev` 均为 0 漏洞。
+- **Hooks 空占位文件容错**：core 为缺失 deny 路径创建的空 `.owc/hooks.json` 视为「无配置」，不再每事件刷 `hook.failed`。
+
+### 新功能
+
+- **Web Fetch 渠道扩充**：新增 Exa Contents、ScrapingBee、ScraperAPI、ZenRows 四个抓取渠道；Exa 由仅搜索升级为 Search + Fetch（`/contents`，默认取最新正文并限制 2 万字符）。ScrapingBee / ScraperAPI 默认渲染 JS 并直接返回 Markdown，ZenRows 使用 `mode=auto`（按需升级 JS 渲染/代理）返回 Markdown；三者均只声明 `fetch` 能力，API Key 分别按 Bearer / `api_key` / `apikey` 传递。设置页「联网服务 → 添加联网服务商」选择对应类型并填 Key，再在「网页抓取」下拉启用。
+- **联网搜索新增百度 AI 搜索（千帆）**：联网服务商新增 `baidu` 类型，直接调用千帆 `/v2/ai_search/web_search`，使用千帆 API Key（Bearer 鉴权），按 `top_k` 取网页结果并归一化为标题 / 链接 / 摘要（自动清理百度摘要中的控制字符）；可选标准版（默认）、增强版 `turbo` 与旗舰版 `pro`（计费与能力不同）；增强版支持国内内容（默认）/ 国外内容 / 按 query 语言自动的 `compliance_scene` 选择，旗舰版按官方计费仅提供国内内容，标准版/旗舰版不下发 `compliance_scene`。设置页「联网服务 → 添加联网服务商」选择「百度 AI 搜索（千帆）」，填 API Key 后在「联网搜索」下拉启用即可。
 
 ### 界面与交互
 
@@ -28,6 +42,15 @@
 - **侧栏多选入口合并**：原来的叉号/对号两个按钮合并为单个勾选方框按钮，激活时以强调色底色表示，再点一次退出多选。
 - **Composer 模型与思考标识**：思考程度不再使用强调色胶囊，与模型名同色同字号，仅以「 · max」文本衔接。
 
+### 界面与动效
+
+- **设计 token 重铸**：色彩拆为语义七级 surface（canvas/card/inset/floating/subtle/hover/active）+ 三档边框，亮/暗双主题独立校色；排版收敛为 11–26 七档字号、四档行高与 400/500/600 三档字重；圆角 4–16、阴影四档、间距八档、动效时长与曲线全部 token 化，CSS 引入 `@layer tokens, base, components, utilities` 分层。
+- **聊天区重做**：助手/工具消息改为左侧 72px 元信息列，用户消息去气泡化（右对齐浅底块）；复制/翻译/解析/编辑/重发/分叉收进正文下方悬停操作条；工具调用压成 28px 单行轨道，结果并入行尾；思考过程改为左轨单行摘要。
+- **外观设置扩展**：「设置 → 外观」新增界面西文 / CJK / 代码字体三组选择、代码连字、界面缩放四档、动画三态（跟随系统 / 标准 / 精简），并提供四幕动画预览（弹层 / 消息 / 工具轨道 / 微交互，可播放或循环）。
+- **字体探测与内嵌思源等宽**：默认只扫描**可免费商用**的字体（Noto/Source Han、Sarasa、霞鹜文楷、文泉驿、OPPO Sans、HarmonyOS Sans、MiSans、阿里巴巴普惠体、vivo Sans、HONOR Sans 等），只列出本机已安装项；Windows/macOS 自带商用字体不进入默认列表，需手动输入族名单独探测。代码字体默认改为随应用分发的「思源等宽（Noto Sans Mono 拉丁子集，约 32KB）」；中文代码回退系统等宽。「系统默认」直接使用操作系统字体，不受免费商用筛选影响。用户添加的字体持久化在本机浏览器，并标注可用性。
+- **动效体系**：100/160/240/360/500ms 五档时长 + standard/enter/exit/spring 四条曲线；引入 motion（LazyMotion + domAnimation），动画预览已用真实进出与高度动画；主题切换做一次性 240ms 颜色过渡；`prefers-reduced-motion` 全局兜底保留，「精简」模式下预览即时切变。弹层与消息列表的库级编排仍在推进。
+- **组件统一**：顶栏环境控件改为无边框 chip + 组间竖线；空态改单列居中；侧栏 240–420px 可拖拽、两行会话行、hover 才显示操作；面板标签与文件树统一 VS Code 行语法；composer 发送态、工具栏 chip 与思考档位胶囊重绘；终端与 Monaco 配色对齐新色板。底部双状态栏已合并为一条（会话状态嵌入面板标签条右侧，桌面显示模型/成本/窗口，窄屏隐藏模式/成本/窗口并保留状态文案与模型名）；顶栏桌面两行结构完成。代码字体切换现即时作用于 Monaco 与已打开的终端。
+
 ### 修复
 
 - **界面缩放真正生效**：字号 token/正文改为按 `--ui-scale` 计算，并同步 Monaco、diff 与已打开终端；不再只改根字号而文字纹丝不动。
@@ -40,29 +63,6 @@
 - **安全加固**：bwrap 占位文件创建改用 `openat(O_NOFOLLOW)` 逐级进入写根，项目自带的 `.owc` 符号链接不能再把宿主侧写入带出工作区；server 读取项目 `.owc/hooks.json`、`.owc/mcp.json` 时也拒绝符号链接路径。终端 ANSI 黑/白在亮色主题下不再反色。
 - **细节修正**：目录浏览「选择此目录」恢复主按钮样式；侧栏顶部快捷新建按钮改用独立可访问名称，读屏可区分两个新建入口。
 - 清理已失效的排版/字体扫描 CSS、`--radius-m` 未定义回退、`ExtensionInfo.availablePresets` 死契约与过期注释。
-
-## [1.15.0] - 2026-11-02
-
-### 安全
-
-- **修复沙盒逃逸（POSIX bubblewrap deny 掩码）**：denyPaths 指向的文件不存在时，旧实现直接跳过掩码——沙盒内 agent 可在可写工作区创建同名文件（如 `.owc/hooks.json`，server 以宿主身份执行其内容），即逃逸为宿主 RCE。现在 core 会为「位于写根之内的缺失 deny 路径」创建占位文件（父链 0700、文件 0600）再挂载 /dev/null 掩码，实测沙盒内无法创建/写入/删除该路径；写根之外的缺失路径（如不存在的 `~/.ssh` 密钥）仍跳过，不会被凭空创建。副作用：默认拒绝清单（`.env`、`.owc/hooks.json`、`.owc/mcp.json`）对应的空文件会出现在工作区，属预期行为。
-- **项目级执行入口配置默认不信任**：新增设置「信任项目级执行配置」（`trustProjectExecConfig`，`OWC_TRUST_PROJECT_EXEC_CONFIG`，热生效，默认关）。开启前 server 不读取工作区的 `.owc/hooks.json`（事件钩子，宿主身份执行 shell）与 `.owc/mcp.json`（MCP server 配置，可 spawn 任意命令）——克隆/下载的仓库可能自带这两个文件。跳过时每个会话收到一次 `hook.project_config_untrusted` 通知（含路径）；全局 `<数据目录>/hooks.json` 与 `<数据目录>/mcp.json` 不受影响。
-- **依赖漏洞修复**：server 升级 fastify（5.12.5 → 修复 header 校验绕过 GHSA-389g-gv7q-r4x8 与 fast-uri 多条 host confusion/scheme 欺骗）、glob override 到 14.0.3（修复 GHSA-3g3m-2fjr-6pw4 与 minimatch globparts 放大）；web 移除未使用的 dompurify 直接依赖并 override 到 3.4.17（修复多条 critical advisory）、katex override 到 0.18.4（收编 rehype-katex 嵌套的 0.16.47，修复 GHSA-238p-pmpm-9mq7 原型污染绕过 trust 限制）。两层 `npm audit --omit=dev` 均为 0 漏洞。
-- **Hooks 空占位文件容错**：core 为缺失 deny 路径创建的空 `.owc/hooks.json` 视为「无配置」，不再每事件刷 `hook.failed`。
-
-### 界面与动效
-
-- **设计 token 重铸**：色彩拆为语义七级 surface（canvas/card/inset/floating/subtle/hover/active）+ 三档边框，亮/暗双主题独立校色；排版收敛为 11–26 七档字号、四档行高与 400/500/600 三档字重；圆角 4–16、阴影四档、间距八档、动效时长与曲线全部 token 化，CSS 引入 `@layer tokens, base, components, utilities` 分层。
-- **聊天区重做**：助手/工具消息改为左侧 72px 元信息列，用户消息去气泡化（右对齐浅底块）；复制/翻译/解析/编辑/重发/分叉收进正文下方悬停操作条；工具调用压成 28px 单行轨道，结果并入行尾；思考过程改为左轨单行摘要。
-- **外观设置扩展**：「设置 → 外观」新增界面西文 / CJK / 代码字体三组选择、代码连字、界面缩放四档、动画三态（跟随系统 / 标准 / 精简），并提供四幕动画预览（弹层 / 消息 / 工具轨道 / 微交互，可播放或循环）。
-- **字体探测与内嵌思源等宽**：默认只扫描**可免费商用**的字体（Noto/Source Han、Sarasa、霞鹜文楷、文泉驿、OPPO Sans、HarmonyOS Sans、MiSans、阿里巴巴普惠体、vivo Sans、HONOR Sans 等），只列出本机已安装项；Windows/macOS 自带商用字体不进入默认列表，需手动输入族名单独探测。代码字体默认改为随应用分发的「思源等宽（Noto Sans Mono 拉丁子集，约 32KB）」；中文代码回退系统等宽。「系统默认」直接使用操作系统字体，不受免费商用筛选影响。用户添加的字体持久化在本机浏览器，并标注可用性。
-- **动效体系**：100/160/240/360/500ms 五档时长 + standard/enter/exit/spring 四条曲线；引入 motion（LazyMotion + domAnimation），动画预览已用真实进出与高度动画；主题切换做一次性 240ms 颜色过渡；`prefers-reduced-motion` 全局兜底保留，「精简」模式下预览即时切变。弹层与消息列表的库级编排仍在推进。
-- **组件统一**：顶栏环境控件改为无边框 chip + 组间竖线；空态改单列居中；侧栏 240–420px 可拖拽、两行会话行、hover 才显示操作；面板标签与文件树统一 VS Code 行语法；composer 发送态、工具栏 chip 与思考档位胶囊重绘；终端与 Monaco 配色对齐新色板。底部双状态栏已合并为一条（会话状态嵌入面板标签条右侧，桌面显示模型/成本/窗口，窄屏隐藏模式/成本/窗口并保留状态文案与模型名）；顶栏桌面两行结构完成。代码字体切换现即时作用于 Monaco 与已打开的终端。
-
-### 新功能
-
-- **Web Fetch 渠道扩充**：新增 Exa Contents、ScrapingBee、ScraperAPI、ZenRows 四个抓取渠道；Exa 由仅搜索升级为 Search + Fetch（`/contents`，默认取最新正文并限制 2 万字符）。ScrapingBee / ScraperAPI 默认渲染 JS 并直接返回 Markdown，ZenRows 使用 `mode=auto`（按需升级 JS 渲染/代理）返回 Markdown；三者均只声明 `fetch` 能力，API Key 分别按 Bearer / `api_key` / `apikey` 传递。设置页「联网服务 → 添加联网服务商」选择对应类型并填 Key，再在「网页抓取」下拉启用。
-- **联网搜索新增百度 AI 搜索（千帆）**：联网服务商新增 `baidu` 类型，直接调用千帆 `/v2/ai_search/web_search`，使用千帆 API Key（Bearer 鉴权），按 `top_k` 取网页结果并归一化为标题 / 链接 / 摘要（自动清理百度摘要中的控制字符）；可选标准版（默认）、增强版 `turbo` 与旗舰版 `pro`（计费与能力不同）；增强版支持国内内容（默认）/ 国外内容 / 按 query 语言自动的 `compliance_scene` 选择，旗舰版按官方计费仅提供国内内容，标准版/旗舰版不下发 `compliance_scene`。设置页「联网服务 → 添加联网服务商」选择「百度 AI 搜索（千帆）」，填 API Key 后在「联网搜索」下拉启用即可。
 
 ## [1.14.0]
 
