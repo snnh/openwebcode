@@ -176,8 +176,6 @@ def main():
         response, _ = exec_command(proc, 8, "filtered", workspace, "echo ok", network="bogus")
         assert_error(response, -32602, "network")
         response, output = exec_command(proc, 9, "filtered", workspace, "echo ok", network="deny")
-        if not ("result" in response and response["result"]["exitCode"] == 0):
-            print(f"DIAG filtered result={response!r} output={output!r}", file=sys.stderr)
         assert "result" in response and response["result"]["exitCode"] == 0, response
         assert "ok" in output, output
         request(proc, 10, "job.start", {"sessionId": "filtered", "jobId": "badnet", "kind": "exec",
