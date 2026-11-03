@@ -1,4 +1,6 @@
 import { DEFAULT_SESSION_CACHE_IDLE_MINUTES, MAX_SESSION_CACHE_IDLE_MINUTES, setSessionCacheIdleMinutes } from "./cache-policy.js";
+import { RUNTIME_MODES, DEFAULT_RUNTIME_MODE, effectiveIdleMinutes, isRuntimeMode, runtimeProfile, type RuntimeMode } from "./runtime-mode.js";
+import { setCacheScale } from "./cache-limits.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
@@ -103,6 +105,10 @@ interface RuntimeDependencies {
   usageLog?: { prune(options: { mode: UsageLogCleanupMode; retentionDays: number }): Promise<number> };
   /** 常驻缓存空闲清扫；sessionCacheIdleMinutes 变更时热触发一次 */
   sweepCaches?: () => void;
+  /** 进阶内存上限：相关设置或运行模式变更时立即重评估一次 */
+  memoryBudget?: { evaluate(): void };
+  /** 模式切换时按新上限立即裁剪缓存 */
+  trimCaches?: () => void;
   /** 出站 User-Agent 热应用；缺省 user-agent.ts 的模块级 setter，测试注入 fake 避免串模块状态 */
   userAgentApplier?: (ua: string | null) => void;
 }
@@ -208,6 +214,24 @@ function requireUsageLogRetentionDays(value: SettingValue): void {
 function requireSessionCacheIdleMinutes(value: SettingValue): void {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > MAX_SESSION_CACHE_IDLE_MINUTES) {
     throw new SettingsValidationError(`缓存空闲释放必须是 0–${MAX_SESSION_CACHE_IDLE_MINUTES} 的整数（0 = 不释放）`);
+  }
+}
+
+function requireExecConcurrency(value: SettingValue): void {
+  if (value === null) return;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 8) {
+    throw new SettingsValidationError("执行并发需为 1–8 的整数，或留空跟随运行模式");
+  }
+}
+
+function requireRuntimeMode(value: SettingValue): void {
+  if (!isRuntimeMode(value)) throw new SettingsValidationError("运行模式必须是 performance、balanced 或 memory");
+}
+
+function requireMemoryBudgetMB(value: SettingValue): void {
+  if (value === null) return;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 512 || value > 32768) {
+    throw new SettingsValidationError("进阶内存上限需为 512–32768 MB 的整数，或留空");
   }
 }
 
@@ -447,6 +471,10 @@ const FIELDS: FieldSpec[] = [
   { key: "usageLogRetentionDays", group: "service", label: "用量日志保留天数", type: "number", env: "OWC_USAGE_LOG_RETENTION_DAYS", defaultValue: 365, restartRequired: false, fromEnv: envNumber, validate: requireUsageLogRetentionDays, description: "配合清理模式使用的保留天数（1–3650）；仅 after-days / live-timeout 分支生效" },
   // 常驻缓存的空闲释放（热生效）：0 = 不逐出（长跑常驻换更少的重读）
   { key: "sessionCacheIdleMinutes", group: "service", label: "缓存空闲释放（分钟）", type: "number", env: "OWC_SESSION_CACHE_IDLE_MINUTES", defaultValue: DEFAULT_SESSION_CACHE_IDLE_MINUTES, restartRequired: false, fromEnv: envNumber, validate: requireSessionCacheIdleMinutes, description: "打开过的会话/索引在多久没有访问后释放内存（0–1440 分钟；0 = 不释放，常驻更快但占用更高）" },
+  { key: "execConcurrency", group: "service", label: "长命令执行并发", type: "number", env: "OWC_EXEC_CONCURRENCY", defaultValue: null, restartRequired: false, fromEnv: envNumber, validate: requireExecConcurrency, description: "同时执行的长命令数量（1–8）；留空跟随运行模式（性能 4 / 平衡 2 / 内存 1）。超出部分按会话公平排队；排队不消耗命令超时，可在性能面板取消" },
+  { key: "runtimeMode", group: "service", label: "运行模式", type: "select", env: "OWC_RUNTIME_MODE", defaultValue: DEFAULT_RUNTIME_MODE, restartRequired: false, options: [...RUNTIME_MODES], validate: requireRuntimeMode, description: "性能优先 = 更大缓存/更高并发/预取；平衡 = 默认；内存优先 = 更小缓存/更低并发/更快释放。缓存上限始终受安全边界约束" },
+  { key: "memoryBudgetEnabled", group: "service", label: "启用进阶内存上限", type: "boolean", env: "OWC_MEMORY_BUDGET_ENABLED", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "开启后按 server + core + 扩展宿主三进程 RSS 判断；超过上限先温和压缩，仍超再全量压缩。浏览器堆单独按模式控制，不纳入该阈值" },
+  { key: "memoryBudgetMB", group: "service", label: "进阶内存上限 (MB)", type: "number", env: "OWC_MEMORY_BUDGET_MB", defaultValue: null, restartRequired: false, fromEnv: envNumber, validate: requireMemoryBudgetMB, description: "512–32768 MB；留空表示不设置。超过上限触发压缩，低于上限 90% 自动恢复模式行为" },
   // 监听（重启生效）；Web 端归入"远程访问"页签
   { key: "host", group: "network", label: "监听地址", type: "text", env: "OWC_HOST", defaultValue: "127.0.0.1", restartRequired: true, validate: requireNonEmpty },
   { key: "port", group: "network", label: "监听端口", type: "number", env: "OWC_PORT", defaultValue: 3210, restartRequired: true, fromEnv: envNumber, validate: requirePort },
@@ -655,6 +683,10 @@ export class SettingsService {
       usageLogCleanupMode: value("usageLogCleanupMode") as UsageLogCleanupMode,
       usageLogRetentionDays: value("usageLogRetentionDays") as number,
       sessionCacheIdleMinutes: value("sessionCacheIdleMinutes") as number,
+      execConcurrency: (value("execConcurrency") as number | null) ?? runtimeProfile(isRuntimeMode(value("runtimeMode")) ? value("runtimeMode") as RuntimeMode : DEFAULT_RUNTIME_MODE).execConcurrency,
+      runtimeMode: isRuntimeMode(value("runtimeMode")) ? value("runtimeMode") as RuntimeMode : DEFAULT_RUNTIME_MODE,
+      memoryBudgetEnabled: value("memoryBudgetEnabled") as boolean,
+      memoryBudgetMB: (value("memoryBudgetMB") as number | null),
       agentMaxTurns: value("agentMaxTurns") as number,
       subAgentMaxTurns: value("subAgentMaxTurns") as number,
       subAgentConcurrency: value("subAgentConcurrency") as number,
@@ -855,9 +887,26 @@ export class SettingsService {
         retentionDays: effective.usageLogRetentionDays,
       }).catch((error: unknown) => process.stderr.write(`[settings] 用量日志清理失败：${error instanceof Error ? error.message : String(error)}\n`));
     }
-    // 常驻缓存空闲释放热生效：立即改阈值并清一次过期条目（下次读取自动重建，不打断在跑的 run）
-    if (changed.includes("sessionCacheIdleMinutes")) {
-      setSessionCacheIdleMinutes(this.effective().sessionCacheIdleMinutes);
+    // 运行模式热生效：缓存倍率、空闲逐出、执行并发一起切换；降低上限后立即清一次。
+    if (changed.includes("runtimeMode")) {
+      const effective = this.effective();
+      const profile = runtimeProfile(effective.runtimeMode);
+      setCacheScale(profile.cacheScale);
+      setSessionCacheIdleMinutes(effectiveIdleMinutes(effective.runtimeMode, effective.sessionCacheIdleMinutes));
+      this.deps.core.setExecConcurrency?.(effective.execConcurrency);
+      this.deps.sweepCaches?.();
+      this.deps.trimCaches?.();
+    }
+    if (changed.includes("runtimeMode") || changed.includes("memoryBudgetEnabled") || changed.includes("memoryBudgetMB")) {
+      void this.deps.memoryBudget?.evaluate();
+    }
+    // 显式执行并发/空闲释放覆盖模式默认值（两者同时变更时以显式值为准）。
+    if (changed.includes("execConcurrency") && !changed.includes("runtimeMode")) {
+      this.deps.core.setExecConcurrency?.(this.effective().execConcurrency);
+    }
+    if (changed.includes("sessionCacheIdleMinutes") && !changed.includes("runtimeMode")) {
+      const effective = this.effective();
+      setSessionCacheIdleMinutes(effectiveIdleMinutes(effective.runtimeMode, effective.sessionCacheIdleMinutes));
       this.deps.sweepCaches?.();
     }
     // 更新检查热应用；离线模式下整体关闭（含手动 refresh——更新检查属纯遥测，无用户刚需入口）

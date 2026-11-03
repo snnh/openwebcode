@@ -299,6 +299,11 @@ def run_bwrap_e2e(proc, workspace):
         assert "symlink-deny-ok" in output, output
         assert not os.path.lexists(os.path.join(outside, "hooks.json"))
 
+        # The symlink case reconfigured the session to symlink_workspace;
+        # switch it back before the stdin/EOF case, which still uses workspace.
+        response = configure(proc, 20, workspace, {"enabled": True, "network": "allow"})
+        assert "result" in response, response
+
         # exec.run gives the command /dev/null as stdin: an interactive
         # reader like cat must see EOF immediately instead of racing the
         # main loop for the RPC pipe (leaking frames across sessions or

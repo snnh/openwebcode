@@ -80,7 +80,7 @@ function readUserFonts(): string[] {
 
 export const FAMILY = "family:";
 
-export function presetStack(choice: FontChoice, presets: FontPreset[], fallback = ""): string | null {
+function presetStack(choice: FontChoice, presets: FontPreset[], fallback = ""): string | null {
   if (choice.startsWith(CUSTOM)) return choice.slice(CUSTOM.length).trim() || null;
   if (choice.startsWith(FAMILY)) {
     const family = choice.slice(FAMILY.length).trim();

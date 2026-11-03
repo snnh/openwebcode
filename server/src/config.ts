@@ -6,6 +6,7 @@ import type { EffortLevel } from "./context/model-profile.js";
 import type { NodeEnv, PythonEnv } from "./sessions/types.js";
 import type { ProxyConfig, ProxyMode } from "./proxy.js";
 import type { UsageLogCleanupMode } from "./usage-log.js";
+import { DEFAULT_RUNTIME_MODE, isRuntimeMode, runtimeProfile, type RuntimeMode } from "./runtime-mode.js";
 
 /** 可显式 pin 的快照后端名单（settings snapshotBackend 的非 auto 选项）；与探测链支持的后端保持一致。 */
 export const SNAPSHOT_BACKENDS = ["git-shadow", "btrfs", "zfs", "overlayfs", "refs"] as const;
@@ -31,6 +32,13 @@ export interface ServerConfig {
   usageLogRetentionDays: number;
   /** 非活跃多久后释放常驻缓存（分钟；0 = 不逐出）。设置项 sessionCacheIdleMinutes 热生效。 */
   sessionCacheIdleMinutes: number;
+  /** 长命令执行并发（1–8）；设置项 execConcurrency 热生效。 */
+  execConcurrency: number;
+  /** 运行模式：性能优先/平衡/内存优先；设置项 runtimeMode 热生效。 */
+  runtimeMode: RuntimeMode;
+  /** 进阶内存上限开关与 MB 值（null = 未设置；服务端三进程 RSS 口径）。 */
+  memoryBudgetEnabled: boolean;
+  memoryBudgetMB: number | null;
   defaultLanguage: string;
   /** dsh 兼容模式：独立端口托管 dsh SPA 与插件（默认关闭；关闭时零常驻）。 */
   dshCompat: { enabled: boolean; port: number; uiPath: string | null };
@@ -260,6 +268,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const jobMemoryMB = boundedInteger(env.OWC_JOB_MEMORY_MB, 1_048_576);
   const jobMaxProcesses = boundedInteger(env.OWC_JOB_MAX_PROCESSES, 4096);
   const allowPaths = pathList(env.OWC_SANDBOX_ALLOW_PATHS);
+  const runtimeMode = isRuntimeMode(env.OWC_RUNTIME_MODE) ? env.OWC_RUNTIME_MODE : DEFAULT_RUNTIME_MODE;
   const catalogSyncUrl = optionalHttpUrl(env.OWC_MODELS_CATALOG_SYNC_URL, "OWC_MODELS_CATALOG_SYNC_URL");
   const pricingSyncUrl = optionalHttpUrl(env.OWC_MODELS_PRICING_SYNC_URL, "OWC_MODELS_PRICING_SYNC_URL");
   const userAgent = env.OWC_USER_AGENT?.trim() ? env.OWC_USER_AGENT.trim() : undefined;
@@ -289,6 +298,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     usageLogRetentionDays: positiveInteger(env.OWC_USAGE_LOG_RETENTION_DAYS, 365),
     // 0 = 不逐出：允许显式关掉空闲释放（长跑常驻换更少的重读）
     sessionCacheIdleMinutes: nonNegativeInteger(env.OWC_SESSION_CACHE_IDLE_MINUTES, MAX_SESSION_CACHE_IDLE_MINUTES) ?? DEFAULT_SESSION_CACHE_IDLE_MINUTES,
+    execConcurrency: boundedInteger(env.OWC_EXEC_CONCURRENCY, 8) ?? runtimeProfile(runtimeMode).execConcurrency,
+    runtimeMode,
+    memoryBudgetEnabled: env.OWC_MEMORY_BUDGET_ENABLED === "1" || env.OWC_MEMORY_BUDGET_ENABLED === "true",
+    memoryBudgetMB: boundedInteger(env.OWC_MEMORY_BUDGET_MB, 32768) ?? null,
     agentMaxTurns: boundedInteger(env.OWC_AGENT_MAX_TURNS, 1000) ?? 50,
     subAgentMaxTurns: boundedInteger(env.OWC_SUB_AGENT_MAX_TURNS, 1000) ?? 100,
     subAgentConcurrency: boundedInteger(env.OWC_SUB_AGENT_CONCURRENCY, 16) ?? 2,

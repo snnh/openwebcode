@@ -10,6 +10,7 @@ import {
   MAX_UPDATE_CHECK_INTERVAL_HOURS,
   SETTINGS_FIELD_EN,
   SETTINGS_GROUP_EN,
+  SETTING_OPTION_LABELS,
   ZERO_ALLOWED_NUMBER_KEYS,
 } from "./shared";
 
@@ -133,7 +134,10 @@ export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
       return (
         <select className="input" value={resetting ? "" : value} disabled={disabled} onChange={(event) => setField(field.key, event.target.value || (field.nullable ? null : ""))} aria-label={fieldLabel(field)}>
           {field.nullable && <option value="">{t("不启用", "Disabled")}</option>}
-          {(field.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          {(field.options ?? []).map((option) => {
+            const localized = SETTING_OPTION_LABELS[field.key]?.[option.value];
+            return <option key={option.value} value={option.value}>{localized ? t(localized.zh, localized.en) : option.label}</option>;
+          })}
         </select>
       );
     }

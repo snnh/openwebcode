@@ -4277,7 +4277,18 @@ export class AgentRunner {
           signal.removeEventListener("abort", cancel);
         }
       }
-      const result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd, ...coreExecShell(session.shellBackend ?? "default") });
+      const cancelExec = () => {
+        const pending = this.core.cancelExec?.({ sessionId, execId });
+        if (pending) void pending.catch(() => undefined);
+      };
+      signal.addEventListener("abort", cancelExec, { once: true });
+      if (signal.aborted) cancelExec();
+      let result;
+      try {
+        result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd, ...coreExecShell(session.shellBackend ?? "default") });
+      } finally {
+        signal.removeEventListener("abort", cancelExec);
+      }
       const output = decodeProcessOutputChunks(execution.output);
       const rawContent = JSON.stringify({ ...result, output, outputTruncated: result.truncated || execution.outputCapped });
       const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), "bash", rawContent);

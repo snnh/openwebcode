@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import {
   clearOlderMessages, loadOlderMessages, PAGINATION_MAX_MESSAGES, PAGINATION_MAX_SESSIONS,
-  pruneSessionCaches, trimOlderMessages, useOlderMessages,
+  pruneSessionCaches, trimOlderMessages, trimPaginationCaches, useOlderMessages,
 } from "../chat/pagination-store";
+import { setWebRuntimeMode } from "../lib/runtime-mode";
 import { api } from "../lib/api";
 import type { ChatMessage, MessagesPage } from "../lib/contracts";
 const message = (id: string): ChatMessage => ({ id, role: "user", content: [{ type: "text", text: id }], createdAt: "2026-01-01T00:00:00.000Z" });
@@ -44,5 +45,21 @@ describe("分页缓存上限", () => {
     for (let index = 0; index <= PAGINATION_MAX_SESSIONS; index += 1) await act(async () => { await loadOlderMessages(`session-${index}`, "m"); });
     expect(olderCount("s1")).toBe(0);
     for (let index = 0; index <= PAGINATION_MAX_SESSIONS; index += 1) clearOlderMessages(`session-${index}`);
+  });
+
+  it("运行模式切换后立即按新预算裁剪已加载分页", async () => {
+    const id = "trim-mode-switch";
+    setWebRuntimeMode("performance");
+    vi.spyOn(api, "messagesPage").mockResolvedValue(page(200, "p"));
+    try {
+      for (let index = 0; index < 6; index += 1) await act(async () => { await loadOlderMessages(id, "seed"); });
+      expect(olderCount(id)).toBe(1200);
+      setWebRuntimeMode("memory");
+      act(() => trimPaginationCaches());
+      expect(olderCount(id)).toBe(1000);
+    } finally {
+      setWebRuntimeMode("balanced");
+      clearOlderMessages(id);
+    }
   });
 });

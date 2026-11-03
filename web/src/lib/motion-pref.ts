@@ -65,12 +65,6 @@ export function useMotionPreference(): {
   };
 }
 
-/** 供非 React 侧（motion 配置、一次性动画）读取 */
-export function isReducedMotion(): boolean {
-  const { preference, systemReduced } = motionStore.get();
-  return preference === "reduced" || (preference === "system" && systemReduced);
-}
-
 /** 启动时同步 <html data-motion> */
 export function installMotionPreference(): void {
   syncAttribute();

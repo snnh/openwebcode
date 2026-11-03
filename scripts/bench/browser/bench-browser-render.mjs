@@ -93,9 +93,12 @@ const response = await page.goto(`${serverBase}/`, { waitUntil: "networkidle" })
 if (!response?.ok()) throw new Error(`Web 页面加载失败：HTTP ${response?.status() ?? "unknown"}`);
 // 点链接的标题区（左上角空白处）：会话行右侧悬浮操作钮会覆盖链接中心，
 // 直接 click() 会被按钮图标 intercept（真实用户也只会点标题文字区域）。
+const firstScreenStart = Date.now();
 await page.locator(".session-link").first().click({ position: { x: 20, y: 12 } });
 await page.locator("#composer-input").waitFor({ state: "visible" });
 await page.locator(".chat-track").waitFor({ state: "visible" });
+await page.locator(".chat-track article[data-message-id]").first().waitFor({ state: "visible" });
+const firstScreenMs = Date.now() - firstScreenStart;
 
 // 新 UI 的分页由顶部哨兵经 IntersectionObserver 自动触发（IO 环境不再渲染「加载更早」按钮）：
 // 反复滚到顶部逼哨兵入视，直到哨兵消失（hasMore 耗尽）。必须在采样前载完——
@@ -202,6 +205,7 @@ console.log(`输入回显 p50: ${ms(inputP50)} ms（目标 <= 50）`);
 console.log(`内存增长: ${ms(memGrowthPct)}%（${ms(memBefore / 1024 / 1024)} → ${ms(memAfter / 1024 / 1024)} MiB，目标 <= 20%）`);
 
 await writeResult("browser-render", [
+  { name: "firstScreen.ms", value: firstScreenMs, unit: "ms", direction: "lower-better" },
   { name: "scroll.fps.p50", value: ms(fpsP50), unit: "fps", direction: "higher-better" },
   { name: "scroll.fps.p95", value: ms(fpsP95), unit: "fps", direction: "higher-better" },
   { name: "input.latency.p50", value: ms(inputP50), unit: "ms", direction: "lower-better" },

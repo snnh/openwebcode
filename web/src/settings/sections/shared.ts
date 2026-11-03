@@ -17,6 +17,15 @@ export function formatSettingValue(value: SettingValue | null | undefined): stri
   return String(value);
 }
 
+/** 选项值的本地化标签（服务端只给 value；缺省回退服务端 label）。 */
+export const SETTING_OPTION_LABELS: Record<string, Record<string, { zh: string; en: string }>> = {
+  runtimeMode: {
+    performance: { zh: "性能优先", en: "Performance" },
+    balanced: { zh: "平衡", en: "Balanced" },
+    memory: { zh: "内存优先", en: "Memory" },
+  },
+};
+
 export const SETTINGS_GROUP_EN: Record<string, string> = {
   modelSelection: "Model Selection",
   models: "Model Catalog & Sync",

@@ -271,6 +271,8 @@ export const api = {
     const query = params.toString();
     return request<CostReport>(`/api/reports/cost${query ? `?${query}` : ""}`);
   },
+  cancelExec: (sessionId: string, execId: string) =>
+    request<{ ok: true }>(`/api/sessions/${sessionId}/exec/${encodeURIComponent(execId)}/cancel`, { method: "POST" }),
   saveSettings: (overrides: Record<string, SettingValue | null>) =>
     request<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ overrides }) }),
   tasks: (id: string) => request<BackgroundTaskInfo[]>(`/api/sessions/${id}/tasks`),

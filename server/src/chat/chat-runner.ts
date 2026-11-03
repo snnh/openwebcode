@@ -392,18 +392,30 @@ export class ChatRunner {
     this.activeRuns.get(sessionId)?.abort();
   }
 
-  /** ref 形态图片块就地内联为 base64 data（provider 只认 data）；读盘失败的块跳过（provider 侧忽略缺 data 的图）。 */
+  /** ref 形态图片块内联为 base64 data（provider 只认 data）；读盘失败的块跳过（provider 侧忽略缺 data 的图）。
+ *  不原地改消息/内容块：getActiveMessages 返回的消息对象与 ChatSessionStore 缓存共享，
+ *  原地写 base64 会把整张图永久留在缓存里（且缓存权重仍按磁盘 ref 记账）。 */
   private async inlineImageRefs(sessionId: string, messages: ChatMessage[]): Promise<void> {
     const sessionDir = this.sessions.sessionDir(sessionId);
-    for (const message of messages) {
-      for (const block of message.content) {
+    for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+      const message = messages[messageIndex]!;
+      let content = message.content;
+      let changed = false;
+      for (let blockIndex = 0; blockIndex < content.length; blockIndex += 1) {
+        const block = content[blockIndex]!;
         if (block.type !== "image" || block.data || !block.ref) continue;
         try {
-          block.data = (await readFile(resolveSessionPath(sessionDir, block.ref))).toString("base64");
+          const data = (await readFile(resolveSessionPath(sessionDir, block.ref))).toString("base64");
+          if (!changed) {
+            content = [...content];
+            changed = true;
+          }
+          content[blockIndex] = { ...block, data };
         } catch {
           // 文件缺失/越界：保留 ref 形态，不进 provider 请求
         }
       }
+      if (changed) messages[messageIndex] = { ...message, content };
     }
   }
 

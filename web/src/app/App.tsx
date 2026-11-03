@@ -35,7 +35,8 @@ import { tabActions } from "../workbench/tab-actions";
 import { ChatView } from "../chat/ChatView";
 import { CONVERSATION_SEARCH_EVENT } from "../chat/types";
 import { streamBuffer } from "../chat/stream-buffer";
-import { clearOlderMessages } from "../chat/pagination-store";
+import { clearOlderMessages, trimPaginationCaches } from "../chat/pagination-store";
+import { readRuntimeMode, setWebRuntimeMode } from "../lib/runtime-mode";
 import { clearComposerState, useComposerSendable } from "../composer/drafts";
 import { chatBridge } from "./chat-bridge";
 import { registerBuiltinCommands, useGlobalKeybindings, buildWhenContext, mergeKeybindings, DEFAULT_KEYBINDINGS, cycleZone, type CommandActions } from "./commands";
@@ -83,6 +84,12 @@ export function App(): ReactElement {
   const serverSettings = useServerSettingsQuery();
   const updateCheck = useUpdateCheckQuery();
   const sessionDefaults = useSessionDefaults();
+  // 运行模式决定 Web 分页/常驻窗口预算；设置查询与设置对话框共享缓存。
+  useEffect(() => {
+    if (!serverSettings.data) return;
+    setWebRuntimeMode(readRuntimeMode(serverSettings.data));
+    trimPaginationCaches();
+  }, [serverSettings.data]);
   const agentRun = useAgentRun(sessionId);
   const subagentTabs = useSubagentTabs();
   const terminalTabs = useTerminalTabs();

@@ -4,7 +4,7 @@ import type { CoreClientLike, CoreEvent, CoreInfo, ExecRequest, ExecResult } fro
 /** 通用 fake core.ping/start 返回值（sandbox advisory、全 fs 能力、无 jobControl）。 */
 export const FAKE_CORE_INFO: CoreInfo = {
   version: "0.2.4-test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
+  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, asyncExec: true, fsHash: true, fsScanPagination: true, fsWatch: true },
   limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
 };
 

@@ -58,4 +58,30 @@ describe("buildView 片段级失效（驱逐条目变化不触发全量重建）
     expect(json(restored.messages[1])).toContain("z".repeat(500));
     expect(json(restored.messages)).toBe(json((await context.buildView(messages, { forceFullRebuild: true })).messages));
   });
+
+  it("驱逐与图片预算不原地修改调用方消息（缓存共享只读）", async () => {
+    const context = new ContextManager(await tempRoot("owc-fragment-share-"));
+    const toolWithMedia: ChatMessage = {
+      ...toolMessage("t1", "LARGE"),
+      content: [{ type: "tool_result", toolCallId: "call-t1", content: "LARGE", isError: false, media: { type: "image", mediaType: "image/png", data: "BBBB" } }],
+    };
+    const images: ChatMessage[] = Array.from({ length: 5 }, (_, index) => ({
+      id: `img${index}`,
+      role: "user",
+      content: [{ type: "image", mediaType: "image/png", data: `AAAA${index}` }],
+      createdAt: "2026-01-01T00:00:02.000Z",
+    }));
+    const messages = [userMessage("u1", "q"), toolWithMedia, ...images];
+    await evict(context, "t1");
+    const before = json(messages);
+    const view = await context.buildView(messages);
+
+    // 视图侧：驱逐占位与旧图占位生效
+    expect(fragmentOf(view, "t1")).toContain(ARTIFACT);
+    expect(json(view.messages.filter((message) => message.id.startsWith("img")))).toContain("image omitted");
+    // 调用方消息（与缓存共享）保持原样：媒体、原图 data 均未被剥离/替换
+    expect(json(messages)).toBe(before);
+    expect(toolWithMedia.content[0]).toMatchObject({ type: "tool_result", content: "LARGE", media: { data: "BBBB" } });
+    expect(images[0]!.content[0]).toMatchObject({ type: "image", data: "AAAA0" });
+  });
 });

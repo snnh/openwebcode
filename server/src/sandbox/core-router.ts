@@ -24,6 +24,7 @@ import type {
   FsWatchRequest,
   JobOutputRequest,
   JobOutputResult,
+  ExecStats,
   JobStartRequest,
   JobStatus,
   IndexScanStartRequest,
@@ -163,8 +164,26 @@ export class CoreRouter extends EventEmitter {
   /** 全局默认 pythonEnv（同上）；数据目录用于 uv-config 的 venv 挂载目录计算。 */
   private pythonEnvDefault?: () => PythonEnv | undefined;
   private dataDir: string | undefined;
+  /** 长命令执行并发（settings 热生效）：共享 core 与 WSB core 都套用。 */
+  private execConcurrency = 2;
 
   /** 注入全局默认 nodeEnv 解析器（与 AgentRunner.setNodeEnvDefault 同源）。 */
+  /** 设置长命令执行并发（1–8）；已存在的共享/WSB core 同步生效。 */
+  setExecConcurrency(value: number): void {
+    this.execConcurrency = Math.max(1, Math.min(8, Math.floor(value)));
+    this.shared.setExecConcurrency?.(this.execConcurrency);
+    const seen = new Set<CoreClientLike>();
+    for (const client of this.configuredClients.values()) {
+      if (seen.has(client)) continue;
+      seen.add(client);
+      client.setExecConcurrency?.(this.execConcurrency);
+    }
+  }
+
+  execStats(): ExecStats {
+    return this.shared.execStats?.() ?? { running: 0, queued: 0, maxConcurrent: this.execConcurrency, oldestWaitMs: 0, items: [] };
+  }
+
   setNodeEnvDefault(getter: () => NodeEnv | undefined): void {
     this.nodeEnvDefault = getter;
   }
@@ -232,6 +251,7 @@ export class CoreRouter extends EventEmitter {
     this.platform = platform ?? process.platform;
     this.forwardClientEvents(shared);
     this.wsb.onClientCreated = (_sessionId, client) => {
+      client.setExecConcurrency?.(this.execConcurrency);
       this.forwardClientEvents(client, _sessionId);
     };
   }
@@ -512,6 +532,12 @@ export class CoreRouter extends EventEmitter {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
     return client.run({ ...request, cwd });
+  }
+
+  async cancelExec(request: { sessionId: string; execId: string }): Promise<{ ok: true }> {
+    const { client } = await this.ensureConfigured(request.sessionId);
+    if (!client.cancelExec) throw new Error("Core exec.cancel support is unavailable");
+    return client.cancelExec(request);
   }
 
   async readFile(request: FsReadRequest): Promise<FsReadResult> {

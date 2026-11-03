@@ -50,6 +50,7 @@ Browser (React 19 + Vite 6) ── HTTP/WebSocket ──► Node service (agent 
 - **Task list**: a collapsible chip on the right side of the main tab bar shows the agent's current tasks and progress; persisted across restarts (`/clear` clears it too).
 - **Web search and fetch**: Web Search / Web Fetch over configurable search providers (Jina / Brave / Tavily / Bing / Baidu AI Search (Qianfan) / SearXNG / Exa / LinkUp / Bocha / Firecrawl / ScrapingBee / ScraperAPI / ZenRows / Custom — 14 in total), or search executed server-side by the model provider (OpenAI Responses only).
 - **Scheduled tasks (cron)**: create scheduled tasks in a session that auto-inject a prompt to continue running; 5-field cron syntax, persisted across restarts.
+- **Interface and accessibility**: bilingual Chinese/English UI, light/dark themes, accent colors, Latin/CJK/code font choices, code ligatures, and 90–125% text scaling; layout and preferences are remembered per browser.
 - **Mobile and remote access**: responsive adaptation for phones/tablets; off-loopback listening enforces an access token (auto-generated or `OWC_ACCESS_TOKEN`), with optional TOTP global login.
 - **The `owc run` CLI**: headless NDJSON event stream for CI integration.
 - **dsh compatibility mode (experimental, off by default)**: hosts the official dsh SPA on its own port and loads dsh-ecosystem plugins (Host tools/hooks and client UI plugins).

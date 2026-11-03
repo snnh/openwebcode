@@ -25,7 +25,7 @@ class FakeTransport extends RpcTransport {
 
 const pingInfo = (features: Record<string, boolean> = {}): CoreInfo => ({
   version: "test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: true, fsHash: true, fsScanPagination: true, fsWatch: true, ...features },
+  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: true, asyncExec: true, fsHash: true, fsScanPagination: true, fsWatch: true, ...features },
 });
 
 function makeClient(handler: Handler): { client: CoreClient; requests: RpcRequest[] } {

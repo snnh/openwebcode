@@ -41,14 +41,6 @@ export function dshEntryUrl(mode: DshModeSettings, location: { protocol: string;
   return `${location.protocol}//${location.hostname}:${mode.port}/${query}`;
 }
 
-/** dsh 运行态（主端口 `GET /api/dsh/status`）。 */
-export interface DshRuntimeStatus {
-  enabled: boolean;
-  listening: boolean;
-  address?: string;
-  reason?: string;
-}
-
 /** 服务端未就绪原因 → 用户可读的双语提示（未知原因原样透出，便于诊断）。 */
 export function dshNotReadyNotice(reason: string | undefined, port: number): { zh: string; en: string } {
   const suffix = `（端口 ${port}）`;

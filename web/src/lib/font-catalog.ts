@@ -7,13 +7,13 @@ import { fontAvailable, firstFamily } from "./font-detect";
  * 不含 Windows/macOS 自带商用字体（雅黑、苹方、Segoe、SF 等）——这类字体只能由用户
  * 在设置页手动输入族名后单独探测，不进入默认扫描结果。
  */
-export const LATIN_CANDIDATES = [
+const LATIN_CANDIDATES = [
   "Inter", "Roboto", "Noto Sans", "Noto Sans Display", "Open Sans", "Lato", "Montserrat",
   "Poppins", "Source Sans 3", "Source Sans Pro", "IBM Plex Sans", "Fira Sans", "Geist",
   "Ubuntu", "Cantarell", "DejaVu Sans", "Liberation Sans",
 ];
 
-export const CJK_CANDIDATES = [
+const CJK_CANDIDATES = [
   // 开源
   "Noto Sans SC", "Noto Sans CJK SC", "Source Han Sans SC", "Source Han Sans CN", "思源黑体",
   "Noto Serif SC", "Source Han Serif SC", "Sarasa Gothic SC", "LXGW WenKai",
@@ -23,7 +23,7 @@ export const CJK_CANDIDATES = [
   "Alibaba PuHuiTi", "Alibaba PuHuiTi 3.0", "Alibaba PuHuiTi 2.0", "vivo Sans", "HONOR Sans",
 ];
 
-export const MONO_CANDIDATES = [
+const MONO_CANDIDATES = [
   "JetBrains Mono", "Fira Code", "Cascadia Code", "Cascadia Mono", "Source Code Pro",
   "IBM Plex Mono", "Noto Sans Mono", "Sarasa Mono SC", "Iosevka", "Hack", "Inconsolata",
   "Ubuntu Mono", "Roboto Mono", "Space Mono", "Anonymous Pro", "Victor Mono", "Recursive Mono",

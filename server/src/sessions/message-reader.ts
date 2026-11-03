@@ -10,6 +10,7 @@
  */
 import { open, stat } from "node:fs/promises";
 import { isCacheEntryIdle } from "../cache-policy.js";
+import { cacheLimits } from "../cache-limits.js";
 
 interface MessagePage<T> {
   messages: T[];
@@ -20,7 +21,6 @@ interface MessagePage<T> {
 
 export const DEFAULT_PAGE_SIZE = 100;
 const READ_CHUNK_BYTES = 64 * 1024;
-const MAX_CACHED_INDEXES = 32;
 const PREFIX_FINGERPRINT_BYTES = 64;
 /** 取消息 id 只解码的行首切片大小：id 是序列化 JSON 的首字段，常规行落在行首几十字节内。 */
 const ID_PREFIX_BYTES = 1024;
@@ -399,6 +399,37 @@ export function sweepIdleMessageIndexes(now: number = Date.now()): number {
   return evicted;
 }
 
+/**
+ * 内存归因：索引缓存规模（只读统计，不参与热路径）。
+ * approxBytes 按「行引用 48B + id 表项 80B + 尾部指纹缓冲」粗估，仅用于相对比较。
+ */
+export function messageIndexStats(): {
+  entries: number;
+  lines: number;
+  byIdEntries: number;
+  approxBytes: number;
+  recoveryTails: number;
+} {
+  let entries = 0;
+  let lines = 0;
+  let byIdEntries = 0;
+  let approxBytes = 0;
+  for (const index of indexes.values()) {
+    entries += 1;
+    lines += index.lines.length;
+    byIdEntries += index.byId.size;
+    approxBytes += index.lines.length * 48 + index.byId.size * 80 + index.prefixTail.byteLength;
+  }
+  return { entries, lines, byIdEntries, approxBytes, recoveryTails: recoveryTails.size };
+}
+
+export function clearMessageIndexes(): number {
+  const evicted = indexes.size;
+  indexes.clear();
+  recoveryTails.clear();
+  return evicted;
+}
+
 async function getIndex(filePath: string): Promise<MessageFileIndex> {
   const now = Date.now();
   // 惰性清扫：任意一次索引访问顺带释放空闲条目（不依赖定时器）
@@ -539,10 +570,20 @@ async function readTail(handle: Awaited<ReturnType<typeof open>>, end: number): 
   return tail;
 }
 
+/** 按当前模式上限立即裁剪字节索引；返回逐出条数。 */
+export function trimMessageIndexes(): number {
+  let evicted = 0;
+  while (indexes.size > cacheLimits().messageIndexes) {
+    indexes.delete(indexes.keys().next().value!);
+    evicted++;
+  }
+  return evicted;
+}
+
 function touchIndex(filePath: string, index: MessageFileIndex): void {
   indexes.delete(filePath);
   indexes.set(filePath, index);
-  while (indexes.size > MAX_CACHED_INDEXES) indexes.delete(indexes.keys().next().value!);
+  while (indexes.size > cacheLimits().messageIndexes) indexes.delete(indexes.keys().next().value!);
 }
 
 /** Read one contiguous page range, then slice individual UTF-8 records. */

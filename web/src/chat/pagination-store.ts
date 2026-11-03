@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { createStore, useStore } from "../app/store";
 import { api } from "../lib/api";
+import { webRuntimeProfile } from "../lib/runtime-mode";
 import type { ChatMessage } from "../lib/contracts";
 
 /**
@@ -18,9 +19,9 @@ import type { ChatMessage } from "../lib/contracts";
  */
 
 /** 单会话保留的已加载更早消息条数上限（约 20 页；超出部分从视图释放，仍可继续向前翻） */
-export const PAGINATION_MAX_MESSAGES = 2000;
+export const PAGINATION_MAX_MESSAGES = 2000; // 平衡档默认值；实际上限按运行模式读取
 /** 同时保留分页缓存的会话数上限（LRU） */
-export const PAGINATION_MAX_SESSIONS = 10;
+export const PAGINATION_MAX_SESSIONS = 10; // 平衡档默认值；实际上限按运行模式读取
 
 interface OlderMessagesState {
   older: ChatMessage[];
@@ -42,7 +43,7 @@ const store = createStore<PaginationState>({ bySession: {} });
  * 截断某会话的已加载历史：保留最近 limit 条（游标与 hasMore 原样保留——
  * 前者保证还能继续向前翻，后者只由服务端响应决定，避免翻页不收敛）。
  */
-export function trimOlderMessages(state: OlderMessagesState, limit: number = PAGINATION_MAX_MESSAGES): OlderMessagesState {
+export function trimOlderMessages(state: OlderMessagesState, limit: number = webRuntimeProfile().webPageMessages): OlderMessagesState {
   if (state.older.length <= limit) return state;
   return { ...state, older: state.older.slice(state.older.length - limit) };
 }
@@ -51,7 +52,7 @@ export function trimOlderMessages(state: OlderMessagesState, limit: number = PAG
 export function pruneSessionCaches(
   bySession: Record<string, OlderMessagesState>,
   recency: readonly string[],
-  limit: number = PAGINATION_MAX_SESSIONS,
+  limit: number = webRuntimeProfile().webPageSessions,
 ): Record<string, OlderMessagesState> {
   const keep = new Set(recency.slice(-limit));
   const next: Record<string, OlderMessagesState> = {};
@@ -110,6 +111,24 @@ export async function loadOlderMessages(sessionId: string, oldestId: string): Pr
     // 网络错误静默处理——loading 复位后用户可重试
     patch(sessionId, { loading: false });
   }
+}
+
+/** 运行模式切换后立即按新预算裁剪全部分页缓存（不改变翻页游标）。 */
+export function trimPaginationCaches(): void {
+  const limit = webRuntimeProfile().webPageMessages;
+  const sessionLimit = webRuntimeProfile().webPageSessions;
+  store.set((previous) => {
+    let changed = false;
+    const trimmed: Record<string, OlderMessagesState> = {};
+    for (const [sessionId, entry] of Object.entries(previous.bySession)) {
+      const next = trimOlderMessages(entry, limit);
+      if (next !== entry) changed = true;
+      trimmed[sessionId] = next;
+    }
+    const pruned = pruneSessionCaches(trimmed, recency, sessionLimit);
+    if (pruned !== trimmed) changed = true;
+    return changed ? { bySession: pruned } : previous;
+  });
 }
 
 /** resync.required：清空该会话分页缓存（可能已过期） */

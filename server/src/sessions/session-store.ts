@@ -12,30 +12,26 @@ import { readMessagesTail, readMessagesBefore, readAllMessages, readMessagesAfte
 import { isCacheEntryIdle } from "../cache-policy.js";
 import { deriveTitleFromMessages, serializeByKey, titleFromContent } from "./store-utils.js";
 import type { BindLinkSpec, ChatMessage, FallbackModelEntry, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SandboxNetwork, SessionDetail, SessionMeta } from "./types.js";
+import { cacheLimits, PINNED_MESSAGES_TOTAL_BYTES } from "../cache-limits.js";
 
 /**
  * 单会话整表缓存的驻留上限（**堆字节**，不是文件字节）：实测 JSON 解析后常驻 ≈ 文件 3.11×
  *（37.9MB 文件 → 117.9MB 堆），旧口径按文件字节记账等于把上限放大三倍（"每会话 32MB / 总计
  * 256MB" 实际是 ~100MB / ~800MB 堆，正是长期驻留 679MB 的来源）。48MB ≈ 16MB 文件。
  */
-const MAX_CACHED_MESSAGES_PER_SESSION_BYTES = 48 * 1024 * 1024;
 /** 文件字节 → 堆字节的换算系数（实测 3.11×，向下取整到 3）。 */
 const HEAP_BYTES_PER_FILE_BYTE = 3;
 /** 所有会话整表缓存的累计上限（堆字节，≈64MB 文件）：多会话长跑下防「打开过的会话」把内存堆满。 */
-const MAX_CACHED_MESSAGES_TOTAL_BYTES = 192 * 1024 * 1024;
 /** readMessages 整表缓存条数上限（与 message-reader 的索引缓存同一 LRU 纪律）。 */
-const MAX_CACHED_MESSAGE_LISTS = 32;
 /**
  * pinned（活跃 run 钉住）条目的累计兜底上限（堆字节）。活跃 run 优先的原则不变——pinned 条目
  * 正常不受单会话/累计上限与 LRU 约束；但多个大会话并发 run 时，这些条目累计驻留无上限，
  * 进程可能直接走向 OOM。越过这条线时宁可以「该 run 下一轮重新解析段」为代价逐出最旧 pinned，
  * 也不让进程崩掉（抛 OOM 会丢掉所有并发 run 的上下文，代价远大于一次重解析）。
  */
-const MAX_CACHED_MESSAGES_PINNED_TOTAL_BYTES = 768 * 1024 * 1024;
 
 /** readMeta 缓存条数上限。agent loop 每轮多次 readMeta（get/appendMessage 等），
  * meta.json 小而稳定；写入侧不主动失效——指纹（size+mtime+ctime）自动失配。 */
-const MAX_CACHED_METAS = 64;
 
 /** 派生标题时的头部有界读取条数：首条用户文本消息几乎总在头几条里。 */
 const DERIVED_TITLE_HEAD_LIMIT = 50;
@@ -321,7 +317,7 @@ export class SessionStore {
       this.dropMessagesCache(id);
       return;
     }
-    if (entry.weight > MAX_CACHED_MESSAGES_PER_SESSION_BYTES) {
+    if (entry.weight > cacheLimits().sessionPerEntryBytes) {
       this.dropMessagesCache(id);
       return;
     }
@@ -993,7 +989,7 @@ export class SessionStore {
   private touchMetaCache(id: string, entry: MetaCacheEntry): void {
     this.metaCache.delete(id);
     this.metaCache.set(id, entry);
-    while (this.metaCache.size > MAX_CACHED_METAS) this.metaCache.delete(this.metaCache.keys().next().value!);
+    while (this.metaCache.size > cacheLimits().metaEntries) this.metaCache.delete(this.metaCache.keys().next().value!);
   }
 
   /** Safe branch fallback: copy history into a separately selected workspace, never share a writable cwd. */
@@ -1091,7 +1087,7 @@ export class SessionStore {
     this.sweepIdleCaches(entry.lastAccess);
     // dropMessagesCache 内部同步扣 weight 记账（此前此处先手动减一次再 drop，总账越记越负）
     this.dropMessagesCache(id);
-    if (!this.pinnedMessages.has(id) && entry.weight > MAX_CACHED_MESSAGES_PER_SESSION_BYTES) return;
+    if (!this.pinnedMessages.has(id) && entry.weight > cacheLimits().sessionPerEntryBytes) return;
     this.messagesCache.set(id, entry);
     this.messagesCacheBytes += entry.weight;
     this.evictOverflow();
@@ -1100,13 +1096,13 @@ export class SessionStore {
   /**
    * 条数/总量超限逐出：pinned（活跃 run）条目正常跳过——它们正被每 turn 复用，逐出只会让下轮
    * 重新整表解析。兜底：找不到可逐出的非 pinned 条目、且 pinned 累计已越过
-   * MAX_CACHED_MESSAGES_PINNED_TOTAL_BYTES 时，仍逐出 Map 最旧条目（即使它 pinned），
+   * PINNED_MESSAGES_TOTAL_BYTES 时，仍逐出 Map 最旧条目（即使它 pinned），
    * 并 warn 一条（每次逐出最多一条）——多大会话并发 run 时这是防 OOM 的最后一道闸。
    */
   private evictOverflow(): void {
     while (
-      this.messagesCache.size > MAX_CACHED_MESSAGE_LISTS
-      || (this.messagesCacheBytes > MAX_CACHED_MESSAGES_TOTAL_BYTES && this.messagesCache.size > 1)
+      this.messagesCache.size > cacheLimits().sessionEntries
+      || (this.messagesCacheBytes > cacheLimits().sessionTotalBytes && this.messagesCache.size > 1)
     ) {
       let evictable: string | undefined;
       for (const key of this.messagesCache.keys()) {
@@ -1117,16 +1113,34 @@ export class SessionStore {
       }
       if (!evictable) {
         // 剩下的全是 pinned：未越过兜底上限就放弃逐出（活跃 run 优先）
-        if (this.messagesCacheBytes <= MAX_CACHED_MESSAGES_PINNED_TOTAL_BYTES) break;
+        if (this.messagesCacheBytes <= PINNED_MESSAGES_TOTAL_BYTES) break;
         evictable = this.messagesCache.keys().next().value!;
         console.warn(
           `[session-store] pinned 消息缓存累计 ${Math.round(this.messagesCacheBytes / (1024 * 1024))}MB`
-          + ` 超过兜底上限 ${MAX_CACHED_MESSAGES_PINNED_TOTAL_BYTES / (1024 * 1024)}MB：逐出最旧 pinned 缓存`
+          + ` 超过兜底上限 ${PINNED_MESSAGES_TOTAL_BYTES / (1024 * 1024)}MB：逐出最旧 pinned 缓存`
           + `（该会话本轮 run 的下一轮重新解析，进程不走向 OOM）`,
         );
       }
       this.dropMessagesCache(evictable);
     }
+  }
+
+  /** 按当前模式上限立即裁剪整表缓存（模式切换/压缩时调用）；返回逐出条数。 */
+  trimCaches(): number {
+    const before = this.messagesCache.size;
+    this.evictOverflow();
+    return before - this.messagesCache.size;
+  }
+
+  /** 释放所有非 pinned 的整表缓存（二级内存压缩/诊断用）；活跃 run 的 pinned 条目保留。 */
+  clearMessageCaches(): number {
+    let evicted = 0;
+    for (const id of [...this.messagesCache.keys()]) {
+      if (this.pinnedMessages.has(id)) continue;
+      this.dropMessagesCache(id);
+      evicted += 1;
+    }
+    return evicted;
   }
 
   /**

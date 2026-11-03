@@ -77,6 +77,25 @@ describe("chat 会话存储：活动分支投影与分页", () => {
   });
 });
 
+describe("chat 会话整表缓存记账", () => {
+  it("重复 touch 同一缓存不会把累计字节减成负数", async () => {
+    const store = await storeAt();
+    const session = await store.create({ provider: "stub", model: "stub" });
+    await store.appendMessage(session.id, "user", [{ type: "text", text: "问题" }]);
+    await store.getMessages(session.id);
+    const internals = store as unknown as {
+      messagesCache: Map<string, { weight: number; lastAccess: number }>;
+      touchMessagesCache(id: string, entry: { weight: number; lastAccess: number }): void;
+    };
+    const entry = internals.messagesCache.get(session.id)!;
+    const weight = entry.weight;
+    expect(store.messagesCacheStats()).toEqual({ entries: 1, bytes: weight });
+
+    internals.touchMessagesCache(session.id, entry);
+    expect(store.messagesCacheStats()).toEqual({ entries: 1, bytes: weight });
+  });
+});
+
 describe("chat runner 上下文与运行起点", () => {
   it("纯图片消息只把已落盘 user 消息送一次；started 在首个 await 之前同步触发", async () => {
     const root = await tempRoot("owc-chat-runner-");

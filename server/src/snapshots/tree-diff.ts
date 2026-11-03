@@ -66,7 +66,7 @@ interface Change {
 }
 
 /** 简易 glob → 正则：`**` 跨目录段、`*` 单段内、`?` 单字符；其余字符按字面转义。 */
-export function globToRegExp(pattern: string): RegExp {
+function globToRegExp(pattern: string): RegExp {
   let source = "";
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i]!;

@@ -14,7 +14,7 @@
  */
 
 /** 底部遮挡超过该高度才判定为软键盘（px） */
-export const KEYBOARD_OCCLUSION_THRESHOLD = 120;
+const KEYBOARD_OCCLUSION_THRESHOLD = 120;
 
 let installed = false;
 

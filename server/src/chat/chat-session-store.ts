@@ -10,6 +10,7 @@ import { readAllMessages, readMessagesHead, sweepIdleMessageIndexes } from "../s
 import { isCacheEntryIdle } from "../cache-policy.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { ChatSessionMeta, ChatShare } from "./chat-types.js";
+import { cacheLimits } from "../cache-limits.js";
 
 /** 新会话默认标题（首条用户文本消息到达后自动派生替换）。 */
 const DEFAULT_TITLE = "New chat";
@@ -18,13 +19,10 @@ const DEFAULT_TITLE = "New chat";
 const DERIVED_TITLE_HEAD_LIMIT = 50;
 
 /** readMessages 整表缓存条数上限（与 SessionStore/message-reader 同一 LRU 纪律）。 */
-const MAX_CACHED_MESSAGE_LISTS = 32;
 /** 单个会话整表缓存的驻留上限：超过就不缓存。 */
-const MAX_CACHED_MESSAGES_PER_SESSION_BYTES = 48 * 1024 * 1024;
 /** 文件字节 → 堆字节的换算系数（实测 3.11×，向下取整到 3）。 */
 const HEAP_BYTES_PER_FILE_BYTE = 3;
 /** 所有会话整表缓存的累计上限。 */
-const MAX_CACHED_MESSAGES_TOTAL_BYTES = 192 * 1024 * 1024;
 
 /**
  * 单会话消息整表缓存：size+mtime+ctime 指纹校验（同 SessionStore.messagesCache），
@@ -319,18 +317,43 @@ export class ChatSessionStore {
   private touchMessagesCache(id: string, entry: MessagesCacheEntry): void {
     entry.lastAccess = Date.now();
     this.sweepIdleCaches(entry.lastAccess);
-    const previous = this.messagesCache.get(id);
-    if (previous) this.messagesCacheBytes -= previous.weight;
+    // dropMessagesCache 内部同步扣 weight 记账；此处不能再手动减一次，否则累计字节会变负、上限失效。
     this.dropMessagesCache(id);
-    if (entry.weight > MAX_CACHED_MESSAGES_PER_SESSION_BYTES) return;
+    if (entry.weight > cacheLimits().chatPerEntryBytes) return;
     this.messagesCache.set(id, entry);
     this.messagesCacheBytes += entry.weight;
     while (
-      this.messagesCache.size > MAX_CACHED_MESSAGE_LISTS
-      || (this.messagesCacheBytes > MAX_CACHED_MESSAGES_TOTAL_BYTES && this.messagesCache.size > 1)
+      this.messagesCache.size > cacheLimits().chatEntries
+      || (this.messagesCacheBytes > cacheLimits().chatTotalBytes && this.messagesCache.size > 1)
     ) {
       this.dropMessagesCache(this.messagesCache.keys().next().value!);
     }
+  }
+
+  /** 整表缓存规模（测试/诊断）：条目数与累计估算堆字节。 */
+  messagesCacheStats(): { entries: number; bytes: number } {
+    return { entries: this.messagesCache.size, bytes: this.messagesCacheBytes };
+  }
+
+  /** 释放全部整表缓存（二级内存压缩/诊断用）；下一次读取自动重建。 */
+  clearMessageCaches(): number {
+    const evicted = this.messagesCache.size;
+    this.messagesCache.clear();
+    this.messagesCacheBytes = 0;
+    return evicted;
+  }
+
+  /** 按当前模式上限立即裁剪整表缓存；返回逐出条数。 */
+  trimCaches(): number {
+    let evicted = 0;
+    while (
+      this.messagesCache.size > cacheLimits().chatEntries
+      || (this.messagesCacheBytes > cacheLimits().chatTotalBytes && this.messagesCache.size > 1)
+    ) {
+      this.dropMessagesCache(this.messagesCache.keys().next().value!);
+      evicted++;
+    }
+    return evicted;
   }
 
   /**
@@ -374,12 +397,16 @@ export class ChatSessionStore {
         return;
       }
       cached.messages.push(message);
-      cached.size = info.size;
-      // 权重按堆字节口径整份重算（追加穿透同样受单会话/累计上限裁决，超额即逐出）
-      cached.weight = info.size * HEAP_BYTES_PER_FILE_BYTE;
-      cached.mtimeMs = info.mtimeMs;
-      cached.ctimeMs = info.ctimeMs;
-      this.touchMessagesCache(id, cached);
+      // 不原地改写 cached 的 size/weight/指纹：touchMessagesCache 先按旧 weight 冲账，
+      // 原地改写会让 drop 扣掉新值（入账的是旧值），总账越记越负。传更新后的新条目。
+      this.touchMessagesCache(id, {
+        ...cached,
+        size: info.size,
+        // 权重按堆字节口径整份重算（追加穿透同样受单会话/累计上限裁决，超额即逐出）
+        weight: info.size * HEAP_BYTES_PER_FILE_BYTE,
+        mtimeMs: info.mtimeMs,
+        ctimeMs: info.ctimeMs,
+      });
     } catch {
       this.dropMessagesCache(id);
     }

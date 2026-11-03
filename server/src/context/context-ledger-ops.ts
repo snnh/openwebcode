@@ -67,24 +67,33 @@ function evictionPlaceholder(entry: LedgerEntry): string {
   return `[tool result evicted (${tool}${size}); artifact:${entry.artifactId}; call read_artifact with artifactId "${entry.artifactId}", offset and limit to re-read a slice]`;
 }
 
-/** 构建单条消息片段：深克隆 + 驱逐占位替换（pin 的消息跳过替换）。tokens/segments 在估算阶段回填。 */
+/** 构建单条消息片段：无驱逐/无图片时共享源消息（只读语义），仅在必要时重建包装与内容数组。 */
 export function buildFragment(message: ChatMessage, byMessage: Map<string, LedgerEntry>, pinnedIds: ReadonlySet<string>): ViewFragment {
   const entry = byMessage.get(message.id);
   const pinned = pinnedIds.has(message.id);
   const evictResult = entry && entry.state !== "full" && entry.state !== "restored" && !pinned;
+  let content = message.content;
+  let cloned = false;
+  if (evictResult) {
+    // 只重建被驱逐的 tool_result 块；其余块按不可变数据共享，避免整条消息深拷贝。
+    content = message.content.map((block) => {
+      if (block.type !== "tool_result") return block;
+      // 驱逐剥离附带媒体（media 内的 base64 本体）：否则被逐结果的大块二进制仍会随视图发给模型
+      const { media: _droppedMedia, ...rest } = block;
+      return {
+        ...rest,
+        content: entry.excerpt ?? evictionPlaceholder(entry),
+      };
+    });
+    cloned = true;
+  } else if (message.content.some((block) => block.type === "image")) {
+    // enforceImageBudget 会替换数组槽（不改块对象）：只复制数组，块仍共享。
+    content = [...message.content];
+    cloned = true;
+  }
   return {
-    message: {
-      ...message,
-      content: message.content.map((block) => {
-        if (!evictResult || block.type !== "tool_result") return { ...block };
-        // 驱逐剥离附带媒体（media 内的 base64 本体）：否则被逐结果的大块二进制仍会随视图发给模型
-        const { media: _droppedMedia, ...rest } = block;
-        return {
-          ...rest,
-          content: entry.excerpt ?? evictionPlaceholder(entry),
-        };
-      }),
-    },
+    // 无驱逐/无图片时直接共享源消息对象；消息对象语义只读，返回给调用方的视图还会再浅拷贝一层。
+    message: cloned ? { ...message, content } : message,
     tokens: 0,
     segments: emptySegments(),
     pinned,

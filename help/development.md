@@ -41,7 +41,7 @@ openwebcode/
 │   │   ├── components/      # 设计基元（Icon/Overlay/ConfirmDialog 等）与保留件（Markdown/Monaco 编辑器）
 │   │   ├── lib/             # api.ts REST 客户端、contracts/ 按域拆分的类型契约（barrel 在 contracts.ts）
 │   │   ├── i18n.tsx         # 中英双语
-│   │   └── styles/          # 十二份样式表（tokens/base/layout/chat-list/chat-cards/chat-mode/composer/sidebar/panels/editor/dialogs/settings）
+│   │   └── styles/          # 十六份样式表（fonts/tokens-*/base/layout/chat-list/chat-cards/chat-mode/composer/sidebar/panels/editor/dialogs/settings）
 │   └── src/test/            # vitest + jsdom + Testing Library
 ├── packaging/         # 分发布局、安装脚本、WiX 打包
 ├── scripts/           # bench/（Node + Playwright 性能基准，回归 >15% 标红）、fetch-dsh-web.mjs（抓取 dsh UI vendor）
@@ -175,7 +175,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 
 ### 加一个 MCP 传输
 
-`server/src/mcp/` 现有 stdio 和 Streamable HTTP 两种传输，加新的参照同一层抽象（`client.ts` / `manager.ts`）。配置来自 `<dataDir>/mcp.json` 和项目级 `<cwd>/.owc/mcp.json`。MCP 工具以 `mcp__<server>__<tool>` 命名空间注入，和内置工具走同一条权限链，不允许绕过。
+`server/src/mcp/` 现有 stdio 和 Streamable HTTP 两种传输，加新的参照同一层抽象（`client.ts` / `manager.ts`）。配置来自 `<dataDir>/mcp.json` 和项目级 `<cwd>/.owc/mcp.json`。MCP 工具以 `mcp__<server>__<tool>` 命名空间注入，和内置工具走同一条权限链，不允许绕过。项目级文件仅在 `trustProjectExecConfig` 开启时读取；`.owc` 或 `mcp.json` 本身是符号链接时按不存在处理。`McpManager` 对全局/项目文件做指纹缓存，信任开关热切换会重新加载（见 `server/test/mcp-manager.test.ts`）。
 
 ### 改上下文策略
 
@@ -188,9 +188,11 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 ### 改 UI
 
 - UI 状态入 `src/app/` 下的自研 store（ui-store/session-store/live-store/prefs-store，useSyncExternalStore）；服务端数据走 `@tanstack/react-query`；WS 事件经 `app/ws.ts` + `app/event-router.ts` 集中路由。
-- 样式在 `src/styles/` 十二份样式表（tokens/base/layout/chat-list/chat-cards/chat-mode/composer/sidebar/panels/editor/dialogs/settings），CSS 变量主题（亮/暗）。新组件按其域放 `chat/`、`composer/`、`workbench/`、`panels/`、`dialogs/`、`settings/`，基元放 `components/`。
+- 样式在 `src/styles/` 十六份样式表（fonts/tokens-color/tokens-motion/tokens-shape/tokens-type/base/layout/chat-list/chat-cards/chat-mode/composer/sidebar/panels/editor/dialogs/settings），CSS 变量主题（亮/暗）。新组件按其域放 `chat/`、`composer/`、`workbench/`、`panels/`、`dialogs/`、`settings/`，基元放 `components/`。
+- 外观偏好由 `lib/appearance-prefs.ts` 写入 `:root`：`--text-*` 用 `calc(base-px * var(--ui-scale))`，正文/聊天/设置都消费这些 token；Monaco、diff、xterm 的 `fontSize` 在 JS 里按 scale 单独同步，新增文本容器优先用 token，不要写死 px。`--font-ui-latin` 与 `--font-ui-cjk` 两段栈都不要带 generic，最终 `--font-ui` 末尾统一兜底；等宽字体用自己的 `monospace`。
 - 新命令/快捷键：命令注册到 `app/commands.ts` 的 `registerBuiltinCommands`（含 `when` 上下文），默认键位加到 `DEFAULT_KEYBINDINGS`。`commands.test.ts` 会校验每个 REST 动作都有对应命令。
 - Markdown/LaTeX 渲染集中在 `components/Markdown.tsx`，不要为流式/历史/思考各维护一份解析器。
+- 新 WS 事件先判断是否需要进入通知中心：`app/event-router.ts` 是唯一事件消费点。`hook.project_config_untrusted` 的示例是把后台会话也推送进通知中心，并用 `target: { settingsTab: "info" }` 深链到开关；跳转目标类型在 `lib/notifications.ts`。
 - 新增用户可见文案必须走 `useI18n()` 的 `t(中文, english)` 同时给中英文，不做运行时 DOM 文本替换。
 
 ### 写扩展
@@ -214,7 +216,7 @@ dsh（DeepSeek Harness）兼容层在 `server/src/dsh/`：`loader.ts`（插件�
 - **C 只是执行器**。不实现 HTTP/LLM 客户端，不碰 API Key、提示词、任意 URL。LLM、网络、凭据、策略全部留在 Node。
 - **机制在核心，策略在扩展**。核心安全网（上下文强制压缩水位——默认 85%，可在设置调整 `compactionThresholdPercent`（50–95，热生效，env `OWC_COMPACTION_THRESHOLD_PERCENT`）、当前轮保护、账本一致性、沙盒路径校验）不可绕过；Skills/Commands/Hooks/子代理/MCP/扩展只加策略。
 - **权限与沙盒正交**。yolo 只跳过确认，不解除沙盒；`--no-sandbox` 才完全解除（不推荐）。Hooks 由 server 直接 spawn，安全级别等同 yolo，只能加载可信配置。
-- **路径策略优先级固定**：`denyPaths > writeRoots > readRoots`。文件原语必须保持 root-bound + no-follow/reparse 防护。denyPaths 对沙盒内命令同样生效（Windows 剥离 deny 路径上沙盒包身份的 ACL 项——实测 DENY ACE 对 AppContainer 包身份无效 / bwrap mount mask；显式 Landlock 档无法表达，能力报 partial）。
+- **路径策略优先级固定**：`denyPaths > writeRoots > readRoots`。文件原语必须保持 root-bound + no-follow/reparse 防护。denyPaths 对沙盒内命令同样生效（Windows 剥离 deny 路径上沙盒包身份的 ACL 项——实测 DENY ACE 对 AppContainer 包身份无效 / bwrap mount mask；显式 Landlock 档无法表达，能力报 partial）。bwrap 为缺失 deny 路径创建占位文件时只允许写根内，父链从写根开始用 `openat(O_NOFOLLOW)` 逐级进入；父链中有符号链接就放弃创建，不能经项目自带的 `.owc` 链接写到工作区外。
 - **无 TUI**。WebUI 是唯一交互界面，`owc run` CLI 只做非交互自动化（`--json` 出 NDJSON）。禁止引入 ncurses / bubbletea / ratatui / blessed 之类。
 
 ## CI

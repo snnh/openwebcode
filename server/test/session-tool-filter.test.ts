@@ -26,7 +26,7 @@ function fakeTool(name: string): ProviderTool {
 
 const FAKE_CORE_INFO: CoreInfo = {
   version: "0.8.0-test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
+  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, asyncExec: true, fsHash: true, fsScanPagination: true, fsWatch: true },
   limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
 };
 

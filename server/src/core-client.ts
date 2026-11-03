@@ -91,7 +91,7 @@ export interface CoreInfo {
   protocolVersion?: string;
   platform: "windows" | "linux";
   sandboxCapability: string;
-  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean; grepJob?: boolean; globJob?: boolean; pathNormalize?: boolean; shellBash?: boolean; pty?: boolean; bindLink?: boolean; fsReadBase64?: boolean; overlay?: { supported: boolean; fuseOverlayfs: boolean; kernelMount: boolean }; bwrap?: { available: boolean; reason?: string } };
+  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; asyncExec?: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean; grepJob?: boolean; globJob?: boolean; pathNormalize?: boolean; shellBash?: boolean; pty?: boolean; bindLink?: boolean; fsReadBase64?: boolean; overlay?: { supported: boolean; fuseOverlayfs: boolean; kernelMount: boolean }; bwrap?: { available: boolean; reason?: string } };
   limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number; maxIndexScanNodes?: number; maxIndexScanDepth?: number; maxIndexScanBytes?: number; maxIndexScanMs?: number; maxSearchNodes?: number; maxSearchDepth?: number; maxSearchMs?: number; maxIndexExtractFiles?: number; maxIndexExtractBytes?: number; maxIndexExtractMs?: number; indexExtractDefaultSymbolsPerFile?: number; maxIndexExtractSymbolsPerFile?: number; maxConcurrentPtys?: number; maxPtyOutputChunkBytes?: number; maxPtyInputBytes?: number; maxReadBase64Bytes?: number };
 }
 
@@ -314,6 +314,11 @@ export interface CoreClientLike {
   /** core.stats（可选）：旧 core 二进制无此方法时缺省，内存统计应降级为不可用。 */
   stats?(): Promise<CoreStats>;
   run(request: ExecRequest): Promise<ExecResult>;
+  /** exec.cancel（可选）：取消排队或运行中的命令；新 core 提供，旧 core 缺省。 */
+  cancelExec?(request: { sessionId: string; execId: string }): Promise<{ ok: true }>;
+  /** 执行并发与队列统计（可选，仅 CoreClient 实现）。 */
+  setExecConcurrency?(value: number): void;
+  execStats?(): ExecStats;
   configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string; sandboxReason?: string }>;
   /** 最近一次 configureSession 记录的会话执行级别（仅 CoreRouter 提供）；无记录返回 undefined。 */
   sandboxStatusFor?(sessionId: string): { capability: string; reason?: string; at: number } | undefined;
@@ -366,6 +371,23 @@ export interface CoreClientLike {
   release?(sessionId: string): Promise<void>;
 }
 
+/** exec.run 执行队列快照（性能面板/诊断用）。 */
+export interface ExecStats {
+  running: number;
+  queued: number;
+  maxConcurrent: number;
+  oldestWaitMs: number;
+  items: Array<{ sessionId: string; execId: string; state: "running" | "queued"; waitMs: number }>;
+}
+
+/** 已入队、尚未发送的 exec.run；排队不消耗命令超时。 */
+interface QueuedExec {
+  request: ExecRequest;
+  enqueuedAt: number;
+  resolve: (value: ExecResult) => void;
+  reject: (error: Error) => void;
+}
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -384,6 +406,11 @@ export class CoreClient extends EventEmitter {
   private transport: RpcTransport | undefined;
   private child: ChildProcessWithoutNullStreams | undefined;
   private readonly pending = new Map<number, PendingRequest>();
+  /** exec.run 的执行闸门：默认 2 并发，按会话公平挑选下一个；排队不计入命令超时。 */
+  private execConcurrency = 2;
+  private execRunning = 0;
+  private execQueue: QueuedExec[] = [];
+  private readonly execRunningItems = new Set<QueuedExec>();
   private readonly ptyEmitters = new Map<number, EventEmitter>();
   private readonly pendingPtyEvents = new Map<number, Array<{ type: "output" | "exit"; params: unknown }>>();
   /** ptyId → 开出该 pty 的会话 id（pty.open 时登记）。core 要求 pty.input/
@@ -428,6 +455,7 @@ export class CoreClient extends EventEmitter {
     this.stopping = true;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = undefined;
+    for (const item of this.execQueue.splice(0)) item.reject(new Error("Core client stopped"));
     const generation = this.generation;
     const transport = this.transport;
     if (transport) {
@@ -457,7 +485,102 @@ export class CoreClient extends EventEmitter {
   stats(): Promise<CoreStats> { return this.call<CoreStats>("core.stats", {}, 5_000); }
 
   run(request: ExecRequest): Promise<ExecResult> {
-    return this.call<ExecResult>("exec.run", request, (request.timeoutMs ?? 120_000) + 10_000);
+    return new Promise<ExecResult>((resolve, reject) => {
+      if (this.execQueue.length >= 64) {
+        reject(new Error("Core exec queue is full"));
+        return;
+      }
+      const item: QueuedExec = { request, enqueuedAt: Date.now(), resolve, reject };
+      this.execQueue.push(item);
+      this.drainExecQueue();
+    });
+  }
+
+  /** 调整执行并发（1–8）；调大后立即出队。 */
+  setExecConcurrency(value: number): void {
+    if (!Number.isFinite(value)) return;
+    this.execConcurrency = Math.max(1, Math.min(8, Math.floor(value)));
+    this.drainExecQueue();
+  }
+
+  /** 执行队列快照（性能面板/诊断用）。 */
+  execStats(): ExecStats {
+    const now = Date.now();
+    const running = [...this.execRunningItems].map((item) => ({
+      sessionId: item.request.sessionId,
+      execId: item.request.execId,
+      state: "running" as const,
+      waitMs: now - item.enqueuedAt,
+    }));
+    const queued = this.execQueue.map((item) => ({
+      sessionId: item.request.sessionId,
+      execId: item.request.execId,
+      state: "queued" as const,
+      waitMs: now - item.enqueuedAt,
+    }));
+    return {
+      running: this.execRunning,
+      queued: this.execQueue.length,
+      maxConcurrent: this.execConcurrency,
+      oldestWaitMs: this.execQueue.length > 0 ? now - this.execQueue[0]!.enqueuedAt : 0,
+      items: [...running, ...queued],
+    };
+  }
+
+  /** 取消排队项（本地移除）或运行中命令（转发 core.exec.cancel）。 */
+  async cancelExec(request: { sessionId: string; execId: string }): Promise<{ ok: true }> {
+    const index = this.execQueue.findIndex((item) => item.request.sessionId === request.sessionId && item.request.execId === request.execId);
+    if (index >= 0) {
+      const [item] = this.execQueue.splice(index, 1);
+      item!.reject(new CoreRpcError(-32001, "command cancelled"));
+      return { ok: true };
+    }
+    const running = [...this.execRunningItems].some((item) => item.request.sessionId === request.sessionId && item.request.execId === request.execId);
+    if (!running) return { ok: true };
+    try {
+      return await this.call<{ ok: true }>("exec.cancel", request);
+    } catch (error) {
+      // 命令可能在 cancel 抵达前已结束：取消语义按幂等处理。
+      if (error instanceof CoreRpcError && error.code === -32003) return { ok: true };
+      throw error;
+    }
+  }
+
+  private drainExecQueue(): void {
+    while (this.execRunning < this.execConcurrency && this.execQueue.length > 0) {
+      const index = this.pickExecIndex();
+      const [item] = this.execQueue.splice(index, 1);
+      if (!item) return;
+      this.execRunning++;
+      this.execRunningItems.add(item);
+      const timeoutMs = (item.request.timeoutMs ?? 120_000) + 10_000;
+      this.call<ExecResult>("exec.run", item.request, timeoutMs)
+        .then(item.resolve, item.reject)
+        .finally(() => {
+          this.execRunning--;
+          this.execRunningItems.delete(item);
+          this.drainExecQueue();
+        });
+    }
+  }
+
+  /** 按会话公平：优先挑当前运行数最少的会话，其次最早入队。 */
+  private pickExecIndex(): number {
+    const runningBySession = new Map<string, number>();
+    for (const item of this.execRunningItems) {
+      runningBySession.set(item.request.sessionId, (runningBySession.get(item.request.sessionId) ?? 0) + 1);
+    }
+    let best = 0;
+    let bestCount = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < this.execQueue.length; index++) {
+      const sessionId = this.execQueue[index]!.request.sessionId;
+      const count = runningBySession.get(sessionId) ?? 0;
+      if (count < bestCount) {
+        best = index;
+        bestCount = count;
+      }
+    }
+    return best;
   }
 
   configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string; sandboxReason?: string }> { return this.call("session.configure", request); }
@@ -716,6 +839,7 @@ export class CoreClient extends EventEmitter {
       pending.reject(error);
       this.pending.delete(id);
     }
+    for (const item of this.execQueue.splice(0)) item.reject(error);
     if (child && child.exitCode === null) child.kill();
     // core 重启/退出意味着全部 pty 已死：通知每个 per-pty 通道退出并清表
     for (const emitter of this.ptyEmitters.values()) emitter.emit("exit", {});

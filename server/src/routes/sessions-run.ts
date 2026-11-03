@@ -498,6 +498,18 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
     return reply.code(204).send();
   });
 
+  /** 取消该会话的一条排队/运行中命令（性能面板使用）。 */
+  app.post<{ Params: { id: string; execId: string } }>("/api/sessions/:id/exec/:execId/cancel", async (request, reply) => {
+    const session = await sessions.getMeta(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    if (!core.cancelExec) return reply.code(503).send({ error: "Core exec.cancel support is unavailable" });
+    try {
+      return await core.cancelExec({ sessionId: request.params.id, execId: request.params.execId });
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/sessions/:id/abort", async (request, reply) => {
     if (!agent.abort(request.params.id)) return reply.code(409).send({ error: "Session is not running" });
     return reply.code(202).send({ accepted: true });

@@ -131,15 +131,6 @@ export const PENDING_CHROME_FALLBACK = 180;
 /** chrome 高度未量到时的保守预留（移动端） */
 export const PENDING_CHROME_FALLBACK_MOBILE = 150;
 
-/** 消息列表保底高度（px）：卡片再高也保留约 3 行上下文 */
-export const PENDING_LIST_FLOOR = 120;
-/** 顶栏 + 标签条 + Composer 的预留高度（px），用于算卡片上限 */
-export const PENDING_CHROME_RESERVE = 180;
-/** 移动端列表保底（约 2 行）：窄屏下把空间优先让给待回答卡 */
-export const PENDING_LIST_FLOOR_MOBILE = 72;
-/** 移动端顶栏/输入栏预留（比桌面更紧：状态行与工具行本就压扁） */
-export const PENDING_CHROME_RESERVE_MOBILE = 150;
-
 export interface PendingAccordion {
   /** 当前展开的卡片 id；undefined 表示全部收起 */
   expandedId: string | undefined;

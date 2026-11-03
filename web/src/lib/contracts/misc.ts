@@ -239,15 +239,34 @@ export interface CacheClearResponse {
 }
 
 export interface MemoryStats {
-  node: { rss: number; heapUsed: number; heapTotal: number; external: number };
+  node: { rss: number; heapUsed: number; heapTotal: number; external: number; arrayBuffers: number };
   core: { rssBytes: number } | null;
   extensionHost: { rss: number } | null;
+}
+
+export interface ExecStatsView {
+  running: number;
+  queued: number;
+  maxConcurrent: number;
+  oldestWaitMs: number;
+  items: Array<{ sessionId: string; execId: string; state: "running" | "queued"; waitMs: number }>;
+}
+
+export interface MemoryBudgetView {
+  enabled: boolean;
+  budgetMB: number | null;
+  totalMB: number | null;
+  level: 0 | 1 | 2;
+  compressed: boolean;
+  updatedAt: number | null;
 }
 
 export interface ServerMetrics {
   events: { published: number; retained: number; retainedBytes: number; oversizedNotRetained: number };
   websocket: { clients: number; slowClientDisconnects: number; failedClientSends: number };
   memory: MemoryStats;
+  exec: ExecStatsView;
+  memoryBudget: MemoryBudgetView;
 }
 
 export interface PromptOverrideView {

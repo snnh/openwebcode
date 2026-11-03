@@ -21,10 +21,23 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
 #include <windows.h>
+typedef CONDITION_VARIABLE owc_cond_t;
+#define owc_cond_init(c) InitializeConditionVariable(c)
+#define owc_cond_wait(c,lock) SleepConditionVariableCS((c),(lock),INFINITE)
+#define owc_cond_signal(c) WakeConditionVariable(c)
+#define owc_cond_broadcast(c) WakeAllConditionVariable(c)
 #else
 #include <pthread.h>
 typedef pthread_mutex_t CRITICAL_SECTION;
+typedef pthread_cond_t owc_cond_t;
+#define owc_cond_init(c) ((void)pthread_cond_init((c),NULL))
+#define owc_cond_wait(c,lock) ((void)pthread_cond_wait((c),(lock)))
+#define owc_cond_signal(c) ((void)pthread_cond_signal(c))
+#define owc_cond_broadcast(c) ((void)pthread_cond_broadcast(c))
 typedef struct { pthread_t thread; } owc_pthread_handle;
 typedef owc_pthread_handle *HANDLE;
 typedef unsigned long DWORD;
@@ -210,10 +223,25 @@ static int reply_result(owc_rpc *rpc, const owc_json *id, const char *result) {
     free(id_text); return ok;
 }
 
-typedef struct { owc_rpc *rpc; const char *exec_id; } output_context;
+/* Response writers for asynchronous workers: the id is rendered at enqueue
+ * time, and the worker must not consult rpc->suppress_responses (it belongs
+ * to whichever request the main loop is currently dispatching). */
+static int reply_error_text(owc_rpc *rpc, const char *id_text, int code, const char *message) {
+    char *escaped; int ok=0;
+    if(!id_text) return 1;
+    escaped=owc_json_escape_string(message);
+    if(escaped) ok=write_format(rpc,"{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":%d,\"message\":%s}}",id_text,code,escaped);
+    free(escaped); return ok;
+}
+static int reply_result_text(owc_rpc *rpc, const char *id_text, const char *result) {
+    if(!id_text) return 1;
+    return write_format(rpc,"{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":%s}",id_text,result);
+}
+
+typedef struct { owc_rpc *rpc; const char *exec_id; int notify; } output_context;
 static void output_notification(void *user_data,const char *stream,const unsigned char *data,size_t length,unsigned sequence) {
     output_context *context=(output_context *)user_data; char *encoded,*id;
-    if(context->rpc->suppress_responses) return;
+    if(!context->notify) return;
     encoded=base64_encode(data,length); id=owc_json_escape_string(context->exec_id);
     if(encoded && id) (void)write_format(context->rpc,"{\"jsonrpc\":\"2.0\",\"method\":\"exec.output\",\"params\":{\"execId\":%s,\"stream\":\"%s\",\"data\":\"%s\",\"seq\":%u}}",id,stream,encoded,sequence);
     free(encoded); free(id);
@@ -287,41 +315,361 @@ static const char *shell_backend_name(int backend) {
     return backend==(int)OWC_SHELL_PWSH?"pwsh":backend==(int)OWC_SHELL_BASH?"bash":"default";
 }
 
-/* See handle_exec_run: synchronous exec.run timeouts are clamped to this. */
+/* Async exec.run: the RPC loop snapshots the request, enqueues it, and
+ * returns immediately.  A bounded worker pool executes commands, so a long
+ * command in one session cannot block session.configure, fs.*, ping, or exec.run
+ * for every other session.  Ordering is handled by JSON-RPC ids; output
+ * frames are serialized by owc_rpc_write's write mutex. */
 #define OWC_EXEC_RUN_MAX_TIMEOUT_MS (10*60*1000)
+#define OWC_ASYNC_EXEC_WORKERS 8
+#define OWC_ASYNC_EXEC_MAX_QUEUE 64
+
+typedef struct owc_async_exec {
+    owc_rpc *rpc;
+    char *id_text;
+    char *exec_id;
+    char *session_id;
+    char *command;
+    char *cwd;
+    char *shell_path;
+    char *allow_paths[32]; size_t allow_count;
+    char *bind_backing[16]; int bind_read_only[16]; size_t bind_count;
+    char *read_roots[16]; size_t read_root_count;
+    char *write_roots[16]; size_t write_root_count;
+    char *deny_paths[16]; size_t deny_path_count;
+    char *read_only_paths[32]; size_t read_only_count;
+    char proxy_addr[144];
+    int sandbox_enabled, allow_network, sandbox_mode, shell_backend, network_filtered;
+    unsigned long job_memory_mb, job_max_processes;
+    int timeout_ms;
+    volatile int cancel;
+    int running;
+    struct owc_async_exec *queue_next;
+    struct owc_async_exec *active_next;
+} owc_async_exec;
+
+static owc_async_exec *async_exec_queue_head=NULL;
+static owc_async_exec *async_exec_queue_tail=NULL;
+static owc_async_exec *async_exec_active=NULL;
+static size_t async_exec_queued=0;
+static size_t async_exec_running=0;
+static CRITICAL_SECTION async_exec_mutex;
+static owc_cond_t async_exec_cond;
+static int async_exec_ready=0;
+
+static char *async_exec_copy_text(const char *value) {
+    size_t length;
+    char *copy;
+    if(!value) return NULL;
+    length=strlen(value)+1;
+    copy=(char *)malloc(length);
+    if(copy) memcpy(copy,value,length);
+    return copy;
+}
+
+static void async_exec_free(owc_async_exec *exec) {
+    size_t i;
+    if(!exec) return;
+    free(exec->id_text); free(exec->exec_id); free(exec->session_id);
+    free(exec->command); free(exec->cwd); free(exec->shell_path);
+    for(i=0;i<exec->allow_count;i++) free(exec->allow_paths[i]);
+    for(i=0;i<exec->bind_count;i++) free(exec->bind_backing[i]);
+    for(i=0;i<exec->read_root_count;i++) free(exec->read_roots[i]);
+    for(i=0;i<exec->write_root_count;i++) free(exec->write_roots[i]);
+    for(i=0;i<exec->deny_path_count;i++) free(exec->deny_paths[i]);
+    for(i=0;i<exec->read_only_count;i++) free(exec->read_only_paths[i]);
+    free(exec);
+}
+
+static int async_exec_copy_paths(char **target,size_t *count,const char *const *source,size_t source_count,size_t maximum) {
+    size_t i;
+    if(source_count>maximum) return 0;
+    for(i=0;i<source_count;i++) {
+        target[i]=async_exec_copy_text(source[i]);
+        if(!target[i]) return 0;
+        (*count)++;
+    }
+    return 1;
+}
+
+/* Execute one snapshot and write its response.  The worker must never read
+ * rpc->suppress_responses: the main loop overwrites it for every request. */
+static void async_exec_run_one(owc_async_exec *exec) {
+    owc_exec_request request;
+    owc_exec_result result;
+    output_context context;
+    int ok;
+    if(exec->cancel) {
+        (void)reply_error_text(exec->rpc,exec->id_text,-32001,"command cancelled");
+        return;
+    }
+    memset(&request,0,sizeof(request));
+    context.rpc=exec->rpc;
+    context.exec_id=exec->exec_id;
+    context.notify=exec->id_text!=NULL;
+    request.command=exec->command;
+    request.cwd=exec->cwd;
+    request.session_id=exec->session_id;
+    request.sandbox_enabled=exec->sandbox_enabled;
+    request.allow_network=exec->allow_network;
+    request.sandbox_mode=exec->sandbox_mode;
+    request.shell_backend=exec->shell_backend;
+    request.shell_path=exec->shell_path;
+    request.allow_paths=(const char *const *)exec->allow_paths;
+    request.allow_path_count=exec->allow_count;
+    request.bind_backing=(const char *const *)exec->bind_backing;
+    request.bind_read_only=exec->bind_read_only;
+    request.bind_count=exec->bind_count;
+    request.read_roots=(const char *const *)exec->read_roots;
+    request.read_root_count=exec->read_root_count;
+    request.write_roots=(const char *const *)exec->write_roots;
+    request.write_root_count=exec->write_root_count;
+    request.deny_paths=(const char *const *)exec->deny_paths;
+    request.deny_path_count=exec->deny_path_count;
+    request.network_filtered=exec->network_filtered;
+    request.proxy_addr=exec->proxy_addr[0]?exec->proxy_addr:NULL;
+    request.read_only_paths=(const char *const *)exec->read_only_paths;
+    request.read_only_count=exec->read_only_count;
+    request.job_memory_mb=exec->job_memory_mb;
+    request.job_max_processes=exec->job_max_processes;
+    request.timeout_ms=exec->timeout_ms;
+    request.output_limit=10u*1024u*1024u;
+    request.cancel_requested=&exec->cancel;
+    request.on_output=output_notification;
+    request.user_data=&context;
+    ok=owc_exec_run(&request,&result);
+    if(!exec->id_text) return;
+    if(exec->cancel || result.cancelled) {
+        (void)reply_error_text(exec->rpc,exec->id_text,-32001,"command cancelled");
+        return;
+    }
+    if(!ok) {
+        char message[384];
+        if(result.shell_unavailable) (void)snprintf(message,sizeof(message),"%s executable was not found",shell_backend_name(exec->shell_backend));
+        else if(result.sandbox_reason[0]) (void)snprintf(message,sizeof(message),"failed to start or monitor command (system error %lu): %s",result.system_error,result.sandbox_reason);
+        else (void)snprintf(message,sizeof(message),"failed to start or monitor command (system error %lu)",result.system_error);
+        (void)reply_error_text(exec->rpc,exec->id_text,-32000,message);
+        return;
+    }
+    if(result.timed_out) {
+        (void)reply_error_text(exec->rpc,exec->id_text,-32001,"command timed out");
+        return;
+    }
+    {
+        char result_text[2048];
+        char *reason=owc_json_escape_string(result.sandbox_reason[0]?result.sandbox_reason:"sandbox not requested");
+        if(!reason) {
+            (void)reply_error_text(exec->rpc,exec->id_text,-32000,"failed to encode sandbox status");
+            return;
+        }
+        (void)snprintf(result_text,sizeof(result_text),"{\"exitCode\":%d,\"durationMs\":%lld,\"truncated\":%s,\"sandboxCapability\":\"%s\",\"sandboxReason\":%s}",
+            result.exit_code,result.duration_ms,result.truncated?"true":"false",owc_sandbox_status_name((owc_sandbox_status)result.sandbox_status),reason);
+        free(reason);
+        (void)reply_result_text(exec->rpc,exec->id_text,result_text);
+    }
+}
+
+static void async_exec_active_remove(owc_async_exec *exec) {
+    owc_async_exec **slot=&async_exec_active;
+    while(*slot) {
+        if(*slot==exec) { *slot=exec->active_next; return; }
+        slot=&(*slot)->active_next;
+    }
+}
+
+/* Remove a not-yet-started request from the FIFO queue.  Caller holds the
+ * mutex; active-list removal is separate so cancel can reply/free outside. */
+static int async_exec_queue_remove(owc_async_exec *exec) {
+    owc_async_exec *previous=NULL,*current=async_exec_queue_head;
+    while(current) {
+        if(current==exec) {
+            if(previous) previous->queue_next=current->queue_next;
+            else async_exec_queue_head=current->queue_next;
+            if(async_exec_queue_tail==current) async_exec_queue_tail=previous;
+            async_exec_queued--;
+            return 1;
+        }
+        previous=current;
+        current=current->queue_next;
+    }
+    return 0;
+}
+
+static DWORD WINAPI async_exec_worker(void *unused) {
+    (void)unused;
+    for(;;) {
+        owc_async_exec *exec;
+        EnterCriticalSection(&async_exec_mutex);
+        while(!async_exec_queue_head) owc_cond_wait(&async_exec_cond,&async_exec_mutex);
+        exec=async_exec_queue_head;
+        async_exec_queue_head=exec->queue_next;
+        if(!async_exec_queue_head) async_exec_queue_tail=NULL;
+        async_exec_queued--;
+        async_exec_running++;
+        exec->running=1;
+        LeaveCriticalSection(&async_exec_mutex);
+        async_exec_run_one(exec);
+        EnterCriticalSection(&async_exec_mutex);
+        async_exec_running--;
+        exec->running=0;
+        async_exec_active_remove(exec);
+        LeaveCriticalSection(&async_exec_mutex);
+        async_exec_free(exec);
+    }
+    return 0;
+}
+
+static int async_exec_init(void) {
+    int i,created=0;
+    if(async_exec_ready) return 1;
+    InitializeCriticalSection(&async_exec_mutex);
+    owc_cond_init(&async_exec_cond);
+    for(i=0;i<OWC_ASYNC_EXEC_WORKERS;i++) {
+        HANDLE thread=CreateThread(NULL,0,async_exec_worker,NULL,0,NULL);
+        if(thread) { CloseHandle(thread); created++; }
+    }
+    async_exec_ready=created>0;
+    return async_exec_ready;
+}
+
+static int async_exec_enqueue(owc_async_exec *exec) {
+    if(!async_exec_init()) return 0;
+    EnterCriticalSection(&async_exec_mutex);
+    if(async_exec_queued>=OWC_ASYNC_EXEC_MAX_QUEUE) {
+        LeaveCriticalSection(&async_exec_mutex);
+        return 0;
+    }
+    exec->queue_next=NULL;
+    if(async_exec_queue_tail) async_exec_queue_tail->queue_next=exec;
+    else async_exec_queue_head=exec;
+    async_exec_queue_tail=exec;
+    async_exec_queued++;
+    exec->active_next=async_exec_active;
+    async_exec_active=exec;
+    owc_cond_signal(&async_exec_cond);
+    LeaveCriticalSection(&async_exec_mutex);
+    return 1;
+}
+
+static int async_exec_cancel(const char *session_id,const char *exec_id) {
+    owc_async_exec *exec;
+    owc_async_exec *cancelled_queued=NULL;
+    int found=0;
+    if(!async_exec_ready) return 0;
+    EnterCriticalSection(&async_exec_mutex);
+    for(exec=async_exec_active;exec;exec=exec->active_next) {
+        if(strcmp(exec->session_id,session_id)||strcmp(exec->exec_id,exec_id)) continue;
+        if(exec->running) {
+            /* Running commands observe this flag through owc_exec_run. */
+            exec->cancel=1;
+        } else if(async_exec_queue_remove(exec)) {
+            /* Queued commands can be answered immediately; do not make the
+             * client wait for an unrelated long-running worker to finish. */
+            async_exec_active_remove(exec);
+            cancelled_queued=exec;
+        }
+        found=1;
+        break;
+    }
+    LeaveCriticalSection(&async_exec_mutex);
+    if(cancelled_queued) {
+        (void)reply_error_text(cancelled_queued->rpc,cancelled_queued->id_text,-32001,"command cancelled");
+        async_exec_free(cancelled_queued);
+    }
+    return found;
+}
+
 static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *params) {
     const char *command=owc_json_get_string(owc_json_object_get(params,"cmd"));
     const char *cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));
     const char *exec_id=owc_json_get_string(owc_json_object_get(params,"execId"));
     const char *session_id=owc_json_get_string(owc_json_object_get(params,"sessionId"));
     static const char *keys[]={"sessionId","execId","cmd","cwd","timeoutMs","shellBackend","shellPath","network"};
-    owc_exec_request request; owc_exec_result result; output_context context; int sandbox_enabled,allow_network,sandbox_mode; unsigned long job_memory_mb,job_max_processes; const char *const *bind_backing; const int *bind_read_only; size_t bind_count;
+    owc_async_exec *exec;
+    const char *shell_path=NULL;
+    int sandbox_enabled=0,allow_network=0,sandbox_mode=0,shell_backend=0,timeout_ms=0;
+    unsigned long job_memory_mb=0,job_max_processes=0;
+    const char *const *bind_backing=NULL;
+    const int *bind_read_only=NULL;
+    size_t bind_count=0;
     if(!params || params->type!=OWC_JSON_OBJECT || !command || !cwd || !exec_id || !session_id || !command[0] || !cwd[0] || !exec_id[0] || !session_id[0]) return reply_error(rpc,id,-32602,"exec.run requires non-empty string sessionId, execId, cmd, and cwd");
     if(!allowed_keys(params,keys,8))return reply_error(rpc,id,-32602,"exec.run contains unknown fields");
-    memset(&request,0,sizeof(request)); context.rpc=rpc; context.exec_id=exec_id;
-    if(!parse_shell_backend(params,&request.shell_backend))return reply_error(rpc,id,-32602,"shellBackend must be default, pwsh, or bash");
-    if(!parse_shell_path(params,&request.shell_path))return reply_error(rpc,id,-32602,"shellPath must be a non-empty string of at most 1024 bytes");
-    if(!session_exec_policy(session_id,cwd,&sandbox_enabled,&allow_network,&sandbox_mode,&request.allow_paths,&request.allow_path_count,&job_memory_mb,&job_max_processes,&bind_backing,&bind_read_only,&bind_count,&request.read_roots,&request.read_root_count,&request.write_roots,&request.write_root_count,&request.deny_paths,&request.deny_path_count,&request.network_filtered,&request.proxy_addr,&request.read_only_paths,&request.read_only_count))return reply_error(rpc,id,-32002,"session cwd is not configured");
-    if(!parse_network_override(params,&allow_network))return reply_error(rpc,id,-32602,"network must be \"allow\" or \"deny\"");
-    request.command=command; request.cwd=cwd; request.session_id=session_id;request.sandbox_enabled=sandbox_enabled;request.allow_network=allow_network;request.sandbox_mode=sandbox_mode;
-    request.job_memory_mb=job_memory_mb; request.job_max_processes=job_max_processes;
-    request.bind_backing=bind_backing; request.bind_read_only=bind_read_only; request.bind_count=bind_count;
-    if(!parse_timeout(owc_json_object_get(params,"timeoutMs"),&request.timeout_ms)) return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer");
-    /* A synchronous exec.run blocks the entire RPC loop until the command
-     * finishes, so an effectively unbounded timeout (parse_timeout accepts
-     * up to INT_MAX ms, roughly 24 days) would wedge every session behind
-     * one request.  Clamp to ten minutes; long-running work belongs in
-     * job.start, which is asynchronous. */
-    if(request.timeout_ms>OWC_EXEC_RUN_MAX_TIMEOUT_MS) request.timeout_ms=OWC_EXEC_RUN_MAX_TIMEOUT_MS;
-    request.output_limit=10u*1024u*1024u; request.on_output=output_notification; request.user_data=&context;
-    if(!owc_exec_run(&request,&result)) { char message[384];if(result.shell_unavailable){(void)snprintf(message,sizeof(message),"%s executable was not found",shell_backend_name(request.shell_backend));return reply_error(rpc,id,-32000,message);}if(result.sandbox_reason[0])(void)snprintf(message,sizeof(message),"failed to start or monitor command (system error %lu): %s",result.system_error,result.sandbox_reason);else (void)snprintf(message,sizeof(message),"failed to start or monitor command (system error %lu)",result.system_error);return reply_error(rpc,id,-32000,message); }
-    if(result.timed_out) return reply_error(rpc,id,-32001,"command timed out");
-    {
-        char result_text[2048];char *reason=owc_json_escape_string(result.sandbox_reason[0]?result.sandbox_reason:"sandbox not requested");if(!reason)return reply_error(rpc,id,-32000,"failed to encode sandbox status");
-        (void)snprintf(result_text,sizeof(result_text),"{\"exitCode\":%d,\"durationMs\":%lld,\"truncated\":%s,\"sandboxCapability\":\"%s\",\"sandboxReason\":%s}",
-            result.exit_code,result.duration_ms,result.truncated?"true":"false",owc_sandbox_status_name((owc_sandbox_status)result.sandbox_status),reason);free(reason);
-        return reply_result(rpc,id,result_text);
+    if(!parse_shell_backend(params,&shell_backend))return reply_error(rpc,id,-32602,"shellBackend must be default, pwsh, or bash");
+    if(!parse_shell_path(params,&shell_path))return reply_error(rpc,id,-32602,"shellPath must be a non-empty string of at most 1024 bytes");
+    exec=(owc_async_exec *)calloc(1,sizeof(*exec));
+    if(!exec) return reply_error(rpc,id,-32000,"out of memory");
+    exec->rpc=rpc;
+    exec->shell_backend=shell_backend;
+    if(shell_path) {
+        exec->shell_path=async_exec_copy_text(shell_path);
+        if(!exec->shell_path) { async_exec_free(exec); return reply_error(rpc,id,-32000,"out of memory"); }
     }
+    {
+        const char *const *allow_paths=NULL,*const *read_roots=NULL,*const *write_roots=NULL,*const *deny_paths=NULL,*const *read_only_paths=NULL;
+        size_t allow_count=0,read_root_count=0,write_root_count=0,deny_path_count=0,read_only_count=0;
+        const char *proxy_addr=NULL;
+        if(!session_exec_policy(session_id,cwd,&sandbox_enabled,&allow_network,&sandbox_mode,&allow_paths,&allow_count,&job_memory_mb,&job_max_processes,&bind_backing,&bind_read_only,&bind_count,&read_roots,&read_root_count,&write_roots,&write_root_count,&deny_paths,&deny_path_count,&exec->network_filtered,&proxy_addr,&read_only_paths,&read_only_count)) {
+            async_exec_free(exec);
+            return reply_error(rpc,id,-32002,"session cwd is not configured");
+        }
+        exec->sandbox_enabled=sandbox_enabled;
+        exec->allow_network=allow_network;
+        exec->sandbox_mode=sandbox_mode;
+        exec->job_memory_mb=job_memory_mb;
+        exec->job_max_processes=job_max_processes;
+        if(proxy_addr) (void)snprintf(exec->proxy_addr,sizeof(exec->proxy_addr),"%s",proxy_addr);
+        if(!async_exec_copy_paths(exec->allow_paths,&exec->allow_count,allow_paths,allow_count,32)
+           || !async_exec_copy_paths(exec->read_roots,&exec->read_root_count,read_roots,read_root_count,16)
+           || !async_exec_copy_paths(exec->write_roots,&exec->write_root_count,write_roots,write_root_count,16)
+           || !async_exec_copy_paths(exec->deny_paths,&exec->deny_path_count,deny_paths,deny_path_count,16)
+           || !async_exec_copy_paths(exec->read_only_paths,&exec->read_only_count,read_only_paths,read_only_count,32)) {
+            async_exec_free(exec);
+            return reply_error(rpc,id,-32000,"out of memory");
+        }
+        if(bind_count>16) { async_exec_free(exec); return reply_error(rpc,id,-32000,"invalid session policy"); }
+        if(bind_count>0) {
+            size_t i;
+            if(!bind_backing || !bind_read_only) { async_exec_free(exec); return reply_error(rpc,id,-32000,"invalid session policy"); }
+            for(i=0;i<bind_count;i++) {
+                exec->bind_backing[i]=async_exec_copy_text(bind_backing[i]);
+                if(!exec->bind_backing[i]) {
+                    exec->bind_count=i; /* free the entries copied before the failure */
+                    async_exec_free(exec);
+                    return reply_error(rpc,id,-32000,"out of memory");
+                }
+                exec->bind_read_only[i]=bind_read_only[i];
+            }
+            exec->bind_count=bind_count;
+        }
+    }
+    exec->command=async_exec_copy_text(command);
+    exec->cwd=async_exec_copy_text(cwd);
+    exec->exec_id=async_exec_copy_text(exec_id);
+    exec->session_id=async_exec_copy_text(session_id);
+    if(!exec->command || !exec->cwd || !exec->exec_id || !exec->session_id) { async_exec_free(exec); return reply_error(rpc,id,-32000,"out of memory"); }
+    if(id && id->type!=OWC_JSON_NULL) {
+        exec->id_text=id_json(id);
+        if(!exec->id_text) { async_exec_free(exec); return reply_error(rpc,id,-32000,"out of memory"); }
+    }
+    if(!parse_network_override(params,&exec->allow_network)) { async_exec_free(exec); return reply_error(rpc,id,-32602,"network must be \"allow\" or \"deny\""); }
+    if(!parse_timeout(owc_json_object_get(params,"timeoutMs"),&timeout_ms)) { async_exec_free(exec); return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer"); }
+    if(timeout_ms>OWC_EXEC_RUN_MAX_TIMEOUT_MS) timeout_ms=OWC_EXEC_RUN_MAX_TIMEOUT_MS;
+    exec->timeout_ms=timeout_ms;
+    if(!async_exec_enqueue(exec)) {
+        async_exec_free(exec);
+        return reply_error(rpc,id,-32000,"exec queue is full");
+    }
+    return 1;
+}
+
+static int handle_exec_cancel(owc_rpc *rpc,const owc_json *id,const owc_json *params) {
+    static const char *keys[]={"sessionId","execId"};
+    const char *session_id=owc_json_get_string(owc_json_object_get(params,"sessionId"));
+    const char *exec_id=owc_json_get_string(owc_json_object_get(params,"execId"));
+    if(!allowed_keys(params,keys,2)) return reply_error(rpc,id,-32602,"exec.cancel contains unknown fields");
+    if(!session_id || !exec_id || !session_id[0] || !exec_id[0]) return reply_error(rpc,id,-32602,"exec.cancel requires non-empty sessionId and execId");
+    if(!async_exec_cancel(session_id,exec_id)) return reply_error(rpc,id,-32003,"exec not found");
+    return reply_result(rpc,id,"{\"ok\":true}");
 }
 
 typedef struct { char *session_id; char *cwd; char *deny_paths[16]; size_t deny_count; char *read_roots[16]; size_t read_root_count; char *write_roots[16]; size_t write_root_count; char *allow_paths[32]; size_t allow_count; int sandbox_enabled; int allow_network; int sandbox_mode; unsigned long job_memory_mb; unsigned long job_max_processes; char *bind_virt[16]; char *bind_backing[16]; int bind_read_only[16]; size_t bind_count; int network_filtered; char proxy_addr[144]; char *read_only_paths[32]; size_t read_only_count; } session_config;
@@ -1935,12 +2283,13 @@ int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
         owc_overlay_capabilities overlay_caps;owc_overlay_probe(&overlay_caps);
         owc_sandbox_result bwrap_caps;char *escaped_bwrap;owc_bwrap_probe(&bwrap_caps);
         escaped_bwrap=owc_json_escape_string(bwrap_caps.reason);
-        escaped=owc_json_escape_string(reason);if(!escaped||!escaped_bwrap){free(escaped);free(escaped_bwrap);(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");}else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s,\"overlay\":{\"supported\":%s,\"fuseOverlayfs\":%s,\"kernelMount\":%s},\"bwrap\":{\"available\":%s,\"reason\":%s}},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false",overlay_caps.supported?"true":"false",overlay_caps.fuse_overlayfs?"true":"false",overlay_caps.kernel_mount?"true":"false",bwrap_caps.status==OWC_SANDBOX_ENFORCED?"true":"false",escaped_bwrap);result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s,\"overlay\":{\"supported\":%s,\"fuseOverlayfs\":%s,\"kernelMount\":%s},\"bwrap\":{\"available\":%s,\"reason\":%s}},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false",overlay_caps.supported?"true":"false",overlay_caps.fuse_overlayfs?"true":"false",overlay_caps.kernel_mount?"true":"false",bwrap_caps.status==OWC_SANDBOX_ENFORCED?"true":"false",escaped_bwrap);(void)reply_result(rpc,id,result);free(result);}free(escaped);free(escaped_bwrap);}}
+        escaped=owc_json_escape_string(reason);if(!escaped||!escaped_bwrap){free(escaped);free(escaped_bwrap);(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");}else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"asyncExec\":true,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s,\"overlay\":{\"supported\":%s,\"fuseOverlayfs\":%s,\"kernelMount\":%s},\"bwrap\":{\"available\":%s,\"reason\":%s}},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false",overlay_caps.supported?"true":"false",overlay_caps.fuse_overlayfs?"true":"false",overlay_caps.kernel_mount?"true":"false",bwrap_caps.status==OWC_SANDBOX_ENFORCED?"true":"false",escaped_bwrap);result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"asyncExec\":true,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s,\"overlay\":{\"supported\":%s,\"fuseOverlayfs\":%s,\"kernelMount\":%s},\"bwrap\":{\"available\":%s,\"reason\":%s}},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false",overlay_caps.supported?"true":"false",overlay_caps.fuse_overlayfs?"true":"false",overlay_caps.kernel_mount?"true":"false",bwrap_caps.status==OWC_SANDBOX_ENFORCED?"true":"false",escaped_bwrap);(void)reply_result(rpc,id,result);free(result);}free(escaped);free(escaped_bwrap);}}
     } else if(strcmp(method,"core.stats")==0) (void)handle_core_stats(rpc,id,params);
     else if(strcmp(method,"core.shutdown")==0) { if(params&&!allowed_keys(params,NULL,0))(void)reply_error(rpc,id,-32602,"core.shutdown accepts no params fields");else{(void)reply_result(rpc,id,"{\"ok\":true}"); rpc->shutting_down=1;} }
     else if(strcmp(method,"session.configure")==0) { static const char *keys[]={"sessionId","cwd","sandbox"};const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId")),*cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));char err[192];int code=-32000;if(params&&!allowed_keys(params,keys,3))(void)reply_error(rpc,id,-32602,"session.configure contains unknown fields");else if(!sid||!sid[0]||!cwd||!cwd[0])(void)reply_error(rpc,id,-32602,"session.configure requires sessionId and cwd");else{err[0]='\0';if(!configure_session(sid,cwd,owc_json_object_get(params,"sandbox"),err,sizeof(err),&code))(void)reply_error(rpc,id,code,err);else(void)reply_session_capability(rpc,id,sid);} }
     else if(strcmp(method,"session.cleanup")==0) { static const char *keys[]={"sessionId"};const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId"));if(params&&!allowed_keys(params,keys,1))(void)reply_error(rpc,id,-32602,"session.cleanup contains unknown fields");else if(!sid||!sid[0])(void)reply_error(rpc,id,-32602,"session.cleanup requires sessionId");else{(void)cleanup_session(sid);(void)reply_result(rpc,id,"{\"ok\":true}");} }
     else if(strcmp(method,"exec.run")==0) (void)handle_exec_run(rpc,id,params);
+    else if(strcmp(method,"exec.cancel")==0) (void)handle_exec_cancel(rpc,id,params);
     else if(strcmp(method,"job.start")==0) (void)handle_job_start(rpc,id,params);
     else if(strcmp(method,"job.cancel")==0) (void)handle_job_cancel(rpc,id,params);
     else if(strcmp(method,"job.status")==0) (void)handle_job_status(rpc,id,params);

@@ -99,6 +99,8 @@ export interface ServerDependencies {
     lanAddresses: string[];
     regenerate?: () => Promise<string>;
   };
+  /** 进阶内存上限状态（/api/metrics 供数）；缺省按关闭展示。 */
+  memoryBudget?: { state(): import("./memory-budget.js").MemoryBudgetState };
   /** 慢 WS 客户端背压阈值覆盖（测试用）；缺省用 ws-backpressure 的常量。 */
   wsBackpressureLimits?: Partial<WsBackpressureLimits>;
   /** 符号索引管理器（0.4.0 Phase 2）；未注入时 /api/workspaces/index/* 与 symbols 路由 501 */

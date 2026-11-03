@@ -8,7 +8,7 @@ import { errorMessage } from "../error-utils.js";
 import { clearCompileCache } from "../compile-cache.js";
 import { maskAccessToken } from "./route-context.js";
 import type { RouteContext } from "./route-context.js";
-import type { MemoryStats } from "./metrics-types.js";
+import type { ExecStatsView, MemoryBudgetView, MemoryStats } from "./metrics-types.js";
 
 /** 内存占用统计：node 主进程 / core 进程 / 扩展宿主进程。任一来源失败降级为 null，不阻断 metrics。
  * 仅在请求时惰性计算（前端监控开关关闭时不请求 /api/metrics，零开销）。 */
@@ -27,7 +27,7 @@ async function buildMemoryStats(core: CoreClientLike, extensions: ExtensionManag
     extensions ? extensions.hostMemory() : Promise.resolve(null),
   ]);
   return {
-    node: { rss: usage.rss, heapUsed: usage.heapUsed, heapTotal: usage.heapTotal, external: usage.external },
+    node: { rss: usage.rss, heapUsed: usage.heapUsed, heapTotal: usage.heapTotal, external: usage.external, arrayBuffers: usage.arrayBuffers },
     core: coreStats,
     extensionHost,
   };
@@ -76,7 +76,13 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: RouteContext): v
     };
   });
 
-  app.get("/api/metrics", async () => ({ events: events.stats(), websocket: { clients: clients.size, slowClientDisconnects: wsStats.slowClientDisconnects, failedClientSends: wsStats.failedClientSends }, memory: await buildMemoryStats(core, dependencies.extensions) }));
+  app.get("/api/metrics", async () => ({
+    events: events.stats(),
+    websocket: { clients: clients.size, slowClientDisconnects: wsStats.slowClientDisconnects, failedClientSends: wsStats.failedClientSends },
+    memory: await buildMemoryStats(core, dependencies.extensions),
+    exec: core.execStats?.() ?? ({ running: 0, queued: 0, maxConcurrent: 0, oldestWaitMs: 0, items: [] } satisfies ExecStatsView),
+    memoryBudget: dependencies.memoryBudget?.state() ?? ({ enabled: false, budgetMB: null, totalMB: null, level: 0, compressed: false, updatedAt: null } satisfies MemoryBudgetView),
+  }));
   // 用户主动清理磁盘缓存（设置 → 服务信息）：只清理可安全重建的编译缓存。
   // 目录校验或所有权标记不通过时返回 skipped（removed=0），绝不误删用户数据。
   app.post("/api/system/cache/clear", async () => ({ compile: await clearCompileCache() }));

@@ -41,9 +41,8 @@ import {
   emptySegments,
   addSegments,
 } from "./context-ledger-ops.js";
+import { cacheLimits } from "../cache-limits.js";
 
-const MAX_CACHED_LEDGERS = 32;
-const MAX_CACHED_VIEWS = 32;
 
 /**
  * 视图缓存累计堆字节上限：每条缓存持有一份活动路径整段消息的主克隆（value.view），
@@ -51,9 +50,7 @@ const MAX_CACHED_VIEWS = 32;
  * 128MB ≈ 单个视图 1600 万 token 原文，正常会话远低于此；上限只用来兜住「多个大会话
  * 同时被打开过」的失控累积。超限逐出最旧（至少保留最新一条，避免下轮立刻全量重建抖动）。
  */
-const MAX_CACHED_VIEW_BYTES = 128 * 1024 * 1024;
 /** 账本缓存累计堆字节上限：64MB ≈ 21MB ledger.json（JSON 解析后常驻 ≈ 文件 3×）。 */
-const MAX_CACHED_LEDGER_BYTES = 64 * 1024 * 1024;
 /** 文件字节 → 堆字节换算系数（与 session-store 的 HEAP_BYTES_PER_FILE_BYTE 同口径，实测 3.11×）。 */
 const LEDGER_HEAP_BYTES_PER_FILE_BYTE = 3;
 
@@ -184,15 +181,15 @@ export class ContextManager {
   /** 条数/字节双重上限逐出最旧；字节上限下至少保留最新一条（正在用的会话优先，
    *  否则单个超限视图会被反复逐出→全量重建）。 */
   private static evictLedgerOverflow(): void {
-    while (ContextManager.ledgerCaches.size > MAX_CACHED_LEDGERS
-      || (ContextManager.ledgerCacheBytes > MAX_CACHED_LEDGER_BYTES && ContextManager.ledgerCaches.size > 1)) {
+    while (ContextManager.ledgerCaches.size > cacheLimits().contextLedgers
+      || (ContextManager.ledgerCacheBytes > cacheLimits().contextLedgerBytes && ContextManager.ledgerCaches.size > 1)) {
       ContextManager.dropLedgerCache(ContextManager.ledgerCaches.keys().next().value!);
     }
   }
 
   private static evictViewOverflow(): void {
-    while (ContextManager.viewCaches.size > MAX_CACHED_VIEWS
-      || (ContextManager.viewCacheBytes > MAX_CACHED_VIEW_BYTES && ContextManager.viewCaches.size > 1)) {
+    while (ContextManager.viewCaches.size > cacheLimits().contextViews
+      || (ContextManager.viewCacheBytes > cacheLimits().contextViewBytes && ContextManager.viewCaches.size > 1)) {
       ContextManager.dropViewCache(ContextManager.viewCaches.keys().next().value!);
     }
   }
@@ -210,6 +207,34 @@ export class ContextManager {
     if (!cache) return;
     ContextManager.viewCacheBytes -= cache.weight;
     ContextManager.viewCaches.delete(sessionRoot);
+  }
+
+  /** 按当前模式上限立即裁剪视图/账本缓存（模式切换/压缩时调用）；返回逐出条数。 */
+  static trimCaches(): number {
+    const before = ContextManager.viewCaches.size + ContextManager.ledgerCaches.size;
+    ContextManager.evictViewOverflow();
+    ContextManager.evictLedgerOverflow();
+    return before - (ContextManager.viewCaches.size + ContextManager.ledgerCaches.size);
+  }
+
+  /** 释放全部视图/账本缓存（二级内存压缩/诊断用）；下一次 buildView 自动重建。 */
+  static clearCaches(): number {
+    const before = ContextManager.viewCaches.size + ContextManager.ledgerCaches.size;
+    ContextManager.viewCaches.clear();
+    ContextManager.ledgerCaches.clear();
+    ContextManager.viewCacheBytes = 0;
+    ContextManager.ledgerCacheBytes = 0;
+    return before;
+  }
+
+  /** 内存归因：视图/账本缓存的条数与估算堆字节（只读统计）。 */
+  static cacheStats(): { viewEntries: number; viewBytes: number; ledgerEntries: number; ledgerBytes: number } {
+    return {
+      viewEntries: ContextManager.viewCaches.size,
+      viewBytes: ContextManager.viewCacheBytes,
+      ledgerEntries: ContextManager.ledgerCaches.size,
+      ledgerBytes: ContextManager.ledgerCacheBytes,
+    };
   }
 
   /** 空闲清扫：按 cache-policy 的统一 TTL 释放长时间未访问的视图/账本缓存，返回逐出条数。 */

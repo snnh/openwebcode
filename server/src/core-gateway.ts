@@ -2,7 +2,7 @@ import type { CoreClientLike, CoreInfo } from "./core-client.js";
 
 export const CORE_PROTOCOL_VERSION = "1.0";
 
-const FEATURE_NAMES = ["fsStat", "fsStatMany", "fsWriteBase64", "jobControl", "fsHash", "fsScanPagination", "fsWatch"] as const;
+const FEATURE_NAMES = ["fsStat", "fsStatMany", "fsWriteBase64", "jobControl", "asyncExec", "fsHash", "fsScanPagination", "fsWatch"] as const;
 const LIMIT_NAMES = ["maxFrameBytes", "maxWriteBase64Bytes", "maxHashBytes", "maxStatManyPaths", "maxStatManyPathBytes", "maxScanEntries", "maxScanDepth", "maxScanNodes", "maxWatches", "maxWatchEvents", "maxConcurrentJobs", "maxJobOutputBytes"] as const;
 
 type CoreFeature = (typeof FEATURE_NAMES)[number];

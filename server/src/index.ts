@@ -27,9 +27,13 @@ import { CoreRouter } from "./sandbox/core-router.js";
 import { FilteredProxyManager } from "./sandbox/filtered-proxy.js";
 import { WsbManager } from "./sandbox/wsb.js";
 import { SessionStore } from "./sessions/session-store.js";
+import { clearMessageIndexes, trimMessageIndexes } from "./sessions/message-reader.js";
 import { defaultSandboxPolicy } from "./sessions/default-sandbox.js";
 import { SettingsService } from "./settings-service.js";
 import { setSessionCacheIdleMinutes } from "./cache-policy.js";
+import { setCacheScale } from "./cache-limits.js";
+import { runtimeProfile, effectiveIdleMinutes } from "./runtime-mode.js";
+import { MemoryBudget, type MemoryBudgetState } from "./memory-budget.js";
 import { SkillRegistry } from "./skills.js";
 import { AgentRegistry } from "./agents.js";
 import { CommandRegistry } from "./commands.js";
@@ -106,7 +110,8 @@ const settings = await SettingsService.load({
 const config = settings.effective();
 // 常驻缓存的空闲释放阈值（会话整表缓存 / 消息文件字节索引）：设置项 sessionCacheIdleMinutes
 // 热生效；0 = 不逐出（长跑常驻换更少的重读）
-setSessionCacheIdleMinutes(config.sessionCacheIdleMinutes);
+setCacheScale(runtimeProfile(config.runtimeMode).cacheScale);
+setSessionCacheIdleMinutes(effectiveIdleMinutes(config.runtimeMode, config.sessionCacheIdleMinutes));
 const dataDir = resolveFromServer(config.dataDir);
 // 出站代理：按当前设置安装全局 dispatcher（off/env/custom），先于一切出站请求；
 // 设置保存后由 SettingsService.hotApply 热重应用
@@ -129,6 +134,7 @@ const filteredProxy = new FilteredProxyManager({
   getDenyList: () => settings.effective().sandboxProxyDenyList ?? [],
 });
 const core = new CoreRouter(sharedCore, sessions, wsbManager, config.sandbox?.jobObject, config.sandbox?.allowPaths, undefined, filteredProxy);
+core.setExecConcurrency(config.execConcurrency);
 const providers = new ProviderRegistry();
 const events = new EventBus();
 const pricing = new PricingCatalog(path.join(dataDir, "model-pricing.json"));
@@ -273,7 +279,8 @@ const updateApplier = new UpdateApplier({
   getReleaseUrl: () => settings.effective().updateCheck.url ?? GITHUB_RELEASES_URL,
   getCurrentVersion: getServerVersion,
 });
-settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker, sandboxProxy: filteredProxy, usageLog, sweepCaches: () => { sessions.sweepIdleCachesAndIndexes(); chatSessions.sweepIdleCachesAndIndexes(); ContextManager.sweepIdleCaches(); } });
+const memoryBudgetRef: { current?: MemoryBudget } = {};
+settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker, sandboxProxy: filteredProxy, usageLog, sweepCaches: () => { sessions.sweepIdleCachesAndIndexes(); chatSessions.sweepIdleCachesAndIndexes(); ContextManager.sweepIdleCaches(); }, trimCaches: () => { sessions.trimCaches(); chatSessions.trimCaches(); ContextManager.trimCaches(); trimMessageIndexes(); }, memoryBudget: { evaluate: () => { void memoryBudgetRef.current?.evaluate(); } } });
 providerProfilesRuntime.start();
 
 // core stderr/diagnostic 双写：终端 + <dataDir>/logs/core.log（超 5MB 启动时轮转为 core.log.1，仅一代）
@@ -340,7 +347,12 @@ remoteSyncScheduler.start();
 
 // TOTP 凭据只读 <dataDir>/totp.json，与 core 进程启动互不依赖：一起并发等待。
 const totp = new TotpAuthService(path.join(dataDir, "totp.json"));
-await Promise.all([core.start(), totp.load()]);
+const [coreInfo] = await Promise.all([core.start(), totp.load()]);
+// 新版 server 依赖 core 的异步 exec.run；旧 core 会让长命令重新卡死整个 RPC 循环，
+// 因此启动即拒绝，而不是静默降级。
+if (coreInfo.features?.asyncExec !== true) {
+  throw new Error("Core does not support async exec.run; use the core bundled with this release (features.asyncExec)");
+}
 // cron 恢复需在 sessions/core 就绪之后：load 会 coalesce 补发停机期间错过的触发（经 follow-up 队列起 run）
 await cron.load();
 // 存储 GC：启动时一次（含托管挂载孤儿清理）+ 每小时周期清理（失败仅记日志）
@@ -378,9 +390,32 @@ const chatSessions = new ChatSessionStore(dataDir);
 // 清扫后按需触发一次 full GC：V8 空闲页在默认调度下归还 OS 很慢（大会话 run 后的堆峰值
 // 驻留成 RSS 尖峰）。GC 统一走 gc-utils（自带 --expose-gc 缺失时的运行时兜底 + 节流），
 // 不再门控在「有逐出」上——热机且缓存不空闲时 V8 同样需要归还空闲页。
+memoryBudgetRef.current = new MemoryBudget({
+  config: () => {
+    const effective = settings.effective();
+    return { enabled: effective.memoryBudgetEnabled, budgetMB: effective.memoryBudgetMB, runtimeMode: effective.runtimeMode };
+  },
+  totalMB: async () => {
+    const nodeMB = process.memoryUsage().rss;
+    const [coreStats, extensionHost] = await Promise.all([
+      core.stats?.().catch(() => undefined) ?? Promise.resolve(undefined),
+      extensions.hostMemory().catch(() => null),
+    ]);
+    const coreMB = coreStats?.rssBytes ?? 0;
+    const extensionMB = extensionHost?.rss ?? 0;
+    if (!coreStats && !extensionHost) return Math.round(nodeMB / (1024 * 1024));
+    return Math.round((nodeMB + coreMB + extensionMB) / (1024 * 1024));
+  },
+  sweep: () => { sessions.sweepIdleCachesAndIndexes(); chatSessions.sweepIdleCachesAndIndexes(); ContextManager.sweepIdleCaches(); sessions.trimCaches(); chatSessions.trimCaches(); ContextManager.trimCaches(); trimMessageIndexes(); },
+  compress: () => { sessions.clearMessageCaches(); chatSessions.clearMessageCaches(); ContextManager.clearCaches(); clearMessageIndexes(); },
+  gc: () => { maybeGc(60_000); },
+  setExecConcurrency: (value) => { core.setExecConcurrency(value); },
+  restoreConcurrency: () => settings.effective().execConcurrency,
+  onState: (state: MemoryBudgetState) => { events.publish({ source: "server", type: "system.memory", payload: state }); },
+});
+void memoryBudgetRef.current?.evaluate();
 const CACHE_SWEEP_INTERVAL_MS = 60_000;
-// 无逐出时的兜底 full GC 间隔：缓存忙但空闲页已堆积，也需要周期性归还 OS
-const IDLE_GC_INTERVAL_MS = 5 * 60_000;
+// 无逐出时的兜底 full GC 间隔由运行模式决定（性能 5 分钟 / 平衡 3 分钟 / 内存 1 分钟）。
 // 同一时段的 GC 节流：60s 内最多一次 full GC（full GC 会停下进程，频繁触发得不偿失）
 const GC_THROTTLE_MS = 60_000;
 // RSS 看门狗阈值（MB）：默认 1536，显式设 0 关闭。超阈值立即尝试 full GC，回收后仍超标才告警
@@ -395,13 +430,14 @@ const RSS_WARN_INTERVAL_MS = 10 * 60_000;
 let lastIdleGcAt = Date.now();
 let lastRssWarnAt = 0;
 setInterval(() => {
+  void memoryBudgetRef.current?.evaluate();
   const now = Date.now();
   const evicted = sessions.sweepIdleCachesAndIndexes(now)
     + chatSessions.sweepIdleCachesAndIndexes(now)
     + ContextManager.sweepIdleCaches(now);
   if (evicted > 0) {
     if (maybeGc(GC_THROTTLE_MS)) lastIdleGcAt = now;
-  } else if (now - lastIdleGcAt >= IDLE_GC_INTERVAL_MS) {
+  } else if (now - lastIdleGcAt >= runtimeProfile(settings.effective().runtimeMode).gcIntervalMs) {
     if (maybeGc(GC_THROTTLE_MS)) lastIdleGcAt = now;
   }
   // RSS 看门狗：超过阈值先尝试归还（full GC 常能显著压低 RSS），回收后仍超标才告警
@@ -539,6 +575,7 @@ const app = await buildServer({
   vaultService,
   backgroundTasks,
   extensions,
+  memoryBudget: { state: () => memoryBudgetRef.current?.state() ?? { enabled: false, budgetMB: null, totalMB: null, level: 0, compressed: false, updatedAt: null } },
   contentLens,
   providerProfiles,
   providerProfilesRuntime,
