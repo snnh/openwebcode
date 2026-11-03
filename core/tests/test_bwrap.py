@@ -147,12 +147,14 @@ def run_bwrap_e2e(proc, workspace):
         # under $HOME is not even mounted.
         inside_path = os.path.join(workspace, "workspace-write.txt")
         outside_path = os.path.join(outside, "outside-write.txt")
-        result, _ = run_exec(
+        result, output = run_exec(
             proc, 11, workspace,
             f"printf workspace-ok > '{inside_path}'; printf outside-must-fail > '{outside_path}'",
         )
         assert result["sandboxCapability"] == "enforced", result
         assert result["exitCode"] != 0, result
+        if not os.path.exists(inside_path):
+            print(f"DIAG result={result!r} output={output!r}", file=sys.stderr)
         with open(inside_path, "r", encoding="utf-8") as stored:
             assert stored.read() == "workspace-ok"
         assert not os.path.exists(outside_path), outside_path
