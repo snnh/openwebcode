@@ -104,7 +104,10 @@ def main():
             request(proc, 13, "session.configure", {"sessionId": "b", "cwd": cwd_b, "sandbox": sandbox(cwd_b)})
             request(proc, 14, "exec.run", {"sessionId": "b", "execId": "short", "cmd": short_cmd, "cwd": cwd_b, "timeoutMs": 30000})
             responses = wait_for(messages, [10, 11, 12, 13, 14], timeout=15.0)
-            control_elapsed = max(responses[request_id]["_received_at"] for request_id in (11, 12, 13, 14)) - control_start
+            # Measure only the control-plane calls.  The short exec is a real
+            # PowerShell process on Windows; its startup time is not a sign
+            # that the RPC loop was blocked by the long command.
+            control_elapsed = max(responses[request_id]["_received_at"] for request_id in (11, 12, 13)) - control_start
             assert "result" in responses[10], responses[10]
             assert control_elapsed < 1.5, f"control plane blocked for {control_elapsed:.2f}s"
             for request_id in (11, 12, 13, 14):
