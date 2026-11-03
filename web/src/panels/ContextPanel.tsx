@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { ContextTokenUsage, ContextUsage, ContextView } from "../lib/contracts";
 import { cacheHitRate } from "../lib/cache-stats";
-import { deriveWindowInfo, windowLevel, compactionThresholdPercent, type ContextWindowInfo } from "../lib/context-window";
+import { deriveWindowInfo, windowLevel, windowUtilization, compactionThresholdPercent, type ContextWindowInfo } from "../lib/context-window";
 import { formatCurrency, formatDateTime, formatTokens, formatTokensShort, microToDecimal } from "../lib/format";
 import { compactionModeNameText } from "../lib/compaction";
 import { cacheTone, formatCacheTitle } from "../lib/cache-stats";
@@ -61,7 +61,10 @@ function WindowSection({ info, latestUsage, cumulativeUsage, evicted, thresholdP
 }): ReactElement {
   const { t } = useI18n();
   const level = windowLevel(info.utilization, thresholdPercent);
-  const pct = info.utilization !== undefined ? Math.round(info.utilization * 100) : undefined;
+  // 标签展示窗口占比；工作预算占比（utilization）用于压缩水位配色，并写在 tooltip 中。
+  const windowShare = windowUtilization(info);
+  const pct = windowShare !== undefined ? Math.round(windowShare * 100) : undefined;
+  const budgetPct = info.utilization !== undefined ? Math.round(info.utilization * 100) : undefined;
   const latestCache = latestUsage ? cacheHitRate(latestUsage) : undefined;
   const cumulativeCache = cacheHitRate(cumulativeUsage);
   // 完全无缓存活动（本轮与累计读写均为 0）时不渲染缓存行
@@ -83,7 +86,7 @@ function WindowSection({ info, latestUsage, cumulativeUsage, evicted, thresholdP
       <p
         className="ctx-window-label"
         title={info.workingBudget !== undefined
-          ? t(`工作预算 ${formatTokens(info.workingBudget)} tokens（上下文窗口扣除系统侧占用与输出预留）`, `Working budget ${formatTokens(info.workingBudget)} tokens (context window minus system-side usage and output reserve)`)
+          ? t(`工作预算 ${formatTokens(info.workingBudget)} tokens（上下文窗口扣除系统侧占用与输出预留）；工作预算占用 ${budgetPct ?? 0}%（自动压缩水位按工作预算计算）`, `Working budget ${formatTokens(info.workingBudget)} tokens (context window minus system-side usage and output reserve); working budget usage ${budgetPct ?? 0}% (auto-compaction threshold uses this budget)`)
           : undefined}
       >
         {info.contextWindow !== undefined && pct !== undefined

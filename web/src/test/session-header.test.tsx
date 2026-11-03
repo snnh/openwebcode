@@ -36,6 +36,22 @@ describe("SessionHeader 基础信息与运行态", () => {
     expect(unpriced.querySelector(".cost-summary")?.textContent).toContain("¥0.01 *");
     expect(unpriced.querySelector(".cost-summary")?.getAttribute("title")).toContain("未定价");
   });
+  it("窗口百分比按 contextWindow 计算；工作预算占比只出现在 title", () => {
+    renderHeader({
+      windowUsage: {
+        estimatedTokens: 69_000,
+        contextWindow: 512_000,
+        workingBudget: 448_000,
+        utilization: 69_000 / 448_000,
+        pinnedTokens: 0,
+        segments: { system: 0, input: 0, toolCalls: 0, output: 0, other: 0 },
+      },
+    });
+    const meter = screen.getByTestId("window-usage");
+    expect(meter.textContent).toContain("69k/512k");
+    expect(meter.textContent).toContain("13%");
+    expect(meter.getAttribute("title")).toContain("工作预算占用 15%");
+  });
   it("中断按钮仅 busy 渲染并可回调；手动快照按钮仅托管工作区渲染；配置切换经 onConfig 下发", () => {
     const onAbort = vi.fn();
     const onConfig = vi.fn();

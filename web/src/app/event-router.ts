@@ -269,19 +269,19 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
         deps.notify(t("上下文已清空（历史保留，子代理列表已清空）", "Context cleared (history retained, subagents cleared)"));
       }
     }
-    // 上下文压缩开始（手动/85% 强制）：压缩可能耗时（vault 多次快速模型调用），先给即时反馈；
+    // 上下文压缩开始（手动/自动）：压缩可能耗时（vault 多次快速模型调用），先给即时反馈；
     // 同时写入 live-store：消息流尾部出现运行中检查点行
     if (event.type === "context.compacting" && event.sessionId === currentId) {
       deps.applyCompactionEvent(event);
       const payload = event.payload as { mode?: string; forced?: boolean };
-      deps.notify(t(`正在压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${t(...compactionModeText(payload.mode ?? "overview"))}）…`, `Compacting context (${payload.forced ? "forced at 85% · " : ""}${t(...compactionModeText(payload.mode ?? "overview"))})…`));
+      deps.notify(t(`正在压缩上下文（${payload.forced ? "自动 · " : ""}${t(...compactionModeText(payload.mode ?? "overview"))}）…`, `Compacting context (${payload.forced ? "auto · " : ""}${t(...compactionModeText(payload.mode ?? "overview"))})…`));
     }
-    // 上下文压缩（手动/85% 强制）：运行中检查点行原位沉降为常驻行；刷新上下文面板并提示
+    // 上下文压缩（手动/自动）：运行中检查点行原位沉降为常驻行；刷新上下文面板并提示
     if (event.type === "context.compacted" && event.sessionId === currentId) {
       deps.applyCompactionEvent(event);
       const payload = event.payload as { mode?: string; forced?: boolean };
       const modeLabel = payload.mode === "truncated" ? t(...compactionModeText("truncated")) : t(...compactionModeText(payload.mode ?? "overview"));
-      deps.notify(t(`已压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${modeLabel}）`, `Context compacted (${payload.forced ? "forced at 85% · " : ""}${modeLabel})`));
+      deps.notify(t(`已压缩上下文（${payload.forced ? "自动 · " : ""}${modeLabel}）`, `Context compacted (${payload.forced ? "auto · " : ""}${modeLabel})`));
     }
     if (event.type === "context.compact_failed" && event.sessionId === currentId) {
       deps.applyCompactionEvent(event);

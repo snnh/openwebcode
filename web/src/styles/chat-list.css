@@ -66,7 +66,7 @@
   .conversation-search-input { width: min(180px, 36vw); }
 }
 
-/* 上下文压缩检查点行（/compact 与 85% 强制压缩的消息流投影；与 context-cleared-divider 同族） */
+/* 上下文压缩检查点行（/compact 与自动压缩的消息流投影；与 context-cleared-divider 同族） */
 .compaction-row {
   max-width: min(100%, var(--content-max));
   margin: var(--sp-2) 0 22px;

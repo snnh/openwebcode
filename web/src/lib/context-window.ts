@@ -15,6 +15,12 @@ export interface ContextWindowInfo {
   pinnedTokens: number;
 }
 
+/** 窗口占比（展示口径）：已估算上下文 / 模型窗口。与 utilization（工作预算占比，供压缩水位使用）不同。 */
+export function windowUtilization(info: ContextWindowInfo | undefined): number | undefined {
+  if (!info?.contextWindow || info.contextWindow <= 0) return undefined;
+  return info.estimatedTokens / info.contextWindow;
+}
+
 export function deriveWindowInfo(
   watermark: ContextWatermark | undefined,
   stats: ContextBuildStats | undefined,

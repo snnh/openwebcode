@@ -8,9 +8,9 @@ import { live } from "../../app/live-store";
 import { useChatActions } from "../types";
 
 /**
- * 上下文压缩检查点行（/compact 与 85% 水位强制压缩在消息流中的常驻投影）：
+ * 上下文压缩检查点行（/compact 与自动压缩在消息流中的常驻投影）：
  * - running：压缩进行中的占位行（spinner + 模式/强制标注），沉降时被同位替换；
- * - settled：折叠态显示图标 + 标题 + 徽标（手动/强制 85% + 模式）+ 被替换条数与 token 估算，
+ * - settled：折叠态显示图标 + 标题 + 徽标（手动/自动 + 模式）+ 被替换条数与 token 估算，
  *   带摘要的记录可展开查看（摘要走统一 Markdown 渲染，附指令清单与时间）；无摘要保持可见不可展开；
  * - failed：常驻行内错误（role="alert"），可关闭。
  */
@@ -24,7 +24,7 @@ export function CompactionRow({ marker }: { marker: CompactionMarker }): ReactEl
       <div className="compaction-row compaction-running" role="status">
         <span className="live-activity-spinner" aria-hidden />
         <span>{t("正在压缩上下文", "Compacting context")}（{t(...compactionModeText(marker.mode))}）…</span>
-        {marker.forced && <span className="pill compaction-badge">{t("强制 85%", "forced 85%")}</span>}
+        {marker.forced && <span className="pill compaction-badge">{t("自动", "auto")}</span>}
       </div>
     );
   }
@@ -71,7 +71,7 @@ export function CompactionRow({ marker }: { marker: CompactionMarker }): ReactEl
       >
         <Icon name="compress" size={13} />
         <span className="compaction-title">{t("上下文已压缩", "Context compacted")}</span>
-        <span className="pill compaction-badge">{marker.forced ? t("强制 85%", "forced 85%") : t("手动", "manual")}</span>
+        <span className="pill compaction-badge">{marker.forced ? t("自动", "auto") : t("手动", "manual")}</span>
         <span className="pill compaction-badge">{t(...compactionModeText(marker.mode))}</span>
         <span className="compaction-meta">{meta}</span>
         {expandable && (

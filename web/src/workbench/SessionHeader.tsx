@@ -12,7 +12,7 @@ import { isBusyState, STATE_LABELS } from "../lib/agent-state";
 import { cacheHitRate, cacheTone, formatCacheTitle } from "../lib/cache-stats";
 import { selectContextMetrics } from "../lib/context-metrics";
 import { tasksPollInterval } from "../lib/task-poll";
-import { compactionThresholdPercent, windowLevel } from "../lib/context-window";
+import { compactionThresholdPercent, windowLevel, windowUtilization } from "../lib/context-window";
 import { useContextViewQuery, useServerSettingsQuery } from "../app/queries";
 import { Icon } from "../components/Icon";
 import { useConfirmDialog } from "../components/ConfirmDialog";
@@ -84,7 +84,10 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
   const budgetRatio = costSummary?.tokenBudget ? Math.min(1, costSummary.tokens / costSummary.tokenBudget) : undefined;
   const thresholdPercent = compactionThresholdPercent(useServerSettingsQuery().data);
   const windowState = windowLevel(windowUsage?.utilization, thresholdPercent);
-  const windowPct = windowUsage?.utilization !== undefined ? Math.round((windowUsage?.utilization ?? 0) * 100) : undefined;
+  // 展示口径是窗口占比；工作预算占比（utilization）只用于压缩水位配色与 tooltip。
+  const windowShare = windowUtilization(windowUsage);
+  const windowPct = windowShare !== undefined ? Math.round(windowShare * 100) : undefined;
+  const budgetPct = windowUsage?.utilization !== undefined ? Math.round(windowUsage.utilization * 100) : undefined;
   // 会话累计用量（ledger.usage 切片订阅——账本其余变化不重渲顶栏）：
   // 顶栏缓存命中率用累计口径，查询未返回前回退到最近一轮（latestUsage）
   const contextQuery = useContextViewQuery(session.id, selectContextMetrics);
@@ -398,7 +401,7 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
             data-testid="window-usage"
             data-level={windowState}
             title={windowUsage.contextWindow
-              ? t(`上下文窗口 ${formatTokens(windowUsage.estimatedTokens)} / ${formatTokens(windowUsage.contextWindow)} tokens（${windowPct ?? 0}%）`, `Context window ${formatTokens(windowUsage.estimatedTokens)} / ${formatTokens(windowUsage.contextWindow)} tokens (${windowPct ?? 0}%)`)
+              ? t(`上下文窗口 ${formatTokens(windowUsage.estimatedTokens)} / ${formatTokens(windowUsage.contextWindow)} tokens（${windowPct ?? 0}%）${budgetPct !== undefined ? `；工作预算占用 ${budgetPct}%` : ""}`, `Context window ${formatTokens(windowUsage.estimatedTokens)} / ${formatTokens(windowUsage.contextWindow)} tokens (${windowPct ?? 0}%)${budgetPct !== undefined ? `; working budget usage ${budgetPct}%` : ""}`)
               : t(`当前上下文约 ${formatTokens(windowUsage.estimatedTokens)} tokens`, `Current context ≈ ${formatTokens(windowUsage.estimatedTokens)} tokens`)}
           >
             <span className="window-usage-text">

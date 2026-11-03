@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
 import { Icon, type IconName } from "../components/Icon";
 import { INACTIVE_STATES, stateLabel } from "../lib/agent-state";
-import { deriveWindowInfo } from "../lib/context-window";
+import { deriveWindowInfo, windowUtilization } from "../lib/context-window";
 import { buildCostSummary, selectContextStatusMetrics } from "../lib/context-metrics";
 import { formatCurrency, formatTokensShort } from "../lib/format";
 import { useStore } from "../app/store";
@@ -55,7 +55,8 @@ function PanelStatus({ sessionId, agentState, mobile }: { sessionId: string; age
     [models.data, session?.model, session?.provider],
   );
   const windowInfo = useMemo(() => deriveWindowInfo(watermark, contextView.data?.stats, model), [watermark, contextView.data?.stats, model]);
-  const windowPercent = windowInfo?.utilization !== undefined ? Math.round(windowInfo.utilization * 100) : undefined;
+  const windowShare = windowUtilization(windowInfo);
+  const windowPercent = windowShare !== undefined ? Math.round(windowShare * 100) : undefined;
 
   return (
     <div className="panel-status" aria-label={t("会话状态", "Session status")}>
@@ -180,7 +181,7 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
             title={showSecondary ? t("收起更多面板标签", "Collapse more panel tabs") : t("更多面板标签（子代理 / 沙盒 / 性能）", "More panel tabs (Subagents / Sandbox / Perf)")}
             onClick={() => setTabsExpanded((value) => !value)}
           >
-            <Icon name={showSecondary ? "chevron-up" : "chevron-down"} size={13} />
+            <Icon name="more" size={13} />
           </button>
         )}
         {sessionId && <PanelStatus sessionId={sessionId} agentState={agentState} mobile={mobile} />}

@@ -1,7 +1,7 @@
 import type { ContextView } from "./contracts";
 
 /**
- * 上下文压缩检查点（/compact 与 85% 水位强制压缩）的消息流投影：
+ * 上下文压缩检查点（/compact 与自动压缩）的消息流投影：
  * - 实时标记由 WS 事件（context.compacting/compacted/compact_failed）驱动，经 live-store 进入消息流尾部；
  * - 历史还原从 ContextView 的账本记录（compactionHistory，默认回退 compacted 单条）推导；
  * 全部为纯客户端投影——模型-facing 的压缩框架消息不进聊天流，账本/消息文件不因此改变。
@@ -15,7 +15,7 @@ export interface CompactionMarker {
   /** 活动路径下标：messages[0..uptoIndex) 被该次压缩取代；运行中占位为 -1（落尾部）。 */
   uptoIndex: number;
   mode: CompactionMode;
-  /** 85% 水位强制（否则为手动 /compact 或面板按钮）。 */
+  /** 自动触发（否则为手动 /compact 或面板按钮）。 */
   forced: boolean;
   createdAt: string;
   status: "running" | "settled" | "failed";

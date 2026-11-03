@@ -62,6 +62,7 @@
 .panel-tabs button:hover { color: var(--text); }
 .panel-tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: var(--fw-500); }
 .panel-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-tabs-more.open { color: var(--text); }
 .panel-fold { display: inline-flex; align-items: center; margin-left: 0; color: var(--text-3); font-size: var(--text-s); padding: 4px 8px; position: sticky; right: 0; flex: none; background: var(--surface-card); }
 .panel-fold:hover { color: var(--text); }
 .panel-content { overflow: hidden; }
