@@ -516,7 +516,14 @@ static DWORD WINAPI async_exec_worker(void *unused) {
         LeaveCriticalSection(&async_exec_mutex);
         async_exec_free(exec);
     }
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4702) /* unreachable code: worker loop is intentionally infinite */
+#endif
     return 0;
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 }
 
 static int async_exec_init(void) {
