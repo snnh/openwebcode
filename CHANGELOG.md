@@ -2,13 +2,17 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
-## [1.16.1] - 2026-11-03
+## [1.16.1] - 2026-11-04
 
 ### 修复
 
 - **上下文百分比改为窗口占比**：顶栏、Context 面板与底部状态统一按 `estimatedTokens / contextWindow` 展示，69k/512k 显示 13%；工作预算占比仅保留在悬浮提示中，自动压缩阈值仍按工作预算计算。
 - **压缩状态不再写死 85%**：自动压缩阈值可配置（50–100），Provider 溢出恢复也会触发自动压缩；压缩检查点徽标与提示改为「自动 / 手动」，不再显示固定 85%。
 - **移动端面板标签条**：「更多标签」改用省略号，与面板开合的 chevron 区分，消除两个向上箭头并排的歧义。
+- **命令超时不再有隐藏硬上限**：core 删除 `exec.run` / `job.start` 的 120 秒默认值与 10 分钟钳制；新增 `execTimeoutMs` 设置（默认 30 分钟，`0` = 不限，热生效），前台 bash、后台 bash、持久 shell、`test_runner`、git 操作与 `/api/exec` 共用；core RPC 等待自动取该值 + 10 秒，`0` 时不设定时器。
+- **后台任务继承前台沙盒策略**：修复后台 bash 绕过 `CoreRouter.policyFor` 导致 `sandboxMode=off` 的会话仍被强制启用沙盒（默认 4GB 内存 / 64 进程）的问题；后台任务现在与前台一致地应用 off、资源限制与工具链挂载。`filtered` 网络会话因独立 core 无法挂载 sidecar 代理，后台 bash 会明确报错而不是静默失败。
+- **资源限制优先级修正**：全局 `jobObjectMemoryMB` / `jobObjectMaxProcesses` 只补缺省，不再覆盖显式 per-call 限制（例如 chat Python 的 512MB）；设置说明同步标注 POSIX 上同样通过 `RLIMIT_AS` / `RLIMIT_NPROC` 生效。
+- **配置热生效与内部常驻任务修复**：WSB 与后台任务的 `coreRequestTimeoutMs` 改为读取当前设置，不再使用启动快照；删除 core 的 120 秒默认超时后，filtered 网络 sidecar 代理 job 不再被默认超时杀掉。
 
 ## [1.16.0] - 2026-11-03
 
