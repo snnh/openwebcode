@@ -125,7 +125,7 @@ const sessions = new SessionStore(path.join(dataDir, "sessions"));
 const wsbManager = new WsbManager({
   corePath: resolveFromServer(config.corePath),
   sessionRootFor: (sessionId) => sessions.contextRoot(sessionId),
-  requestTimeoutMs: config.coreRequestTimeoutMs,
+  requestTimeoutMs: () => settings.effective().coreRequestTimeoutMs,
 });
 // filtered 网络档 sidecar 编排：代理设置与拦截清单现读 settings（热生效）
 const filteredProxy = new FilteredProxyManager({
@@ -203,11 +203,15 @@ const selectedWeb = providerProfiles.selectedWebProfiles();
 const search = createProfileSearchProvider(selectedWeb.search);
 const webFetch = createProfileWebFetchProvider(selectedWeb.fetch);
 const backgroundTasks = new BackgroundTaskRegistry(
-  () => new CoreClient(config.corePath, config.coreRequestTimeoutMs),
+  () => new CoreClient(config.corePath, settings.effective().coreRequestTimeoutMs),
   async (client, sessionId, cwd) => {
-    const session = await sessions.get(sessionId);
+    // 后台任务使用独立 core 进程，但必须继承与前台相同的有效沙盒策略：
+    // 直接下发 session.sandbox 会绕过 policyFor，导致 sandboxMode=off/wsb
+    // 的会话在后台仍被启用沙盒（并吃 core 默认的 4GB/64 进程限制）。
+    const session = await sessions.getMeta(sessionId);
     const sandbox = session?.sandbox ?? defaultSandboxPolicy(cwd);
-    await client.configureSession({ sessionId, cwd, sandbox });
+    const routed = core.policyForClient(session, sandbox);
+    await client.configureSession({ sessionId, cwd, sandbox: routed });
   },
   (info) => events.publish({ source: "agent", type: "task.finished", sessionId: info.sessionId, payload: info }),
   undefined,
@@ -220,6 +224,7 @@ agent.setNodeEnvDefault(() => settings.effective().nodeEnv);
 core.setNodeEnvDefault(() => settings.effective().nodeEnv);
 core.setPythonEnvDefault(() => settings.effective().pythonEnv, dataDir);
 agent.setMaxTurns(() => settings.effective().agentMaxTurns);
+agent.setExecTimeoutMs(() => settings.effective().execTimeoutMs);
 agent.setSubAgentMaxTurns(() => settings.effective().subAgentMaxTurns);
 agent.setSubAgentConcurrency(() => settings.effective().subAgentConcurrency);
 agent.setSpawnSwarmConcurrency(() => settings.effective().spawnSwarmConcurrency);
@@ -239,10 +244,10 @@ agent.setIndexManager(indexManager);
 const indexSweepTimer = setInterval(() => { void indexManager.sweep().catch(() => undefined); }, 5 * 60_000);
 indexSweepTimer.unref();
 // 诊断闭环（0.4.0 Phase 3a）：test_runner 工具、REST tests/diagnostics、diagnostics.updated 事件共用
-const diagnostics = new DiagnosticsService(core, sessions, events);
+const diagnostics = new DiagnosticsService(core, sessions, events, () => settings.effective().execTimeoutMs);
 agent.setDiagnostics(diagnostics);
 // Git 集成（0.4.0 Phase 4a）：git_status/diff/commit 工具、git/* REST、worktree 生命周期（<dataDir>/worktrees）、scm.updated 事件共用
-const scm = new ScmService(core, sessions, events, { worktreeRoot: path.join(dataDir, "worktrees") });
+const scm = new ScmService(core, sessions, events, { worktreeRoot: path.join(dataDir, "worktrees"), execTimeoutMs: () => settings.effective().execTimeoutMs });
 agent.setScm(scm);
 // cron 定时任务（提交⑫）：<dataDir>/cron.json 持久化，单 timer 调度；触发经 follow-up 队列注入
 // （极简 [cron] 前缀标记来源，stale 为 7 天保留期到期的最后一次触发）。会话已删时自愈级联。

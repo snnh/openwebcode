@@ -47,6 +47,8 @@ interface PythonExecOptions {
 /** 单条输出流上限（超出截断，防止用户代码打爆内存/上下文）。 */
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const TIMEOUT_MS = 30_000;
+/** 用户代码内存上限（MB）：同时用于 Python wrapper 的 RLIMIT_AS 与 core Job Object。 */
+const MEMORY_LIMIT_MB = 512;
 /** SIGTERM 后的宽限期，超时未退出升级 SIGKILL。 */
 const KILL_GRACE_MS = 5_000;
 
@@ -298,8 +300,8 @@ except ImportError:
 # Resource limits (POSIX only; the resource module is absent on Windows).
 try:
     import resource
-    resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
-    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_CPU, (${Math.round(TIMEOUT_MS / 1000)}, ${Math.round(TIMEOUT_MS / 1000)}))
+    resource.setrlimit(resource.RLIMIT_AS, (${MEMORY_LIMIT_MB} * 1024 * 1024, ${MEMORY_LIMIT_MB} * 1024 * 1024))
 except (ImportError, AttributeError):
     pass
 
@@ -341,7 +343,7 @@ async function runViaCore(
       writeRoots: [sessionDir],
       denyPaths: [],
       network: "allow",
-      jobMemoryMB: 512,
+      jobMemoryMB: MEMORY_LIMIT_MB,
       jobMaxProcesses: 64,
     },
   });

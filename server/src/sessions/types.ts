@@ -124,7 +124,7 @@ export type CoreShellBackend = "default" | "pwsh" | "bash";
 export type PythonEnv = "global" | "uv-workspace" | "uv-config";
 /** Node 运行环境：global = 本机已有环境（默认）；project = 工作区 node_modules/.bin 前置 PATH；fnm / nvm = 版本管理器激活。 */
 export type NodeEnv = "global" | "project" | "fnm" | "nvm";
-/** 全局 Job Object 资源限制（仅 Windows；字段缺省时 core 用内置默认值 4096 MB / 64 进程） */
+/** 全局进程树资源限制（Windows Job Object / POSIX RLIMIT；字段缺省时 core 用内置默认值 4096 MB / 64 进程） */
 export interface JobObjectLimits {
   memoryMB?: number;
   maxProcesses?: number;

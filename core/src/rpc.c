@@ -249,10 +249,10 @@ static void output_notification(void *user_data,const char *stream,const unsigne
 
 static int parse_timeout(const owc_json *value, int *timeout_ms) {
     double number;
-    if(!value) { *timeout_ms=120000; return 1; }
+    if(!value) { *timeout_ms=0; return 1; }
     if(value->type!=OWC_JSON_NUMBER) return 0;
     number=value->value.number;
-    if(number<1 || number>INT_MAX || number!=(double)(int)number) return 0;
+    if(number<0 || number>INT_MAX || number!=(double)(int)number) return 0;
     *timeout_ms=(int)number; return 1;
 }
 
@@ -320,7 +320,6 @@ static const char *shell_backend_name(int backend) {
  * command in one session cannot block session.configure, fs.*, ping, or exec.run
  * for every other session.  Ordering is handled by JSON-RPC ids; output
  * frames are serialized by owc_rpc_write's write mutex. */
-#define OWC_EXEC_RUN_MAX_TIMEOUT_MS (10*60*1000)
 #define OWC_ASYNC_EXEC_WORKERS 8
 #define OWC_ASYNC_EXEC_MAX_QUEUE 64
 
@@ -655,8 +654,7 @@ static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *param
         if(!exec->id_text) { async_exec_free(exec); return reply_error(rpc,id,-32000,"out of memory"); }
     }
     if(!parse_network_override(params,&exec->allow_network)) { async_exec_free(exec); return reply_error(rpc,id,-32602,"network must be \"allow\" or \"deny\""); }
-    if(!parse_timeout(owc_json_object_get(params,"timeoutMs"),&timeout_ms)) { async_exec_free(exec); return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer"); }
-    if(timeout_ms>OWC_EXEC_RUN_MAX_TIMEOUT_MS) timeout_ms=OWC_EXEC_RUN_MAX_TIMEOUT_MS;
+    if(!parse_timeout(owc_json_object_get(params,"timeoutMs"),&timeout_ms)) { async_exec_free(exec); return reply_error(rpc,id,-32602,"timeoutMs must be a non-negative integer"); }
     exec->timeout_ms=timeout_ms;
     if(!async_exec_enqueue(exec)) {
         async_exec_free(exec);
@@ -1906,7 +1904,7 @@ static int handle_job_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){
         if(proxy_addr)(void)snprintf(job->proxy_addr,sizeof(job->proxy_addr),"%s",proxy_addr);
     }
     job->sandbox_enabled=enabled;job->allow_network=network;job->sandbox_mode=mode;job->shell_backend=shell_backend;job->memory=memory;job->processes=processes;job->network_filtered=network_filtered;
-    job->timeout=120000;{const owc_json *timeout=owc_json_object_get(p,"timeoutMs");if(timeout&&!parse_timeout(timeout,&job->timeout)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer");}}
+    job->timeout=0;{const owc_json *timeout=owc_json_object_get(p,"timeoutMs");if(timeout&&!parse_timeout(timeout,&job->timeout)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"timeoutMs must be a non-negative integer");}}
     if(!job->id||!job->session||!job->cwd||(!is_scan&&!is_search&&!is_extract&&!job->cmd)||((is_scan||is_search||is_extract)&&!job->scan_path)||(is_search&&!job->search_pattern)||(is_extract&&!job->extract_files)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}
     job->state=OWC_JOB_RUNNING;
     job->thread=CreateThread(NULL,0,job_worker,job,0,NULL);

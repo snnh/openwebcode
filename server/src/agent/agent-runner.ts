@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { DEFAULT_EXEC_TIMEOUT_MS, MAX_COMMAND_OUTPUT_B64_CHARS } from "../exec-timeout.js";
 import os from "node:os";
 import path from "node:path";
 import type { CoreClientLike, CoreEvent } from "../core-client.js";
@@ -119,16 +120,15 @@ const TOOL_EVENT_PREVIEW_CHARS = 1_024;
 /** 事件 payload 单字符串值上限：write_file 全量 content 这类大输入会把 MB 级帧推上 WS 热路径。 */
 const TOOL_EVENT_INPUT_VALUE_CHARS = 256 * 1024;
 
-/** 一次性/jobControl bash 输出的 base64 累积上限（≈1MiB 解码文本，对齐持久 shell 的
- *  MAX_SHELL_OUTPUT_CHARS 纪律）：命令结束前无上限会让跑飞命令在超时窗口内撑爆内存
+/** 一次性/jobControl bash 输出的 base64 累积上限（≈1MiB 解码文本，与持久 shell 共用
+ *  exec-timeout 模块的预算）：命令结束前无上限会让跑飞命令在超时窗口内撑爆内存
  * （base64 副本 + 解码明文 + JSON 串三份）。超限从头丢最旧 chunk——尾部对错误诊断最有价值。 */
-const MAX_BASH_OUTPUT_B64_CHARS = 1_400_000;
 
 /** 追加一个输出 chunk 并按上限从头裁掉最旧者；返回是否发生过裁断。 */
 function pushCappedOutput(target: { output: Array<{ stream: string; data: string; seq: number }>; outputChars: number; outputCapped: boolean }, chunk: { stream: string; data: string; seq: number }): void {
   target.output.push(chunk);
   target.outputChars += chunk.data.length;
-  while (target.outputChars > MAX_BASH_OUTPUT_B64_CHARS && target.output.length > 0) {
+  while (target.outputChars > MAX_COMMAND_OUTPUT_B64_CHARS && target.output.length > 0) {
     target.outputChars -= target.output[0]!.data.length;
     target.output.shift();
     target.outputCapped = true;
@@ -967,6 +967,14 @@ export class AgentRunner {
   /** 注入轮次上限的实时取值函数（index.ts 装配：settings.effective().agentMaxTurns）。 */
   setMaxTurns(get: () => number): void {
     this.maxTurnsLimit = get;
+  }
+
+  /** 前台/后台 bash 与持久 shell 共用的软超时（ms，0 = 不限）。 */
+  private execTimeoutMs: () => number = () => DEFAULT_EXEC_TIMEOUT_MS;
+
+  /** 注入命令软超时的实时取值函数（index.ts 装配：settings.effective().execTimeoutMs）。 */
+  setExecTimeoutMs(get: () => number): void {
+    this.execTimeoutMs = get;
   }
 
   /** 子代理默认轮次上限取值函数（index.ts 装配：settings.effective().subAgentMaxTurns）。
@@ -4184,6 +4192,9 @@ export class AgentRunner {
         const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         if (session.sandboxMode === "wsb") throw new Error("WSB 沙盒模式不支持后台 bash");
+        // 后台任务使用独立 core，无法复用共享 core 上的 filtered sidecar 代理。
+        // 明确拒绝，避免任务启动后因无代理而静默失败。
+        if (session.sandbox?.network === "filtered") throw new Error("filtered 网络会话不支持后台 bash：后台任务使用独立 core，无法挂载 sidecar 代理");
         if (session.workspace?.mode === "managed") throw new Error("托管工作区不支持后台 bash");
         const taskId = `task-${randomUUID().slice(0, 8)}`;
         await this.backgroundTasks.start({
@@ -4191,8 +4202,8 @@ export class AgentRunner {
           taskId,
           cmd: input.cmd,
           cwd: session.cwd,
-          // 后台任务语义是长时间运行：独立 core 连接，10 分钟超时（core-client RPC 超时随之为 610s，不再 ~130s 杀连接）
-          timeoutMs: 10 * 60_000,
+          // 后台任务与前台共用同一个软超时设置（0 = 不限）。
+          timeoutMs: this.execTimeoutMs(),
           shellBackend: session.shellBackend ?? "default",
         });
         const result = { taskId, status: "started" as const };
@@ -4249,8 +4260,8 @@ export class AgentRunner {
         const cancel = () => { void this.core.cancelJob({ sessionId, jobId }).catch(() => undefined); };
         signal.addEventListener("abort", cancel, { once: true });
         try {
-          // jobControl 路径本身无 RPC 超时兜底：给 core 侧 10 分钟上限，轮询循环遇 timed_out 终止
-          await this.core.startJob({ sessionId, jobId, kind: "exec", cmd, cwd: session.cwd, timeoutMs: 10 * 60_000, ...coreExecShell(session.shellBackend ?? "default") });
+          // jobControl 路径本身无 RPC 超时兜底：软超时由 settings.execTimeoutMs 提供（0 = 不限），轮询循环遇 timed_out 终止
+          await this.core.startJob({ sessionId, jobId, kind: "exec", cmd, cwd: session.cwd, timeoutMs: this.execTimeoutMs(), ...coreExecShell(session.shellBackend ?? "default") });
           for (;;) {
             const page = await this.core.jobOutput({ sessionId, jobId, afterSeq, limit: 128 });
             for (const chunk of page.chunks) pushCappedOutput(acc, chunk);
@@ -4285,7 +4296,7 @@ export class AgentRunner {
       if (signal.aborted) cancelExec();
       let result;
       try {
-        result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd, ...coreExecShell(session.shellBackend ?? "default") });
+        result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd, timeoutMs: this.execTimeoutMs(), ...coreExecShell(session.shellBackend ?? "default") });
       } finally {
         signal.removeEventListener("abort", cancelExec);
       }
@@ -4319,7 +4330,7 @@ export class AgentRunner {
   ): Promise<{ content: string; isError: boolean } | null> {
     let result;
     try {
-      result = await this.persistentShells.run(session, cmd, signal);
+      result = await this.persistentShells.run(session, cmd, signal, this.execTimeoutMs());
     } catch (error) {
       if (error instanceof PersistentShellUnavailableError) return null;
       if (signal.aborted) throw error;

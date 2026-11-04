@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { DEFAULT_CORE_REQUEST_TIMEOUT_MS, execRpcTimeoutMs } from "./exec-timeout.js";
 import path from "node:path";
 import type { CoreShellBackend, SandboxPolicy } from "./sessions/types.js";
 import { StdioTransport, type RpcTransport } from "./rpc/transport.js";
@@ -391,7 +392,7 @@ interface QueuedExec {
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timer: NodeJS.Timeout;
+  timer: NodeJS.Timeout | undefined;
   generation: number;
 }
 
@@ -428,7 +429,7 @@ export class CoreClient extends EventEmitter {
 
   constructor(
     private readonly corePath: string,
-    private requestTimeoutMs = 130_000,
+    private requestTimeoutMs = DEFAULT_CORE_REQUEST_TIMEOUT_MS,
     /** 注入外部连接（WSB 回连 TCP）时跳过 spawn 与失败自动重启 */
     private readonly connectionFactory?: () => Promise<CoreConnection>,
   ) {
@@ -553,8 +554,8 @@ export class CoreClient extends EventEmitter {
       if (!item) return;
       this.execRunning++;
       this.execRunningItems.add(item);
-      const timeoutMs = (item.request.timeoutMs ?? 120_000) + 10_000;
-      this.call<ExecResult>("exec.run", item.request, timeoutMs)
+      const commandTimeoutMs = item.request.timeoutMs ?? 0;
+      this.call<ExecResult>("exec.run", item.request, execRpcTimeoutMs(commandTimeoutMs))
         .then(item.resolve, item.reject)
         .finally(() => {
           this.execRunning--;
@@ -766,10 +767,10 @@ export class CoreClient extends EventEmitter {
     }
     const id = this.nextId++;
     const { promise, resolve, reject } = Promise.withResolvers<T>();
-    const timer = setTimeout(() => {
+    const timer = timeoutMs > 0 ? setTimeout(() => {
       const error = new Error(`Core request ${method} timed out`);
       this.failConnection(generation, error);
-    }, timeoutMs);
+    }, timeoutMs) : undefined;
     this.pending.set(id, { resolve: (value) => resolve(value as T), reject, timer, generation });
     try {
       transport.write({ jsonrpc: "2.0", id, method, params });
@@ -819,7 +820,7 @@ export class CoreClient extends EventEmitter {
     }
     const pending = this.pending.get(response.id);
     if (!pending || pending.generation !== generation) return;
-    clearTimeout(pending.timer);
+    if (pending.timer) clearTimeout(pending.timer);
     this.pending.delete(response.id);
     if (hasError && response.error) pending.reject(new CoreRpcError(response.error.code, response.error.message));
     else pending.resolve(response.result);
@@ -835,7 +836,7 @@ export class CoreClient extends EventEmitter {
     this.info = undefined;
     for (const [id, pending] of this.pending) {
       if (pending.generation !== generation) continue;
-      clearTimeout(pending.timer);
+      if (pending.timer) clearTimeout(pending.timer);
       pending.reject(error);
       this.pending.delete(id);
     }

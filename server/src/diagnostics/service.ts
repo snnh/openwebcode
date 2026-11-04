@@ -9,6 +9,7 @@ import type { SessionStore } from "../sessions/session-store.js";
 import type { ShellBackend } from "../sessions/types.js";
 import { coreExecShell } from "../agent/shell-detect.js";
 import { decodeProcessOutputChunks } from "../agent/output-decoder.js";
+import { DEFAULT_EXEC_TIMEOUT_MS } from "../exec-timeout.js";
 import { detectTestCommand } from "./detect.js";
 import { FALLBACK_TAIL_CHARS, fallbackDiagnosticSet, parseTestOutput } from "./parsers.js";
 import type { DiagnosticRun, DiagnosticSet } from "./types.js";
@@ -18,7 +19,6 @@ const MAX_FEEDBACK_FAILURES = 20;
 const MAX_FEEDBACK_FIELD_CHARS = 500;
 /** 连续相同失败签名提示阈值 */
 const REPEATED_SIGNATURE_HINT_THRESHOLD = 2;
-const TEST_JOB_TIMEOUT_MS = 10 * 60_000;
 const POLL_INTERVAL_MS = 50;
 
 /** 失败签名：failures 的 name+file+line 稳定哈希（顺序敏感，消息内容不参与）。 */
@@ -91,6 +91,8 @@ export class DiagnosticsService {
     private readonly core: CoreClientLike,
     private readonly sessions: SessionStore,
     private readonly events: EventBus,
+    /** 与 bash/后台任务共用的命令软超时（0 = 不限）。 */
+    private readonly getExecTimeoutMs: () => number = () => DEFAULT_EXEC_TIMEOUT_MS,
   ) {}
 
   /** 会话删除时清理该会话的失败签名记录（Map 按会话数增长，挂在会话删除清理链上）。 */
@@ -113,8 +115,8 @@ export class DiagnosticsService {
     let exitCode: number | undefined;
     let statusDurationMs: number | undefined;
     try {
-      // 与 bash 工具同一路径：Core job 模型执行，继承会话权限沙盒；jobControl 无 RPC 超时兜底，core 侧给 10 分钟上限
-      await this.core.startJob({ sessionId, jobId, kind: "exec", cmd: detected.command, cwd, timeoutMs: TEST_JOB_TIMEOUT_MS, ...coreExecShell(options.shellBackend ?? "default") });
+      // 与 bash 工具同一路径：Core job 模型执行，继承会话权限沙盒；软超时共用 execTimeoutMs。
+      await this.core.startJob({ sessionId, jobId, kind: "exec", cmd: detected.command, cwd, timeoutMs: this.getExecTimeoutMs(), ...coreExecShell(options.shellBackend ?? "default") });
       for (;;) {
         const page = await this.core.jobOutput({ sessionId, jobId, afterSeq, limit: 256 });
         output.push(...page.chunks);

@@ -1,5 +1,6 @@
 import { DEFAULT_SESSION_CACHE_IDLE_MINUTES, MAX_SESSION_CACHE_IDLE_MINUTES } from "./cache-policy.js";
 import path from "node:path";
+import { DEFAULT_CORE_REQUEST_TIMEOUT_MS, DEFAULT_EXEC_TIMEOUT_MS, MAX_EXEC_TIMEOUT_MS } from "./exec-timeout.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 import type { FastModelConfig } from "./fast-model.js";
 import type { EffortLevel } from "./context/model-profile.js";
@@ -25,6 +26,8 @@ export interface ServerConfig {
   corePath: string;
   dataDir: string;
   coreRequestTimeoutMs: number;
+  /** 前台/后台 bash 命令的软超时（ms，0 = 不限）；与 core.exec.run / job.start 及持久 shell 共用。设置项 execTimeoutMs 热生效。 */
+  execTimeoutMs: number;
   gcMaxBytes: number;
   /** usage-events.jsonl 清理模式（设置「服务信息」热生效）；off = 不清理。 */
   usageLogCleanupMode: UsageLogCleanupMode;
@@ -73,7 +76,7 @@ export interface ServerConfig {
     timeoutMs: number;
     fixedUsdCnyRate?: string;
   };
-  /** 全局 Job Object 资源限制覆盖（仅 Windows）；缺省不下发，core 用内置默认值 */
+  /** 全局进程树资源限制缺省；Windows 走 Job Object，POSIX 走 RLIMIT_AS/NPROC。显式 per-call 限制优先，缺省不下发时 core 用内置默认值 */
   sandbox?: {
     allowPaths?: string[];
     jobObject?: { memoryMB?: number; maxProcesses?: number };
@@ -292,7 +295,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     ...(!isLoopbackHost(host) && allowedOrigins.length === 0 ? { autoAllowSameOrigin: true } : {}),
     corePath: env.OWC_CORE_PATH ?? defaultCorePath(),
     dataDir: env.OWC_DATA_DIR ?? "../.openwebcode",
-    coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),
+    coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, DEFAULT_CORE_REQUEST_TIMEOUT_MS),
+    execTimeoutMs: boundedNonNegativeInteger(env.OWC_EXEC_TIMEOUT_MS, DEFAULT_EXEC_TIMEOUT_MS, MAX_EXEC_TIMEOUT_MS),
     gcMaxBytes: positiveInteger(env.OWC_GC_MAX_BYTES, 2_147_483_648),
     usageLogCleanupMode: usageLogCleanupMode(env.OWC_USAGE_LOG_CLEANUP_MODE),
     usageLogRetentionDays: positiveInteger(env.OWC_USAGE_LOG_RETENTION_DAYS, 365),

@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
+import { DEFAULT_EXEC_TIMEOUT_MS } from "../exec-timeout.js";
 import type { FastifyInstance } from "fastify";
 import { detectWsb } from "../sandbox/wsb.js";
 import { SettingsValidationError } from "../settings-service.js";
@@ -156,7 +157,9 @@ export function registerMiscRoutes(app: FastifyInstance, ctx: RouteContext): voi
       // network 是 server 内部专用覆盖（filtered 会话的 sidecar 代理以 allow 启动）：
       // REST 入口剥离客户端该字段，防止绕开会话的 network=deny/filtered 策略。
       const { network: _strippedNetwork, ...execBody } = request.body;
-      return await core.run(execBody);
+      // REST 入口与 agent bash 共用同一个软超时设置；显式 timeoutMs 仍可覆盖。
+      const timeoutMs = execBody.timeoutMs ?? dependencies.settings?.effective().execTimeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
+      return await core.run({ ...execBody, timeoutMs });
     } finally {
       releaseWorkspace();
     }

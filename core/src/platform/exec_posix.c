@@ -302,7 +302,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
             close_fd(&out_pipe[0]); close_fd(&err_pipe[0]);
             break;
         }
-        if (current - started >= request->timeout_ms) {
+        if (request->timeout_ms > 0 && current - started >= request->timeout_ms) {
             signal_child_group(child, SIGKILL);
             result->timed_out = 1;
             if (running) reap_child(child, &status);

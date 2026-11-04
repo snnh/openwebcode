@@ -6,6 +6,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { networkInterfaces } from "node:os";
 import path from "node:path";
 import { CoreClient } from "../core-client.js";
+import { DEFAULT_CORE_REQUEST_TIMEOUT_MS } from "../exec-timeout.js";
 import { TcpTransport } from "../rpc/transport.js";
 import type { SessionMeta } from "../sessions/types.js";
 
@@ -153,7 +154,7 @@ class WsbSession {
     this.server = undefined;
     const client = new CoreClient(
       "wsb",
-      this.options.requestTimeoutMs ?? 130_000,
+      this.options.requestTimeoutMs ?? DEFAULT_CORE_REQUEST_TIMEOUT_MS,
       () => Promise.resolve({ transport: new TcpTransport(socket) }),
     );
     this.client = client;
@@ -241,7 +242,8 @@ interface WsbManagerOptions {
   /** owc-exec.exe 绝对路径（dirname 作为 .wsb 里的只读分发目录） */
   corePath: string;
   sessionRootFor: (sessionId: string) => string;
-  requestTimeoutMs?: number;
+  /** 数值快照或热读取函数；设置 coreRequestTimeoutMs 变更后新开的虚拟机立即生效。 */
+  requestTimeoutMs?: number | (() => number);
   connectTimeoutMs?: number;
   spawnWsb?: (wsbPath: string) => ChildProcess;
   pickHostIp?: () => string | undefined;
@@ -262,6 +264,9 @@ export class WsbManager {
   acquire(sessionId: string, session: SessionMeta, network?: "allow" | "deny"): Promise<CoreClient> {
     const existing = this.pending.get(sessionId);
     if (existing) return existing;
+    const requestTimeoutMs = typeof this.options.requestTimeoutMs === "function"
+      ? this.options.requestTimeoutMs()
+      : this.options.requestTimeoutMs;
     const wsbSession = new WsbSession({
       sessionId,
       sessionRoot: this.options.sessionRootFor(sessionId),
@@ -269,7 +274,7 @@ export class WsbManager {
       distDir: path.dirname(this.options.corePath),
       ...(session.setupScript ? { setupScript: session.setupScript } : {}),
       ...(network ? { network } : {}),
-      ...(this.options.requestTimeoutMs !== undefined ? { requestTimeoutMs: this.options.requestTimeoutMs } : {}),
+      ...(requestTimeoutMs !== undefined ? { requestTimeoutMs } : {}),
       ...(this.options.connectTimeoutMs !== undefined ? { connectTimeoutMs: this.options.connectTimeoutMs } : {}),
       ...(this.options.spawnWsb ? { spawnWsb: this.options.spawnWsb } : {}),
       ...(this.options.pickHostIp ? { pickHostIp: this.options.pickHostIp } : {}),

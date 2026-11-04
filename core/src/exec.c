@@ -14,7 +14,9 @@ int owc_exec_run(const owc_exec_request *request, owc_exec_result *result) {
         return 0;
     }
     normalized = *request;
-    if (normalized.timeout_ms <= 0) normalized.timeout_ms = 120000;
+    /* timeout_ms <= 0 means no timeout: the caller (server) owns the soft
+     * limit so the CLI and one-shot exec paths do not impose a hidden 120s
+     * cap. */
     if (normalized.output_limit == 0) normalized.output_limit = 10u * 1024u * 1024u;
     return owc_platform_exec_run(&normalized, result);
 }

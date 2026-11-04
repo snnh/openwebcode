@@ -10,6 +10,7 @@ import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import type { NodeEnv, PythonEnv, SessionMeta, ShellBackend } from "../sessions/types.js";
 import { resolveShell, type ResolvedShell, type ShellFlavor } from "./shell-detect.js";
 import { sessionEnvActivationCommand } from "./session-env.js";
+import { DEFAULT_EXEC_TIMEOUT_MS, MAX_COMMAND_OUTPUT_CHARS } from "../exec-timeout.js";
 
 /**
  * 提交⑩：agent bash 的持久 shell。每会话每 shellBackend 懒建一个 pty（sandbox=true，
@@ -20,10 +21,12 @@ import { sessionEnvActivationCommand } from "./session-env.js";
 /** pty 尺寸：取 core 上限 512 列，尽量避免回显折行干扰 sentinel 解析。 */
 const PERSISTENT_SHELL_COLS = 512;
 const PERSISTENT_SHELL_ROWS = 30;
-/** 单命令超时：与 jobControl 路径一致（10 分钟）；超时销毁 shell，下条命令透明重建。 */
-const PERSISTENT_COMMAND_TIMEOUT_MS = 10 * 60_000;
+/** 调用方未注入共享设置时的兜底单命令超时；超时销毁 shell，下条命令透明重建。 */
+const PERSISTENT_COMMAND_TIMEOUT_MS = DEFAULT_EXEC_TIMEOUT_MS;
+/** 建壳/初始化往返的固定超时（不是用户命令超时，避免 0=不限时初始化挂死）。 */
+const SHELL_INIT_TIMEOUT_MS = 30_000;
 /** 输出字符上限：与 core job output_limit（1 MiB）对齐，超出截断但仍继续扫 sentinel。 */
-const MAX_SHELL_OUTPUT_CHARS = 1_000_000;
+const MAX_SHELL_OUTPUT_CHARS = MAX_COMMAND_OUTPUT_CHARS;
 /** core pty.input 单帧解码后 ≤8KB，按字符边界切块发送。 */
 const INPUT_CHUNK_BYTES = 4096;
 /** rawTail（chunk 末尾未成形转义序列残段）上限：恶意超长 OSC 无终结符时每个 chunk 都会
@@ -235,7 +238,7 @@ interface ActiveCommand {
   parser: SentinelParser;
   resolve: (result: { code: number; raw: Buffer[] }) => void;
   reject: (error: Error) => void;
-  timer: NodeJS.Timeout;
+  timer: NodeJS.Timeout | undefined;
   signal: AbortSignal;
   onAbort: () => void;
   /** 本命令的原始输出字节（base64 解码后）：lossy UTF-8 出现乱码时按代码页重解码。 */
@@ -281,10 +284,10 @@ export class PersistentShellManager {
     return !this.capabilityFailed && Boolean(this.core.openPty && this.core.inputPty && this.core.closePty && this.core.ptyEvents);
   }
 
-  run(session: SessionMeta, cmd: string, signal: AbortSignal): Promise<PersistentShellResult> {
+  run(session: SessionMeta, cmd: string, signal: AbortSignal, timeoutMs = PERSISTENT_COMMAND_TIMEOUT_MS): Promise<PersistentShellResult> {
     const backend = session.shellBackend ?? "default";
     const key = `${session.id}:${backend}`;
-    const queued = (this.queues.get(key) ?? Promise.resolve()).then(() => this.runExclusive(key, session, backend, cmd, signal));
+    const queued = (this.queues.get(key) ?? Promise.resolve()).then(() => this.runExclusive(key, session, backend, cmd, signal, timeoutMs));
     this.queues.set(key, queued.then(() => undefined, () => undefined));
     return queued;
   }
@@ -295,7 +298,7 @@ export class PersistentShellManager {
     for (const [key, shell] of [...this.shells]) {
       if (!key.startsWith(prefix)) continue;
       // 在途命令立即报错结算：destroy 摘除 pty 事件后 exit 不会再送达，不结算则调用方
-      // 挂到命令超时（10 分钟）。checkpoint 恢复/删除路由有三件套守卫不会遇到在途；
+      // 挂到命令超时。checkpoint 恢复/删除路由有三件套守卫不会遇到在途；
       // 配置路由的 force 强制切换是主要触发路径。
       const active = shell.active;
       if (active) this.settle(shell, () => active.reject(new Error("Persistent shell disposed: session config changed")));
@@ -323,6 +326,7 @@ export class PersistentShellManager {
     backend: ShellBackend,
     cmd: string,
     signal: AbortSignal,
+    timeoutMs: number,
   ): Promise<PersistentShellResult> {
     signal.throwIfAborted();
     if (!this.supported) throw new PersistentShellUnavailableError("Core pty support is unavailable");
@@ -339,7 +343,7 @@ export class PersistentShellManager {
       const parser = new SentinelParser(rand, lines);
       const started = Date.now();
       try {
-        const { code: exitCode, raw } = await this.execOnShell(record, parser, lines.join(eol) + eol, signal);
+        const { code: exitCode, raw } = await this.execOnShell(record, parser, lines.join(eol) + eol, signal, timeoutMs);
         let output = repairShellOutput(parser.output(), raw, rand, lines);
         if (record.pythonEnvNote || record.nodeEnvNote) {
           const note = [record.pythonEnvNote, record.nodeEnvNote].filter((n) => n).join("; ");
@@ -422,7 +426,7 @@ export class PersistentShellManager {
       const rand = randomBytes(6).toString("hex");
       const eol = process.platform === "win32" ? "\r" : "\n";
       lines.push(sentinelLine(shell.flavor, rand));
-      const { code: initCode } = await this.execOnShell(record, new SentinelParser(rand, lines), lines.join(eol) + eol, signal);
+      const { code: initCode } = await this.execOnShell(record, new SentinelParser(rand, lines), lines.join(eol) + eol, signal, SHELL_INIT_TIMEOUT_MS);
       if (initCode !== 0) {
         this.initFailed.add(key);
         throw new PersistentShellUnavailableError(`Persistent shell could not enter the session cwd (init code ${initCode}); falling back to one-shot exec`);
@@ -491,7 +495,7 @@ export class PersistentShellManager {
   }
 
   /** 在 shell 上执行一段输入（命令 + sentinel），解析到 sentinel 返回 exit code。 */
-  private execOnShell(shell: ShellRecord, parser: SentinelParser, payload: string, signal: AbortSignal): Promise<{ code: number; raw: Buffer[] }> {
+  private execOnShell(shell: ShellRecord, parser: SentinelParser, payload: string, signal: AbortSignal, timeoutMs: number): Promise<{ code: number; raw: Buffer[] }> {
     if (shell.dead) return Promise.reject(new Error("Persistent shell is not running"));
     return new Promise<{ code: number; raw: Buffer[] }>((resolve, reject) => {
       const onAbort = () => {
@@ -504,15 +508,15 @@ export class PersistentShellManager {
           }
         });
       };
-      const timer = setTimeout(() => {
+      const timer = timeoutMs > 0 ? setTimeout(() => {
         this.settle(shell, () => {
           // 超时的命令可能仍占着 shell：销毁重建，避免下条命令读到残流
           this.destroy(shell);
           // 附带已捕获输出的尾部：命令跑飞（如全盘遍历）时模型能看到现场并自我纠正
           const tail = parser.output().slice(-2000).trim();
-          reject(new Error(`command timed out after ${PERSISTENT_COMMAND_TIMEOUT_MS}ms` + (tail ? `\ncaptured output before timeout (tail):\n${tail}` : "")));
+          reject(new Error(`command timed out after ${timeoutMs}ms` + (tail ? `\ncaptured output before timeout (tail):\n${tail}` : "")));
         });
-      }, PERSISTENT_COMMAND_TIMEOUT_MS);
+      }, timeoutMs) : undefined;
       shell.active = { parser, resolve, reject, timer, signal, onAbort, raw: [], rawBytes: 0 };
       signal.addEventListener("abort", onAbort, { once: true });
       this.writeInput(shell, payload).catch((error: unknown) => {
@@ -529,7 +533,7 @@ export class PersistentShellManager {
     const active = shell.active;
     if (!active) return;
     shell.active = null;
-    clearTimeout(active.timer);
+    if (active.timer) clearTimeout(active.timer);
     active.signal.removeEventListener("abort", active.onAbort);
     action();
   }

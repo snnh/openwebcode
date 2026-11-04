@@ -499,10 +499,15 @@ def main():
         response, _ = collect_until_response(proc, 301)
         assert response.get("error", {}).get("code") == -32602, response
 
-        # exec.run clamps timeoutMs to ten minutes instead of rejecting:
-        # an oversized value must still run a fast command normally.
+        # exec.run accepts oversized timeoutMs without clamping: the server owns
+        # the soft limit and a fast command must still run normally.
         request(proc, 304, "exec.run", {"sessionId": "s1", "execId": "huge-timeout", "cmd": command, "cwd": os.getcwd(), "timeoutMs": 2147483647, **shell_params})
         response, _ = collect_until_response(proc, 304)
+        assert response.get("result", {}).get("exitCode") == 7, response
+
+        # timeoutMs=0 means no timeout (server owns the soft limit).
+        request(proc, 305, "exec.run", {"sessionId": "s1", "execId": "no-timeout", "cmd": command, "cwd": os.getcwd(), "timeoutMs": 0, **shell_params})
+        response, _ = collect_until_response(proc, 305)
         assert response.get("result", {}).get("exitCode") == 7, response
 
         if pwsh_integration:

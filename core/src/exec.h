@@ -83,7 +83,7 @@ typedef struct {
     size_t read_only_count;
     unsigned long job_memory_mb;     /* job-wide committed memory limit; 0 = default */
     unsigned long job_max_processes; /* active process limit; 0 = default */
-    int timeout_ms;
+    int timeout_ms;                  /* <= 0 = no timeout (caller-owned soft limit) */
     size_t output_limit;
     /* Optional cooperative cancellation flag.  The platform executor owns the
        process tree and observes this while draining output; a future job

@@ -40,6 +40,16 @@ describe("CoreRouter.policyFor 平台分支", () => {
     expect(CoreRouter.policyFor(meta("bubblewrap"), policy, undefined, undefined, "linux")).toMatchObject({ mode: "bubblewrap", enabled: true });
   });
 
+  it("显式 per-call 资源限制优先，全局 jobObject 只补缺省", () => {
+    const explicit = CoreRouter.policyFor(meta(undefined), { ...policy, jobMemoryMB: 512, jobMaxProcesses: 32 }, { memoryMB: 8192, maxProcesses: 256 }, undefined, "linux");
+    expect(explicit.jobMemoryMB).toBe(512);
+    expect(explicit.jobMaxProcesses).toBe(32);
+
+    const inherited = CoreRouter.policyFor(meta(undefined), policy, { memoryMB: 8192, maxProcesses: 256 }, undefined, "linux");
+    expect(inherited.jobMemoryMB).toBe(8192);
+    expect(inherited.jobMaxProcesses).toBe(256);
+  });
+
   it("wsb/off 关闭沙盒并丢弃 bindLinks（与平台无关）", () => {
     const wsb = CoreRouter.policyFor(meta("wsb"), { ...policy, bindLinks: [{ virtPath: "C:\\x", backingPath: "D:\\b" }] }, undefined, undefined, "linux");
     expect(wsb).toMatchObject({ enabled: false });

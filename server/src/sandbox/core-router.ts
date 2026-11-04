@@ -291,8 +291,10 @@ export class CoreRouter extends EventEmitter {
     if (mode === "off") return { ...sandbox, enabled: false };
     const limits = {
       ...(allowPaths && allowPaths.length > 0 ? { allowPaths } : {}),
-      ...(jobObject?.memoryMB !== undefined ? { jobMemoryMB: jobObject.memoryMB } : {}),
-      ...(jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
+      // 显式 per-call 限制优先：全局设置只补缺省，不能放宽 chat Python 等
+      // 调用方自带的更严格上限。
+      ...(sandbox.jobMemoryMB === undefined && jobObject?.memoryMB !== undefined ? { jobMemoryMB: jobObject.memoryMB } : {}),
+      ...(sandbox.jobMaxProcesses === undefined && jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
     };
     // 凭据放行按生效模式：POSIX 恒追加；Windows 仅 AppContainer 档（含缺省）追加，显式 jobobject 跳过；
     // ~/.ssh 另需会话显式开启（sshCredentials，见 gitCredentialReadOnlyPaths）
@@ -324,6 +326,15 @@ export class CoreRouter extends EventEmitter {
       cwd: meta.cwd,
       sandbox: meta.sandbox ?? defaultSandboxPolicy(meta.cwd),
     };
+  }
+
+  /**
+   * 为独立 core 客户端（后台任务等）计算与共享 core 一致的有效策略：
+   * 含 policyFor 的 off/wsb/资源限制与工具链挂载。filtered sidecar 依赖
+   * 共享 core 的代理编排，不在此方法覆盖范围。
+   */
+  policyForClient(meta: SessionMeta | undefined, sandbox: SandboxPolicy): SandboxPolicy {
+    return this.withToolchainMounts(meta, CoreRouter.policyFor(meta, sandbox, this.jobObject, this.allowPaths, this.platform));
   }
 
   private async configureClient(

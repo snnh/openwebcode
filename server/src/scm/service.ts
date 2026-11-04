@@ -10,6 +10,7 @@ import type { SessionStore } from "../sessions/session-store.js";
 import type { ShellBackend } from "../sessions/types.js";
 import { coreExecShell } from "../agent/shell-detect.js";
 import { decodeProcessOutputChunks } from "../agent/output-decoder.js";
+import { DEFAULT_EXEC_TIMEOUT_MS } from "../exec-timeout.js";
 import type {
   GitCommitInput,
   GitCommitResult,
@@ -32,7 +33,6 @@ const MAX_WORKTREES = 4;
 /** 提交信息长度上限。 */
 const MAX_COMMIT_MESSAGE_CHARS = 2_000;
 
-const GIT_JOB_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 50;
 
 /**
@@ -159,7 +159,7 @@ export class ScmService {
     private readonly core: CoreClientLike,
     private readonly sessions: SessionStore,
     private readonly events: EventBus,
-    private readonly options: { worktreeRoot: string; exec?: GitExec } ,
+    private readonly options: { worktreeRoot: string; exec?: GitExec; execTimeoutMs?: () => number } ,
   ) {
     // 会话内任何写路径（agent 文件工具、bash、SCM 自身操作）都会发布 scm.updated：
     // 读到的事件即丢弃该会话的读缓存，避免「刚提交/刚写文件仍看到旧状态」。
@@ -235,7 +235,7 @@ export class ScmService {
     const cancel = () => { void this.core.cancelJob({ sessionId: context.sessionId, jobId }).catch(() => undefined); };
     context.signal?.addEventListener("abort", cancel, { once: true });
     try {
-      await this.core.startJob({ sessionId: context.sessionId, jobId, kind: "exec", cmd, cwd, timeoutMs: GIT_JOB_TIMEOUT_MS, ...coreExecShell(context.shellBackend) });
+      await this.core.startJob({ sessionId: context.sessionId, jobId, kind: "exec", cmd, cwd, timeoutMs: this.options.execTimeoutMs?.() ?? DEFAULT_EXEC_TIMEOUT_MS, ...coreExecShell(context.shellBackend) });
       for (;;) {
         const page = await this.core.jobOutput({ sessionId: context.sessionId, jobId, afterSeq, limit: 128 });
         output.push(...page.chunks);

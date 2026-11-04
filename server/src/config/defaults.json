@@ -28,6 +28,7 @@
   "offlineMode": false,
   "corePath": "../build/Debug/owc-exec.exe",
   "coreRequestTimeoutMs": 130000,
+  "execTimeoutMs": 1800000,
   "sandboxAllowPaths": [],
   "browseRoots": [],
   "sandboxProxyDenyList": [],

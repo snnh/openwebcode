@@ -8,6 +8,7 @@ import { ensureDirWithMode } from "./fs-utils.js";
 import type { AgentRunner } from "./agent/agent-runner.js";
 import { loadConfig, parseOriginList, defaultCorePath, SNAPSHOT_BACKENDS, type ServerConfig, type SnapshotBackendName } from "./config.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
+import { DEFAULT_CORE_REQUEST_TIMEOUT_MS, DEFAULT_EXEC_TIMEOUT_MS, MAX_EXEC_TIMEOUT_MS } from "./exec-timeout.js";
 import type { CoreClientLike } from "./core-client.js";
 import type { EventBus } from "./events/event-bus.js";
 import type { ProviderRegistry } from "./providers/provider.js";
@@ -243,6 +244,12 @@ function requireNoProxyList(value: SettingValue): void {
   }
 }
 
+function requireExecTimeoutMs(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > MAX_EXEC_TIMEOUT_MS) {
+    throw new SettingsValidationError(`命令超时需为 0–${MAX_EXEC_TIMEOUT_MS} 的整数毫秒（0 = 不限）`);
+  }
+}
+
 function requireJobMemoryMB(value: SettingValue): void {
   if (typeof value !== "number" || value < 1 || value > 1_048_576) {
     throw new SettingsValidationError("Job 内存上限需为 1–1048576 MB (1 TB)");
@@ -451,7 +458,8 @@ const FIELDS: FieldSpec[] = [
   { key: "spawnSwarmConcurrency", group: "context", label: "spawn_swarm 并发成员数", type: "number", env: "OWC_SPAWN_SWARM_CONCURRENCY", defaultValue: 4, restartRequired: false, fromEnv: envNumber, validate: requireSpawnSwarmConcurrency, description: "spawn_swarm 单次派发同时运行的成员数（2–16，默认 4）；成员总数上限仍为 16。spawn_swarm 是并行编排，低于 2 无法构成并行 swarm" },
   // 执行器
   { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", runtimeDefault: () => defaultCorePath(), restartRequired: true, validate: requireNonEmpty },
-  { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: 130_000, restartRequired: false, fromEnv: envNumber },
+  { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: DEFAULT_CORE_REQUEST_TIMEOUT_MS, restartRequired: false, fromEnv: envNumber },
+  { key: "execTimeoutMs", group: "executor", label: "命令超时 (ms)", type: "number", env: "OWC_EXEC_TIMEOUT_MS", defaultValue: DEFAULT_EXEC_TIMEOUT_MS, restartRequired: false, fromEnv: envNonNegativeInteger, validate: requireExecTimeoutMs, description: "前台/后台 bash 与持久 shell 共用的软超时（0 = 不限）；默认 30 分钟。RPC 等待自动取该值 + 10 秒" },
   { key: "sandboxAllowPaths", group: "executor", label: "沙盒额外允许目录", type: "pathList", env: "OWC_SANDBOX_ALLOW_PATHS", defaultValue: [], restartRequired: true, fromEnv: envPathList, validate: requirePathList, description: "每行一个目录，最多 16 个；执行时与会话工作目录合并并去重" },
   // 目录浏览根（热生效）：新建会话对话框的目录浏览器可遍历范围；留空默认家目录
   { key: "browseRoots", group: "executor", label: "目录浏览根", type: "pathList", env: "OWC_BROWSE_ROOTS", defaultValue: [], restartRequired: false, fromEnv: envPathList, validate: requirePathList, description: "新建会话时目录浏览器可遍历的根目录列表，每行一个绝对路径；留空则默认为用户家目录" },
@@ -462,9 +470,9 @@ const FIELDS: FieldSpec[] = [
   { key: "trustProjectExecConfig", group: "executor", label: "信任项目级执行配置", type: "boolean", env: "OWC_TRUST_PROJECT_EXEC_CONFIG", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "开启后才读取工作区内 .owc/hooks.json（事件钩子，宿主身份执行 shell）与 .owc/mcp.json（MCP server 配置，spawn 任意命令）；默认关闭，防止克隆来的恶意仓库携带执行入口配置。跳过时每个会话收到一次 hook.project_config_untrusted 通知" },
   { key: "pythonEnv", group: "executor", label: "Python 环境", type: "select", env: "OWC_PYTHON_ENV", defaultValue: "global", restartRequired: false, options: PYTHON_ENV_OPTIONS, description: "全局默认：bash 工具的 python 运行环境。global = 本机已有环境；uv-workspace = 在项目工作区 .owc/venv 创建 uv 虚拟环境；uv-config = 在数据目录 venvs/ 创建 uv 虚拟环境（POSIX 沙盒内读写挂载该 venv 目录，pip install 仅落进 venv，无法写入系统环境）。会话可在顶栏单独覆盖" },
   { key: "nodeEnv", group: "executor", label: "Node 环境", type: "select", env: "OWC_NODE_ENV", defaultValue: "global", restartRequired: false, options: NODE_ENV_OPTIONS, description: "全局默认：bash 工具的 node 运行环境。global = 本机已有环境；project = 工作区 node_modules/.bin 前置 PATH；fnm / nvm = 版本管理器激活（fnm 不支持 cmd；nvm 仅 POSIX bash/sh），POSIX 沙盒内读写挂载版本管理器目录，npm i -g 等安装仅落进该目录，无法写入整机环境。会话可在顶栏单独覆盖" },
-  // Job Object 资源限制（仅 Windows，重启生效）：注入 CoreRouter 全局下发，留空由 core 用默认值
-  { key: "jobObjectMemoryMB", group: "executor", label: "Job 内存上限 (MB)", type: "number", env: "OWC_JOB_MEMORY_MB", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMemoryMB, description: "进程树提交内存上限，缺省 4096；仅 Windows（Job Object）生效" },
-  { key: "jobObjectMaxProcesses", group: "executor", label: "Job 进程数上限", type: "number", env: "OWC_JOB_MAX_PROCESSES", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMaxProcesses, description: "进程树活跃进程上限，缺省 64；仅 Windows（Job Object）生效" },
+  // 进程树资源限制（Windows Job Object / POSIX RLIMIT，重启生效）：注入 CoreRouter 全局下发，留空由 core 用默认值
+  { key: "jobObjectMemoryMB", group: "executor", label: "Job 内存上限 (MB)", type: "number", env: "OWC_JOB_MEMORY_MB", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMemoryMB, description: "进程树提交内存上限，缺省 4096；Windows 走 Job Object，POSIX 走 RLIMIT_AS。显式会话/工具限制优先" },
+  { key: "jobObjectMaxProcesses", group: "executor", label: "Job 进程数上限", type: "number", env: "OWC_JOB_MAX_PROCESSES", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMaxProcesses, description: "进程树活跃进程上限，缺省 64；Windows 走 Job Object，POSIX 走 RLIMIT_NPROC。显式会话/工具限制优先" },
   { key: "gcMaxBytes", group: "service", label: "存储上限 (字节)", type: "number", env: "OWC_GC_MAX_BYTES", defaultValue: 2_147_483_648, restartRequired: false, fromEnv: envNumber, description: "会话 artifacts 全局 LRU 上限，超出后从最旧开始清理" },
   // usage-events 清理（热生效）：模式 + 保留天数；off = 不清理（默认，保持历史行为）
   { key: "usageLogCleanupMode", group: "service", label: "用量日志清理模式", type: "select", env: "OWC_USAGE_LOG_CLEANUP_MODE", defaultValue: "off", restartRequired: false, options: USAGE_LOG_CLEANUP_MODES, fromEnv: envUsageLogCleanupMode, validate: requireUsageLogCleanupMode, description: "off = 不清理；deleted-after-days = 仅已删除会话的事件保留超过指定天数后清理（未删除保留）；all-after-days = 所有事件超过指定天数后清理，不分会话；deleted-immediate-live-timeout = 已删除会话的事件立即清理，未删除超过指定天数后清理；deleted-immediate-only = 已删除会话的事件立即清理，未删除不清理" },
@@ -679,6 +687,7 @@ export class SettingsService {
       corePath: value("corePath") as string,
       dataDir: value("dataDir") as string,
       coreRequestTimeoutMs: value("coreRequestTimeoutMs") as number,
+      execTimeoutMs: value("execTimeoutMs") as number,
       gcMaxBytes: value("gcMaxBytes") as number,
       usageLogCleanupMode: value("usageLogCleanupMode") as UsageLogCleanupMode,
       usageLogRetentionDays: value("usageLogRetentionDays") as number,
