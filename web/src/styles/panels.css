@@ -579,9 +579,20 @@
 @media (max-width: 560px) {
   .panel-tabs { flex-wrap: wrap; row-gap: 0; padding-bottom: 0; }
   .panel-tabs > button { padding-left: 7px; padding-right: 7px; }
-  .panel-tabs .panel-fold { order: 4; }
+  .panel-tabs .panel-fold { order: 1; }
+  /* 第二行标签必须排在状态行之前：否则展开「更多」后状态行会夹在两行标签中间 */
+  .panel-tabs-secondary-inline {
+    order: 2;
+    flex: 1 0 100%;
+    display: flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 0 4px;
+    border-top: 1px solid var(--border);
+    overflow: hidden;
+  }
   .panel-tabs .panel-status {
-    order: 5;
+    order: 3;
     flex: 1 0 100%;
     margin-left: 0;
     padding: 4px 8px calc(4px + env(safe-area-inset-bottom));

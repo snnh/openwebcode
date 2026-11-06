@@ -9,6 +9,7 @@ import { sessionStore } from "../app/session-store";
 import { useContextViewQuery, useExtensionsQuery, useModelsQuery, useSessionsQuery } from "../app/queries";
 import { layout, layoutStore, type BottomTab } from "./layout";
 import { useI18n } from "../i18n";
+import { useMediaQuery } from "../hooks/use-media-query";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 
 // 底部面板标签各自独立 chunk，仅在打开对应标签页时加载
@@ -100,6 +101,8 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
   const height = useStore(layoutStore, (state) => state.bottomHeight);
   // 移动端第二行标签折叠：默认收起、不持久化；面板展开时自动展开，「收起」按钮始终可收回
   const [tabsExpanded, setTabsExpanded] = useState(false);
+  // ≤560px 时标签条换行：第二行标签必须排在状态行之前，避免状态行把两行标签隔开
+  const narrowTabs = useMediaQuery("(max-width: 560px)");
   const extensions = useExtensionsQuery();
   const evalEnabled = extensions.data?.some((extension) => extension.id === "owc-eval" && extension.enabled) === true;
   const dshSyncEnabled = extensions.data?.some((extension) => extension.id === "dsh-sync" && extension.enabled) === true;
@@ -146,6 +149,18 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
 
   const running = agentState !== undefined && !INACTIVE_STATES.has(agentState);
 
+  const secondaryTabButtons = secondaryTabs.map((item) => (
+    <button
+      key={item}
+      className={tab === item && bottomOpen ? "active" : ""}
+      aria-pressed={tab === item && bottomOpen}
+      onClick={() => selectTab(item)}
+    >
+      <Icon name={TAB_META[item].icon} size={13} />
+      {t(TAB_META[item].zh, TAB_META[item].en)}
+    </button>
+  ));
+
   return (
     <section className={`bottom-panel${bottomOpen ? " open" : ""}`} aria-label={t("面板", "Panel")}>
       {bottomOpen && (
@@ -184,6 +199,11 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
             <Icon name="more" size={13} />
           </button>
         )}
+        {showSecondary && narrowTabs && (
+          <div className="panel-tabs-secondary-inline" role="group" aria-label={t("更多面板标签", "More panel tabs")}>
+            {secondaryTabButtons}
+          </div>
+        )}
         {sessionId && <PanelStatus sessionId={sessionId} agentState={agentState} mobile={mobile} />}
         <button
           className="panel-fold"
@@ -193,20 +213,10 @@ export function BottomPanel({ sessionId, agentState, mobile = false }: BottomPan
           <Icon name={bottomOpen ? "chevron-down" : "chevron-up"} size={14} />
         </button>
       </div>
-      {/* 移动端第二行标签（默认收起）：子代理/沙盒/性能/评测 */}
-      {showSecondary && (
+      {/* ≤560px 的第二行标签已内联到 .panel-tabs（排在状态行之前）；更宽屏保持独立一行 */}
+      {showSecondary && !narrowTabs && (
         <div className="panel-tabs panel-tabs-secondary">
-          {secondaryTabs.map((item) => (
-            <button
-              key={item}
-              className={tab === item && bottomOpen ? "active" : ""}
-              aria-pressed={tab === item && bottomOpen}
-              onClick={() => selectTab(item)}
-            >
-              <Icon name={TAB_META[item].icon} size={13} />
-              {t(TAB_META[item].zh, TAB_META[item].en)}
-            </button>
-          ))}
+          {secondaryTabButtons}
         </div>
       )}
       {bottomOpen && (
