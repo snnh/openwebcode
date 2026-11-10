@@ -152,7 +152,9 @@ def run_bwrap_e2e(proc, workspace):
             f"printf workspace-ok > '{inside_path}'; printf outside-must-fail > '{outside_path}'",
         )
         assert result["sandboxCapability"] == "enforced", result
-        assert result["exitCode"] != 0, result
+        assert result["exitCode"] != 0, (result, output)
+        if not os.path.exists(inside_path):
+            raise AssertionError(f"workspace bind did not expose {inside_path}: {result} output={output!r}")
         with open(inside_path, "r", encoding="utf-8") as stored:
             assert stored.read() == "workspace-ok"
         assert not os.path.exists(outside_path), outside_path
@@ -178,7 +180,7 @@ def run_bwrap_e2e(proc, workspace):
             "done"
         )
         result, output = run_exec(proc, 40, workspace, namespace_probe)
-        assert result["exitCode"] == 0, result
+        assert result["exitCode"] == 0, (result, output)
         lines = [line.strip() for line in output.splitlines() if line.strip()]
         assert "host-pid-isolated" in lines, output
         assert "host-kill-blocked" in lines, output

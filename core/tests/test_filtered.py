@@ -176,7 +176,7 @@ def main():
         response, _ = exec_command(proc, 8, "filtered", workspace, "echo ok", network="bogus")
         assert_error(response, -32602, "network")
         response, output = exec_command(proc, 9, "filtered", workspace, "echo ok", network="deny")
-        assert "result" in response and response["result"]["exitCode"] == 0, response
+        assert "result" in response and response["result"]["exitCode"] == 0, (response, output)
         assert "ok" in output, output
         request(proc, 10, "job.start", {"sessionId": "filtered", "jobId": "badnet", "kind": "exec",
                                         "cmd": "echo ok", "cwd": workspace, "network": "bogus"})
