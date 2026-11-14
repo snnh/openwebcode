@@ -123,8 +123,8 @@ def main():
         response, output = exec_command(proc, 11, "deny", workspace,
                                         'echo injected> "missing.env"')
         assert "result" in response, response
-        assert response["result"]["exitCode"] != 0, (response, output)
-        assert os.path.getsize(missing) == 0
+        # cmd.exe 的 echo 重定向失败时也可能返回 0；以宿主侧文件内容为准
+        assert os.path.getsize(missing) == 0, (response, output)
 
         # The DENY ACE blocks reading the deny file from the sandboxed
         # command even though the workspace write root allows reads.
@@ -138,7 +138,7 @@ def main():
         response, output = exec_command(proc, 4, "deny", workspace,
                                         'echo injected> ".owc\\hooks.json"')
         assert "result" in response, response
-        assert response["result"]["exitCode"] != 0, (response, output)
+        # 同上：退出码不可靠，直接核对宿主文件未被改写
         with open(hooks, "r", encoding="utf-8") as stored:
             assert stored.read() == '{"hooks":[]}'
 
