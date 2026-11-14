@@ -92,7 +92,7 @@ export interface CoreInfo {
   protocolVersion?: string;
   platform: "windows" | "linux";
   sandboxCapability: string;
-  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; asyncExec?: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean; grepJob?: boolean; globJob?: boolean; pathNormalize?: boolean; shellBash?: boolean; pty?: boolean; bindLink?: boolean; fsReadBase64?: boolean; overlay?: { supported: boolean; fuseOverlayfs: boolean; kernelMount: boolean }; bwrap?: { available: boolean; reason?: string } };
+  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; asyncExec?: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean; grepJob?: boolean; globJob?: boolean; pathNormalize?: boolean; shellBash?: boolean; pty?: boolean; bindLink?: boolean; fsReadBase64?: boolean; overlay?: { supported: boolean; fuseOverlayfs: boolean; kernelMount: boolean }; bwrap?: { available: boolean; reason?: string }; landlock?: { available: boolean; reason?: string } };
   limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number; maxIndexScanNodes?: number; maxIndexScanDepth?: number; maxIndexScanBytes?: number; maxIndexScanMs?: number; maxSearchNodes?: number; maxSearchDepth?: number; maxSearchMs?: number; maxIndexExtractFiles?: number; maxIndexExtractBytes?: number; maxIndexExtractMs?: number; indexExtractDefaultSymbolsPerFile?: number; maxIndexExtractSymbolsPerFile?: number; maxConcurrentPtys?: number; maxPtyOutputChunkBytes?: number; maxPtyInputBytes?: number; maxReadBase64Bytes?: number };
 }
 
@@ -323,6 +323,11 @@ export interface CoreClientLike {
   configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string; sandboxReason?: string }>;
   /** 最近一次 configureSession 记录的会话执行级别（仅 CoreRouter 提供）；无记录返回 undefined。 */
   sandboxStatusFor?(sessionId: string): { capability: string; reason?: string; at: number } | undefined;
+  /** 最近一次成功下发的有效策略来源与未生效项（CoreRouter 提供；旧注入实现可缺省）。 */
+  effectivePolicyForSession?(sessionId: string): {
+    entries: Array<{ field: string; value: string; source: string }>;
+    dropped: Array<{ field: string; value: string; source: string; reason: string }>;
+  } | undefined;
   cleanupSession(sessionId: string): Promise<{ ok: true }>;
   readFile(request: FsReadRequest): Promise<FsReadResult>;
   writeFile(request: FsWriteRequest): Promise<{ ok: true }>;

@@ -48,10 +48,6 @@ export function setCacheScale(value: number): void {
   scale = Math.max(0.5, Math.min(2, value));
 }
 
-export function cacheScale(): number {
-  return scale;
-}
-
 function scaled(value: number, minimum: number): number {
   return Math.max(minimum, Math.round(value * scale));
 }

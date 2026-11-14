@@ -360,11 +360,11 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
     return agent.listPendingPermissions(request.params.id);
   });
 
-  app.post<{ Params: { id: string }; Body: { requestId: string; decision: "allow" | "allow_always" | "deny"; reason?: string } }>("/api/sessions/:id/permissions/respond", async (request, reply) => {
+  app.post<{ Params: { id: string }; Body: { requestId: string; decision: "allow" | "allow_always" | "allow_always_global" | "deny"; reason?: string } }>("/api/sessions/:id/permissions/respond", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     const body = request.body;
-    if (!body || typeof body.requestId !== "string" || !["allow", "allow_always", "deny"].includes(body.decision) || (body.reason !== undefined && typeof body.reason !== "string")) {
-      return reply.code(400).send({ error: "requestId, decision allow|allow_always|deny, and optional reason are required" });
+    if (!body || typeof body.requestId !== "string" || !["allow", "allow_always", "allow_always_global", "deny"].includes(body.decision) || (body.reason !== undefined && typeof body.reason !== "string")) {
+      return reply.code(400).send({ error: "requestId, decision allow|allow_always|allow_always_global|deny, and optional reason are required" });
     }
     const complete = await agent.preparePermissionResponse(request.params.id, body.requestId, body.decision, body.reason);
     if (!complete) return reply.code(404).send({ error: "Permission request not found" });

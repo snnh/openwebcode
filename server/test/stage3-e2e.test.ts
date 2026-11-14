@@ -135,7 +135,7 @@ describe("stage 3 vertical acceptance", () => {
     const captured: AppEvent[] = [];
     const harness = await setup(provider);
     harness.events.on("event", (event) => captured.push(event));
-    const sessionId = await newSession(harness.app, { cwd: harness.root, provider: "anthropic", model: "claude-opus-4-8" });
+    const sessionId = await newSession(harness.app, { cwd: harness.root, provider: "anthropic", model: "claude-opus-4-8", permissionMode: "ask" });
 
     await submitWithPermission(harness, sessionId, "创建阶段三验收文件", "allow");
     expect(await readFile(path.join(harness.root, "src/result.txt"), "utf8")).toBe("stage-three\n");
@@ -167,7 +167,7 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
   it("权限卡可经 REST 恢复，写盘→上下文→文件树→预览→检查点 diff 全链路可用", async () => {
     const harness = await setup(scriptProvider("anthropic"));
     const { app, events, root } = harness;
-    const sessionId = await newSession(app, { cwd: root, provider: "anthropic", model: "claude-opus-4-8" });
+    const sessionId = await newSession(app, { cwd: root, provider: "anthropic", model: "claude-opus-4-8", permissionMode: "ask" });
 
     const settled = waitForEvent(events, "agent.state", { sessionId, match: idle });
     const permission = waitForEvent(events, "permission.request", { sessionId });

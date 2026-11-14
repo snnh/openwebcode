@@ -223,6 +223,19 @@ agent.setPythonEnvDefault(() => settings.effective().pythonEnv);
 agent.setNodeEnvDefault(() => settings.effective().nodeEnv);
 core.setNodeEnvDefault(() => settings.effective().nodeEnv);
 core.setPythonEnvDefault(() => settings.effective().pythonEnv, dataDir);
+core.setTrustProjectExecConfig(() => settings.effective().trustProjectExecConfig);
+agent.setPermissionGlobalRules(() => settings.effective().permissionGlobalRules ?? []);
+agent.setPermissionHighRiskDefaults(() => ({
+  commands: settings.effective().permissionHighRisk?.commands ?? [],
+  tools: settings.effective().permissionHighRisk?.tools ?? [],
+}));
+agent.setGlobalPermissionRuleAppender(async (rule) => {
+  const current = settings.effective().permissionGlobalRules ?? [];
+  const next = [...current.filter((item) => item.tool !== rule.tool || item.argumentPrefix !== rule.argumentPrefix), rule];
+  await settings.update({
+    permissionGlobalRules: next.map((item) => item.argumentPrefix ? `${item.tool}|${item.argumentPrefix}` : item.tool),
+  });
+});
 agent.setMaxTurns(() => settings.effective().agentMaxTurns);
 agent.setExecTimeoutMs(() => settings.effective().execTimeoutMs);
 agent.setSubAgentMaxTurns(() => settings.effective().subAgentMaxTurns);

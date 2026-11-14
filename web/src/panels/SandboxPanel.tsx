@@ -25,6 +25,29 @@ const CAPABILITY_PILL_CLASS: Record<SandboxCapability, string> = {
   partial: "amber",
   advisory: "danger",
 };
+const POLICY_SOURCE_LABELS: Record<string, [string, string]> = {
+  default: ["默认策略", "Default"],
+  session: ["会话策略", "Session"],
+  global: ["全局设置", "Global"],
+  "credential-git": ["Git 身份配置", "Git identity"],
+  "credential-git-token": ["Git 令牌", "Git tokens"],
+  "credential-ssh": ["SSH 凭据", "SSH credentials"],
+  "toolchain-node": ["Node 工具链", "Node toolchain"],
+  "toolchain-python": ["Python 工具链", "Python toolchain"],
+};
+
+const POLICY_FIELD_LABELS: Record<string, [string, string]> = {
+  readRoots: ["读取根", "Read root"],
+  writeRoots: ["写入根", "Write root"],
+  denyPaths: ["拒绝路径", "Denied path"],
+  allowPaths: ["读写放行", "Writable path"],
+  readOnlyPaths: ["只读挂载", "Read-only mount"],
+  bindLinks: ["目录绑定", "Bind link"],
+  network: ["网络", "Network"],
+  mode: ["模式", "Mode"],
+  jobMemoryMB: ["内存上限", "Memory cap"],
+  jobMaxProcesses: ["进程上限", "Process cap"],
+};
 
 /** 沙盒面板：会话沙盒策略 + 平台能力 + 最近一次 configureSession 上报的执行级别。会话详情自取（qk.session）。 */
 export function SandboxPanel({ sessionId }: { sessionId?: string | undefined }): ReactElement {
@@ -35,6 +58,10 @@ export function SandboxPanel({ sessionId }: { sessionId?: string | undefined }):
   // ~/.ssh 只读挂载开关（会话级 opt-in）：变更触发服务端回收持久 shell 并重配沙盒
   const sshToggle = useMutation({
     mutationFn: (enabled: boolean) => api.updateSession(sessionId!, { sshCredentials: enabled }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: qk.session(sessionId!) }),
+  });
+  const gitToggle = useMutation({
+    mutationFn: (enabled: boolean) => api.updateSession(sessionId!, { gitCredentials: enabled }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: qk.session(sessionId!) }),
   });
   const sandboxCaps = useQuery({
@@ -60,12 +87,15 @@ export function SandboxPanel({ sessionId }: { sessionId?: string | undefined }):
     ? mode === "jobobject" ? "landlock" : mode === "appcontainer" ? "bubblewrap" : mode
     : mode;
   const capability = sandboxStatus.data?.sandboxCapability;
+  const effective = sandboxStatus.data?.effectivePolicy;
+  const autoEntries = effective?.entries.filter((entry) => entry.source !== "default" && entry.source !== "session") ?? [];
+  const dropped = effective?.dropped ?? [];
   return (
     <div className="inspector-body">
       <h2>{t("沙盒策略", "Sandbox policy")}</h2>
       <dl>
         <dt>{t("模式", "Mode")}</dt>
-        <dd>{t(...SANDBOX_MODE_LABELS[displayMode])}{session.kind === "local" && <span className="muted-empty"> · {t("本机会话：命令直接在本机执行，HOME 外文件路径需逐个允许", "local session: commands run directly on the host; file paths outside HOME require per-path approval")}</span>}</dd>
+        <dd>{t(...SANDBOX_MODE_LABELS[displayMode])}{session.kind === "local" && <span className="muted-empty"> · {enabled ? t("本机会话：命令在沙盒内执行，凭据按下方开关只读挂载", "local session: commands run inside the sandbox; credentials are mounted read-only per the toggles below") : t("本机会话：命令直接在本机执行，HOME 外文件路径需逐个允许", "local session: commands run directly on the host; file paths outside HOME require per-path approval")}</span>}</dd>
         <dt>{t("状态", "Status")}</dt>
         <dd>{enabled ? t("已启用", "Enabled") : t("已关闭", "Off")}</dd>
         <dt>{t("执行级别", "Enforcement")}</dt>
@@ -77,6 +107,29 @@ export function SandboxPanel({ sessionId }: { sessionId?: string | undefined }):
             </>
           ) : "—"}
         </dd>
+        <dt>{t("策略来源", "Policy sources")}</dt>
+        <dd>
+          {autoEntries.length === 0 ? t("全部来自会话或默认策略", "All from session or default policy") : (
+            <ul className="sandbox-policy-list">
+              {autoEntries.map((entry) => (
+                <li key={`${entry.field}:${entry.value}`}>
+                  <code>{entry.value}</code>
+                  <span className="muted-empty">
+                    {" · "}{t(...(POLICY_FIELD_LABELS[entry.field] ?? [entry.field, entry.field]))}
+                    {" · "}{t(...(POLICY_SOURCE_LABELS[entry.source] ?? [entry.source, entry.source]))}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {dropped.length > 0 && (
+            <p className="muted-empty dialog-hint">
+              {t(`另有 ${dropped.length} 项因 core 上限未下发：`, `${dropped.length} more item(s) not applied due to core limits:`)}
+              {dropped.slice(0, 3).map((entry) => ` ${entry.value}`).join("")}
+              {dropped.length > 3 ? " …" : ""}
+            </p>
+          )}
+        </dd>
         <dt>{t("网络", "Network")}</dt>
         <dd>{sandbox.network === "allow" ? t("允许", "Allowed") : sandbox.network === "filtered" ? t("代理过滤（仅 Windows）", "Filtered via proxy (Windows only)") : t("拒绝", "Denied")}</dd>
         <dt>{t("SSH 凭据", "SSH credentials")}</dt>
@@ -85,12 +138,25 @@ export function SandboxPanel({ sessionId }: { sessionId?: string | undefined }):
             <input
               type="checkbox"
               checked={session.sshCredentials === true}
-              disabled={sshToggle.isPending || session.kind === "local"}
+              disabled={sshToggle.isPending || !enabled}
               onChange={(event) => sshToggle.mutate(event.target.checked)}
             />
             {t("沙盒内只读挂载 ~/.ssh（SSH push 需要；默认关闭，私钥可被沙盒命令读取）", "Mount ~/.ssh read-only in the sandbox (needed for SSH push; off by default as sandboxed commands can read the keys)")}
           </label>
           {sshToggle.isError && <p className="muted-empty dialog-hint">{t("更新失败，请重试。", "Update failed; please retry.")}</p>}
+        </dd>
+        <dt>{t("Git 令牌", "Git tokens")}</dt>
+        <dd>
+          <label className="bindlink-readonly">
+            <input
+              type="checkbox"
+              checked={session.gitCredentials === true}
+              disabled={gitToggle.isPending || !enabled}
+              onChange={(event) => gitToggle.mutate(event.target.checked)}
+            />
+            {t("沙盒内只读挂载 .git-credentials / .config/git/credentials / .config/gh（默认关闭，令牌可被沙盒命令读取）", "Mount .git-credentials / .config/git/credentials / .config/gh read-only in the sandbox (off by default as sandboxed commands can read the tokens)")}
+          </label>
+          {gitToggle.isError && <p className="muted-empty dialog-hint">{t("更新失败，请重试。", "Update failed; please retry.")}</p>}
         </dd>
         <dt>{t("读取根", "Read roots")}</dt>
         <dd>{sandbox.readRoots.join("\n") || "—"}</dd>

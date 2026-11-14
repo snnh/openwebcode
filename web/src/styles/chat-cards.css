@@ -758,3 +758,7 @@ article.message.conv-search-active { outline: 2px solid color-mix(in srgb, var(-
   max-width: 100%;
 }
 .tool-file-link:hover, .tool-file-link:focus-visible { color: var(--text); }
+
+/* 权限卡「总是允许」的全局作用域选项：仅在二次确认态出现 */
+.permission-global-scope { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: var(--text-xs); color: var(--text-3); }
+.permission-global-scope input { margin: 0; }

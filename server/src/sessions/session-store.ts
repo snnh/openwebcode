@@ -11,7 +11,7 @@ import { defaultSandboxPolicy } from "./default-sandbox.js";
 import { readMessagesTail, readMessagesBefore, readAllMessages, readMessagesAfter, readMessagesHead, checkRecoveryTail, invalidateMessageIndex, readLastRecordRange, sweepIdleMessageIndexes, DEFAULT_PAGE_SIZE } from "./message-reader.js";
 import { isCacheEntryIdle } from "../cache-policy.js";
 import { deriveTitleFromMessages, serializeByKey, titleFromContent } from "./store-utils.js";
-import type { BindLinkSpec, ChatMessage, FallbackModelEntry, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SandboxNetwork, SessionDetail, SessionMeta } from "./types.js";
+import type { BindLinkSpec, ChatMessage, FallbackModelEntry, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, PermissionMode, SandboxMode, SandboxNetwork, SessionDetail, SessionMeta } from "./types.js";
 import { cacheLimits, PINNED_MESSAGES_TOTAL_BYTES } from "../cache-limits.js";
 
 /**
@@ -72,6 +72,14 @@ interface MetaCacheEntry {
   meta: SessionMeta;
 }
 
+/** 本机会话的 fs 根随沙盒档位变化：off = 全盘（HOME 外走人工门）；沙盒开启 = HOME。 */
+function applyLocalSandboxRoots(meta: SessionMeta): void {
+  if (meta.kind !== "local") return;
+  const root = meta.sandboxMode === "off" ? path.parse(meta.cwd).root : meta.cwd;
+  const base = meta.sandbox ?? defaultSandboxPolicy(meta.cwd);
+  meta.sandbox = { ...base, readRoots: [root], writeRoots: [root] };
+}
+
 interface CreateSessionInput {
   cwd: string;
   /** 会话类型（语义见 SessionMeta.kind）；仅 "local" 由路由层在解析 cwd=HOME 后传入。 */
@@ -80,6 +88,7 @@ interface CreateSessionInput {
   model?: string;
   title?: string;
   agentMode?: "plan" | "code" | "goal";
+  permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
   /** 会话网络策略（缺省 allow；并入默认沙盒策略持久化）。 */
   network?: SandboxNetwork;
@@ -96,6 +105,10 @@ interface CreateSessionInput {
   toolsDeny?: string[];
   /** 会话级备选模型链（非空才落盘；语义见 SessionMeta.fallbackModels）。 */
   fallbackModels?: FallbackModelEntry[];
+  /** 沙盒内只读挂载 ~/.ssh（默认关闭）。 */
+  sshCredentials?: boolean;
+  /** 沙盒内只读挂载 git/gh 令牌（默认关闭）。 */
+  gitCredentials?: boolean;
 }
 
 export class SessionStore {
@@ -167,8 +180,13 @@ export class SessionStore {
     // meta 上（旧版本对显式 jobobject 也按删字段存储），readMeta 据此做存量迁移；
     // 新会话写真值避免「缺省即默认」的双义。setupScript 仅非空时保留
     meta.sandboxMode = input.sandboxMode ?? (process.platform === "win32" ? "appcontainer" : "bubblewrap");
+    applyLocalSandboxRoots(meta);
     if (input.setupScript?.trim()) meta.setupScript = input.setupScript;
     if (input.agentMode === "plan" || input.agentMode === "goal") meta.agentMode = input.agentMode;
+    // 新会话默认智能审核；存量 meta 缺字段仍由运行期 fallback 到 ask，避免静默改变旧会话。
+    meta.permissionMode = input.permissionMode ?? "review";
+    if (input.sshCredentials === true) meta.sshCredentials = true;
+    if (input.gitCredentials === true) meta.gitCredentials = true;
     // 工具白名单/黑名单：空数组等同未设置，不落盘
     if (input.toolsAllow?.length) meta.toolsAllow = input.toolsAllow;
     if (input.toolsDeny?.length) meta.toolsDeny = input.toolsDeny;
@@ -472,7 +490,7 @@ export class SessionStore {
     return message;
   }
 
-  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv" | "nodeEnv" | "preset" | "persona" | "swarmEnabled" | "reviewModel" | "toolsAllow" | "toolsDeny" | "fallbackModels" | "sshCredentials">>): Promise<SessionMeta> {
+  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv" | "nodeEnv" | "preset" | "persona" | "swarmEnabled" | "reviewModel" | "toolsAllow" | "toolsDeny" | "fallbackModels" | "sshCredentials" | "gitCredentials">>): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.provider = update.provider;
     meta.model = update.model;
@@ -519,6 +537,8 @@ export class SessionStore {
     // ~/.ssh 沙盒挂载：undefined/false = 不挂载（缺省关闭，显式 true 才挂载）
     if (update.sshCredentials !== true) delete meta.sshCredentials;
     else meta.sshCredentials = true;
+    if (update.gitCredentials !== true) delete meta.gitCredentials;
+    else meta.gitCredentials = true;
     meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
     return meta;
@@ -681,6 +701,7 @@ export class SessionStore {
   async updateSandboxMode(id: string, sandboxMode: SandboxMode | undefined, setupScript: string | undefined): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     if (sandboxMode !== undefined) meta.sandboxMode = sandboxMode;
+    applyLocalSandboxRoots(meta);
     if (!setupScript?.trim()) delete meta.setupScript;
     else meta.setupScript = setupScript;
     meta.updatedAt = monotonicTimestamp();

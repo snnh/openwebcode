@@ -75,11 +75,31 @@ describe("SessionStore.updateSandboxMode", () => {
     await store.updateSandboxMode(id, "appcontainer", undefined); expect((await store.get(id))?.sandboxMode).toBe("appcontainer");
   });
 
+  it("本机会话：off 时 fs 根为文件系统根，切沙盒后收敛到 HOME，切回恢复", async () => {
+    const root = await tempRoot("owc-local-roots-");
+    const store = await storeAt(root);
+    const home = path.join(root, "home");
+    const fileRoot = path.parse(home).root;
+    const session = await store.create({ cwd: home, kind: "local", sandboxMode: "off", provider: "p", model: "m" });
+    expect(session.sandboxMode).toBe("off");
+    expect(session.sandbox).toMatchObject({ readRoots: [fileRoot], writeRoots: [fileRoot] });
+
+    const sandboxed = await store.updateSandboxMode(session.id, "bubblewrap", undefined);
+    expect(sandboxed.sandbox).toMatchObject({ readRoots: [home], writeRoots: [home] });
+    const backOff = await store.updateSandboxMode(session.id, "off", undefined);
+    expect(backOff.sandbox).toMatchObject({ readRoots: [fileRoot], writeRoots: [fileRoot] });
+  });
+
   it("create 显式落盘平台默认档；Windows 存量缺字段 meta 迁移为 jobobject", async () => {
     const root = await tempRoot("owc-sandbox-migrate-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: root, provider: "p", model: "m" });
     expect(session.sandboxMode).toBe(process.platform === "win32" ? "appcontainer" : "bubblewrap");
+    // 新会话默认智能审核；显式档位按传入值落盘
+    expect(session.permissionMode).toBe("review");
+    expect((await store.create({ cwd: root, provider: "p", model: "m", permissionMode: "ask" })).permissionMode).toBe("ask");
+    expect(await store.create({ cwd: root, provider: "p", model: "m", sshCredentials: true, gitCredentials: true }))
+      .toMatchObject({ sshCredentials: true, gitCredentials: true });
     // 1.10.0 前的存量 meta：手工写入缺 sandboxMode 的 meta.json
     const legacyId = "00000000-0000-4000-8000-000000000001";
     const legacy = path.join(root, "sessions", legacyId);
@@ -90,6 +110,8 @@ describe("SessionStore.updateSandboxMode", () => {
     }), "utf8");
     await writeFile(path.join(legacy, "messages.jsonl"), "", "utf8");
     const loaded = await store.get(legacyId);
+    // 存量 meta 不补写权限档：运行期仍 fallback ask，避免静默改变旧会话
+    expect(loaded?.permissionMode).toBeUndefined();
     if (process.platform === "win32") {
       // Windows 存量保持创建时的 Job Object 档位（一次性补写），不被静默改判 AppContainer
       expect(loaded?.sandboxMode).toBe("jobobject");

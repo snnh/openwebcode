@@ -20,6 +20,7 @@ async function fixture(options?: {
   platform?: NodeJS.Platform;
   features?: CoreInfo["features"];
   sandboxStatusFor?: (sessionId: string) => { capability: string; reason?: string; at: number } | undefined;
+  effectivePolicyForSession?: (sessionId: string) => { entries: Array<{ field: string; value: string; source: string }>; dropped: Array<{ field: string; value: string; source: string; reason: string }> } | undefined;
 }) {
   const root = await tempRoot("owc-sandbox-status-");
   const sessions = new SessionStore(path.join(root, "sessions"));
@@ -33,6 +34,7 @@ async function fixture(options?: {
   const core = makeFakeCore({
     async ping() { return { ...FAKE_CORE_INFO, ...(options?.features ? { features: options.features } : {}) }; },
     ...(options?.sandboxStatusFor ? { sandboxStatusFor: options.sandboxStatusFor } : {}),
+    ...(options?.effectivePolicyForSession ? { effectivePolicyForSession: options.effectivePolicyForSession } : {}),
   });
   const app = await buildServer({
     core, sessions, agent: { isRunning: () => false } as AgentRunner, events: new EventBus(), providers, pricing,
@@ -75,6 +77,23 @@ describe("sandboxMode 平台门禁", () => {
       expect((await createSession(win, { sandboxMode })).statusCode, sandboxMode).toBe(400);
     }
     expect((await createSession(win, { sandboxMode: "off" })).statusCode).toBe(201);
+  });
+});
+
+describe("本机会话创建沙盒档", () => {
+  it("缺省 off；显式选择本机沙盒档时保留；WSB 与 setupScript 拒绝", async () => {
+    const linux = await fixture({ platform: "linux" });
+    const plain = await createSession(linux, { kind: "local" });
+    expect(plain.statusCode).toBe(201);
+    expect(await linux.sessions.get(plain.json<{ id: string }>().id)).toMatchObject({ kind: "local", sandboxMode: "off" });
+
+    const sandboxed = await createSession(linux, { kind: "local", sandboxMode: "bubblewrap" });
+    expect(sandboxed.statusCode).toBe(201);
+    expect(await linux.sessions.get(sandboxed.json<{ id: string }>().id)).toMatchObject({ kind: "local", sandboxMode: "bubblewrap" });
+    expect((await createSession(linux, { kind: "local", setupScript: "echo hi" })).statusCode).toBe(400);
+
+    const win = await fixture({ platform: "win32" });
+    expect((await createSession(win, { kind: "local", sandboxMode: "wsb" })).statusCode).toBe(400);
   });
 });
 
@@ -125,5 +144,25 @@ describe("GET /api/sessions/:id/sandbox-status", () => {
     const response = await setup.app.inject({ method: "GET", url: `/api/sessions/${created.json<{ id: string }>().id}/sandbox-status` });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ sandboxCapability: "enforced", sandboxReason: "landlock active" });
+  });
+
+  it("透出有效策略来源与未生效项", async () => {
+    const setup = await fixture({
+      sandboxStatusFor: () => ({ capability: "partial", at: 1 }),
+      effectivePolicyForSession: () => ({
+        entries: [{ field: "readOnlyPaths", value: "/home/u/.gitconfig", source: "credential-git" }],
+        dropped: [{ field: "readOnlyPaths", value: "/home/u/.ssh", source: "credential-ssh", reason: "core cap 32" }],
+      }),
+    });
+    const created = await createSession(setup);
+    const response = await setup.app.inject({ method: "GET", url: `/api/sessions/${created.json<{ id: string }>().id}/sandbox-status` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      sandboxCapability: "partial",
+      effectivePolicy: {
+        entries: [{ field: "readOnlyPaths", value: "/home/u/.gitconfig", source: "credential-git" }],
+        dropped: [{ field: "readOnlyPaths", value: "/home/u/.ssh", source: "credential-ssh", reason: "core cap 32" }],
+      },
+    });
   });
 });

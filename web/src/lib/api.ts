@@ -1,4 +1,4 @@
-import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, CronJobInfo, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PresetDetail, PresetSummary, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, SandboxNetwork, Session, SessionDetail, SessionSandboxStatus, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
+import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, CronJobInfo, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PermissionMode, PresetDetail, PresetSummary, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, SandboxNetwork, Session, SessionDetail, SessionSandboxStatus, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string, readonly code?: string) {
@@ -94,7 +94,7 @@ export const api = {
   session: (id: string, limit?: number) => request<SessionDetail>(`/api/sessions/${id}${limit ? `?limit=${limit}` : ""}`),
   messagesPage: (id: string, before: string, limit?: number) => request<MessagesPage>(`/api/sessions/${id}/messages?before=${encodeURIComponent(before)}${limit ? `&limit=${limit}` : ""}`),
   run: (id: string) => request<AgentRun>(`/api/sessions/${id}/run`),
-  createSession: (body: { cwd?: string; kind?: "local"; provider: string; model: string; title?: string; agentMode?: "plan" | "code" | "goal"; sandboxMode?: SandboxMode; sshCredentials?: boolean; network?: SandboxNetwork; setupScript?: string; workspaceMode?: "managed"; bindLinks?: { virtPath: string; backingPath: string; readOnly?: boolean }[]; toolsAllow?: string[]; toolsDeny?: string[]; fallbackModels?: { provider: string; model: string }[] }) =>
+  createSession: (body: { cwd?: string; kind?: "local"; provider: string; model: string; title?: string; agentMode?: "plan" | "code" | "goal"; permissionMode?: PermissionMode; sandboxMode?: SandboxMode; sshCredentials?: boolean; gitCredentials?: boolean; network?: SandboxNetwork; setupScript?: string; workspaceMode?: "managed"; bindLinks?: { virtPath: string; backingPath: string; readOnly?: boolean }[]; toolsAllow?: string[]; toolsDeny?: string[]; fallbackModels?: { provider: string; model: string }[] }) =>
     request<Session>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
   sandboxCapabilities: () => request<SandboxCapabilities>("/api/sandbox/capabilities"),
   sessionSandboxStatus: (sessionId: string) => request<SessionSandboxStatus>(`/api/sessions/${encodeURIComponent(sessionId)}/sandbox-status`),
@@ -143,7 +143,7 @@ export const api = {
   abort: (id: string) => request<{ accepted: boolean }>(`/api/sessions/${id}/abort`, { method: "POST" }),
   runShell: (id: string, cmd: string) =>
     request<{ accepted: boolean }>(`/api/sessions/${id}/shell`, { method: "POST", body: JSON.stringify({ cmd }) }),
-  respondPermission: (id: string, body: { requestId: string; decision: "allow" | "allow_always" | "deny"; reason?: string }) =>
+  respondPermission: (id: string, body: { requestId: string; decision: "allow" | "allow_always" | "allow_always_global" | "deny"; reason?: string }) =>
     request<{ accepted: boolean }>(`/api/sessions/${id}/permissions/respond`, { method: "POST", body: JSON.stringify(body) }),
   pendingPermissions: (id: string) => request<PendingPermission[]>(`/api/sessions/${id}/permissions`),
   todos: (id: string) => request<TodoItem[]>(`/api/sessions/${id}/todos`),

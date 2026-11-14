@@ -359,11 +359,11 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
       sessionMeta.upsertPermission(req);
       queryClient.invalidateQueries({ queryKey: ["permissions", event.sessionId] });
     }
-    // 模型审核（review 模式）：低风险自动通过的通知进通知流，不弹 toast
+    // 智能审核（review 模式）：模型判定低风险自动通过的通知进通知流，不弹 toast
     if (event.type === "permission.reviewed") {
       const reviewed = event.payload as { tool?: string; verdict?: string };
       if (reviewed.verdict === "low") {
-        deps.pushEventNotification(t(`${reviewed.tool ?? ""} 经模型审核自动通过`, `${reviewed.tool ?? ""} auto-approved by model review`), "info");
+        deps.pushEventNotification(t(`${reviewed.tool ?? ""} 经智能审核自动通过`, `${reviewed.tool ?? ""} auto-approved by smart review`), "info");
       }
     }
     if (event.type.startsWith("queue.") || event.type.startsWith("steering.")) {

@@ -346,16 +346,10 @@ export function App(): ReactElement {
 
   const create = useMutation({
     mutationFn: (values: NewSessionValues) => api.createSession(values),
-    onSuccess: (session, values) => {
+    onSuccess: (session, _values) => {
       ui.setNewSessionOpen(false);
       ui.selectSession(session.id);
       void queryClient.invalidateQueries({ queryKey: qk.sessions });
-      // 权限模式不在创建接口内，创建后单独应用
-      if (values.permissionMode && values.permissionMode !== "ask") {
-        api.updateSession(session.id, { permissionMode: values.permissionMode })
-          .then(() => queryClient.invalidateQueries({ queryKey: qk.session(session.id) }))
-          .catch(fail("权限模式应用失败", "Could not apply permission mode"));
-      }
     },
     onError: fail("创建会话失败", "Could not create session"),
   });

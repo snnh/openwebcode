@@ -18,6 +18,8 @@ export function PermissionCard({ permission, onDone, onError, collapsed = false,
   const [pending, setPending] = useState(false);
   // 「总是允许」需二次确认：第一次点击进入确认态，3 秒内再点才生效
   const [confirmAlways, setConfirmAlways] = useState(false);
+  // 二次确认时可选「全局」：写入服务端全局放行规则，对所有会话生效
+  const [globalAlways, setGlobalAlways] = useState(false);
   const confirmTimer = useRef<number | undefined>(undefined);
   const allowOnceRef = useRef<HTMLButtonElement>(null);
   const titleId = `permission-title-${permission.requestId}`;
@@ -33,9 +35,10 @@ export function PermissionCard({ permission, onDone, onError, collapsed = false,
   const cancelConfirm = (): void => {
     if (confirmTimer.current) window.clearTimeout(confirmTimer.current);
     setConfirmAlways(false);
+    setGlobalAlways(false);
   };
 
-  const decide = (decision: "allow" | "allow_always" | "deny"): void => {
+  const decide = (decision: "allow" | "allow_always" | "allow_always_global" | "deny"): void => {
     setPending(true);
     api.respondPermission(sessionId, { requestId: permission.requestId, decision, ...(reason ? { reason } : {}) })
       .then(() => onDone(permission.requestId))
@@ -51,8 +54,9 @@ export function PermissionCard({ permission, onDone, onError, collapsed = false,
       confirmTimer.current = window.setTimeout(() => setConfirmAlways(false), 3000);
       return;
     }
+    const decision = globalAlways ? "allow_always_global" : "allow_always";
     cancelConfirm();
-    decide("allow_always");
+    decide(decision);
   };
 
   const summary = summarizeToolInput(permission.input);
@@ -95,6 +99,12 @@ export function PermissionCard({ permission, onDone, onError, collapsed = false,
             aria-label={t("拒绝理由（可选）", "Reason for denial (optional)")}
           />
         </div>
+      )}
+      {confirmAlways && (
+        <label className="permission-global-scope">
+          <input type="checkbox" checked={globalAlways} onChange={(event) => setGlobalAlways(event.target.checked)} />
+          {t("对所有会话生效（写入全局放行规则）", "Apply to all sessions (adds a global allow rule)")}
+        </label>
       )}
       <div className="permission-actions">
         <button ref={allowOnceRef} className="btn primary" disabled={pending} onClick={() => { cancelConfirm(); decide("allow"); }}>{t("允许一次", "Allow once")}</button>

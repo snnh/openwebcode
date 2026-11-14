@@ -83,8 +83,9 @@ export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
         overrides[key] = value === true;
       } else if (field.type === "pathList") {
         const paths = String(value).split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
-        if (paths.length > 16) {
-          setError(t(`${field.label} 最多允许 16 个目录`, `${fieldLabel(field)} accepts at most 16 directories`));
+        const maxEntries = field.key.startsWith("permission") ? 32 : 16;
+        if (paths.length > maxEntries) {
+          setError(t(`${field.label} 最多允许 ${maxEntries} 项`, `${fieldLabel(field)} accepts at most ${maxEntries} entries`));
           return;
         }
         overrides[key] = paths;
@@ -162,7 +163,11 @@ export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
           className="input"
           rows={Math.max(2, Math.min(6, value.split("\n").length))}
           value={resetting ? "" : value}
-          placeholder={resetting ? t("保存后重置为空", "Reset to empty on save") : t("每行一个绝对目录", "One absolute directory per line")}
+          placeholder={resetting ? t("保存后重置为空", "Reset to empty on save") : field.key === "permissionGlobalRules"
+            ? t("每行一条，如 bash|git status", "One rule per line, e.g. bash|git status")
+            : field.key.startsWith("permission")
+              ? t("每行一个条目", "One entry per line")
+              : t("每行一个绝对目录", "One absolute directory per line")}
           disabled={disabled}
           onChange={(event) => setField(field.key, event.target.value)}
           aria-label={fieldLabel(field)}

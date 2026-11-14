@@ -19,6 +19,7 @@ import type { SnapshotMode, SessionMeta, TextContent } from "../sessions/types.j
 import type { SessionStore } from "../sessions/session-store.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { CoreClientLike } from "../core-client.js";
+import { validateSandboxRuntime } from "../sandbox/preflight.js";
 import type { SettingsService } from "../settings-service.js";
 import {
   EFFORT_LEVELS, NO_PROVIDER_MESSAGE,
@@ -197,7 +198,7 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     }
   };
   app.post<{ Body: CreateSessionBody }>("/api/sessions", async (request, reply) => {
-    // 本机会话（kind=local）：cwd 缺省解析为 HOME、沙盒强制 off；与托管工作区互斥
+    // 本机会话（kind=local）：cwd 缺省解析为 HOME；沙盒缺省 off，可显式选择本机沙盒档；与托管工作区互斥
     const isLocal = request.body?.kind === "local";
     if (request.body?.kind !== undefined && request.body.kind !== "local") {
       return reply.code(400).send({ error: 'kind must be "local"' });
@@ -223,6 +224,17 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     const model = request.body.model ?? implicitSelection?.model ?? resolveDefaultModel(provider, dependencies.models);
     const sandboxModeError = validateSandboxMode(request.body.sandboxMode);
     if (sandboxModeError) return reply.code(400).send({ error: sandboxModeError });
+    if (isLocal && request.body.sandboxMode === "wsb") {
+      return reply.code(400).send({ error: "本机会话不支持 Windows Sandbox" });
+    }
+    if (isLocal && request.body.setupScript !== undefined) {
+      return reply.code(400).send({ error: "本机会话不支持 setupScript" });
+    }
+    const effectiveCreateSandboxMode = isLocal
+      ? request.body.sandboxMode ?? "off" as const
+      : request.body.sandboxMode ?? (platform === "win32" ? "appcontainer" as const : "bubblewrap" as const);
+    const sandboxRuntimeError = await validateSandboxRuntime(effectiveCreateSandboxMode, core);
+    if (sandboxRuntimeError) return reply.code(400).send({ error: sandboxRuntimeError });
     const networkError = validateSandboxNetwork(request.body.network);
     if (networkError) return reply.code(400).send({ error: networkError });
     // filtered 依赖同 AppContainer 包内 sidecar 代理，wsb 模式下无此形态，组合拒绝
@@ -239,6 +251,9 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     if (request.body.agentMode !== undefined && !["plan", "code", "goal"].includes(request.body.agentMode)) {
       return reply.code(400).send({ error: 'agentMode must be "plan", "code", or "goal"' });
     }
+    if (request.body.permissionMode !== undefined && !["ask", "acceptEdits", "review", "yolo"].includes(request.body.permissionMode)) {
+      return reply.code(400).send({ error: "permissionMode must be ask, acceptEdits, review, or yolo" });
+    }
     const toolsAllowError = validateToolNameList(request.body.toolsAllow, "toolsAllow");
     if (toolsAllowError) return reply.code(400).send({ error: toolsAllowError });
     const toolsDenyError = validateToolNameList(request.body.toolsDeny, "toolsDeny");
@@ -253,6 +268,9 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     if (request.body.sshCredentials !== undefined && typeof request.body.sshCredentials !== "boolean") {
       return reply.code(400).send({ error: "sshCredentials must be a boolean" });
     }
+    if (request.body.gitCredentials !== undefined && typeof request.body.gitCredentials !== "boolean") {
+      return reply.code(400).send({ error: "gitCredentials must be a boolean" });
+    }
     if (request.body.workspaceMode !== undefined && request.body.workspaceMode !== "managed") {
       return reply.code(400).send({ error: 'workspaceMode must be "managed"' });
     }
@@ -264,7 +282,7 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
       provider,
       model,
       cwd,
-      ...(isLocal ? { kind: "local" as const, sandboxMode: "off" as const } : {}),
+      ...(isLocal ? { kind: "local" as const, ...(request.body.sandboxMode === undefined ? { sandboxMode: "off" as const } : {}) } : {}),
     }), provider, model);
     events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
     // SessionStart 钩子：仅通知不阻断

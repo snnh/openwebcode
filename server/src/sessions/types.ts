@@ -178,12 +178,19 @@ export interface SessionMeta {
   /** review 模式的审核模型来源；undefined = fast。 */
   reviewModel?: ReviewModel;
   permissionRules?: PermissionRule[];
+  /** 追加高危命令前缀（全局基线不可删，只能追加）；仅使权限更严。 */
+  permissionHighRiskCommands?: string[];
+  /** 追加高危工具名（精确匹配）；仅使权限更严。 */
+  permissionHighRiskTools?: string[];
   sandbox?: SandboxPolicy;
   /** 用户选择的沙盒模式；undefined = appcontainer（Windows 默认档；POSIX 未选择时不下发 mode） */
   sandboxMode?: SandboxMode;
   /** 沙盒内只读挂载 ~/.ssh（SSH 私钥）；undefined/false = 不挂载。默认关闭：只读不防外泄
-   * （沙盒命令可读私钥且网络默认 allow），git over HTTPS 凭据（.git-credentials 等）仍默认挂载。 */
+   * （沙盒命令可读私钥且网络默认 allow）。 */
   sshCredentials?: boolean;
+  /** 沙盒内只读挂载 git/gh 令牌文件（.git-credentials / .config/git/credentials / .config/gh）；
+   * undefined/false = 不挂载。默认关闭：只读不防令牌经网络外发；身份配置 .gitconfig 仍默认挂载。 */
+  gitCredentials?: boolean;
   /** WSB 会话初始化脚本，内联进 .wsb LogonCommand，先于 owc-exec 执行 */
   setupScript?: string;
   /** 探测到的快照后端名（zfs 附带数据集："zfs:<dataset>"），由 snapshots/index.ts 落盘 */

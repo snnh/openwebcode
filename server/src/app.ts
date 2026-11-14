@@ -451,6 +451,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       const wsb = detectWsb();
       if (!wsb.available) return `sandboxMode wsb 不可用：${wsb.reason ?? "Windows Sandbox 不可用"}`;
     }
+    // Landlock 无法约束 denyPaths；信任项目执行配置时，.owc/hooks.json 可被沙盒命令覆写并由宿主执行。
+    if (value === "landlock" && dependencies.settings?.effective().trustProjectExecConfig) {
+      return "sandboxMode landlock 与“信任项目级执行配置”不兼容：请改用 bubblewrap，或关闭该信任设置";
+    }
     return undefined;
   };
   /** sandbox.network 校验：filtered 仅 Windows 接受（core 侧 Job Object 网络过滤）；合法或缺省返回 undefined */

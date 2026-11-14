@@ -59,6 +59,7 @@ import type { JobObjectLimits, NodeEnv, PythonEnv, SandboxPolicy, SessionMeta } 
 import { effectiveNodeEnv, nodeToolchainReadOnlyPaths, nodeToolchainWritePaths, type NodeToolchainMountDeps } from "../node-env.js";
 import { effectivePythonEnv, pythonEnvWritePaths } from "../python-env.js";
 import type { FilteredProxyManager } from "./filtered-proxy.js";
+import { buildEffectiveSandboxPolicy, type EffectiveSandboxPolicy } from "./effective-policy.js";
 import { WSB_WORKSPACE_MOUNT, type WsbManager } from "./wsb.js";
 
 /**
@@ -82,23 +83,81 @@ function effectiveSandboxMode(meta: SessionMeta | undefined, platform: NodeJS.Pl
   return meta?.sandboxMode ?? (platform === "win32" ? "appcontainer" : undefined);
 }
 
+function sameList(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/** sandbox 是否就是内置默认策略（仅用于来源标注；显式写成同值也按默认展示，不影响执行）。 */
+function isBuiltInDefaultPolicy(sandbox: SandboxPolicy, cwd: string | undefined): boolean {
+  if (!cwd) return false;
+  const base = defaultSandboxPolicy(cwd);
+  return sandbox.enabled === base.enabled
+    && sandbox.network === base.network
+    && sameList(sandbox.readRoots, base.readRoots)
+    && sameList(sandbox.writeRoots, base.writeRoots)
+    && sameList(sandbox.denyPaths, base.denyPaths)
+    && (sandbox.allowPaths?.length ?? 0) === 0
+    && (sandbox.readOnlyPaths?.length ?? 0) === 0
+    && (sandbox.bindLinks?.length ?? 0) === 0;
+}
+
+/** 凭据候选目录（按类别）：身份/配置恒选；令牌与 .ssh 由会话显式开启。 */
+interface GitCredentialCandidates {
+  identity: string[];
+  tokens: string[];
+  ssh: string[];
+}
+
+function gitCredentialCandidates(
+  platform: NodeJS.Platform = process.platform,
+  home: string = os.homedir(),
+  mode: SessionMeta["sandboxMode"] | undefined = undefined,
+  sshCredentials = false,
+  gitCredentials = false,
+): GitCredentialCandidates {
+  if (platform === "win32" && (mode ?? "appcontainer") !== "appcontainer") return { identity: [], tokens: [], ssh: [] };
+  if (!home) return { identity: [], tokens: [], ssh: [] };
+  const existing = (rel: string): string | undefined => {
+    const candidate = path.join(home, rel);
+    return existsSync(candidate) ? candidate : undefined;
+  };
+  const identity = [".gitconfig", ".config/git/config", ".config/git/ignore", ".config/git/attributes"]
+    .map(existing).filter((value): value is string => value !== undefined);
+  const tokens = gitCredentials
+    ? [".git-credentials", ".config/git/credentials", ".config/gh"]
+      .map(existing).filter((value): value is string => value !== undefined)
+    : [];
+  const ssh = sshCredentials
+    ? [".ssh"].map(existing).filter((value): value is string => value !== undefined)
+    : [];
+  return { identity, tokens, ssh };
+}
+
 /**
  * Git/GitHub 凭据只读放行：bwrap/Landlock/AppContainer 沙盒只挂载会话工作区，宿主 $HOME
  * 不可见，沙盒内 git push / gh 因取不到凭据而挂起交互提示（表现为命令卡死）。
- * 把标准凭据路径并入 readOnlyPaths：沙盒内进程只读可见；fs.* 工具的路径策略不含
- * readOnlyPaths，工具层读不到凭据内容。Windows 仅 AppContainer 档（含缺省）追加——
- * Job Object 无文件系统隔离（凭据本就可读），追加只会挤占槽位；off/wsb 由 policyFor
- * 提前返回，与这里的判断无交集。core 侧 readOnlyPaths 上限 32：用户配置优先，凭据按序补到满为止（尽力而为）。
+ *
+ * 默认只挂身份/配置（.gitconfig、.config/git/config|ignore|attributes），不挂可含明文令牌的
+ * .git-credentials、.config/git/credentials、.config/gh；后者由会话级 gitCredentials 显式开启。
+ * .ssh 含 SSH 私钥，仍由 sshCredentials 单独 opt-in。
+ * 沙盒内进程只读可见；fs.* 工具的路径策略不含 readOnlyPaths，工具层读不到凭据内容。
+ * Windows 仅 AppContainer 档（含缺省）追加——Job Object 无文件系统隔离（凭据本就可读），
+ * 追加只会挤占槽位；off/wsb 由 policyFor 提前返回，与这里的判断无交集。
+ * core 侧 readOnlyPaths 上限 32：用户配置优先，凭据按序补到满为止（尽力而为）。
  */
-export function gitCredentialReadOnlyPaths(existing: string[] | undefined, platform: NodeJS.Platform = process.platform, home: string = os.homedir(), mode: SessionMeta["sandboxMode"] | undefined = undefined, includeSsh = false): string[] {
+export function gitCredentialReadOnlyPaths(
+  existing: string[] | undefined,
+  platform: NodeJS.Platform = process.platform,
+  home: string = os.homedir(),
+  mode: SessionMeta["sandboxMode"] | undefined = undefined,
+  sshCredentials = false,
+  gitCredentials = false,
+): string[] {
   const merged = [...(existing ?? [])];
-  if (platform === "win32" && (mode ?? "appcontainer") !== "appcontainer") return merged;
-  if (!home) return merged;
-  // .ssh 含 SSH 私钥：只读挂载不防外泄（沙盒网络默认 allow），改为会话级显式 opt-in；
-  // git over HTTPS 凭据维持默认挂载（git push/gh 是高频合法需求，缺失会挂起交互提示）。
-  const candidates = [".gitconfig", ".git-credentials", ".config/git", ".config/gh", ...(includeSsh ? [".ssh"] : [])]
-    .map((rel) => path.join(home, rel))
-    .filter((candidate) => existsSync(candidate));
+  const credentials = gitCredentialCandidates(platform, home, mode, sshCredentials, gitCredentials);
+  const candidates = [...credentials.identity, ...credentials.tokens, ...credentials.ssh];
   for (const candidate of candidates) {
     if (merged.length >= 32) break;
     if (!merged.includes(candidate)) merged.push(candidate);
@@ -164,6 +223,8 @@ export class CoreRouter extends EventEmitter {
   /** 全局默认 pythonEnv（同上）；数据目录用于 uv-config 的 venv 挂载目录计算。 */
   private pythonEnvDefault?: () => PythonEnv | undefined;
   private dataDir: string | undefined;
+  /** 项目级执行配置信任开关（settings 热生效）：Landlock 无法约束 denyPaths，二者互斥。 */
+  private trustProjectExecConfig?: () => boolean;
   /** 长命令执行并发（settings 热生效）：共享 core 与 WSB core 都套用。 */
   private execConcurrency = 2;
 
@@ -188,34 +249,22 @@ export class CoreRouter extends EventEmitter {
     this.nodeEnvDefault = getter;
   }
 
+  /** 注入项目级执行配置信任开关；landlock + trust 组合会在配置期拒绝。 */
+  setTrustProjectExecConfig(getter: () => boolean): void {
+    this.trustProjectExecConfig = getter;
+  }
+
+  private assertSandboxTrustCompatible(meta: SessionMeta | undefined): void {
+    if (effectiveSandboxMode(meta, this.platform) !== "landlock" || !this.trustProjectExecConfig?.()) return;
+    throw new Error("sandboxMode landlock 与“信任项目级执行配置”不兼容：Landlock 无法约束 denyPaths，沙盒命令可覆写 .owc/hooks.json 并由宿主执行。请改用 bubblewrap，或关闭该信任设置。");
+  }
+
   /** 注入全局默认 pythonEnv 解析器与数据目录（与 AgentRunner.setPythonEnvDefault 同源）。 */
   setPythonEnvDefault(getter: () => PythonEnv | undefined, dataDir?: string): void {
     this.pythonEnvDefault = getter;
     this.dataDir = dataDir;
   }
 
-  /**
-   * 按生效 nodeEnv/pythonEnv 并入工具链挂载（会话值 > 全局默认 > global）：
-   * global node → readOnlyPaths（只读层，保持现状）；fnm/nvm 与 uv-config venv →
-   * allowPaths（读写层，严格限定环境自身目录）。wsb/off 由 policyFor 关沙盒，挂载表被 core 忽略。
-   * Windows 仅 AppContainer 档（含缺省）需要挂载：用户 profile 对沙盒不可见，fnm/nvm 等
-   * 装在其下；jobobject 无文件隔离、off/wsb 沙盒关闭，挂载无意义。
-   */
-  private withToolchainMounts(meta: SessionMeta | undefined, sandbox: SandboxPolicy): SandboxPolicy {
-    if (this.platform === "win32" && effectiveSandboxMode(meta, this.platform) !== "appcontainer") return sandbox;
-    const nodeMode = effectiveNodeEnv(meta?.nodeEnv, this.nodeEnvDefault?.());
-    const pythonMode = effectivePythonEnv(meta?.pythonEnv, this.pythonEnvDefault?.());
-    let next = sandbox;
-    const readOnly = nodeEnvReadOnlyPaths(next.readOnlyPaths, nodeMode, this.platform);
-    if (readOnly.length > (next.readOnlyPaths?.length ?? 0)) next = { ...next, readOnlyPaths: readOnly };
-    const writeDirs = [
-      ...nodeToolchainWritePaths(nodeMode, { platform: this.platform }),
-      ...pythonEnvWritePaths(pythonMode, meta?.cwd, this.dataDir, this.platform),
-    ];
-    const writable = toolchainWritePaths(next.allowPaths, writeDirs);
-    if (writable.length > (next.allowPaths?.length ?? 0)) next = { ...next, allowPaths: writable };
-    return next;
-  }
   /**
    * Core keeps session policy in process memory. Remember the desired host-side
    * request and which concrete client currently has it, so a restarted shared
@@ -234,6 +283,8 @@ export class CoreRouter extends EventEmitter {
   private readonly ptySessions = new Map<number, string>();
   /** sessionId → 最近一次 configureSession 成功后 core 上报的执行级别（REST 透出用）。 */
   private readonly sandboxStatus = new Map<string, { capability: string; reason?: string; at: number }>();
+  /** sessionId → 最近一次成功下发的有效策略与来源/丢弃项（REST/UI 透出用）。 */
+  private readonly effectivePolicies = new Map<string, EffectiveSandboxPolicy>();
 
   constructor(
     private readonly shared: CoreClientLike,
@@ -282,31 +333,18 @@ export class CoreRouter extends EventEmitter {
 
   /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；缺省不下发 mode（core 缺省即 AppContainer：Windows 默认档；POSIX core 自选默认后端，避免 UI 展示 Windows 标签）；appcontainer/jobobject/bubblewrap 显式选择原样下发；jobObject 限制仅随启用路径下发 */
   static policyFor(meta: SessionMeta | undefined, sandbox: SandboxPolicy, jobObject?: JobObjectLimits, allowPaths?: string[], platform: NodeJS.Platform = process.platform): SandboxPolicy {
-    const mode = meta?.sandboxMode;
-    // wsb 会话在 VM 内的 core 上配置：宿主侧 bindLinks 路径在 guest 无效，剥离（创建 REST 已拒绝 wsb+bindLinks，此为切换模式后的防御）
-    if (mode === "wsb") {
-      const { bindLinks: _stripped, ...rest } = sandbox;
-      return { ...rest, enabled: false };
-    }
-    if (mode === "off") return { ...sandbox, enabled: false };
-    const limits = {
-      ...(allowPaths && allowPaths.length > 0 ? { allowPaths } : {}),
-      // 显式 per-call 限制优先：全局设置只补缺省，不能放宽 chat Python 等
-      // 调用方自带的更严格上限。
-      ...(sandbox.jobMemoryMB === undefined && jobObject?.memoryMB !== undefined ? { jobMemoryMB: jobObject.memoryMB } : {}),
-      ...(sandbox.jobMaxProcesses === undefined && jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
-    };
-    // 凭据放行按生效模式：POSIX 恒追加；Windows 仅 AppContainer 档（含缺省）追加，显式 jobobject 跳过；
-    // ~/.ssh 另需会话显式开启（sshCredentials，见 gitCredentialReadOnlyPaths）
-    const credentials = gitCredentialReadOnlyPaths(sandbox.readOnlyPaths, platform, os.homedir(), effectiveSandboxMode(meta, platform), meta?.sshCredentials === true);
-    const withCredentials = credentials.length > 0 ? { readOnlyPaths: credentials } : {};
-    if (mode === "appcontainer") return { ...sandbox, ...withCredentials, ...limits, mode: "appcontainer" };
-    // bubblewrap 显式下发（POSIX 专用；Windows 上的取值由 REST 校验拦截，这里不防御）
-    if (mode === "bubblewrap") return { ...sandbox, ...withCredentials, ...limits, mode: "bubblewrap" };
-    // landlock 与两平台缺省都不下发 mode：core 缺省即 AppContainer（Windows 默认档）/
-    // POSIX 默认后端；显式选择（含持久化里已存的 jobobject）原样下发
-    if (mode === "jobobject") return { ...sandbox, ...withCredentials, ...limits, mode: "jobobject" };
-    return { ...sandbox, ...withCredentials, ...limits };
+    const mountMode = effectiveSandboxMode(meta, platform);
+    return buildEffectiveSandboxPolicy({
+      sandbox,
+      ...(meta?.sandboxMode !== undefined ? { mode: meta.sandboxMode } : {}),
+      platform,
+      baseSource: "session",
+      ...(allowPaths ? { globalAllowPaths: allowPaths } : {}),
+      ...(jobObject ? { jobObject } : {}),
+      credentials: gitCredentialCandidates(platform, os.homedir(), mountMode, meta?.sshCredentials === true, meta?.gitCredentials === true),
+      toolchainReadOnly: [],
+      toolchainWrite: { node: [], python: [] },
+    }).policy;
   }
 
   private async metaFor(sessionId: string): Promise<SessionMeta | undefined> {
@@ -329,12 +367,52 @@ export class CoreRouter extends EventEmitter {
   }
 
   /**
+   * 计算会话有效策略：默认/会话层 + 全局层 + 凭据/工具链候选，统一交给
+   * effective-policy builder 合并、去重、截断并标注来源。模式字段仍按
+   * meta.sandboxMode 下发（win32 缺省 appcontainer 不下发 mode），凭据/工具链
+   * 门禁按 effectiveSandboxMode 判定。
+   */
+  effectivePolicyFor(meta: SessionMeta | undefined, sandbox: SandboxPolicy): EffectiveSandboxPolicy {
+    this.assertSandboxTrustCompatible(meta);
+    const dispatchedMode = meta?.sandboxMode;
+    const mountMode = effectiveSandboxMode(meta, this.platform);
+    const includeToolchain = !(this.platform === "win32" && mountMode !== "appcontainer");
+    const nodeMode = effectiveNodeEnv(meta?.nodeEnv, this.nodeEnvDefault?.());
+    const pythonMode = effectivePythonEnv(meta?.pythonEnv, this.pythonEnvDefault?.());
+    const credentials = gitCredentialCandidates(
+      this.platform,
+      os.homedir(),
+      mountMode,
+      meta?.sshCredentials === true,
+      meta?.gitCredentials === true,
+    );
+    const toolchainReadOnly = includeToolchain ? nodeToolchainReadOnlyPaths(nodeMode, { platform: this.platform }) : [];
+    const toolchainWrite = includeToolchain
+      ? {
+        node: nodeToolchainWritePaths(nodeMode, { platform: this.platform }),
+        python: pythonEnvWritePaths(pythonMode, meta?.cwd, this.dataDir, this.platform),
+      }
+      : { node: [], python: [] };
+    return buildEffectiveSandboxPolicy({
+      sandbox,
+      ...(dispatchedMode !== undefined ? { mode: dispatchedMode } : {}),
+      platform: this.platform,
+      baseSource: isBuiltInDefaultPolicy(sandbox, meta?.cwd) ? "default" : "session",
+      ...(this.allowPaths ? { globalAllowPaths: this.allowPaths } : {}),
+      ...(this.jobObject ? { jobObject: this.jobObject } : {}),
+      credentials,
+      toolchainReadOnly,
+      toolchainWrite,
+    });
+  }
+
+  /**
    * 为独立 core 客户端（后台任务等）计算与共享 core 一致的有效策略：
-   * 含 policyFor 的 off/wsb/资源限制与工具链挂载。filtered sidecar 依赖
+   * 含 off/wsb/资源限制、凭据与工具链挂载。filtered sidecar 依赖
    * 共享 core 的代理编排，不在此方法覆盖范围。
    */
   policyForClient(meta: SessionMeta | undefined, sandbox: SandboxPolicy): SandboxPolicy {
-    return this.withToolchainMounts(meta, CoreRouter.policyFor(meta, sandbox, this.jobObject, this.allowPaths, this.platform));
+    return this.effectivePolicyFor(meta, sandbox).policy;
   }
 
   private async configureClient(
@@ -342,14 +420,16 @@ export class CoreRouter extends EventEmitter {
     meta: SessionMeta | undefined,
     request: { sessionId: string; cwd: string; sandbox: SandboxPolicy },
   ): Promise<void> {
+    this.assertSandboxTrustCompatible(meta);
     // A tool may arrive during CoreClient's short exponential-restart delay.
     // start() is idempotent and either joins the live handshake or starts it
     // immediately, so do not leak a transient "Core is not running" failure.
     await client.start();
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    const routed = CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform);
-    const result = await this.configureWithFiltered(client, request.sessionId, cwd, this.withToolchainMounts(meta, routed));
-    // 重放配置（core 重启后）同样刷新执行级别透出，避免 /sandbox-status 陈旧
+    const effective = this.effectivePolicyFor(meta, request.sandbox);
+    const result = await this.configureWithFiltered(client, request.sessionId, cwd, effective.policy);
+    // 重放配置（core 重启后）同样刷新执行级别与有效策略透出，避免 /sandbox-status 陈旧
+    this.effectivePolicies.set(request.sessionId, effective);
     this.sandboxStatus.set(request.sessionId, { capability: result.sandboxCapability, ...(result.sandboxReason !== undefined ? { reason: result.sandboxReason } : {}), at: Date.now() });
     this.configuredClients.set(request.sessionId, client);
   }
@@ -410,6 +490,7 @@ export class CoreRouter extends EventEmitter {
     this.configuring.clear();
     this.ptyOwners.clear();
     this.sandboxStatus.clear();
+    this.effectivePolicies.clear();
   }
 
   ping(): Promise<CoreInfo> {
@@ -455,16 +536,19 @@ export class CoreRouter extends EventEmitter {
     this.configuredClients.delete(sessionId);
     this.configuring.delete(sessionId);
     this.sandboxStatus.delete(sessionId);
+    this.effectivePolicies.delete(sessionId);
     if (this.filteredProxy) await this.filteredProxy.releaseProxy(this.shared, sessionId).catch(() => undefined);
     await this.wsb.release(sessionId);
   }
 
   async configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string; sandboxReason?: string }> {
     const { client, meta } = await this.clientFor(request.sessionId);
+    this.assertSandboxTrustCompatible(meta);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    const routed = CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform);
-    const result = await this.configureWithFiltered(client, request.sessionId, cwd, this.withToolchainMounts(meta, routed));
+    const effective = this.effectivePolicyFor(meta, request.sandbox);
+    const result = await this.configureWithFiltered(client, request.sessionId, cwd, effective.policy);
     this.desiredConfigs.set(request.sessionId, request);
+    this.effectivePolicies.set(request.sessionId, effective);
     this.configuredClients.set(request.sessionId, client);
     this.sandboxStatus.set(request.sessionId, { capability: result.sandboxCapability, ...(result.sandboxReason !== undefined ? { reason: result.sandboxReason } : {}), at: Date.now() });
     return result;
@@ -480,6 +564,11 @@ export class CoreRouter extends EventEmitter {
     return this.sandboxStatus.get(sessionId);
   }
 
+  /** 最近一次成功下发的有效策略（含来源与因 core 上限被丢弃的项）；未配置/已释放返回 undefined。 */
+  effectivePolicyForSession(sessionId: string): EffectiveSandboxPolicy | undefined {
+    return this.effectivePolicies.get(sessionId);
+  }
+
   async cleanupSession(sessionId: string): Promise<{ ok: true }> {
     const meta = await this.metaFor(sessionId);
     if (meta?.sandboxMode === "wsb") {
@@ -491,6 +580,7 @@ export class CoreRouter extends EventEmitter {
       this.configuredClients.delete(sessionId);
       this.configuring.delete(sessionId);
       this.sandboxStatus.delete(sessionId);
+      this.effectivePolicies.delete(sessionId);
       return { ok: true };
     }
     // filtered sidecar 随会话清理回收（cancel job + 删 deny 文件，best effort）
@@ -501,6 +591,7 @@ export class CoreRouter extends EventEmitter {
     this.configuredClients.delete(sessionId);
     this.configuring.delete(sessionId);
     this.sandboxStatus.delete(sessionId);
+    this.effectivePolicies.delete(sessionId);
     return result;
   }
 

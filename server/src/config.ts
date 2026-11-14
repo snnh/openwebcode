@@ -71,6 +71,10 @@ export interface ServerConfig {
   nodeEnv: NodeEnv;
   /** 项目级执行入口配置（.owc/hooks.json / .owc/mcp.json）是否读取；默认 false（不信任）。 */
   trustProjectExecConfig: boolean;
+  /** 全局放行规则（设置 permissionGlobalRules / OWC_PERMISSION_GLOBAL_RULES，热生效）：应用于所有会话。 */
+  permissionGlobalRules?: Array<{ tool: string; argumentPrefix?: string }>;
+  /** 全局追加高危项（设置 permissionHighRiskCommands/Tools）：命中后强制人工确认（yolo 除外）。 */
+  permissionHighRisk?: { commands?: string[]; tools?: string[] };
   exchangeRate: {
     url?: string;
     timeoutMs: number;

@@ -616,3 +616,7 @@
   from { opacity: 0; transform: translateY(4px); }
 }
 html[data-motion="reduced"] .bottom-panel.open .panel-content { animation: none; }
+
+/* 沙盒面板：有效策略来源列表（右对齐、等宽，仅展示自动挂载/全局项） */
+.sandbox-policy-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.sandbox-policy-list li { white-space: normal; overflow-wrap: anywhere; }

@@ -20,15 +20,18 @@ import type { ServerDependencies } from "../app.js";
 export interface CreateSessionBody {
   /** cwd 必填；kind === "local"（本机会话）时忽略——由 server 解析为 HOME。 */
   cwd: string;
-  /** 会话类型；缺省常规。"local" = 本机会话：cwd=HOME、sandboxMode 强制 off，不经沙盒。 */
+  /** 会话类型；缺省常规。"local" = 本机会话：cwd=HOME，沙盒缺省 off、可显式选择本机沙盒档。 */
   kind?: "local";
   provider?: string;
   model?: string;
   title?: string;
   agentMode?: "plan" | "code" | "goal";
+  permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
   /** 沙盒内只读挂载 ~/.ssh（SSH push 需要）；缺省不挂载（只读不防外泄，需显式开启）。 */
   sshCredentials?: boolean;
+  /** 沙盒内只读挂载 .git-credentials / .config/git/credentials / .config/gh；缺省不挂载。 */
+  gitCredentials?: boolean;
   /** 会话网络策略（缺省 allow；filtered 仅 Windows） */
   network?: SandboxNetwork;
   setupScript?: string;
@@ -70,6 +73,8 @@ export interface SessionConfigBody {
   sandboxMode?: SandboxMode;
   /** 沙盒 ~/.ssh 只读挂载开关补丁；仅显式提供时更新。 */
   sshCredentials?: boolean;
+  /** 沙盒 git/gh 令牌只读挂载开关补丁；仅显式提供时更新。 */
+  gitCredentials?: boolean;
   /** 会话网络策略补丁（仅显式提供时更新；filtered 仅 Windows）。 */
   network?: SandboxNetwork;
   setupScript?: string;

@@ -20,12 +20,31 @@ export interface SandboxCapabilities {
   bindLink: { available: boolean; reason?: string };
   /** bubblewrap 可用性（POSIX；旧 core 二进制不上报时 server 按不可用返回）。 */
   bwrap?: { available: boolean; reason?: string };
+  /** Landlock 可用性（Linux；旧 core 二进制不上报时 server 按不可用返回）。 */
+  landlock?: { available: boolean; reason?: string };
+}
+
+/** 有效策略中的一项：最终值 + 来源（default/session/global/credential-\* / toolchain-\*）。 */
+export interface EffectiveSandboxPolicyEntry {
+  field: string;
+  value: string;
+  source: string;
+}
+
+/** 因 core 上限（如 readOnlyPaths 32）未下发的自动挂载项。 */
+export interface DroppedSandboxPolicyEntry extends EffectiveSandboxPolicyEntry {
+  reason: string;
 }
 
 /** GET /api/sessions/:id/sandbox-status：最近一次 configureSession 时 core 上报的执行级别；无记录返回 {}。 */
 export interface SessionSandboxStatus {
   sandboxCapability?: SandboxCapability;
   sandboxReason?: string;
+  /** 最近一次成功下发的有效策略来源与未生效项（未配置时缺省）。 */
+  effectivePolicy?: {
+    entries: EffectiveSandboxPolicyEntry[];
+    dropped: DroppedSandboxPolicyEntry[];
+  };
 }
 
 /** 托管工作区平台能力（GET /api/managed-workspace/capability） */

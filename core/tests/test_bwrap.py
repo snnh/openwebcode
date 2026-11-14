@@ -98,6 +98,11 @@ def main_bwrap():
         assert set(bwrap) == {"available", "reason"}, bwrap
         assert isinstance(bwrap["available"], bool), bwrap
         assert isinstance(bwrap["reason"], str) and bwrap["reason"], bwrap
+        landlock = response["result"]["features"].get("landlock")
+        assert isinstance(landlock, dict), response["result"]["features"]
+        assert set(landlock) == {"available", "reason"}, landlock
+        assert isinstance(landlock["available"], bool), landlock
+        assert isinstance(landlock["reason"], str) and landlock["reason"], landlock
 
         workspace = tempfile.mkdtemp(prefix="owc-bwrap-workspace-")
         try:
@@ -105,6 +110,8 @@ def main_bwrap():
                 # The POSIX-only mode values are rejected on Windows builds.
                 assert bwrap["available"] is False, bwrap
                 assert "only available on Linux" in bwrap["reason"], bwrap
+                assert landlock["available"] is False, landlock
+                assert "only available on Linux" in landlock["reason"], landlock
                 response = configure(proc, 2, workspace, {"enabled": True, "mode": "landlock"})
                 assert_error(response, -32602, "landlock")
                 response = configure(proc, 3, workspace, {"enabled": True, "mode": "bubblewrap"})

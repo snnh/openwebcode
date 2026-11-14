@@ -12,6 +12,7 @@ import {
   type SessionConfigBody, type BudgetBody,
 } from "./route-context.js";
 import type { RouteContext } from "./route-context.js";
+import { validateSandboxRuntime } from "../sandbox/preflight.js";
 
 export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteContext): void {
   const { dependencies } = ctx;
@@ -127,6 +128,11 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     if (sshCredentials !== undefined && typeof sshCredentials !== "boolean") {
       return reply.code(400).send({ error: "sshCredentials must be a boolean" });
     }
+    // git/gh 令牌沙盒只读挂载开关：默认关闭，显式 true 才挂载
+    const gitCredentials = request.body && "gitCredentials" in request.body ? request.body.gitCredentials ?? undefined : session.gitCredentials;
+    if (gitCredentials !== undefined && typeof gitCredentials !== "boolean") {
+      return reply.code(400).send({ error: "gitCredentials must be a boolean" });
+    }
     // 会话级工具白名单/黑名单：缺省保持不变；null 或空数组清除；未知名静默忽略（过滤时无效果）
     const toolsAllow = request.body && "toolsAllow" in request.body ? request.body.toolsAllow ?? undefined : session.toolsAllow;
     const toolsAllowError = validateToolNameList(toolsAllow, "toolsAllow");
@@ -161,15 +167,19 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     }
     const touchesSandbox = Boolean(request.body && ("sandboxMode" in request.body || "setupScript" in request.body));
     if (touchesSandbox) {
-      // 本机会话（kind=local）固定 off：切换沙盒模式或注入 setupScript 会破坏
-      // "直跑宿主机 + HOME 外路径审批门" 的语义，直接拒绝
-      if (session.kind === "local") {
-        return reply.code(400).send({ error: "本机会话固定为 off 沙盒模式（命令直接在本机执行），不能切换沙盒" });
-      }
       const sandboxModeError = validateSandboxMode(request.body?.sandboxMode);
       if (sandboxModeError) return reply.code(400).send({ error: sandboxModeError });
+      if (request.body?.sandboxMode !== undefined) {
+        const sandboxRuntimeError = await validateSandboxRuntime(request.body.sandboxMode, core);
+        if (sandboxRuntimeError) return reply.code(400).send({ error: sandboxRuntimeError });
+      }
       if (request.body?.setupScript !== undefined && typeof request.body.setupScript !== "string") {
         return reply.code(400).send({ error: "setupScript must be a string" });
+      }
+      // 本机会话可主动切沙盒（fs/命令根随之收敛到 HOME）；WSB 的 VM 挂载语义不适用于 HOME。
+      if (session.kind === "local") {
+        if (request.body?.sandboxMode === "wsb") return reply.code(400).send({ error: "本机会话不支持 Windows Sandbox" });
+        if (request.body?.setupScript !== undefined) return reply.code(400).send({ error: "本机会话不支持 setupScript" });
       }
     }
     // 网络策略补丁独立于 sandboxMode（network-only 更新不清除既有 sandboxMode）
@@ -187,7 +197,7 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     // 沙盒策略或 python/node 运行环境变更需要回收持久 shell（pty 在旧沙盒策略下打开、
     // 环境激活命令只在建壳时注入一次）。遇在途 shell 命令（!cmd 执行中/等审批）默认 409，
     // 由前端二次确认后带 force:true 重发；强制路径回收时让在途命令立即报错结算。
-    const recycleShells = touchesSandbox || sandboxNetwork !== undefined || pythonEnv !== session.pythonEnv || nodeEnv !== session.nodeEnv || Boolean(sshCredentials) !== Boolean(session.sshCredentials);
+    const recycleShells = touchesSandbox || sandboxNetwork !== undefined || pythonEnv !== session.pythonEnv || nodeEnv !== session.nodeEnv || Boolean(sshCredentials) !== Boolean(session.sshCredentials) || Boolean(gitCredentials) !== Boolean(session.gitCredentials);
     if (request.body?.force !== undefined && typeof request.body.force !== "boolean") {
       return reply.code(400).send({ error: "force must be a boolean" });
     }
@@ -198,7 +208,7 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
       // WSB 的启动脚本/模式/网络只在虚拟机启动时生效，切换前先释放旧实例。
       await core.release?.(session.id);
     }
-    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(nodeEnv ? { nodeEnv } : {}), ...(preset !== undefined ? { preset: preset.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(sshCredentials === true ? { sshCredentials: true } : {}), ...(reviewModel ? { reviewModel } : {}), ...(toolsAllow?.length ? { toolsAllow } : {}), ...(toolsDeny?.length ? { toolsDeny } : {}), ...(fallbackModels?.length ? { fallbackModels } : {}) });
+    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(nodeEnv ? { nodeEnv } : {}), ...(preset !== undefined ? { preset: preset.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(sshCredentials === true ? { sshCredentials: true } : {}), ...(gitCredentials === true ? { gitCredentials: true } : {}), ...(reviewModel ? { reviewModel } : {}), ...(toolsAllow?.length ? { toolsAllow } : {}), ...(toolsDeny?.length ? { toolsDeny } : {}), ...(fallbackModels?.length ? { fallbackModels } : {}) });
     // 运行中热切主模型：主循环每 turn 现读会话配置，但 fallback 覆盖会遮蔽新主模型，
     // 这里打标让下一轮先丢弃覆盖（见 AgentRunner.resetModelFallbackOverride）。
     // 仅模型/provider 变化触发；只改 thinking/effort 时保留在途的 fallback 覆盖。
@@ -221,8 +231,8 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     }
     // nodeEnv 变化会改变与选择绑定的沙盒工具链挂载（readOnlyPaths）：下次工具调用需重新 configure
     if (nodeEnv !== session.nodeEnv) configuredSessions.delete(session.id);
-    // sshCredentials 变化会改变 ~/.ssh 只读挂载：下次工具调用需重新 configure
-    if (Boolean(sshCredentials) !== Boolean(session.sshCredentials)) configuredSessions.delete(session.id);
+    // sshCredentials / gitCredentials 变化会改变 HOME 只读挂载：下次工具调用需重新 configure
+    if (Boolean(sshCredentials) !== Boolean(session.sshCredentials) || Boolean(gitCredentials) !== Boolean(session.gitCredentials)) configuredSessions.delete(session.id);
     // 沙盒策略或 python/node 运行环境变更：回收该会话的持久 shell（下条 bash 透明重建，
     // 按新策略开壳并激活新环境，uv venv 懒创建也在此时触发）。在途命令已被上方守卫拦截，
     // force 路径由 disposeSession 立即报错结算。测试注入的简版 agent 可能未实现该方法。
@@ -238,8 +248,13 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
     const status = core.sandboxStatusFor?.(request.params.id);
+    const effective = core.effectivePolicyForSession?.(request.params.id);
     if (!status) return {};
-    return { sandboxCapability: status.capability, ...(status.reason !== undefined ? { sandboxReason: status.reason } : {}) };
+    return {
+      sandboxCapability: status.capability,
+      ...(status.reason !== undefined ? { sandboxReason: status.reason } : {}),
+      ...(effective ? { effectivePolicy: { entries: effective.entries, dropped: effective.dropped } } : {}),
+    };
   });
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/context", async (request, reply) => {

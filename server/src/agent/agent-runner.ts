@@ -28,7 +28,10 @@ import type { Provider, ProviderRegistry, ProviderTool, ProviderEvent } from "..
 import { ProviderError } from "../providers/provider-error.js";
 import { collectProviderTurn } from "../providers/retry.js";
 import { recordToolCallId, type ToolCallIdRegistry } from "../providers/shared.js";
-import { PermissionCoordinator, permissionRule, matchesRule, type PermissionDecision } from "./permission-coordinator.js";
+import { PermissionCoordinator, type PermissionDecision } from "./permission-coordinator.js";
+import { executionClassForTool, permissionRule, matchesRule, isLocalPathGatedTool, mergePermissionRules } from "./tool-policy.js";
+import type { BashSandboxContext } from "./bash-risk.js";
+import { decidePermission, planGateDecision } from "./permission-engine.js";
 import { buildReviewMessages, completeWithProvider, parseVerdict, type ReviewOutcome } from "./permission-review.js";
 import type { FastModelClient } from "../fast-model.js";
 import {
@@ -65,10 +68,6 @@ import type { CronScheduler } from "../cron-scheduler.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import { ToolAliasResolver, normalizeBuiltinToolInput } from "./tool-alias.js";
 
-/** 本机会话（kind=local）路径门覆盖的文件工具：HOME 外路径需人工允许或命中 allow 规则。
- * 由 FILE_TOOLS 派生 + read_media（本地路径读媒体与 read_file 同门；http(s) URL 在门内特判放行，
- * URL 安全由 media-fetch 的 SSRF 链负责）。 */
-const LOCAL_PATH_GATED_TOOLS = new Set([...FILE_TOOLS.map((tool) => tool.name), "read_media"]);
 import { digestSwarmBoard, SWARM_BOARD_EXCERPT_LIMIT, swarmBoardPath, writeSwarmRoster, type SwarmRosterMember } from "./swarm-board.js";
 import type { ChatMessage, MessageContent, NodeEnv, PythonEnv, SessionMeta, WebSearchCallContent } from "../sessions/types.js";
 import { replaceThinkingBlockById } from "../providers/thinking-merge.js";
@@ -578,19 +577,6 @@ function builtInTools(options: {
     ...(options.cronEnabled ? [CRON_CREATE_TOOL, CRON_LIST_TOOL, CRON_DELETE_TOOL] : []),
   ];
 }
-
-/** Scheduling metadata is product-side only; Provider schemas remain unchanged. */
-type ToolExecutionClass = "read_only" | "workspace_write" | "process" | "external";
-const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
-  read_file: "read_only", read_media: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only", repo_map: "read_only", code_search: "read_only",
-  git_status: "read_only", git_diff: "read_only", ask_user: "read_only", exit_plan_mode: "read_only",
-  web_fetch: "external", web_search: "external", write_file: "workspace_write", edit_file: "workspace_write",
-  bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", subagent: "process", [SUBAGENT_LEGACY_NAME]: "process", spawn_swarm: "process", test_runner: "process",
-  swarm_board_post: "read_only", swarm_board_read: "read_only",
-  cron_create: "read_only", cron_list: "read_only", cron_delete: "read_only",
-  git_commit: "process", git_worktree_create: "process", git_worktree_remove: "process", git_worktree_merge: "process",
-};
-function executionClass(name: string): ToolExecutionClass { return name.startsWith("mcp__") || name.startsWith("ext__") ? "external" : TOOL_EXECUTION_CLASS[name] ?? "workspace_write"; }
 
 /** ask_user 校验后的单题规格（options 已确认 2-4 项、label 非空）。 */
 interface AskUserQuestionSpec {
@@ -2292,11 +2278,16 @@ export class AgentRunner {
     if (!response) return undefined;
     try {
       if (response.persist) {
-        const session = await this.sessions.getMeta(sessionId);
-        if (!session) throw new Error("Session not found");
         const rule = permissionRule(response.tool, response.input);
-        const rules = [...(session.permissionRules ?? []).filter((item) => item.tool !== rule.tool || item.argumentPrefix !== rule.argumentPrefix), rule];
-        await this.sessions.updatePermissions(sessionId, session.permissionMode ?? "ask", rules);
+        if (decision === "allow_always_global") {
+          if (!this.appendGlobalPermissionRule) throw new Error("Global permission rules are unavailable");
+          await this.appendGlobalPermissionRule(rule);
+        } else {
+          const session = await this.sessions.getMeta(sessionId);
+          if (!session) throw new Error("Session not found");
+          const rules = [...(session.permissionRules ?? []).filter((item) => item.tool !== rule.tool || item.argumentPrefix !== rule.argumentPrefix), rule];
+          await this.sessions.updatePermissions(sessionId, session.permissionMode ?? "ask", rules);
+        }
       }
       // 由 HTTP 层在批准响应完成后调用，避免工具执行抢在响应发送前开始。
       return () => response.complete();
@@ -2808,7 +2799,17 @@ export class AgentRunner {
   async reconcilePermissions(sessionId: string): Promise<void> {
     const session = await this.sessions.getMeta(sessionId);
     if (!session) return;
-    this.permissions.reconcile(sessionId, session.permissionMode ?? "ask", session.permissionRules ?? []);
+    const sandbox = this.permissionSandboxContext(session, sessionId);
+    const highRisk = this.highRiskFor(session);
+    this.permissions.reconcile(sessionId, (pending) => decidePermission({
+      mode: session.permissionMode ?? "ask",
+      tool: pending.tool,
+      input: pending.input,
+      rules: this.permissionRulesFor(session),
+      shellFlavor: pending.shell,
+      sandbox,
+      highRisk,
+    }).outcome === "allow");
   }
 
   /** REST snapshot source. An unfinished snapshot after a process restart is
@@ -3096,34 +3097,81 @@ export class AgentRunner {
     if (controller.signal.aborted) throw new Error("Agent run aborted");
   }
 
+  /** 会话生效沙盒上下文：权限引擎的只读快道/构建测试快道与 review 提示词共用。 */
+  private permissionSandboxContext(session: SessionMeta, sessionId: string): BashSandboxContext {
+    const policy = session.sandbox ?? defaultSandboxPolicy(session.cwd);
+    const capability = this.core.sandboxStatusFor?.(sessionId)?.capability;
+    return {
+      ...(session.kind ? { kind: session.kind } : {}),
+      ...(session.sandboxMode ? { mode: session.sandboxMode } : {}),
+      ...(capability ? { capability } : {}),
+      cwd: session.cwd,
+      readRoots: policy.readRoots,
+      writeRoots: policy.writeRoots,
+      ...(policy.allowPaths ? { allowPaths: policy.allowPaths } : {}),
+      denyPaths: policy.denyPaths,
+      network: policy.network,
+    };
+  }
+
+  /** 全局高危追加项（settings 热生效）；未注入时为空。 */
+  setPermissionHighRiskDefaults(getter: () => { commands: string[]; tools: string[] }): void {
+    this.permissionHighRiskDefaults = getter;
+  }
+
+  private permissionHighRiskDefaults?: () => { commands: string[]; tools: string[] };
+  /** 全局放行规则（settings 热生效）：所有会话共用，会话规则优先匹配。 */
+  setPermissionGlobalRules(getter: () => Array<{ tool: string; argumentPrefix?: string }>): void {
+    this.permissionGlobalRules = getter;
+  }
+
+  /** 权限卡「总是允许（全局）」追加规则；由 index.ts 接到 settings.update。 */
+  setGlobalPermissionRuleAppender(appender: (rule: { tool: string; argumentPrefix?: string }) => Promise<void>): void {
+    this.appendGlobalPermissionRule = appender;
+  }
+
+  private appendGlobalPermissionRule?: (rule: { tool: string; argumentPrefix?: string }) => Promise<void>;
+
+  private permissionGlobalRules?: () => Array<{ tool: string; argumentPrefix?: string }>;
+
+  /** 合并全局与会话放行规则；会话规则在前，便于同名规则覆盖全局前缀。 */
+  private permissionRulesFor(session: SessionMeta): Array<{ tool: string; argumentPrefix?: string }> {
+    return mergePermissionRules(session.permissionRules, this.permissionGlobalRules?.());
+  }
+
+  /** 会话 + 全局追加高危项合并（内置基线在 bash-risk/permission-engine 内固定）。 */
+  private highRiskFor(session: SessionMeta): { commands: string[]; tools: string[] } {
+    const defaults = this.permissionHighRiskDefaults?.() ?? { commands: [], tools: [] };
+    return {
+      commands: [...defaults.commands, ...(session.permissionHighRiskCommands ?? [])],
+      tools: [...defaults.tools, ...(session.permissionHighRiskTools ?? [])],
+    };
+  }
+
   private async authorizeTool(sessionId: string, tool: string, input: Record<string, unknown>, signal: AbortSignal, context: "main" | "subagent" = "main"): Promise<{ allowed: boolean; reason?: string }> {
     const session = await this.sessions.getMeta(sessionId);
     if (!session) return { allowed: false, reason: "Session not found" };
     // 工具形态别名按原内置工具的权限类处理（不降级为 external）
     tool = this.toolAliases.resolveBuiltinToolName(sessionId, tool);
-    // Plan 模式门禁：只读工具放行，其余一律拦截
-    const PLAN_READONLY = new Set(["read_file", "read_media", "glob", "grep", "read_artifact", "load_skill", "subagent", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "exit_plan_mode", "cron_list"]);
-    if (session.agentMode === "plan") {
-      if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 code 模式执行。` };
-      if (tool.startsWith("ext__")) return { allowed: false, reason: `Plan 模式为只读：扩展工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 code 模式执行。` };
-      if (!PLAN_READONLY.has(tool)) return { allowed: false, reason: `Plan 模式为只读：${tool} 被拦截。请输出实施计划并请用户切换到 code 模式执行。` };
-    }
+    // Plan 模式门禁：由工具能力表统一判定（外部工具与未知工具一并拦截）
+    const planDenied = session.agentMode === "plan" ? planGateDecision(tool) : undefined;
+    if (planDenied) return { allowed: false, ...(planDenied.reason ? { reason: planDenied.reason } : {}) };
     const baseMode = session.permissionMode ?? "ask";
     // 只读命令自动放行按生效 shell 的词法形态分流（cmd/pwsh 与 sh 语法不同，不参与自动放行）
     const shellFlavor = resolveShell(session.shellBackend ?? "default").flavor;
     // 子代理（subagent/spawn_swarm 成员，手动路径除外——authContext 由注入点区分）内部工具授权的
     // 有效权限档：默认模型审核（review）；主 agent 切 yolo 时同步 yolo（yolo 只跳确认、不扩沙盒）。
-    // 只读白名单/allow 规则命中仍不经审核（下方 needsApproval 前置不变）。
+    // 能力表自动放行/allow 规则命中仍不经审核（下方权限引擎前置不变）。
     const mode = context === "subagent" && baseMode !== "yolo" ? "review" : baseMode;
-    const rules = session.permissionRules ?? [];
+    const rules = this.permissionRulesFor(session);
     // 本机会话（kind=local）文件工具路径门：cwd=HOME、core 路径根放宽到文件系统根，
     // HOME 之外的 read/write/edit/glob/grep 必须先命中 allow 规则或经人工审批——
-    // 与权限模式无关（read_file 在 needsApproval 白名单中本免批，HOME 外读同样要人批）。
-    // 门通过后直接放行，不再走下方 needsApproval（避免 write/edit 在 ask 模式重复确认）；
+    // 与权限模式无关（read_file 在能力表中本免批，HOME 外读同样要人批）。
+    // 门通过后直接放行，不再走下方权限引擎（避免 write/edit 在 ask 模式重复确认）；
     // HOME 内路径不拦截，维持原权限链语义。
     // read_media 的 http(s) URL 不是本地路径：跳过 HOME 路径门（URL 安全由 media-fetch 的 SSRF 链负责）
     const mediaUrlInput = tool === "read_media" && typeof input.path === "string" && /^https?:\/\//i.test(input.path);
-    if (session.kind === "local" && LOCAL_PATH_GATED_TOOLS.has(tool) && !mediaUrlInput) {
+    if (session.kind === "local" && (session.sandboxMode ?? "off") === "off" && isLocalPathGatedTool(tool) && !mediaUrlInput) {
       let rawPath = typeof input.path === "string" && input.path ? input.path : ".";
       try {
         if (this.core.normalizePath) {
@@ -3150,7 +3198,7 @@ export class AgentRunner {
       const insideHome = absC === homeC || absC.startsWith(`${homeC}/`);
       if (!insideHome && !rules.some((rule) => matchesRule(rule, tool, { path: abs }))) {
         this.state(sessionId, "waiting_permission");
-        // Notification 钩子：权限待批（与下方 needsApproval 审批路径同一挂点）
+        // Notification 钩子：权限待批（与下方权限引擎审批路径同一挂点）
         await this.runNotificationHook("Notification", { sessionId, cwd: session.cwd, tool, input: { ...input, path: abs }, notification: { kind: "permission", summary: summarizeToolInput(tool, { ...input, path: abs }) } });
         const result = await this.permissions.request(sessionId, tool, { ...input, path: abs }, signal, { alwaysManual: true, shell: shellFlavor });
         this.state(sessionId, "tool_running");
@@ -3167,18 +3215,30 @@ export class AgentRunner {
         input = { ...input, path: normalized.path };
       } catch { /* 回退原始路径 */ }
     }
-    if (!this.permissions.needsApproval(mode, rules, tool, input, shellFlavor)) return { allowed: true };
+    const sandbox = this.permissionSandboxContext(session, sessionId);
+    const decision = decidePermission({ mode, tool, input, rules, shellFlavor, sandbox, highRisk: this.highRiskFor(session) });
+    if (decision.outcome === "allow") return { allowed: true };
+    if (decision.outcome === "deny") return { allowed: false, ...(decision.reason ? { reason: decision.reason } : {}) };
     // 模型审核（review 模式）：需要人工确认的调用先由审核模型评判风险；git_commit 永远直接人工。
     // 审核期间不置 waiting_permission（仍视为工具运行中）；LOW 自动放行，其余照旧走人工流程。
-    if (mode === "review" && tool !== "git_commit") {
-      const reviewed = await this.reviewToolCall(session, tool, input, signal);
+    if (decision.outcome === "review") {
+      const reviewed = await this.reviewToolCall(session, tool, input, signal, sandbox);
       this.events.publish({ source: "agent", type: "permission.reviewed", sessionId, payload: { tool, ...boundToolEventInput(input), verdict: reviewed.verdict, rationale: reviewed.rationale, model: reviewed.model } });
       if (reviewed.verdict === "low") return { allowed: true };
       // 审核窗口（最长 30s）内用户可能已热切权限档：按最新 mode/rules 复查，
       // 不再需要审批则直接放行，避免挂出一张新档下本不该存在的权限卡。
       const fresh = await this.sessions.getMeta(sessionId);
-      if (fresh && !this.permissions.needsApproval(fresh.permissionMode ?? "ask", fresh.permissionRules ?? [], tool, input, shellFlavor)) {
-        return { allowed: true };
+      if (fresh) {
+        const freshDecision = decidePermission({
+          mode: fresh.permissionMode ?? "ask",
+          tool,
+          input,
+          rules: this.permissionRulesFor(fresh),
+          shellFlavor,
+          sandbox: this.permissionSandboxContext(fresh, sessionId),
+          highRisk: this.highRiskFor(fresh),
+        });
+        if (freshDecision.outcome === "allow") return { allowed: true };
       }
     }
     this.state(sessionId, "waiting_permission");
@@ -3194,12 +3254,19 @@ export class AgentRunner {
    * provider/model 的一次性补全。30s 超时并尊重 run 的 AbortSignal；调用失败、超时或
    * 结果无法解析一律按 HIGH 转人工——审核通道故障不得放大权限。
    */
-  private async reviewToolCall(session: SessionMeta, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ReviewOutcome & { model: string }> {
+  private async reviewToolCall(session: SessionMeta, tool: string, input: Record<string, unknown>, signal: AbortSignal, sandbox?: BashSandboxContext): Promise<ReviewOutcome & { model: string }> {
     const reviewModel = session.reviewModel ?? "fast";
     if (reviewModel === "fast" && !this.fastModel?.configured) {
       return { verdict: "high", rationale: "快速模型未配置，无法自动审核", model: "fast" };
     }
-    const { system, prompt } = buildReviewMessages(tool, input);
+    const { system, prompt } = buildReviewMessages(tool, input, {
+      ...(session.kind ? { kind: session.kind } : {}),
+      ...(session.sandboxMode ? { mode: session.sandboxMode } : {}),
+      ...(sandbox?.capability ? { capability: sandbox.capability } : {}),
+      ...(sandbox?.network ? { network: sandbox.network } : {}),
+      cwd: session.cwd,
+      ...(sandbox?.writeRoots ? { writeRoots: sandbox.writeRoots } : {}),
+    });
     const combined = withTimeout(signal, 30_000);
     const model = reviewModel === "fast" ? `fast:${this.fastModel?.model ?? ""}` : `${session.provider}/${session.model}`;
     try {
@@ -3318,7 +3385,7 @@ export class AgentRunner {
   ): Promise<MessageContent & { type: "tool_result" }> {
     // 工具形态别名回调到内置实现：权限分级/事件/分发统一按内置名。
     name = this.toolAliases.resolveBuiltinToolName(sessionId, name);
-    const execution = executionClass(name);
+    const execution = executionClassForTool(name);
     this.events.publish({ source: "agent", type: "tool.scheduling", sessionId, payload: { toolCallId, name, execution, parallelEligible: execution === "read_only" } });
     if (name.startsWith("mcp__")) {
       const mcp = this.mcp;

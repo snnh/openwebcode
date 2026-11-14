@@ -399,30 +399,6 @@ export function sweepIdleMessageIndexes(now: number = Date.now()): number {
   return evicted;
 }
 
-/**
- * 内存归因：索引缓存规模（只读统计，不参与热路径）。
- * approxBytes 按「行引用 48B + id 表项 80B + 尾部指纹缓冲」粗估，仅用于相对比较。
- */
-export function messageIndexStats(): {
-  entries: number;
-  lines: number;
-  byIdEntries: number;
-  approxBytes: number;
-  recoveryTails: number;
-} {
-  let entries = 0;
-  let lines = 0;
-  let byIdEntries = 0;
-  let approxBytes = 0;
-  for (const index of indexes.values()) {
-    entries += 1;
-    lines += index.lines.length;
-    byIdEntries += index.byId.size;
-    approxBytes += index.lines.length * 48 + index.byId.size * 80 + index.prefixTail.byteLength;
-  }
-  return { entries, lines, byIdEntries, approxBytes, recoveryTails: recoveryTails.size };
-}
-
 export function clearMessageIndexes(): number {
   const evicted = indexes.size;
   indexes.clear();

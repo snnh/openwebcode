@@ -17,12 +17,23 @@ function meta(sandboxMode: SessionMeta["sandboxMode"]): SessionMeta | undefined 
   return sandboxMode ? { ...baseMeta, sandboxMode } : undefined;
 }
 
-/** 临时 $HOME 凭据夹具：.gitconfig（默认并入）+ .ssh（opt-in 才并入）。 */
+/** 临时 $HOME 凭据夹具：身份配置默认并入；令牌与 .ssh 需显式 opt-in。 */
 async function credentialHome() {
   const home = await tempRoot("owc-gh-cred-");
   await writeFile(path.join(home, ".gitconfig"), "[user]\n");
+  await writeFile(path.join(home, ".git-credentials"), "https://x@github.com\n");
+  await mkdir(path.join(home, ".config", "git"), { recursive: true });
+  await writeFile(path.join(home, ".config", "git", "credentials"), "https://x@github.com\n");
+  await mkdir(path.join(home, ".config", "gh"), { recursive: true });
   await mkdir(path.join(home, ".ssh"), { recursive: true });
-  return { home, config: path.join(home, ".gitconfig"), ssh: path.join(home, ".ssh") };
+  return {
+    home,
+    config: path.join(home, ".gitconfig"),
+    gitCredential: path.join(home, ".git-credentials"),
+    xdgCredential: path.join(home, ".config", "git", "credentials"),
+    gh: path.join(home, ".config", "gh"),
+    ssh: path.join(home, ".ssh"),
+  };
 }
 
 describe("CoreRouter.policyFor 平台分支", () => {
@@ -132,6 +143,14 @@ describe("CoreRouter.configureSession 工具链挂载", () => {
     }
   });
 
+  it("landlock 与 trustProjectExecConfig 互斥：配置期拒绝，关闭信任后恢复", async () => {
+    const { router } = makeRouter({ ...baseMeta, sandboxMode: "landlock" });
+    router.setTrustProjectExecConfig(() => true);
+    await expect(router.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy })).rejects.toThrow(/landlock/);
+    router.setTrustProjectExecConfig(() => false);
+    await expect(router.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy })).resolves.toBeDefined();
+  });
+
   it("uv-config 的 venv 进 allowPaths；仅 AppContainer 缺省档挂载，win32 jobobject 档不挂载", async () => {
     const dataDir = await tempRoot("owc-uv-mount-");
     const venv = uvVenvDir("uv-config", "/work", dataDir);
@@ -205,12 +224,14 @@ describe("toolchainWritePaths / nodeToolchainWritePaths", () => {
 });
 
 describe("gitCredentialReadOnlyPaths（沙盒内 git/gh 凭据只读放行）", () => {
-  it("并入 $HOME 下存在的凭据并去重；.ssh 需显式 opt-in；无文件隔离的档位不追加", async () => {
-    const { home, config, ssh } = await credentialHome();
+  it("默认只挂身份配置；令牌与 .ssh 显式 opt-in；无文件隔离的档位不追加", async () => {
+    const { home, config, gitCredential, xdgCredential, gh, ssh } = await credentialHome();
     expect(gitCredentialReadOnlyPaths(["/work/ro", config], "linux", home)).toEqual(["/work/ro", config]);
-    // .ssh 默认不挂载（只读不防私钥外泄），会话显式 opt-in 才并入
+    // 令牌默认不挂载（只读不防外发），身份配置 .gitconfig 仍默认并入
     expect(gitCredentialReadOnlyPaths(undefined, "linux", home)).toEqual([config]);
+    expect(gitCredentialReadOnlyPaths(undefined, "linux", home, undefined, false, true)).toEqual([config, gitCredential, xdgCredential, gh]);
     expect(gitCredentialReadOnlyPaths(undefined, "linux", home, undefined, true)).toEqual([config, ssh]);
+    expect(gitCredentialReadOnlyPaths(undefined, "linux", home, undefined, true, true)).toEqual([config, gitCredential, xdgCredential, gh, ssh]);
     // win32 缺省档 = AppContainer：追加；显式 appcontainer 同
     expect(gitCredentialReadOnlyPaths(undefined, "win32", home)).toEqual([config]);
     expect(gitCredentialReadOnlyPaths(undefined, "win32", home, "appcontainer", true)).toEqual([config, ssh]);
@@ -219,21 +240,73 @@ describe("gitCredentialReadOnlyPaths（沙盒内 git/gh 凭据只读放行）", 
     expect(gitCredentialReadOnlyPaths(["/work/ro"], "win32", home, "jobobject")).toEqual(["/work/ro"]);
   });
 
-  it("policyFor 经 homedir 并入凭据：POSIX/win32 缺省与 appcontainer 生效，wsb/off/jobobject 不追加", async () => {
-    const { home, config } = await credentialHome();
-    await writeFile(path.join(home, ".git-credentials"), "https://x@github.com\n");
+  it("policyFor 经 homedir 并入凭据：身份默认生效，令牌按 gitCredentials opt-in", async () => {
+    const { home, config, gitCredential, xdgCredential, gh } = await credentialHome();
     vi.stubEnv("USERPROFILE", home);
     vi.stubEnv("HOME", home);
     try {
-      const credentials = [config, path.join(home, ".git-credentials")];
-      expect(CoreRouter.policyFor(meta(undefined), policy, undefined, undefined, "linux").readOnlyPaths).toEqual(credentials);
-      expect(CoreRouter.policyFor(meta(undefined), policy, undefined, undefined, "win32").readOnlyPaths).toEqual(credentials);
-      expect(CoreRouter.policyFor(meta("appcontainer"), policy, undefined, undefined, "win32")).toMatchObject({ mode: "appcontainer", readOnlyPaths: credentials });
+      const identity = [config];
+      const tokens = [config, gitCredential, xdgCredential, gh];
+      expect(CoreRouter.policyFor(meta(undefined), policy, undefined, undefined, "linux").readOnlyPaths).toEqual(identity);
+      expect(CoreRouter.policyFor(meta(undefined), policy, undefined, undefined, "win32").readOnlyPaths).toEqual(identity);
+      expect(CoreRouter.policyFor(meta("appcontainer"), policy, undefined, undefined, "win32")).toMatchObject({ mode: "appcontainer", readOnlyPaths: identity });
+      const withTokens = { ...baseMeta, gitCredentials: true };
+      expect(CoreRouter.policyFor(withTokens, policy, undefined, undefined, "linux").readOnlyPaths).toEqual(tokens);
       for (const [mode, platform] of [["wsb", "linux"], ["off", "linux"], ["jobobject", "win32"]] as const) {
         expect(CoreRouter.policyFor(meta(mode), policy, undefined, undefined, platform).readOnlyPaths, mode).toBeUndefined();
       }
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("CoreRouter.effectivePolicyFor（有效策略 builder）", () => {
+  function makeRouter(sessionMeta: SessionMeta, platform: NodeJS.Platform = "linux") {
+    const client = { on() { return client; } };
+    return new CoreRouter(client as never, { get: async () => sessionMeta } as never, {} as never, undefined, undefined, platform);
+  }
+
+  it("凭据按类别标注来源；core 上限 32 之外的自动挂载进入 dropped", async () => {
+    const { home, config, gitCredential } = await credentialHome();
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    try {
+      const pinned = Array.from({ length: 31 }, (_, index) => `/pin/${index}`);
+      const session = { ...baseMeta, gitCredentials: true, sandbox: { ...policy, readOnlyPaths: pinned } };
+      const effective = makeRouter(session).effectivePolicyFor(session, session.sandbox!);
+      expect(effective.policy.readOnlyPaths).toHaveLength(32);
+      expect(effective.policy.readOnlyPaths?.at(-1)).toBe(config);
+      expect(effective.entries).toContainEqual({ field: "readOnlyPaths", value: config, source: "credential-git" });
+      expect(effective.dropped).toContainEqual({ field: "readOnlyPaths", value: gitCredential, source: "credential-git-token", reason: "core cap 32" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("win32 缺省 AppContainer 不下发 mode 但仍并入身份凭据；off 不追加自动挂载", async () => {
+    const { home, config } = await credentialHome();
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    try {
+      const session = { ...baseMeta, cwd: "/work" };
+      const win = makeRouter(session, "win32").effectivePolicyFor(session, policy);
+      expect(win.policy.mode).toBeUndefined();
+      expect(win.policy.readOnlyPaths).toContain(config);
+
+      const off = { ...session, sandboxMode: "off" as const };
+      const disabled = makeRouter(off, "linux").effectivePolicyFor(off, policy);
+      expect(disabled.policy.enabled).toBe(false);
+      expect(disabled.policy.readOnlyPaths).toBeUndefined();
+      expect(disabled.entries.some((entry) => entry.source === "credential-git")).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("显式配置超过 core 上限时在配置前拒绝", () => {
+    const session = { ...baseMeta, cwd: "/work" };
+    const tooMany = { ...policy, readRoots: Array.from({ length: 17 }, (_, index) => `/r/${index}`) };
+    expect(() => makeRouter(session).effectivePolicyFor(session, tooMany)).toThrow(/core limits/);
   });
 });

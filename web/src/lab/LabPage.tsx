@@ -78,7 +78,7 @@ export function LabPage(): ReactElement {
           <div style={{ color: "var(--text-3)", fontSize: "var(--text-s)", padding: "4px 2px" }}>向正在执行的作业补充指令…</div>
           <div className="composer-toolbar">
             <button type="button" className="composer-menu-btn" aria-label="附件">📎</button>
-            <span className="composer-menu-btn" style={{ color: "var(--amber)" }}>模型审核</span>
+            <span className="composer-menu-btn" style={{ color: "var(--amber)" }}>智能审核</span>
             <span className="composer-menu-btn">模式</span>
             <span className="composer-toolbar-spacer" />
             <span className="composer-menu-btn">deepseek-v4.1-flash <span className="model-menu-btn-thinking">思考 max</span></span>

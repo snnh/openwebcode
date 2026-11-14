@@ -340,6 +340,62 @@ function requireDomainList(value: SettingValue): void {
   }
 }
 
+function requireStringList(value: SettingValue, label: string, max: number): void {
+  if (!Array.isArray(value) || value.length > max || value.some((entry) => typeof entry !== "string" || entry.trim() === "")) {
+    throw new SettingsValidationError(`${label}必须是最多 ${max} 项的非空字符串列表`);
+  }
+}
+
+/** 全局放行规则：每行 `tool` 或 `tool|参数前缀`。 */
+function requirePermissionRuleList(value: SettingValue): void {
+  if (!Array.isArray(value) || value.length > 32) {
+    throw new SettingsValidationError("全局放行规则必须是最多 32 项的列表");
+  }
+  for (const entry of value) {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new SettingsValidationError("全局放行规则不能包含空行");
+    }
+    const separator = entry.indexOf("|");
+    const tool = (separator < 0 ? entry : entry.slice(0, separator)).trim();
+    const prefix = separator < 0 ? "" : entry.slice(separator + 1).trim();
+    if (!/^[A-Za-z][A-Za-z0-9_.-]*$/.test(tool)) {
+      throw new SettingsValidationError(`全局放行规则的工具名无效：${tool}`);
+    }
+    if (prefix.length > 512 || prefix.includes("\n") || prefix.includes("\r")) {
+      throw new SettingsValidationError("全局放行规则的参数前缀必须是不超过 512 字符的单行文本");
+    }
+  }
+}
+
+function parsePermissionRules(lines: readonly string[]): Array<{ tool: string; argumentPrefix?: string }> {
+  const rules: Array<{ tool: string; argumentPrefix?: string }> = [];
+  for (const line of lines) {
+    const raw = line.trim();
+    if (!raw) continue;
+    const separator = raw.indexOf("|");
+    const tool = (separator < 0 ? raw : raw.slice(0, separator)).trim();
+    const prefix = separator < 0 ? "" : raw.slice(separator + 1).trim();
+    if (tool) rules.push(prefix ? { tool, argumentPrefix: prefix } : { tool });
+  }
+  return rules;
+}
+
+function envStringList(raw: string): SettingValue | undefined {
+  const values = raw.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
+  return values.length > 0 && values.length <= 32 ? values : undefined;
+}
+
+function envPermissionRuleList(raw: string): SettingValue | undefined {
+  const values = envStringList(raw);
+  if (!Array.isArray(values)) return undefined;
+  try {
+    requirePermissionRuleList(values);
+    return values;
+  } catch {
+    return undefined;
+  }
+}
+
 function envNumber(raw: string): SettingValue | undefined {
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : undefined;
@@ -468,6 +524,10 @@ const FIELDS: FieldSpec[] = [
   // 项目级执行入口配置（热生效）：.owc/hooks.json（宿主身份执行 shell）与 .owc/mcp.json（spawn 任意命令）
   // 默认不信任——克隆/下载的仓库可能自带这两个文件，打开会话即执行。开启前确认项目来源可信。
   { key: "trustProjectExecConfig", group: "executor", label: "信任项目级执行配置", type: "boolean", env: "OWC_TRUST_PROJECT_EXEC_CONFIG", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "开启后才读取工作区内 .owc/hooks.json（事件钩子，宿主身份执行 shell）与 .owc/mcp.json（MCP server 配置，spawn 任意命令）；默认关闭，防止克隆来的恶意仓库携带执行入口配置。跳过时每个会话收到一次 hook.project_config_untrusted 通知" },
+  // 全局权限策略（热生效）：放行规则与追加高危项对所有会话生效；会话规则优先匹配。
+  { key: "permissionGlobalRules", group: "defaults", label: "全局放行规则", type: "pathList", env: "OWC_PERMISSION_GLOBAL_RULES", defaultValue: [], restartRequired: false, fromEnv: envPermissionRuleList, validate: requirePermissionRuleList, description: "每行一条，最多 32 条：`tool` 或 `tool|参数前缀`（如 `bash|git status`、`web_fetch|https://docs.example.com`）。对所有会话生效；会话内 allow_always 规则优先。显式规则可覆盖高危分类，请只放行可信操作" },
+  { key: "permissionHighRiskCommands", group: "defaults", label: "追加高危命令", type: "pathList", env: "OWC_PERMISSION_HIGH_RISK_COMMANDS", defaultValue: [], restartRequired: false, fromEnv: envStringList, validate: (value) => requireStringList(value, "追加高危命令", 32), description: "每行一个命令前缀（最多 32 个），命中后强制人工确认（yolo 除外）；内置高危基线不可关闭，这里只追加" },
+  { key: "permissionHighRiskTools", group: "defaults", label: "追加高危工具", type: "pathList", env: "OWC_PERMISSION_HIGH_RISK_TOOLS", defaultValue: [], restartRequired: false, fromEnv: envStringList, validate: (value) => requireStringList(value, "追加高危工具", 32), description: "每行一个工具名（最多 32 个），命中后强制人工确认（yolo 除外）；MCP/扩展工具也可填写" },
   { key: "pythonEnv", group: "executor", label: "Python 环境", type: "select", env: "OWC_PYTHON_ENV", defaultValue: "global", restartRequired: false, options: PYTHON_ENV_OPTIONS, description: "全局默认：bash 工具的 python 运行环境。global = 本机已有环境；uv-workspace = 在项目工作区 .owc/venv 创建 uv 虚拟环境；uv-config = 在数据目录 venvs/ 创建 uv 虚拟环境（POSIX 沙盒内读写挂载该 venv 目录，pip install 仅落进 venv，无法写入系统环境）。会话可在顶栏单独覆盖" },
   { key: "nodeEnv", group: "executor", label: "Node 环境", type: "select", env: "OWC_NODE_ENV", defaultValue: "global", restartRequired: false, options: NODE_ENV_OPTIONS, description: "全局默认：bash 工具的 node 运行环境。global = 本机已有环境；project = 工作区 node_modules/.bin 前置 PATH；fnm / nvm = 版本管理器激活（fnm 不支持 cmd；nvm 仅 POSIX bash/sh），POSIX 沙盒内读写挂载版本管理器目录，npm i -g 等安装仅落进该目录，无法写入整机环境。会话可在顶栏单独覆盖" },
   // 进程树资源限制（Windows Job Object / POSIX RLIMIT，重启生效）：注入 CoreRouter 全局下发，留空由 core 用默认值
@@ -654,6 +714,9 @@ export class SettingsService {
     const sandboxAllowPaths = value("sandboxAllowPaths") as string[];
     const browseRoots = value("browseRoots") as string[];
     const sandboxProxyDenyList = (value("sandboxProxyDenyList") as string[]).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+    const permissionGlobalRules = parsePermissionRules(value("permissionGlobalRules") as string[]);
+    const permissionHighRiskCommands = value("permissionHighRiskCommands") as string[];
+    const permissionHighRiskTools = value("permissionHighRiskTools") as string[];
     const catalogSyncUrl = value("catalogSyncUrl");
     const pricingSyncUrl = value("pricingSyncUrl");
     const proxyHttp = value("proxyHttp");
@@ -714,6 +777,10 @@ export class SettingsService {
       pythonEnv: value("pythonEnv") as PythonEnv,
       nodeEnv: value("nodeEnv") as NodeEnv,
       trustProjectExecConfig: value("trustProjectExecConfig") as boolean,
+      ...(permissionGlobalRules.length > 0 ? { permissionGlobalRules } : {}),
+      ...(permissionHighRiskCommands.length > 0 || permissionHighRiskTools.length > 0
+        ? { permissionHighRisk: { commands: permissionHighRiskCommands, tools: permissionHighRiskTools } }
+        : {}),
       exchangeRate: {
         ...(typeof exchangeRateUrl === "string" ? { url: exchangeRateUrl } : {}),
         timeoutMs: value("exchangeRateTimeoutMs") as number,

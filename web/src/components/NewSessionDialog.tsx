@@ -17,6 +17,8 @@ export interface NewSessionValues {
   sandboxMode?: SandboxMode;
   /** 沙盒内只读挂载 ~/.ssh（SSH push 需要）；缺省不挂载（只读不防私钥外泄，显式开启才挂载）。 */
   sshCredentials?: boolean;
+  /** 沙盒内只读挂载 git/gh 令牌；缺省不挂载。 */
+  gitCredentials?: boolean;
   network?: SandboxNetwork;
   setupScript?: string;
   workspaceMode?: "managed";
@@ -55,9 +57,10 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const [title, setTitle] = useState("");
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>("review");
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>("appcontainer");
   const [sshCredentials, setSshCredentials] = useState(false);
+  const [gitCredentials, setGitCredentials] = useState(false);
   const [network, setNetwork] = useState<SandboxNetwork>("allow");
   const [setupScript, setSetupScript] = useState("");
   const [workspaceMode, setWorkspaceMode] = useState<"direct" | "managed">("direct");
@@ -178,6 +181,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             // appcontainer 是默认，不必显式提交；setupScript 仅 wsb 有意义；network 默认 allow 不必提交
             ...(sandboxMode !== "appcontainer" ? { sandboxMode } : {}),
             ...(sshCredentials ? { sshCredentials: true } : {}),
+            ...(gitCredentials ? { gitCredentials: true } : {}),
             ...(network !== "allow" ? { network } : {}),
             ...(sandboxMode === "wsb" && setupScript.trim() ? { setupScript: setupScript.trim() } : {}),
             ...(workspaceMode === "managed" ? { workspaceMode } : {}),
@@ -315,7 +319,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           <select className="input" value={permissionMode} onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}>
             <option value="ask">{t("每次确认", "Ask every time")}</option>
             <option value="acceptEdits">{t("接受编辑", "Accept edits")}</option>
-            <option value="review">{t("模型审核", "Model review")}</option>
+            <option value="review">{t("智能审核", "Smart review")}</option>
             <option value="yolo">YOLO</option>
           </select>
         </label>
@@ -349,6 +353,14 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             onChange={(event) => setSshCredentials(event.target.checked)}
           />
           {t("沙盒内只读挂载 ~/.ssh（SSH push 需要；注意私钥可被沙盒命令读取）", "Mount ~/.ssh read-only in the sandbox (needed for SSH push; note sandboxed commands can read the keys)")}
+        </label>
+        <label className="bindlink-readonly">
+          <input
+            type="checkbox"
+            checked={gitCredentials}
+            onChange={(event) => setGitCredentials(event.target.checked)}
+          />
+          {t("沙盒内只读挂载 git/gh 令牌（.git-credentials / .config/git/credentials / .config/gh；默认关闭）", "Mount git/gh tokens read-only in the sandbox (.git-credentials / .config/git/credentials / .config/gh; off by default)")}
         </label>
         {network === "filtered" && (
           <p className="muted-empty dialog-hint">{t("经代理过滤出网（仅 Windows）；Linux 会话不支持该策略。", "Outbound traffic is filtered via a proxy (Windows only); not supported on Linux sessions.")}</p>

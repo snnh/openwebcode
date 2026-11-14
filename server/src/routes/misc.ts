@@ -83,6 +83,7 @@ export function registerMiscRoutes(app: FastifyInstance, ctx: RouteContext): voi
     const info = await core.ping().catch(() => undefined);
     const bindLinkAvailable = info?.features?.bindLink === true;
     const bwrap = info?.features?.bwrap;
+    const landlock = info?.features?.landlock;
     return {
       platform: process.platform,
       appcontainer: true,
@@ -96,6 +97,9 @@ export function registerMiscRoutes(app: FastifyInstance, ctx: RouteContext): voi
       // core 未上报 features.bwrap（旧二进制）视为不可用
       bwrap: bwrap
         ? { available: bwrap.available, ...(bwrap.reason !== undefined ? { reason: bwrap.reason } : {}) }
+        : { available: false },
+      landlock: landlock
+        ? { available: landlock.available, ...(landlock.reason !== undefined ? { reason: landlock.reason } : {}) }
         : { available: false },
     };
   });
