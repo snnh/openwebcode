@@ -7,9 +7,10 @@ is stripped of the sandbox package SID's ACEs (the AppContainer package leg
 of the access check is allow-only, so a missing allow - not a DENY ACE - is
 what actually blocks), and a sandboxed command cannot read or write the
 path even though the workspace write root would otherwise allow both.
-Requires Windows with a working AppContainer probe (the same environments
-the filtered e2e needs); other platforms and advisory/partial probes skip
-honestly.
+A missing deny path inside the write root gets a restricted host
+placeholder first; its creation failure is fail-closed.  Requires Windows
+with a working AppContainer probe (the same environments the filtered e2e
+needs); other platforms and advisory/partial probes skip honestly.
 """
 import base64
 import json
@@ -83,6 +84,7 @@ def main():
         secret = os.path.join(workspace, ".env")
         hooks_dir = os.path.join(workspace, ".owc")
         hooks = os.path.join(hooks_dir, "hooks.json")
+        missing = os.path.join(workspace, "new-deny-dir", "missing.env")
         os.mkdir(hooks_dir)
         with open(secret, "w", encoding="utf-8") as stored:
             stored.write("SUPER_SECRET_TOKEN")
@@ -93,7 +95,7 @@ def main():
 
         sandbox = {"enabled": True, "network": "allow",
                    "readRoots": [workspace], "writeRoots": [workspace],
-                   "denyPaths": [secret, hooks]}
+                   "denyPaths": [secret, hooks, missing]}
         response = configure(proc, 1, workspace, sandbox, "deny")
         assert "result" in response, response
         capability = response["result"]["sandboxCapability"]
@@ -107,6 +109,22 @@ def main():
         response, output = exec_command(proc, 2, "deny", workspace, 'type "ok.txt"')
         assert "result" in response and response["result"]["exitCode"] == 0, response
         assert "plain-content" in output, output
+
+        # A missing deny path inside the write root gets a restricted host
+        # placeholder before the command starts.  The sandboxed process must
+        # not be able to create or overwrite it (otherwise the host could
+        # later execute the attacker-controlled file).
+        assert os.path.exists(missing), "missing deny placeholder was not created"
+        assert os.path.isdir(os.path.dirname(missing))
+        assert os.path.getsize(missing) == 0
+        response, output = exec_command(proc, 10, "deny", workspace, 'type "missing.env"')
+        assert "result" in response, response
+        assert response["result"]["exitCode"] != 0, (response, output)
+        response, output = exec_command(proc, 11, "deny", workspace,
+                                        'echo injected> "missing.env"')
+        assert "result" in response, response
+        assert response["result"]["exitCode"] != 0, (response, output)
+        assert os.path.getsize(missing) == 0
 
         # The DENY ACE blocks reading the deny file from the sandboxed
         # command even though the workspace write root allows reads.
@@ -131,7 +149,7 @@ def main():
         response, _ = exec_command(proc, 5, "deny", workspace, 'echo x> "dropped.env"')
         assert "result" in response and response["result"]["exitCode"] == 0, response
         response = configure(proc, 6, workspace,
-                             {**sandbox, "denyPaths": [secret, hooks, dropped]},
+                             {**sandbox, "denyPaths": [secret, hooks, missing, dropped]},
                              "deny")
         assert "result" in response, response
         response, output = exec_command(proc, 7, "deny", workspace, 'type "dropped.env"')

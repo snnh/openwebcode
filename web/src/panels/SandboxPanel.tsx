@@ -34,6 +34,7 @@ const POLICY_SOURCE_LABELS: Record<string, [string, string]> = {
   "credential-ssh": ["SSH 凭据", "SSH credentials"],
   "toolchain-node": ["Node 工具链", "Node toolchain"],
   "toolchain-python": ["Python 工具链", "Python toolchain"],
+  "filtered-proxy": ["代理 sidecar", "Proxy sidecar"],
 };
 
 const POLICY_FIELD_LABELS: Record<string, [string, string]> = {

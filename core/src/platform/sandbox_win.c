@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 HRESULT WINAPI CreateAppContainerProfile(PCWSTR, PCWSTR, PCWSTR,
                                          PSID_AND_ATTRIBUTES, DWORD, PSID *);
@@ -667,9 +668,12 @@ static int grant_read_only_paths(owc_sandbox *sandbox,
  *   UNPROTECTED_DACL, which resumes inheritance and reproduces the
  *   pre-grant DACL.
  *
- * A missing path is skipped (nothing to leak yet; the next command re-runs
- * this strip); a strip failure on an existing path fails the whole create -
- * running with a silently open deny hole would be worse than not running. */
+ * A missing path outside every write root is skipped (nothing to leak yet
+ * and it must not be conjured into existence); a missing path inside a write
+ * root gets a restricted placeholder first, because the sandbox could
+ * otherwise create it.  Placeholder creation and a strip failure on an
+ * existing path both fail the whole create - running with a silently open
+ * deny hole would be worse than not running. */
 
 /* Remove every ACE for sid from one object's DACL and write it back.  With
    protect the write also freezes inheritance (PROTECTED_DACL) - required on
@@ -927,6 +931,369 @@ static wchar_t *extend_path(const wchar_t *path) {
     return out;
 }
 
+/* AppContainer denyPaths: a missing path inside a write root would let the
+ * sandboxed command create it after the write-root ACL grant, and the host
+ * may later execute/load that file.  Create a restricted placeholder before
+ * the strip, mirroring the bubblewrap backend.  Only paths lexically inside
+ * a write root are created; paths outside (for example a missing ~/.ssh
+ * key) stay absent.  The placeholder gets a protected DACL for the current
+ * user only, so the package SID cannot access the object even in the window
+ * before strip_deny_path runs.  Any creation/check failure fails closed. */
+
+struct deny_placeholder_security {
+    SECURITY_ATTRIBUTES attributes;
+    SECURITY_DESCRIPTOR descriptor;
+    PACL acl;
+    TOKEN_USER *user;
+};
+
+static void deny_placeholder_security_free(struct deny_placeholder_security *security) {
+    if (!security) return;
+    if (security->acl) LocalFree(security->acl);
+    free(security->user);
+    security->acl = NULL;
+    security->user = NULL;
+}
+
+static int deny_placeholder_security_init(struct deny_placeholder_security *security) {
+    HANDLE token = INVALID_HANDLE_VALUE;
+    EXPLICIT_ACCESSW access;
+    DWORD size = 0;
+    if (!security) return 0;
+    memset(security, 0, sizeof(*security));
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return 0;
+    if (!GetTokenInformation(token, TokenUser, NULL, 0, &size) && size == 0) {
+        CloseHandle(token);
+        return 0;
+    }
+    security->user = (TOKEN_USER *)malloc(size);
+    if (!security->user ||
+        !GetTokenInformation(token, TokenUser, security->user, size, &size)) {
+        CloseHandle(token);
+        deny_placeholder_security_free(security);
+        return 0;
+    }
+    CloseHandle(token);
+    memset(&access, 0, sizeof(access));
+    access.grfAccessPermissions = GENERIC_ALL;
+    access.grfAccessMode = SET_ACCESS;
+    access.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+    access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    access.Trustee.TrusteeType = TRUSTEE_IS_USER;
+    access.Trustee.ptstrName = (LPWSTR)security->user->User.Sid;
+    if (SetEntriesInAclW(1, &access, NULL, &security->acl) != ERROR_SUCCESS ||
+        !InitializeSecurityDescriptor(&security->descriptor,
+                                      SECURITY_DESCRIPTOR_REVISION) ||
+        !SetSecurityDescriptorDacl(&security->descriptor, TRUE, security->acl,
+                                   FALSE) ||
+        !SetSecurityDescriptorControl(&security->descriptor, SE_DACL_PROTECTED,
+                                      SE_DACL_PROTECTED)) {
+        deny_placeholder_security_free(security);
+        return 0;
+    }
+    security->attributes.nLength = (DWORD)sizeof(security->attributes);
+    security->attributes.lpSecurityDescriptor = &security->descriptor;
+    security->attributes.bInheritHandle = FALSE;
+    return 1;
+}
+
+/* Lexically normalize an absolute path and use backslashes, matching the
+ * case-insensitive separator handling of the fs layer.  Relative and
+ * drive-relative paths are rejected; those never get a host-side
+ * placeholder. */
+static wchar_t *deny_normalize_path(const wchar_t *path) {
+    DWORD length, written;
+    wchar_t *full;
+    size_t index, trimmed;
+    if (!path || !path[0]) return NULL;
+    if (!((path[0] == L'\\' && path[1] == L'\\') ||
+          (((path[0] >= L'A' && path[0] <= L'Z') ||
+            (path[0] >= L'a' && path[0] <= L'z')) &&
+           path[1] == L':' &&
+           (path[2] == L'\\' || path[2] == L'/'))))
+        return NULL;
+    length = GetFullPathNameW(path, 0, NULL, NULL);
+    if (length == 0 || length > 32768) return NULL;
+    full = (wchar_t *)malloc(((size_t)length + 1) * sizeof(*full));
+    if (!full) return NULL;
+    written = GetFullPathNameW(path, length + 1, full, NULL);
+    if (written == 0 || written > length) {
+        free(full);
+        return NULL;
+    }
+    for (index = 0; full[index]; ++index)
+        if (full[index] == L'/') full[index] = L'\\';
+    trimmed = wcslen(full);
+    while (trimmed > 3 && full[trimmed - 1] == L'\\')
+        full[--trimmed] = L'\0';
+    if (!full[0]) {
+        free(full);
+        return NULL;
+    }
+    return full;
+}
+
+static int deny_path_within_root(const wchar_t *path, const wchar_t *root) {
+    size_t root_length;
+    if (!path || !root || !root[0]) return 0;
+    root_length = wcslen(root);
+    if (root_length == 3 && root[1] == L':' && root[2] == L'\\')
+        return _wcsnicmp(path, root, 3) == 0 && path[3] != L'\0';
+    while (root_length > 1 && root[root_length - 1] == L'\\') root_length--;
+    if (_wcsnicmp(path, root, root_length) != 0) return 0;
+    return path[root_length] == L'\\' && path[root_length + 1] != L'\0';
+}
+
+static const wchar_t *deny_relative_path(const wchar_t *path,
+                                         const wchar_t *root) {
+    size_t root_length;
+    if (!deny_path_within_root(path, root)) return NULL;
+    root_length = wcslen(root);
+    if (root_length == 3 && root[1] == L':' && root[2] == L'\\')
+        return path + 3;
+    while (root_length > 1 && root[root_length - 1] == L'\\') root_length--;
+    return path + root_length + 1;
+}
+
+/* Reject components that Win32 would silently reinterpret.  The names are
+ * relative to an already validated write root, so a colon (alternate data
+ * stream) or a separator must never appear here. */
+static int deny_component_valid(const wchar_t *name, size_t length) {
+    static const wchar_t *const reserved[] = {
+        L"CON", L"PRN", L"AUX", L"NUL",
+        L"COM1", L"COM2", L"COM3", L"COM4", L"COM5",
+        L"COM6", L"COM7", L"COM8", L"COM9",
+        L"LPT1", L"LPT2", L"LPT3", L"LPT4", L"LPT5",
+        L"LPT6", L"LPT7", L"LPT8", L"LPT9"
+    };
+    static const wchar_t invalid[] = L"<>:\"/\\|?*";
+    size_t index, base_length;
+    if (length == 0 || length > 255) return 0;
+    if (length == 1 && name[0] == L'.') return 0;
+    if (length == 2 && name[0] == L'.' && name[1] == L'.') return 0;
+    for (index = 0; index < length; ++index) {
+        if (name[index] < 32 || wcschr(invalid, name[index]) != NULL) return 0;
+    }
+    if (name[length - 1] == L'.' || name[length - 1] == L' ') return 0;
+    base_length = length;
+    for (index = 0; index < length; ++index)
+        if (name[index] == L'.') {
+            base_length = index;
+            break;
+        }
+    for (index = 0; index < ARRAYSIZE(reserved); ++index) {
+        size_t reserved_length = wcslen(reserved[index]);
+        if (base_length == reserved_length &&
+            _wcsnicmp(name, reserved[index], reserved_length) == 0)
+            return 0;
+    }
+    return 1;
+}
+
+/* Verify an existing object without following a reparse point.  Returns a
+ * Win32 error; expect_directory is 1, 0, or -1 for either. */
+static DWORD deny_check_existing(const wchar_t *path, int expect_directory) {
+    HANDLE handle;
+    BY_HANDLE_FILE_INFORMATION info;
+    DWORD error;
+    handle = CreateFileW(path, FILE_READ_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING,
+                         FILE_FLAG_BACKUP_SEMANTICS |
+                             FILE_FLAG_OPEN_REPARSE_POINT,
+                         NULL);
+    if (handle == INVALID_HANDLE_VALUE) return GetLastError();
+    if (!GetFileInformationByHandle(handle, &info)) {
+        error = GetLastError();
+        CloseHandle(handle);
+        return error;
+    }
+    CloseHandle(handle);
+    if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+        return ERROR_ACCESS_DENIED;
+    if (expect_directory >= 0 &&
+        (((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) !=
+         (expect_directory != 0)))
+        return expect_directory ? ERROR_DIRECTORY : ERROR_FILE_INVALID;
+    return ERROR_SUCCESS;
+}
+
+static int deny_create_placeholder_directory(
+    const wchar_t *path, SECURITY_ATTRIBUTES *attributes,
+    char *reason, size_t reason_size) {
+    DWORD error;
+    int created = CreateDirectoryW(path, attributes) != 0;
+    if (!created) {
+        error = GetLastError();
+        if (error != ERROR_ALREADY_EXISTS) {
+            (void)snprintf(reason, reason_size,
+                           "denyPaths placeholder directory creation failed (error=%lu)",
+                           (unsigned long)error);
+            return 0;
+        }
+    }
+    error = deny_check_existing(path, 1);
+    if (error != ERROR_SUCCESS) {
+        (void)snprintf(reason, reason_size,
+                       "denyPaths placeholder directory could not be secured (error=%lu)",
+                       (unsigned long)error);
+        return 0;
+    }
+    return 1;
+}
+
+static int deny_create_placeholder_file(const wchar_t *path,
+                                        SECURITY_ATTRIBUTES *attributes,
+                                        char *reason, size_t reason_size) {
+    HANDLE handle;
+    DWORD error;
+    handle = CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         attributes, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(handle);
+        return 1;
+    }
+    error = GetLastError();
+    if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS ||
+        error == ERROR_ACCESS_DENIED) {
+        error = deny_check_existing(path, -1);
+        if (error == ERROR_SUCCESS) return 1;
+    }
+    (void)snprintf(reason, reason_size,
+                   "denyPaths placeholder creation failed (error=%lu)",
+                   (unsigned long)error);
+    return 0;
+}
+
+static int deny_create_placeholder(const wchar_t *path,
+                                   const char *const *write_roots,
+                                   size_t write_root_count,
+                                   char *reason, size_t reason_size) {
+    struct deny_placeholder_security security;
+    wchar_t *normalized = NULL;
+    wchar_t *root = NULL;
+    wchar_t *extended_root = NULL;
+    wchar_t *extended_path = NULL;
+    wchar_t *relative_copy = NULL;
+    wchar_t *full = NULL;
+    wchar_t *cursor;
+    const wchar_t *relative = NULL;
+    DWORD attributes, error;
+    size_t index, full_length, full_size;
+    int ok = 0;
+    memset(&security, 0, sizeof(security));
+    normalized = deny_normalize_path(path);
+    if (!normalized) return 1;
+    for (index = 0; index < write_root_count; ++index) {
+        wchar_t *candidate = utf8_to_wide(write_roots[index]);
+        wchar_t *normalized_root;
+        if (!candidate) continue;
+        normalized_root = deny_normalize_path(candidate);
+        free(candidate);
+        if (normalized_root &&
+            deny_path_within_root(normalized, normalized_root)) {
+            root = normalized_root;
+            relative = deny_relative_path(normalized, normalized_root);
+            break;
+        }
+        free(normalized_root);
+    }
+    if (!root) {
+        free(normalized);
+        return 1;
+    }
+    extended_path = extend_path(normalized);
+    if (!extended_path) {
+        set_reason(reason, reason_size, "denyPaths placeholder allocation failed");
+        goto done;
+    }
+    attributes = GetFileAttributesW(extended_path);
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        ok = 1;
+        goto done;
+    }
+    error = GetLastError();
+    if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+        (void)snprintf(reason, reason_size,
+                       "denyPaths entry could not be queried (error=%lu)",
+                       (unsigned long)error);
+        goto done;
+    }
+    if (!relative || !relative[0]) {
+        ok = 1;
+        goto done;
+    }
+    if (!deny_placeholder_security_init(&security)) {
+        set_reason(reason, reason_size,
+                   "denyPaths placeholder security descriptor failed");
+        goto done;
+    }
+    extended_root = extend_path(root);
+    if (!extended_root) {
+        set_reason(reason, reason_size, "denyPaths placeholder allocation failed");
+        goto done;
+    }
+    relative_copy = (wchar_t *)malloc((wcslen(relative) + 1) * sizeof(*relative_copy));
+    if (!relative_copy) {
+        set_reason(reason, reason_size, "denyPaths placeholder allocation failed");
+        goto done;
+    }
+    (void)wcscpy(relative_copy, relative);
+    full_size = wcslen(extended_root) + wcslen(relative_copy) + 2;
+    full = (wchar_t *)malloc(full_size * sizeof(*full));
+    if (!full) {
+        set_reason(reason, reason_size, "denyPaths placeholder allocation failed");
+        goto done;
+    }
+    (void)wcscpy(full, extended_root);
+    full_length = wcslen(full);
+    if (full_length > 0 && full[full_length - 1] != L'\\')
+        full[full_length++] = L'\\';
+    full[full_length] = L'\0';
+    cursor = relative_copy;
+    for (;;) {
+        wchar_t *slash = wcschr(cursor, L'\\');
+        size_t component_length;
+        if (slash) *slash = L'\0';
+        component_length = wcslen(cursor);
+        if (!deny_component_valid(cursor, component_length)) {
+            set_reason(reason, reason_size,
+                       "denyPaths placeholder component is not a safe filename");
+            goto done;
+        }
+        if (full_length > 0 && full[full_length - 1] != L'\\')
+            full[full_length++] = L'\\';
+        if (full_length + component_length + 1 > full_size) {
+            set_reason(reason, reason_size, "denyPaths placeholder allocation failed");
+            goto done;
+        }
+        (void)memcpy(full + full_length, cursor,
+                     (component_length + 1) * sizeof(*full));
+        full_length += component_length;
+        if (!slash) {
+            if (!deny_create_placeholder_file(full, &security.attributes,
+                                              reason, reason_size))
+                goto done;
+            break;
+        }
+        if (!deny_create_placeholder_directory(full, &security.attributes,
+                                               reason, reason_size))
+            goto done;
+        cursor = slash + 1;
+    }
+    ok = 1;
+done:
+    deny_placeholder_security_free(&security);
+    free(normalized);
+    free(root);
+    free(extended_root);
+    free(extended_path);
+    free(relative_copy);
+    free(full);
+    return ok;
+}
+
 static int strip_deny_paths(owc_sandbox *sandbox,
                             const owc_sandbox_options *options,
                             char *reason, size_t reason_size) {
@@ -934,16 +1301,28 @@ static int strip_deny_paths(owc_sandbox *sandbox,
     unsigned long nodes = 0;
     for (i = 0; i < options->deny_count; ++i) {
         wchar_t *path = utf8_to_wide(options->deny_paths[i]);
+        wchar_t *normalized;
+        wchar_t *target;
         wchar_t *extended;
         size_t length;
         if (!path) {
             set_reason(reason, reason_size, "denyPaths entry is not valid UTF-8");
             return 0;
         }
-        length = wcslen(path);
-        while (length > 3 && (path[length - 1] == L'\\' || path[length - 1] == L'/'))
-            path[--length] = L'\0';
-        extended = extend_path(path);
+        normalized = deny_normalize_path(path);
+        target = normalized ? normalized : path;
+        if (!deny_create_placeholder(target, options->write_roots,
+                                     options->write_root_count,
+                                     reason, reason_size)) {
+            free(normalized);
+            free(path);
+            return 0;
+        }
+        length = wcslen(target);
+        while (length > 3 && (target[length - 1] == L'\\' || target[length - 1] == L'/'))
+            target[--length] = L'\0';
+        extended = extend_path(target);
+        free(normalized);
         free(path);
         if (!extended) {
             set_reason(reason, reason_size, "denyPaths strip allocation failed");

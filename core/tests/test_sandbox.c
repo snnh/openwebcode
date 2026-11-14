@@ -234,14 +234,16 @@ static int dacl_has_sid_ace(const wchar_t *path, PSID sid, int *present) {
 
 static int test_deny_acl_restore(void) {
     wchar_t temp[MAX_PATH], root[MAX_PATH], denied[MAX_PATH], allowed[MAX_PATH];
+    wchar_t missing[MAX_PATH], missing_outside[MAX_PATH];
     char root_utf8[MAX_PATH * 3], denied_utf8[MAX_PATH * 3];
     char allowed_utf8[MAX_PATH * 3];
-    char missing_utf8[MAX_PATH * 3], session_id[64], reason[256];
+    char missing_utf8[MAX_PATH * 3], missing_outside_utf8[MAX_PATH * 3];
+    char session_id[64], reason[256];
     wchar_t profile_name[96];
     unsigned char *after = NULL;
     DWORD after_size = 0;
     int after_protected = 0;
-    const char *roots[1], *denies[2];
+    const char *roots[1], *denies[3];
     owc_sandbox_options options;
     owc_sandbox *sandbox = NULL;
     PSID sid = NULL;
@@ -252,10 +254,15 @@ static int test_deny_acl_restore(void) {
         !GetTempFileNameW(temp, L"owd", 0, root) ||
         !DeleteFileW(root) || !CreateDirectoryW(root, NULL)) return 40;
     if (swprintf_s(denied, ARRAYSIZE(denied), L"%ls\\denied.txt", root) < 0 ||
-        swprintf_s(allowed, ARRAYSIZE(allowed), L"%ls\\allowed.txt", root) < 0) {
+        swprintf_s(allowed, ARRAYSIZE(allowed), L"%ls\\allowed.txt", root) < 0 ||
+        swprintf_s(missing, ARRAYSIZE(missing), L"%ls\\missing-deny-target.txt", root) < 0 ||
+        swprintf_s(missing_outside, ARRAYSIZE(missing_outside),
+                   L"%lsowc-missing-deny-outside-%lu.txt", temp,
+                   (unsigned long)GetCurrentProcessId()) < 0) {
         result = 41;
         goto cleanup;
     }
+    (void)DeleteFileW(missing_outside);
     {
         HANDLE file = CreateFileW(denied, GENERIC_WRITE, 0, NULL,
                                   CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -278,9 +285,10 @@ static int test_deny_acl_restore(void) {
                              denied_utf8, (int)sizeof(denied_utf8), NULL, NULL) ||
         !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, allowed, -1,
                              allowed_utf8, (int)sizeof(allowed_utf8), NULL, NULL) ||
-        !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
-                             L"missing-deny-target.txt", -1,
-                             missing_utf8, (int)sizeof(missing_utf8), NULL, NULL)) {
+        !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, missing, -1,
+                             missing_utf8, (int)sizeof(missing_utf8), NULL, NULL) ||
+        !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, missing_outside, -1,
+                             missing_outside_utf8, (int)sizeof(missing_outside_utf8), NULL, NULL)) {
         result = 42;
         goto cleanup;
     }
@@ -288,14 +296,16 @@ static int test_deny_acl_restore(void) {
                    (unsigned long)GetCurrentProcessId());
     roots[0] = root_utf8;
     denies[0] = denied_utf8;
-    /* A deny path that does not exist must be skipped, not fail the grant. */
+    /* Missing paths inside a write root get a restricted placeholder; a
+     * missing path outside every write root must stay absent. */
     denies[1] = missing_utf8;
+    denies[2] = missing_outside_utf8;
     memset(&options, 0, sizeof(options));
     options.session_id = session_id;
     options.write_roots = roots;
     options.write_root_count = 1;
     options.deny_paths = denies;
-    options.deny_count = 2;
+    options.deny_count = 3;
     sandbox = owc_sandbox_create(&options, reason, sizeof(reason));
     if (!sandbox) {
         (void)fprintf(stderr, "deny ACL sandbox creation failed: %s\n", reason);
@@ -311,6 +321,28 @@ static int test_deny_acl_restore(void) {
     hr = DeriveAppContainerSidFromAppContainerName(profile_name, &sid);
     if (FAILED(hr) || !sid) {
         result = 45;
+        goto cleanup;
+    }
+    /* In-workspace missing deny path: the placeholder must exist and carry
+       no package-SID ACE.  A missing path outside the write root must not be
+       conjured into existence. */
+    if (GetFileAttributesW(missing) == INVALID_FILE_ATTRIBUTES) {
+        (void)fprintf(stderr, "missing in-workspace deny placeholder was not created\n");
+        result = 43;
+        goto cleanup;
+    }
+    if (!dacl_has_sid_ace(missing, sid, &present)) {
+        result = 46;
+        goto cleanup;
+    }
+    if (present) {
+        (void)fprintf(stderr, "deny placeholder DACL references the sandbox SID\n");
+        result = 47;
+        goto cleanup;
+    }
+    if (GetFileAttributesW(missing_outside) != INVALID_FILE_ATTRIBUTES) {
+        (void)fprintf(stderr, "missing deny path outside the write root was created\n");
+        result = 43;
         goto cleanup;
     }
     /* The deny path must carry no ACE for the package SID at all: the
@@ -368,6 +400,8 @@ cleanup:
     free(after);
     (void)DeleteFileW(allowed);
     (void)DeleteFileW(denied);
+    (void)DeleteFileW(missing);
+    (void)DeleteFileW(missing_outside);
     (void)RemoveDirectoryW(root);
     return result;
 }

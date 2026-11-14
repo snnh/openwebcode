@@ -106,10 +106,10 @@ describe("nodeEnvReadOnlyPaths（与 nodeEnv 绑定的工具链只读放行）",
 });
 
 describe("CoreRouter.configureSession 工具链挂载", () => {
-  function makeRouter(sessionMeta: SessionMeta, platform: NodeJS.Platform = "linux") {
+  function makeRouter(sessionMeta: SessionMeta, platform: NodeJS.Platform = "linux", filteredProxy?: unknown) {
     const captured: SandboxPolicy[] = [];
     const client = { on() { return client; }, start: async () => {}, configureSession: async (request: { sandbox: SandboxPolicy }) => { captured.push(request.sandbox); return { sandboxCapability: "enforced" as const }; } };
-    const router = new CoreRouter(client as never, { get: async () => sessionMeta } as never, {} as never, undefined, undefined, platform);
+    const router = new CoreRouter(client as never, { get: async () => sessionMeta } as never, {} as never, undefined, undefined, platform, filteredProxy as never);
     return { captured, router };
   }
 
@@ -149,6 +149,29 @@ describe("CoreRouter.configureSession 工具链挂载", () => {
     await expect(router.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy })).rejects.toThrow(/landlock/);
     router.setTrustProjectExecConfig(() => false);
     await expect(router.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy })).resolves.toBeDefined();
+  });
+
+  it("filtered sidecar 目录在首个 configure 前准备并优先挂载", async () => {
+    const home = await tempRoot("owc-filtered-configure-");
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    try {
+      const proxyDir = "/data/proxy";
+      const events: string[] = [];
+      const filteredProxy = {
+        readOnlyPaths: () => [proxyDir],
+        prepareReadOnlyPaths: async () => { events.push("prepare"); return [proxyDir]; },
+        ensureProxy: async () => { events.push("ensure"); return { proxyAddr: "127.0.0.1:1", readOnlyPaths: [proxyDir] }; },
+      };
+      const { captured, router } = makeRouter({ ...baseMeta, sandboxMode: "appcontainer" }, "win32", filteredProxy);
+      await router.configureSession({ sessionId: "s1", cwd: "/work", sandbox: { ...policy, network: "filtered" } });
+      expect(events).toEqual(["prepare", "ensure"]);
+      expect(captured[0]?.readOnlyPaths?.[0]).toBe(proxyDir);
+      expect(captured[1]?.proxyAddr).toBe("127.0.0.1:1");
+      expect(captured[1]?.readOnlyPaths?.[0]).toBe(proxyDir);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("uv-config 的 venv 进 allowPaths；仅 AppContainer 缺省档挂载，win32 jobobject 档不挂载", async () => {
@@ -262,9 +285,9 @@ describe("gitCredentialReadOnlyPaths（沙盒内 git/gh 凭据只读放行）", 
 });
 
 describe("CoreRouter.effectivePolicyFor（有效策略 builder）", () => {
-  function makeRouter(sessionMeta: SessionMeta, platform: NodeJS.Platform = "linux") {
+  function makeRouter(sessionMeta: SessionMeta, platform: NodeJS.Platform = "linux", filteredProxy?: unknown) {
     const client = { on() { return client; } };
-    return new CoreRouter(client as never, { get: async () => sessionMeta } as never, {} as never, undefined, undefined, platform);
+    return new CoreRouter(client as never, { get: async () => sessionMeta } as never, {} as never, undefined, undefined, platform, filteredProxy as never);
   }
 
   it("凭据按类别标注来源；core 上限 32 之外的自动挂载进入 dropped", async () => {
@@ -308,5 +331,28 @@ describe("CoreRouter.effectivePolicyFor（有效策略 builder）", () => {
     const session = { ...baseMeta, cwd: "/work" };
     const tooMany = { ...policy, readRoots: Array.from({ length: 17 }, (_, index) => `/r/${index}`) };
     expect(() => makeRouter(session).effectivePolicyFor(session, tooMany)).toThrow(/core limits/);
+  });
+
+  it("filtered 代理目录进入只读层并标注 filtered-proxy；优先于其他只读项", async () => {
+    const home = await tempRoot("owc-filtered-policy-");
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    try {
+      const proxyDir = "/data/proxy";
+      const session = { ...baseMeta, sandboxMode: "appcontainer" as const, sandbox: { ...policy, network: "filtered" as const } };
+      const effective = makeRouter(session, "win32", { readOnlyPaths: () => [proxyDir] }).effectivePolicyFor(session, session.sandbox);
+      expect(effective.policy.readOnlyPaths?.[0]).toBe(proxyDir);
+      expect(effective.entries).toContainEqual({ field: "readOnlyPaths", value: proxyDir, source: "filtered-proxy" });
+
+      const pinned = Array.from({ length: 32 }, (_, index) => `/pin/${index}`);
+      const lastPinned = pinned[31]!;
+      const saturated = { ...session, sandbox: { ...session.sandbox, readOnlyPaths: pinned } };
+      const capped = makeRouter(saturated, "win32", { readOnlyPaths: () => [proxyDir] }).effectivePolicyFor(saturated, saturated.sandbox);
+      expect(capped.policy.readOnlyPaths).toHaveLength(32);
+      expect(capped.policy.readOnlyPaths?.[0]).toBe(proxyDir);
+      expect(capped.dropped).toContainEqual({ field: "readOnlyPaths", value: lastPinned, source: "session", reason: "core cap 32" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

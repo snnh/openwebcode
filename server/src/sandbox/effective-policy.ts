@@ -4,7 +4,7 @@ import type { JobObjectLimits, SandboxMode, SandboxPolicy } from "../sessions/ty
  * 沙盒有效策略 builder：集中处理默认层、全局层、会话层、凭据/工具链自动挂载
  * 与 core 上限。输出最终策略 + 每项来源 + 被丢弃项，供 SandboxPanel 与排障使用。
  *
- * 调用方负责算好候选目录（凭据、node/python 工具链）；本模块只做合并、去重、
+ * 调用方负责算好候选目录（凭据、node/python 工具链、filtered 代理）；本模块只做合并、去重、
  * 上限与来源标注，避免与 core-router 形成循环依赖。
  */
 
@@ -24,7 +24,8 @@ type SandboxPolicySource =
   | "credential-git-token"
   | "credential-ssh"
   | "toolchain-node"
-  | "toolchain-python";
+  | "toolchain-python"
+  | "filtered-proxy";
 
 interface EffectivePolicyEntry {
   field: keyof SandboxPolicy;
@@ -53,6 +54,8 @@ export interface EffectiveSandboxPolicyInput {
   credentials: { identity: readonly string[]; tokens: readonly string[]; ssh: readonly string[] };
   toolchainReadOnly: readonly string[];
   toolchainWrite: { node: readonly string[]; python: readonly string[] };
+  /** filtered 网络档 sidecar 运行时目录；最先占位，避免被其他自动挂载挤出上限。 */
+  filteredProxyReadOnly?: readonly string[];
 }
 
 function assertExplicitCaps(sandbox: SandboxPolicy): void {
@@ -120,6 +123,8 @@ export function buildEffectiveSandboxPolicy(input: EffectiveSandboxPolicyInput):
     : [...(sandbox.allowPaths ?? [])];
 
   const readOnlyCandidates: Array<{ value: string; source: SandboxPolicySource }> = [
+    // 代理 sidecar 是 filtered 档的启动前提，必须优先于可选的凭据/工具链挂载。
+    ...(input.filteredProxyReadOnly ?? []).map((value) => ({ value, source: "filtered-proxy" as const })),
     ...(sandbox.readOnlyPaths ?? []).map((value) => ({ value, source: input.baseSource })),
     ...input.credentials.identity.map((value) => ({ value, source: "credential-git" as const })),
     ...input.credentials.tokens.map((value) => ({ value, source: "credential-git-token" as const })),

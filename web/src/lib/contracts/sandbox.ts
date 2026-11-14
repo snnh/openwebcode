@@ -24,7 +24,7 @@ export interface SandboxCapabilities {
   landlock?: { available: boolean; reason?: string };
 }
 
-/** 有效策略中的一项：最终值 + 来源（default/session/global/credential-\* / toolchain-\*）。 */
+/** 有效策略中的一项：最终值 + 来源（default/session/global/credential-\* / toolchain-\* / filtered-proxy）。 */
 export interface EffectiveSandboxPolicyEntry {
   field: string;
   value: string;

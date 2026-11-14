@@ -125,6 +125,16 @@ export class FilteredProxyManager {
     return [path.join(this.deps.dataDir, "proxy")];
   }
 
+  /**
+   * 首次 session.configure 前确保只读授予目标已存在：core 对缺失路径的 ACL 授予是
+   * best-effort，若代理目录此时还没创建，sidecar job 会在没有 runtime 读取权限的情况下
+   * 启动。ensureProxy 随后复用同一目录写 deny 文件与 runtime。
+   */
+  async prepareReadOnlyPaths(): Promise<string[]> {
+    await ensureDirWithMode(path.join(this.deps.dataDir, "proxy"), 0o700);
+    return this.readOnlyPaths();
+  }
+
   private runtimeDir(): string {
     return path.join(this.deps.dataDir, "proxy", "runtime");
   }

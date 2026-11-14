@@ -67,8 +67,11 @@ typedef struct {
        reads), so enforcement strips this command's own package-SID ACEs
        from each existing deny path after the write-root grant propagated
        them; without a package-leg allow the object is unreachable for the
-       sandboxed process.  Missing paths are skipped; a strip failure on an
-       existing path fails the whole create (fail-closed).  POSIX enforces
+       sandboxed process.  Missing paths inside a write root get a restricted
+       placeholder (current-user-only protected DACL) before the strip, so a
+       sandboxed command cannot create them; missing paths outside every write
+       root are skipped.  Placeholder creation and a strip failure on an
+       existing path fail the whole create (fail-closed).  POSIX enforces
        deny paths at the fs.* RPC layer and, under bubblewrap, through
        mount masks, so this member is unused there. */
     const char *const *deny_paths;

@@ -2,6 +2,13 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [Unreleased]
+
+### 修复
+
+- **Windows AppContainer 缺失 deny 路径占位与 fail closed**：与 bubblewrap 的修复对齐——写根内缺失的 `denyPaths` 会先创建仅当前用户可访问的受限占位（保护 DACL，不含 AppContainer 包 SID），再执行 ACL strip；占位创建或 strip 失败都会拒绝启动，避免沙盒内进程创建 `.owc/hooks.json`、`.owc/mcp.json` 等宿主执行入口后由宿主加载。写根之外的缺失路径仍不创建。
+- **filtered 代理只读挂载进入有效策略来源**：Windows `filtered` 网络档的 sidecar 运行时目录现在会在首个 `session.configure` 前创建，并由有效策略 builder 优先加入只读层，沙盒面板标注为 `filtered-proxy`；超过 core 上限时按优先级丢弃其他只读项，而不是静默挤掉代理目录。
+
 ## [1.16.1] - 2026-11-04
 
 ### 权限与沙盒

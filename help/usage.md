@@ -135,7 +135,7 @@ ChatGPT 风格的纯对话模式，与编码工作台并存，适合问答、写
 - **工作目录**：agent 的 cwd，文件读写/命令执行都在此目录下（受沙盒约束）。可手输绝对路径，也可点输入框旁的「浏览…」按钮在弹层中导航选择——面包屑可跳回任意层级，列表里目录可进入、文件灰显仅作定位参考、符号链接标记但不跟随。浏览范围受**目录浏览根**限制（见「配置文件位置」），默认为用户家目录，可在 `server-settings.json` 的 `browseRoots` 或环境变量 `OWC_BROWSE_ROOTS` 中配置；手动输入路径仅校验是否存在，不受浏览根约束
 - **模型**：从所有已启用服务商的模型列表中选择，格式为 `模型ID【服务商】`
 - **沙盒模式**：
-  - Windows：`AppContainer`（默认，真文件隔离）/ `Job Object`（兼容模式，无文件隔离）/ `WSB`（Windows Sandbox，跑不可信代码用，一会话一 VM，关闭即销毁）/ `关闭`
+  - Windows：`AppContainer`（默认，真文件隔离）/ `Job Object`（兼容模式，无文件隔离）/ `WSB`（Windows Sandbox，跑不可信代码用，一会话一 VM，关闭即销毁）/ `关闭`。AppContainer 会对写根内缺失的拒绝路径（含默认的 `.env`、`.owc/hooks.json`、`.owc/mcp.json`）创建仅宿主可访问的空占位，避免沙盒内创建后由宿主执行；写根外的缺失路径不会创建
   - Linux：`bubblewrap`（默认，mount/net namespace 隔离；无 bwrap 环境默认档会明确报错，需安装 bubblewrap 或显式切换 Landlock）/ `Landlock`（显式兼容档，仅内核规则，denyPaths 不经命令层强制）/ `关闭`
   - `关闭` 是完全不沙盒，不推荐
   - Linux bubblewrap 与 Windows AppContainer 档内使用 git/gh：宿主 `~/.gitconfig`、`~/.config/git/config|ignore|attributes`（仅实际存在的项）默认以只读方式挂入沙盒；`.git-credentials`、`~/.config/git/credentials`、`~/.config/gh` 含明文令牌，**默认不挂载**，需要 HTTPS push / `gh` 登录时在新建会话对话框或沙盒面板显式开启「Git 令牌」；`~/.ssh` 含 SSH 私钥也默认不挂载，需要 SSH push 时单独开启「SSH 凭据」（均为会话级开关）。这些路径只读且对文件工具不可见（仅沙盒内进程可读）
@@ -215,7 +215,7 @@ agent 运行期间的状态指示与干预手段：
   - `允许一次` —— 仅批准当前工具调用；批准响应先返回浏览器，随后才启动工具
   - `总是允许` —— 二次确认后生成持久规则（如 `bash(npm test)`，按词边界前缀匹配：`npm test -- --watch` 放行、`npm testx` 不放行），随会话保存；二次确认时可勾选「对所有会话生效」，改为写入全局放行规则
   - `拒绝` —— 可附理由回填给 LLM
-- **沙盒面板**：除模式、网络、凭据开关与路径根外，还展示最近一次下发的有效策略来源（默认/会话/全局/凭据/工具链）以及因 core 上限（如只读挂载 32 项）未生效的自动挂载项
+- **沙盒面板**：除模式、网络、凭据开关与路径根外，还展示最近一次下发的有效策略来源（默认/会话/全局/凭据/工具链/filtered 代理）以及因 core 上限（如只读挂载 32 项）未生效的自动挂载项
 - **命令后端**：会话头部可选 `默认` 或 `PowerShell 7`。`默认` 按平台探测顺序取第一个可用项——Windows 为 `pwsh > Git Bash > cmd.exe`（Git Bash 解析为 Git for Windows 的 bash.exe 绝对路径，不会命中 WSL 的 `System32\bash.exe`），Linux 为 `bash > pwsh > $SHELL`（`/bin/sh` 兜底）。该选择同时作用于前台命令、后台任务和 agent 的 bash 工具，随会话保存。选 `pwsh` 前需先安装 PowerShell 7；缺少时会返回明确错误，不会悄悄改用其他 shell
 - **持久 shell**：agent 的 bash 工具默认复用每会话一个持久 shell（沙盒内 pty），`cd` 切换的目录、设置的环境变量跨调用保持；pty 不可用（如旧版 core）或 shell 起不来（如 AppContainer 沙盒下的 pwsh / Git Bash）时透明回退一次性执行，不报错。`run_in_background` 后台任务仍走一次性 job
 - **会话环境变量**：bash 工具的执行环境中自动注入四个会话元数据变量——`OWC_SESSION_ID`（会话 id）、`OWC_WORKSPACE`（会话工作目录）、`OWC_SANDBOX_MODE`（沙盒模式，如 `appcontainer`）、`OWC_AGENT_MODE`（agent 模式，如 `code`/`plan`）。持久 shell 开壳时激活一次，一次性回退路径逐命令前置 export，脚本可依此感知会话上下文

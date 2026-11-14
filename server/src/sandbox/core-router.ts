@@ -367,8 +367,8 @@ export class CoreRouter extends EventEmitter {
   }
 
   /**
-   * 计算会话有效策略：默认/会话层 + 全局层 + 凭据/工具链候选，统一交给
-   * effective-policy builder 合并、去重、截断并标注来源。模式字段仍按
+   * 计算会话有效策略：默认/会话层 + 全局层 + 凭据/工具链/filtered 代理候选，
+   * 统一交给 effective-policy builder 合并、去重、截断并标注来源。模式字段仍按
    * meta.sandboxMode 下发（win32 缺省 appcontainer 不下发 mode），凭据/工具链
    * 门禁按 effectiveSandboxMode 判定。
    */
@@ -393,6 +393,9 @@ export class CoreRouter extends EventEmitter {
         python: pythonEnvWritePaths(pythonMode, meta?.cwd, this.dataDir, this.platform),
       }
       : { node: [], python: [] };
+    const filteredProxyReadOnly = sandbox.enabled && sandbox.network === "filtered" && this.filteredProxy
+      ? this.filteredProxy.readOnlyPaths()
+      : [];
     return buildEffectiveSandboxPolicy({
       sandbox,
       ...(dispatchedMode !== undefined ? { mode: dispatchedMode } : {}),
@@ -403,6 +406,7 @@ export class CoreRouter extends EventEmitter {
       credentials,
       toolchainReadOnly,
       toolchainWrite,
+      filteredProxyReadOnly,
     });
   }
 
@@ -445,11 +449,14 @@ export class CoreRouter extends EventEmitter {
     cwd: string,
     sandbox: SandboxPolicy,
   ): Promise<{ sandboxCapability: string; sandboxReason?: string }> {
-    if (sandbox.network !== "filtered" || !this.filteredProxy || client !== this.shared) {
+    const filteredProxy = this.filteredProxy;
+    if (!sandbox.enabled || sandbox.network !== "filtered" || !filteredProxy || client !== this.shared) {
       return client.configureSession({ sessionId, cwd, sandbox });
     }
+    // ACL 授予不等待目录出现：先把 sidecar 只读目录建好，再下发首个 configure。
+    await filteredProxy.prepareReadOnlyPaths();
     await client.configureSession({ sessionId, cwd, sandbox });
-    const { proxyAddr, readOnlyPaths } = await this.filteredProxy.ensureProxy(client, sessionId, cwd);
+    const { proxyAddr, readOnlyPaths } = await filteredProxy.ensureProxy(client, sessionId, cwd);
     // sidecar 目录必须可读（前置保证），与已并入的凭据/工具链挂载合并而非替换（core 上限 32）
     const mergedReadOnly = [...readOnlyPaths, ...(sandbox.readOnlyPaths ?? []).filter((entry) => !readOnlyPaths.includes(entry))].slice(0, 32);
     return client.configureSession({ sessionId, cwd, sandbox: { ...sandbox, proxyAddr, readOnlyPaths: mergedReadOnly } });
