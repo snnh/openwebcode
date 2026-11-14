@@ -129,7 +129,7 @@ export interface PendingZoneMaxHeightInput {
 /** chrome 高度未量到时的保守预留（桌面：顶栏 + 标签条 + Composer） */
 export const PENDING_CHROME_FALLBACK = 180;
 /** chrome 高度未量到时的保守预留（移动端） */
-export const PENDING_CHROME_FALLBACK_MOBILE = 150;
+const PENDING_CHROME_FALLBACK_MOBILE = 150;
 
 export interface PendingAccordion {
   /** 当前展开的卡片 id；undefined 表示全部收起 */

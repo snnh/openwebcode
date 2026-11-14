@@ -187,6 +187,8 @@ export class HookRunner {
         settle(null);
       }, HookRunner.TIMEOUT_MS);
       child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk.toString("utf8")));
+      // 钩子命令可能不读 stdin 就退出；写入失败会以异步 error 事件冒泡成未处理异常。
+      child.stdin?.on("error", () => undefined);
       child.on("error", (error) => {
         stderr.push(error.message);
         settle(1);

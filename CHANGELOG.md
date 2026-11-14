@@ -2,7 +2,17 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
-## [Unreleased]
+## [1.17.0] - 2026-11-14
+
+### 权限与沙盒
+
+- **权限判定收敛为单策略引擎**：工具能力表统一计划模式只读性、免批判定、allow_always 规则作用域与调度分类；判定顺序固定为「显式规则 → 追加高危工具 → git_commit → yolo → bash 三档 → 档位工具表」，消除 coordinator/runner 两套表漂移。
+- **新建会话默认智能审核 `review`**：读取、write_file/edit_file 与内部工具自动放行；bash 与 test_runner 分机器/模型/人工三档；MCP/扩展工具默认人工；git_commit 始终人工。存量未设置档位的会话仍按 `ask` 兜底。
+- **全局权限设置**：设置 → 会话默认新增全局放行规则（`tool` 或 `tool|参数前缀`，最多 32 条）、追加高危命令与工具；权限卡「总是允许」二次确认时可勾选对所有会话生效。显式规则仍可覆盖高危分类。
+- **本机会话沙盒可选**：可在 `关闭` 与 Landlock/bubblewrap 等本机沙盒档之间切换（WSB 除外）；开沙盒后读写根收敛到 HOME，关闭后恢复文件系统根，HOME 外路径人工门只在关闭时生效。
+- **Git/GitHub 凭据默认最小化**：仅默认只读挂载身份配置；`.git-credentials`、`.config/git/credentials`、`.config/gh` 改为会话级「Git 令牌」开关，`.ssh` 继续由「SSH 凭据」单独开启；修复创建会话时忽略 `sshCredentials` 的问题。
+- **Landlock 与项目级执行配置互斥**：开启「信任项目级执行配置」时，创建/切换到 Landlock 会在配置期拒绝并提示改用 bubblewrap 或关闭信任设置。
+- **沙盒能力预检与有效策略透出**：创建/切换会话时预检 bubblewrap 与 Landlock 能力（旧 core 未上报时放行，明确不可用时拒绝）；沙盒面板展示有效策略来源与因 core 上限未下发的自动挂载项。core `core.ping` 新增 `features.landlock`。
 
 ### 新功能
 
@@ -12,18 +22,10 @@
 
 - **Windows AppContainer 缺失 deny 路径占位与 fail closed**：与 bubblewrap 的修复对齐——写根内缺失的 `denyPaths` 会先创建仅当前用户可访问的受限占位（保护 DACL，不含 AppContainer 包 SID），再执行 ACL strip；占位创建或 strip 失败都会拒绝启动，避免沙盒内进程创建 `.owc/hooks.json`、`.owc/mcp.json` 等宿主执行入口后由宿主加载。写根之外的缺失路径仍不创建。
 - **filtered 代理只读挂载进入有效策略来源**：Windows `filtered` 网络档的 sidecar 运行时目录现在会在首个 `session.configure` 前创建，并由有效策略 builder 优先加入只读层，沙盒面板标注为 `filtered-proxy`；超过 core 上限时按优先级丢弃其他只读项，而不是静默挤掉代理目录。
+- **窄屏底部面板标签顺序**：≤560px 展开「更多」后，第二行标签内联在状态行之前，避免状态行把两组标签隔开。
+- **Hooks 子进程 stdin 的 EPIPE 不再冒泡**：钩子命令不读 stdin 就退出时，写入错误只忽略，不再产生未处理异常。
 
 ## [1.16.1] - 2026-11-04
-
-### 权限与沙盒
-
-- **权限判定收敛为单策略引擎**：工具能力表统一计划模式只读性、免批判定、allow_always 规则作用域与调度分类；判定顺序固定为「显式规则 → 追加高危工具 → git_commit → yolo → bash 三档 → 档位工具表」，消除 coordinator/runner 两套表漂移。
-- **新建会话默认智能审核 `review`**：读取、write_file/edit_file 与内部工具自动放行；bash 与 test_runner 分机器/模型/人工三档；MCP/扩展工具默认人工；git_commit 始终人工。存量未设置档位的会话仍按 `ask` 兜底。
-- **全局权限设置**：设置 → 会话默认新增全局放行规则（`tool` 或 `tool|参数前缀`，最多 32 条）、追加高危命令与工具；权限卡「总是允许」二次确认时可勾选对所有会话生效。显式规则仍可覆盖高危分类。
-- **本机会话沙盒可选**：可在 `关闭` 与 Landlock/bubblewrap 等本机沙盒档之间切换（WSB 除外）；开沙盒后读写根收敛到 HOME，关闭后恢复文件系统根，HOME 外路径人工门只在关闭时生效。
-- **Git/GitHub 凭据默认最小化**：仅默认只读挂载身份配置；`.git-credentials`、`.config/git/credentials`、`.config/gh` 改为会话级「Git 令牌」开关，`.ssh` 继续由「SSH 凭据」单独开启。
-- **Landlock 与项目级执行配置互斥**：开启「信任项目级执行配置」时，创建/切换到 Landlock 会在配置期拒绝并提示改用 bubblewrap 或关闭信任设置。
-- **沙盒能力预检与有效策略透出**：创建/切换会话时预检 bubblewrap 与 Landlock 能力（旧 core 未上报时放行，明确不可用时拒绝）；沙盒面板展示有效策略来源与因 core 上限未下发的自动挂载项。core `core.ping` 新增 `features.landlock`。
 
 ### 修复
 
