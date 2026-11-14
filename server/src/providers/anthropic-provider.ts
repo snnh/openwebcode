@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ChatMessage, ToolResultContent } from "../sessions/types.js";
 import { getUserAgent } from "../user-agent.js";
-import { normalizeProviderError } from "./provider-error.js";
+import { normalizeProviderError, ProviderError } from "./provider-error.js";
 import { anthropicToolResultContent, collectToolMedia } from "./tool-result-media.js";
 import type { Provider, ProviderEvent, ProviderTool, StreamChatRequest } from "./provider.js";
 
@@ -52,6 +52,15 @@ export class AnthropicProvider implements Provider {
     const maxTokens = request.maxTokens ?? (typeof extraMaxTokens === "number" ? extraMaxTokens : this.maxTokens);
     // 服务级（provider 配置）与请求级开关共同决定；任一关闭则不打任何显式断点。
     const caching = this.promptCaching && request.promptCaching !== false;
+    // Anthropic / DeepSeek Messages：可以延迟部分工具，但至少要有一个可立即加载的工具，
+    // 否则端点直接 400。提前给出可诊断错误，避免把必然失败的请求发出去。
+    if (request.tools.length > 0 && request.tools.every((tool) => tool.deferLoading === true)) {
+      throw new ProviderError(
+        "invalid_request",
+        "At least one tool must have defer_loading=false; all tools cannot be deferred",
+        false,
+      );
+    }
     try {
       const stream = this.client.messages.stream(
         {
@@ -218,18 +227,22 @@ function toAnthropicSystem(request: StreamChatRequest, caching: boolean): string
   return blocks;
 }
 
-/** 消息级断点预算：system 块占 1 个，tools 末位占 1 个，剩余额度给消息前缀（取最早者，缓存前缀最长）。 */
+/** 消息级断点预算：system 块占 1 个，tools 断点占 1 个，剩余额度给消息前缀（取最早者，缓存前缀最长）。 */
 function messageBreakpoints(request: StreamChatRequest, caching: boolean): ReadonlySet<string> {
   if (!caching) return new Set();
-  const budget = MAX_CACHE_BREAKPOINTS - 1 - (request.tools.length > 0 ? 1 : 0);
+  // 延迟加载工具不能带 cache_control（端点 400）；只有存在可缓存工具时才占用一个断点额度。
+  const toolsBreakpoint = request.tools.some((tool) => tool.deferLoading !== true);
+  const budget = MAX_CACHE_BREAKPOINTS - 1 - (toolsBreakpoint ? 1 : 0);
   return new Set((request.cacheBreakpoints ?? []).slice(0, Math.max(0, budget)));
 }
 
-/** 工具定义逐 turn 稳定，末位工具打断点即可缓存整个 tools 前缀。 */
+/** 工具定义逐 turn 稳定，末位**非延迟**工具打断点即可缓存整个 tools 前缀；
+ * 延迟工具不能携带 cache_control（Anthropic 明确 400），故断点向前找。 */
 function toAnthropicTools(tools: ProviderTool[], caching: boolean): Anthropic.Tool[] {
+  const breakpoint = caching ? tools.findLastIndex((tool) => tool.deferLoading !== true) : -1;
   return tools.map((tool, index) => ({
     ...toAnthropicTool(tool),
-    ...(caching && index === tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
+    ...(index === breakpoint ? { cache_control: { type: "ephemeral" as const } } : {}),
   }) as Anthropic.Tool);
 }
 
@@ -386,6 +399,7 @@ function toAnthropicTool(tool: ProviderTool): Anthropic.Tool {
     name: tool.name,
     description: tool.description,
     input_schema: tool.inputSchema as Anthropic.Tool.InputSchema,
+    ...(tool.deferLoading === true ? { defer_loading: true } : {}),
   };
 }
 

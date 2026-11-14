@@ -111,6 +111,33 @@ describe("Anthropic prompt cache 断点", () => {
     }
   });
 
+  it("deferLoading 映射为 defer_loading，缓存断点跳过延迟工具；全延迟提前拒绝", async () => {
+    const { provider, bodies } = mockProvider(OK_MESSAGE);
+    const tools = [
+      { name: "search", description: "Search tools", inputSchema: { type: "object" }, deferLoading: true },
+      { name: "read", description: "Read a file", inputSchema: { type: "object" } },
+      { name: "bash", description: "Run a command", inputSchema: { type: "object" }, deferLoading: true },
+    ];
+    await collect(provider.streamChat(cacheRequest({ tools, cacheBreakpoints: ["u1"], messages: [cacheMessage("u1", "user", "hi")] })));
+    const sent = bodies[0]!.tools as Array<Record<string, unknown>>;
+    expect(sent[0]).toMatchObject({ name: "search", defer_loading: true });
+    expect(sent[0]).not.toHaveProperty("cache_control");
+    expect(sent[1]).toMatchObject({ name: "read", cache_control: { type: "ephemeral" } });
+    expect(sent[2]).toMatchObject({ name: "bash", defer_loading: true });
+    expect(sent[2]).not.toHaveProperty("cache_control");
+    // false/未声明不发送字段，保持既有请求体逐字节不变
+    await collect(provider.streamChat(cacheRequest({ tools: [{ name: "read", description: "Read", inputSchema: { type: "object" }, deferLoading: false }] })));
+    expect((bodies[1]!.tools as Array<Record<string, unknown>>)[0]).not.toHaveProperty("defer_loading");
+
+    const before = bodies.length;
+    await expect(collect(provider.streamChat(request({ tools: [tools[0]!] })))).rejects.toMatchObject({
+      kind: "invalid_request",
+      retryable: false,
+      message: expect.stringContaining("At least one tool"),
+    });
+    expect(bodies).toHaveLength(before);
+  });
+
   it("连续两 turn 稳定前缀逐字节一致，只有尾部变化", async () => {
     const { provider, bodies } = mockProvider(OK_MESSAGE);
     const history = [cacheMessage("u1", "user", "first"), cacheMessage("a1", "assistant", "reply")];

@@ -367,6 +367,15 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 
 CLI 等价写法：`owc run "..." --tools read_file,glob,grep`（= `toolsAllow`）、`--exclude-tools bash`（= `toolsDeny`）、`--read-only`（便捷旗标，等价于 `--tools` 只读集：read_file/read_media/glob/grep/read_artifact/repo_map/code_search/git_status/git_diff/load_skill/task_output；与 `--tools` 互斥，同给报错退出码 1）。
 
+### 工具延迟加载（deferLoading）
+
+仅 **Anthropic Messages** 接口（含兼容端点）会把工具定义上的 `deferLoading: true` 序列化为 `defer_loading: true`；OpenAI Chat Completions / Responses 接口忽略该标记。它控制工具是否在首轮进入模型上下文，工具定义仍随每次请求下发；端点需要支持 deferred tool loading（若要求配套 tool search 工具，本版本不自动注入）。
+
+- 来源：MCP server 配置（`mcpServers.<name>.deferLoading`，作用于该 server 的全部工具）、扩展 `registerTool` 的 spec、dsh 插件 `ctx.tools.register` 的 `deferLoading`、Agent 预设别名（`aliases[].deferLoading`）。别名未声明时继承源工具，显式 `false` 可覆盖源工具的 `true`。
+- 必须至少保留一个非延迟工具；全部延迟会在本地返回 `invalid_request`，不会把必然失败的请求发给端点。
+- 延迟工具不能携带 `cache_control`；缓存断点会落到最后一个非延迟工具。
+- 延迟加载只影响工具定义是否进入上下文，不改变工具白名单/黑名单、权限确认与沙盒边界。
+
 ## dsh 兼容模式（实验）
 
 把 **dsh（DeepSeek Harness）官方 SPA 与插件生态**托管进来：设置 → **通用** 打开「启用 dsh 兼容模式」后，活动栏底部出现 `layers` 图标，点击在新标签打开 dsh UI（**独立端口**，默认 3211）。会话、模型配置与权限模式与主工作台共用同一套状态（不是第二套系统）——agent 循环、上下文账本、工具执行、快照与索引仍全部走 owc 自有实现。

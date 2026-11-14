@@ -422,11 +422,16 @@ export function applyToolShaping(builtIns: ProviderTool[], shaping: ActiveToolSh
   const renamedFrom = new Set<string>();
   for (const [as, spec] of shaping.aliases) {
     const from = spec.from === SUBAGENT_LEGACY_NAME ? SUBAGENT_TOOL : spec.from;
-    const aliasOf = (source: ProviderTool): ProviderTool => ({
-      name: as,
-      description: spec.description ?? source.description,
-      inputSchema: spec.inputSchema ?? source.inputSchema,
-    });
+    const aliasOf = (source: ProviderTool): ProviderTool => {
+      // 显式覆盖优先；否则沿用源工具的延迟加载标记（内置工具当前未标记，保留扩展来源的未来兼容）。
+      const deferLoading = spec.deferLoading ?? source.deferLoading;
+      return {
+        name: as,
+        description: spec.description ?? source.description,
+        inputSchema: spec.inputSchema ?? source.inputSchema,
+        ...(deferLoading !== undefined ? { deferLoading } : {}),
+      };
+    };
     if (renamedFrom.has(from)) {
       const source = builtIns.find((tool) => tool.name === from);
       if (!source) continue;

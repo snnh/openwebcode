@@ -77,6 +77,35 @@ describe("Agent 预设：精简模式", () => {
     await expect(resolvePreset(dataDir, { preset: "nope" })).resolves.toBeNull();
   });
 
+  it("工具形态别名继承源工具的 deferLoading，并允许别名显式覆盖", async () => {
+    const tools = [{ name: "bash", description: "Run a command.", inputSchema: { type: "object" }, deferLoading: true }];
+    const inherited = applyToolShaping(tools, {
+      hideBuiltIns: new Set(),
+      toolDescriptions: new Map(),
+      aliases: new Map([["shell", { from: "bash" }]]),
+    });
+    expect(inherited.tools[0]).toMatchObject({ name: "shell", deferLoading: true });
+    const overridden = applyToolShaping(tools, {
+      hideBuiltIns: new Set(),
+      toolDescriptions: new Map(),
+      aliases: new Map([["shell", { from: "bash", deferLoading: false }]]),
+    });
+    expect(overridden.tools[0]).toMatchObject({ name: "shell", deferLoading: false });
+
+    // 预设文件解析必须保留显式 false，否则无法覆盖源工具的 true
+    const dataDir = await root();
+    await mkdir(path.join(dataDir, "agent-presets", "presets"), { recursive: true });
+    await writeFile(path.join(dataDir, "agent-presets", "presets", "alias-false.json"), JSON.stringify({
+      id: "alias-false",
+      name: "Alias false",
+      identity: "",
+      basePrompt: "Baseline.",
+      aliases: [{ from: "bash", as: "shell", deferLoading: false }],
+    }));
+    const parsed = await resolvePreset(dataDir, { preset: "alias-false" });
+    expect(parsed?.aliases[0]).toMatchObject({ from: "bash", as: "shell", deferLoading: false });
+  });
+
   it("工具形态按白名单裁剪并关闭扩展/MCP 工具；精简提示词不渲染经典框架", () => {
     const tools = [
       { name: "bash", description: "Run a command.", inputSchema: { type: "object" } },

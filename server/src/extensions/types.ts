@@ -52,6 +52,8 @@ export interface ToolShapingAlias {
   inputSchema?: Record<string, unknown>;
   /** 参数名归一：模型侧参数名 -> 内置工具参数名（配合 inputSchema 拟态外部产品参数形态）。 */
   argMap?: Record<string, string>;
+  /** 覆盖源工具的延迟加载标记；未声明时沿用源工具。 */
+  deferLoading?: boolean;
 }
 
 /** 工具形态声明：隐藏内置工具 + 别名重命名。官方扩展直接声明；第三方扩展需 tools:shaping 权限。 */
@@ -254,6 +256,8 @@ export interface ExtensionToolSpec {
   inputSchema: Record<string, unknown>;
   /** 工具执行超时（毫秒，默认 5000，上限 120000）；涉及模型调用等长耗时操作需显式调大。 */
   timeoutMs?: number;
+  /** 延迟加载（anthropic-messages 端点序列化为 defer_loading）；需要至少保留一个非延迟工具。 */
+  deferLoading?: boolean;
 }
 
 /** 扩展工具执行结果（tool.invoke 的 HostResponse.result）。 */

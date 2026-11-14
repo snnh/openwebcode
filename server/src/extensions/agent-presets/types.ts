@@ -7,6 +7,8 @@ export interface PresetAlias {
   inputSchema?: Record<string, unknown>;
   /** 参数名归一：模型侧参数名 -> 内置工具参数名。未列出的键原样透传。 */
   argMap?: Record<string, string>;
+  /** 覆盖源工具的延迟加载标记；未声明时沿用源工具。 */
+  deferLoading?: boolean;
 }
 
 export type PresetCategory = "minimal" | "mimicry" | "custom";

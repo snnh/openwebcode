@@ -593,6 +593,7 @@ class DshRuntime implements DshHostRuntime {
       description: definition.description || definition.name,
       inputSchema: definition.parameters as Record<string, unknown>,
       ...(typeof definition.timeoutMs === "number" && Number.isFinite(definition.timeoutMs) ? { timeoutMs: definition.timeoutMs } : {}),
+      ...(definition.deferLoading === true ? { deferLoading: true } : {}),
     };
   }
 }

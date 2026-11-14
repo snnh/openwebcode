@@ -157,7 +157,7 @@ export interface DefineToolOptions<S extends ParameterSchemaSpec, V = JsonValue>
    * undefined 保持渲染输出）。与 finalizeContent（post-execute 后最后一棒）不同层级。
    */
   projectContent?: (exec: unknown, result: unknown) => ToolRenderBlock[] | undefined;
-  /** 上游 0.2.0 新增：工具列表条目的延迟加载标记（提示客户端按需取完整 schema；owc 侧仅透传记录）。 */
+  /** 上游 0.2.0 新增：工具列表条目的延迟加载标记（透传到 provider 层，由 anthropic-messages 端点序列化为 defer_loading）。 */
   deferLoading?: boolean;
   presentCall?: (args: InferArgs<S>) => unknown;
   presentResult?: (args: InferArgs<S>, result: ToolResult) => unknown;

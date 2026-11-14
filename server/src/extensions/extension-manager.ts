@@ -36,7 +36,7 @@ export interface ActiveToolShaping {
   allowedBuiltIns?: Set<string>;
   hideBuiltIns: Set<string>;
   toolDescriptions: Map<string, string>;
-  aliases: Map<string, { from: string; description?: string; inputSchema?: Record<string, unknown>; argMap?: Record<string, string> }>;
+  aliases: Map<string, { from: string; description?: string; inputSchema?: Record<string, unknown>; argMap?: Record<string, string>; deferLoading?: boolean }>;
   /** 是否允许扩展/MCP 工具进入工具表；缺省 true。 */
   externalTools?: boolean;
 }
@@ -440,6 +440,7 @@ export class ExtensionManager {
       ...(typeof alias.description === "string" ? { description: alias.description } : {}),
       ...(alias.inputSchema && typeof alias.inputSchema === "object" ? { inputSchema: alias.inputSchema } : {}),
       ...(alias.argMap && typeof alias.argMap === "object" && Object.values(alias.argMap).every((value) => typeof value === "string") ? { argMap: alias.argMap } : {}),
+      ...(typeof alias.deferLoading === "boolean" ? { deferLoading: alias.deferLoading } : {}),
     });
   }
 
@@ -589,6 +590,7 @@ export class ExtensionManager {
           name: `ext__${extensionId}__${spec.name}`,
           description: `[${extensionId}] ${spec.description || spec.name}`,
           inputSchema: spec.inputSchema,
+          ...(spec.deferLoading === true ? { deferLoading: true } : {}),
         });
       }
     }
@@ -627,6 +629,7 @@ export class ExtensionManager {
           description: spec.description,
           inputSchema: spec.inputSchema && typeof spec.inputSchema === "object" ? spec.inputSchema : { type: "object", properties: {} },
           ...(typeof spec.timeoutMs === "number" && Number.isFinite(spec.timeoutMs) ? { timeoutMs: spec.timeoutMs } : {}),
+          ...(spec.deferLoading === true ? { deferLoading: true } : {}),
         });
       }
       if (registered.size > 0) this.extensionTools.set(extensionId, registered);

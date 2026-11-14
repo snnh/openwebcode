@@ -153,7 +153,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 1. 内置预设写 `server/src/extensions/agent-presets/builtin-presets.ts`（`BUILTIN_PRESETS`）：拟态用 `identity`/`basePrompt`/`productSections` + `hideBuiltIns`/`aliases`（可带 `inputSchema`/`argMap`）；精简形态用 `promptStyle: "minimal"` + `allowedBuiltIns` 白名单。
 2. 新增工具要同步 `agent-presets/tool-catalog.ts`（`PRESET_TOOLS` / `PRESET_TOOL_GROUPS`）：保存预设时按这张表严格校验工具名，未知名字直接 400；`advancedOnly` 的工具不在精简模式编辑器里出现。
 3. 提示词形态：`transformPrompt` 把 `promptStyle`/`projectContext` 透给 `agent/prompts/prompt-builder.ts`（`minimal: true` 走精简段）；项目上下文 `paths` 由 `agent/memory-section.ts` 的 `build()` 分支处理。
-4. 工具形态：`activeToolShaping` 汇总 `allowedBuiltIns`（硬上限）/`hideBuiltIns`/`toolDescriptions`/`aliases`/`externalTools`，`agent/tool-schemas.ts` 的 `applyToolShaping` 负责落地；`externalTools: false` 时 MCP 与扩展工具都不注入。
+4. 工具形态：`activeToolShaping` 汇总 `allowedBuiltIns`（硬上限）/`hideBuiltIns`/`toolDescriptions`/`aliases`/`externalTools`，`agent/tool-schemas.ts` 的 `applyToolShaping` 负责落地；`externalTools: false` 时 MCP 与扩展工具都不注入。别名可带 `deferLoading`，未声明时继承源工具，显式 `false` 可覆盖；扩展工具 spec 与 dsh 插件工具注册同样支持该标记。
 5. 预设数据：内置随代码分发，用户预设是 `<dataDir>/agent-presets/presets/<id>.json`（`preset-store.ts` 宽松解析、原子写、0600）；同 id 即字段级覆盖内置。旧 `env-sim` 目录由 `migration.ts` 一次性迁移并留兼容目录链接。
 6. `agent-presets` 是 server 侧 hostless 扩展：启用它不会拉起 Extension Host（见 `ExtensionManager.HOSTLESS_EXTENSIONS`）。
 7. 测试参考 `server/test/agent-presets.test.ts`（迁移/兼容链接、白名单裁剪、精简提示词、REST 校验与会话级覆盖）。
@@ -175,7 +175,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 
 ### 加一个 MCP 传输
 
-`server/src/mcp/` 现有 stdio 和 Streamable HTTP 两种传输，加新的参照同一层抽象（`client.ts` / `manager.ts`）。配置来自 `<dataDir>/mcp.json` 和项目级 `<cwd>/.owc/mcp.json`。MCP 工具以 `mcp__<server>__<tool>` 命名空间注入，和内置工具走同一条权限链，不允许绕过。项目级文件仅在 `trustProjectExecConfig` 开启时读取；`.owc` 或 `mcp.json` 本身是符号链接时按不存在处理。`McpManager` 对全局/项目文件做指纹缓存，信任开关热切换会重新加载（见 `server/test/mcp-manager.test.ts`）。
+`server/src/mcp/` 现有 stdio 和 Streamable HTTP 两种传输，加新的参照同一层抽象（`client.ts` / `manager.ts`）。配置来自 `<dataDir>/mcp.json` 和项目级 `<cwd>/.owc/mcp.json`。MCP 工具以 `mcp__<server>__<tool>` 命名空间注入，和内置工具走同一条权限链，不允许绕过。项目级文件仅在 `trustProjectExecConfig` 开启时读取；`.owc` 或 `mcp.json` 本身是符号链接时按不存在处理。`McpManager` 对全局/项目文件做指纹缓存，信任开关热切换会重新加载（见 `server/test/mcp-manager.test.ts`）。server 配置可加 `"deferLoading": true`，该 server 发现的全部工具会带上延迟加载标记（仅 Anthropic Messages 接口序列化；至少保留一个非延迟工具）。
 
 ### 改上下文策略
 

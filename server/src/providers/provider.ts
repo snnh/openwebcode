@@ -6,6 +6,10 @@ export interface ProviderTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** 延迟加载：仅 anthropic-messages 端点序列化为 `defer_loading: true`（DeepSeek 的
+   * Anthropic 兼容端点同款）。工具定义仍随每次请求下发，是否进入上下文由端点决定；
+   * 需要客户端工具搜索返回 `tool_reference` 后才会被模型真正加载。 */
+  deferLoading?: boolean;
 }
 
 export interface StreamChatRequest {

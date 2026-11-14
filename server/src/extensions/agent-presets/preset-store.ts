@@ -31,6 +31,7 @@ function parseAlias(raw: unknown): PresetAlias | undefined {
     ...(typeof record.description === "string" ? { description: record.description } : {}),
     ...(inputSchema ? { inputSchema } : {}),
     ...(argMap ? { argMap } : {}),
+    ...(typeof record.deferLoading === "boolean" ? { deferLoading: record.deferLoading } : {}),
   };
 }
 

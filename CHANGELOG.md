@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 新功能
+
+- **工具定义支持 `deferLoading`**：Anthropic Messages 接口会把该标记序列化为 `defer_loading`，让端点按需加载工具定义；MCP server、扩展工具、dsh 插件与 Agent 预设别名都可声明，别名默认继承源工具并允许显式 `false` 覆盖。全部工具都延迟时本地直接返回 `invalid_request`；延迟工具不带 `cache_control`，缓存断点落到最后一个非延迟工具；OpenAI 接口忽略该标记，不影响既有请求体。
+
 ### 修复
 
 - **Windows AppContainer 缺失 deny 路径占位与 fail closed**：与 bubblewrap 的修复对齐——写根内缺失的 `denyPaths` 会先创建仅当前用户可访问的受限占位（保护 DACL，不含 AppContainer 包 SID），再执行 ACL strip；占位创建或 strip 失败都会拒绝启动，避免沙盒内进程创建 `.owc/hooks.json`、`.owc/mcp.json` 等宿主执行入口后由宿主加载。写根之外的缺失路径仍不创建。

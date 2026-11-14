@@ -303,7 +303,7 @@ async function loadThirdParty(manifests: Array<ExtensionManifest & { directory?:
           if (missing.length > 0) throw new Error(`Extension ${manifest.id} lacks permission(s) for ${hook}: ${missing.join(", ")}`);
           register(manifest.id, hook, handler);
         },
-        registerTool(spec: { name?: unknown; description?: unknown; inputSchema?: unknown }, handler: ToolHandler): void {
+        registerTool(spec: { name?: unknown; description?: unknown; inputSchema?: unknown; deferLoading?: unknown }, handler: ToolHandler): void {
           requirePermission(manifest, "tools:register");
           if (!spec || typeof spec.name !== "string" || !TOOL_NAME_PATTERN.test(spec.name)) throw new Error("registerTool requires a name matching [a-zA-Z0-9_-]{1,64}");
           if (typeof handler !== "function") throw new Error("registerTool requires a handler function");
@@ -313,6 +313,7 @@ async function loadThirdParty(manifests: Array<ExtensionManifest & { directory?:
               name: spec.name,
               description: typeof spec.description === "string" && spec.description.trim() !== "" ? spec.description : spec.name,
               inputSchema: spec.inputSchema && typeof spec.inputSchema === "object" ? spec.inputSchema as Record<string, unknown> : { type: "object", properties: {} },
+              ...(spec.deferLoading === true ? { deferLoading: true } : {}),
             },
             handler,
           });

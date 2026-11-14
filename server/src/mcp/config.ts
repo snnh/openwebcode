@@ -1,14 +1,20 @@
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 
-interface McpServerStdioConfig {
+interface McpServerCommonConfig {
+  /** 该 server 发现的所有工具标记为延迟加载（anthropic-messages 端点序列化为 defer_loading）；
+   * 需要至少保留一个非延迟工具，且端点支持客户端工具搜索。 */
+  deferLoading?: boolean;
+}
+
+interface McpServerStdioConfig extends McpServerCommonConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
 }
 
-interface McpServerHttpConfig {
+interface McpServerHttpConfig extends McpServerCommonConfig {
   url: string;
   headers?: Record<string, string>;
 }
@@ -26,12 +32,14 @@ export interface McpConfigResult {
 function validate(value: unknown): McpServerConfig | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
+  const deferred = record.deferLoading === true ? { deferLoading: true as const } : {};
   if (typeof record.url === "string" && record.url !== "") {
-    return { url: record.url, ...(record.headers && typeof record.headers === "object" ? { headers: record.headers as Record<string, string> } : {}) };
+    return { url: record.url, ...deferred, ...(record.headers && typeof record.headers === "object" ? { headers: record.headers as Record<string, string> } : {}) };
   }
   if (typeof record.command === "string" && record.command !== "") {
     return {
       command: record.command,
+      ...deferred,
       ...(Array.isArray(record.args) ? { args: record.args.map(String) } : {}),
       ...(record.env && typeof record.env === "object" ? { env: record.env as Record<string, string> } : {}),
       ...(typeof record.cwd === "string" ? { cwd: record.cwd } : {}),

@@ -44,4 +44,20 @@ describe("McpManager 项目配置缓存", () => {
       await manager.close();
     }
   });
+
+  it("deferLoading 配置继承到该 server 的所有工具", async () => {
+    const root = await tempRoot("owc-mcp-defer-");
+    const cwd = path.join(root, "proj");
+    await mkdir(path.join(cwd, ".owc"), { recursive: true });
+    await writeFile(path.join(root, "mcp.json"), JSON.stringify({ mcpServers: { deferred: { command: "deferred-cmd", deferLoading: true } } }));
+    await writeFile(path.join(cwd, ".owc", "mcp.json"), JSON.stringify({ mcpServers: { normal: { command: "normal-cmd" } } }));
+    const manager = new McpManager(root, { projectExecConfigEnabled: () => true, sweepMs: 60_000 });
+    try {
+      const binding = await manager.toolsFor(cwd);
+      expect(binding.tools.find((tool) => tool.name === "mcp__deferred__echo")).toMatchObject({ deferLoading: true });
+      expect(binding.tools.find((tool) => tool.name === "mcp__normal__echo")).not.toHaveProperty("deferLoading");
+    } finally {
+      await manager.close();
+    }
+  });
 });

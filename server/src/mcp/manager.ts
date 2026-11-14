@@ -81,6 +81,7 @@ export class McpManager {
             name: namespaced,
             description: `[${name}] ${tool.description ?? tool.name}`,
             inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
+            ...(config.deferLoading === true ? { deferLoading: true } : {}),
           });
         }
       } catch (error) {

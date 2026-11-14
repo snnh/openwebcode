@@ -34,19 +34,20 @@ const PING = `  ctx.tools.register({ name: "ping", description: "ping", paramete
 /** 记录宿主能力调用的假 bridge（`withCall=false` 模拟未绑定服务视图）。 */
 function recordingBridge(withCall = true) {
   const calls: Array<{ extensionId: string; api: string; params?: Record<string, unknown> }> = [];
-  const bridge: Parameters<typeof createDshHostRuntime>[0] = { log: () => {}, publish: () => {}, ...(withCall ? {
+  const published: Array<{ sourceId: string; state: unknown }> = [];
+  const bridge: Parameters<typeof createDshHostRuntime>[0] = { log: () => {}, publish: (sourceId, state) => { published.push({ sourceId, state }); }, ...(withCall ? {
     call: async (extensionId: string, api: string, params?: Record<string, unknown>) => {
       calls.push({ extensionId, api, ...(params === undefined ? {} : { params }) });
       return api === "storage.write" ? { bytes: 1 } : api === "storage.list" ? { files: [] } : api === "storage.read" ? { content: null } : {};
     },
   } : {}) };
-  return { calls, bridge };
+  return { calls, published, bridge };
 }
 const host = (withCall = true) => {
-  const { calls, bridge } = recordingBridge(withCall);
+  const { calls, published, bridge } = recordingBridge(withCall);
   const runtime = createDshHostRuntime(bridge);
   runtimes.push(runtime);
-  return { calls, runtime };
+  return { calls, published, runtime };
 };
 
 describe("dsh 宿主运行时（服务缝绑定与订阅回收）", () => {
@@ -86,6 +87,16 @@ describe("dsh 宿主运行时（服务缝绑定与订阅回收）", () => {
     expect(globals.__dshHits).toBe(2); // 修复前：旧订阅未回收 → 累计 3
     delete globals.__dshHits;
   });
+  it("dsh 工具的 deferLoading 透传到扩展工具 spec（provider 层再序列化为 defer_loading）", async () => {
+    const { published, runtime } = host(false);
+    const register = `  ctx.tools.register({ name: "search", description: "search tools", parameters: {}, output: ${OUTPUT}, deferLoading: true, execute: async () => ({ ok: true }) });`;
+    const reports = await runtime.sync([syncItem("plugin-defer", await pluginPackage("plugin-defer", register))]);
+    expect(reports[0]).toMatchObject({ id: "plugin-defer", status: "running", tools: ["search"] });
+    const state = published.find((entry) => entry.sourceId === "dsh-plugin-defer")?.state as
+      { tools?: Array<{ spec: { deferLoading?: boolean } }> } | undefined;
+    expect(state?.tools?.[0]?.spec.deferLoading).toBe(true);
+  });
+
   it("未绑定服务视图时（缺 call）插件仍可注册并调用工具：ctx.get('tools') 可用", async () => {
     const { runtime } = host(false);
     const reports = await runtime.sync([syncItem("plugin-tools", await pluginPackage("plugin-tools", PING))]);
