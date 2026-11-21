@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -99,5 +100,49 @@ describe("子代理工具循环", () => {
     const blocks = transcript.messages.flatMap((message) => message.content);
     expect(blocks.filter((block) => block.type === "tool_call")).toEqual([{ type: "tool_call", id: "sub-dup", name: "read_file", input: { path: "a.ts" } }]);
     expect(blocks.filter((block) => block.type === "tool_result")).toEqual([expect.objectContaining({ toolCallId: "sub-dup" })]);
+  });
+
+  it("运行中按轮次刷新转录（status=running），结束后落终态", async () => {
+    const root = await tempRoot("owc-subagent-live-transcript-");
+    let turn = 0;
+    const snapshots: Array<{ status?: string; messages: Array<{ role: string; content: Array<{ type: string; name?: string }> }> }> = [];
+    const provider: Provider = {
+      name: "live",
+      async *streamChat() {
+        turn += 1;
+        if (turn === 1) {
+          yield { type: "tool_call", id: "sub-live", name: "read_file", input: { path: "a.ts" } };
+          yield { type: "done", stopReason: "tool_use" };
+          return;
+        }
+        yield { type: "text_delta", text: "结论：已读取" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    await runSubAgent({
+      provider,
+      model: "test-model",
+      prompt: "读一下 a.ts",
+      toolNames: ["read_file"],
+      agentKind: "explore",
+      core: makeFakeCore({
+        async readFile() { return { content: "file body", totalLines: 1, encoding: "utf-8" as const, truncated: false }; },
+      }),
+      sessionId: "session-live",
+      cwd: root,
+      contextRoot: root,
+      signal: new AbortController().signal,
+      taskId: "task-live",
+      onProgress: () => {
+        // persistTranscript 在 onProgress 前完成原子替换，回调里可直接读快照
+        snapshots.push(JSON.parse(readFileSync(path.join(root, "subagents", "task-live.json"), "utf8")));
+      },
+    });
+    const running = snapshots.find((snapshot) => snapshot.status === "running");
+    expect(running).toBeDefined();
+    expect(running!.messages.some((message) => message.role === "assistant" && message.content.some((block) => block.type === "tool_call" && block.name === "read_file"))).toBe(true);
+    const final = JSON.parse(await readFile(path.join(root, "subagents", "task-live.json"), "utf8")) as { status: string; turns: number; toolsUsed: string[]; messages: Array<{ role: string; content: Array<{ type: string; name?: string }> }> };
+    expect(final).toMatchObject({ status: "done", turns: 2, toolsUsed: ["read_file"] });
+    expect(final.messages.some((message) => message.role === "tool" && message.content.some((block) => block.type === "tool_result"))).toBe(true);
   });
 });

@@ -190,8 +190,80 @@
 /* 对话/子代理/终端标签内容容器：撑满主列剩余高度；hidden 时整体隐藏（MessageList/终端保持挂载） */
 .main-tab-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .main-tab-panel[hidden] { display: none; }
-.subagent-tab-view { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+.subagent-tab-view { flex: 1; min-height: 0; overflow: hidden; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
 .subagent-tab-view .subagent-run-items { margin-top: 0; }
+/* 子代理运行切换（swarm）：横向 chip，状态色沿用标签条语义 */
+.subagent-run-tabs { display: flex; align-items: center; gap: 4px; overflow-x: auto; flex: none; padding-bottom: 2px; }
+.subagent-run-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-s);
+  background: var(--surface-card); color: var(--text-2); font-size: var(--text-xs); cursor: pointer;
+}
+.subagent-run-tab:hover { border-color: var(--border-strong); color: var(--text); }
+.subagent-run-tab[aria-selected="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.subagent-run-tab[data-status="failed"] { border-color: var(--danger-border); }
+.subagent-run-tab[data-status="failed"][aria-selected="true"] { color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+/* 当前运行的消息流面板：头部固定，正文独立滚动（与主对话同款阅读节奏） */
+.subagent-thread-panel {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+  background: color-mix(in srgb, var(--surface-canvas) 88%, var(--surface-card));
+}
+.subagent-thread-header {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; flex: none;
+  padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--surface-card);
+}
+.subagent-thread-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.subagent-thread {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+  padding: 16px 16px 28px;
+}
+.subagent-thread .message { max-width: none; margin-bottom: 18px; }
+.subagent-thread .message.assistant > .markdown { max-width: var(--reading-max); font-size: var(--text-m); line-height: var(--lh-relaxed); }
+.subagent-thread .message > .message-meta { width: 52px; }
+.subagent-thread .message.assistant, .subagent-thread .message.tool { padding-left: 58px; }
+.subagent-thread .message.user .markdown { max-width: min(86%, 720px); }
+.subagent-thread .message.user .message-meta { width: auto; margin-top: 4px; }
+.subagent-thread .thinking { max-width: var(--reading-max); }
+.subagent-thread-tool {
+  max-width: min(100%, var(--content-max)); margin: 6px 0;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-s);
+  background: var(--surface-card); overflow: clip;
+}
+.subagent-thread-tool > summary {
+  display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px;
+  list-style: none; cursor: pointer; color: var(--text-2); font-size: var(--text-xs);
+}
+.subagent-thread-tool > summary::-webkit-details-marker { display: none; }
+.subagent-thread-tool > summary:hover { background: var(--surface-hover); color: var(--text); }
+.subagent-thread-tool > summary b { font-weight: var(--fw-500); }
+.subagent-thread-tool[open] > summary { border-bottom: 1px solid var(--border-subtle); }
+.subagent-thread-tool-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); font-size: var(--text-2xs); }
+.subagent-thread-tool-meta { margin-left: auto; flex: none; color: var(--text-3); font-size: var(--text-2xs); }
+.subagent-thread-tool-action { flex: none; color: var(--accent); font-size: var(--text-2xs); }
+.subagent-thread-tool pre {
+  margin: 0; padding: 8px 10px; font-size: var(--text-2xs); line-height: var(--lh-normal);
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto;
+}
+.subagent-thread-result.error { border-color: var(--danger-border); }
+.subagent-thread-result.error > summary { color: var(--danger); }
+.subagent-thread-web-search { display: flex; align-items: center; gap: 6px; margin: 6px 0; color: var(--text-3); font-size: var(--text-xs); }
+.subagent-thread-running {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 6px;
+  padding: 8px 10px; border: 1px dashed var(--border); border-radius: var(--radius-s);
+  color: var(--accent); font-size: var(--text-xs);
+}
+.subagent-thread-running .mono { color: var(--text-3); font-size: var(--text-2xs); }
+.subagent-thread-error { margin: 8px 0 0; padding: 8px 10px; border-radius: var(--radius-s); color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); font-size: var(--text-xs); }
+.subagent-thread-hint { margin: 12px 0; color: var(--text-3); font-size: var(--text-xs); }
+.subagent-thread .subagent-transcript-summary { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--surface-card); }
+.subagent-thread-conclusion-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+@media (max-width: 768px) {
+  .subagent-tab-view { padding: 8px 10px; }
+  .subagent-thread { padding: 12px 12px 24px; }
+  .subagent-thread .message.assistant, .subagent-thread .message.tool { padding-left: 0; }
+  .subagent-thread .message > .message-meta { width: auto; }
+}
 /* swarm 组头（与子代理面板同款；面板 CSS 落地后规则一致可去重） */
 .subagent-tab-empty { padding: 12px 16px; }
 .subagent-tab-hint { margin: 0; font-size: var(--text-xs); color: var(--text-3); }

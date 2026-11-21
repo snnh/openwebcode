@@ -1,11 +1,19 @@
 import type { ChatMessage } from "./message";
 
-/** GET /api/sessions/:id/subagents/:taskId 响应：runSubAgent 落盘的子代理转录 */
+/** GET /api/sessions/:id/subagents/:taskId 响应：runSubAgent 边跑边落盘的子代理转录 */
 export interface SubagentTranscript {
   id: string;
   prompt: string;
   agent?: string;
   startedAt: string;
+  /** 最近一次写入时间：运行中的转录会按轮次/工具批次持续刷新。 */
+  updatedAt?: string;
+  /** 终态写入时间；运行中缺省。 */
+  finishedAt?: string;
+  /** 运行状态：旧转录/导入转录可能缺省，由实时运行状态兜底。 */
+  status?: "running" | "done" | "failed";
+  /** 失败原因（status=failed 时）。 */
+  error?: string;
   turns: number;
   toolsUsed: string[];
   conclusion: string;

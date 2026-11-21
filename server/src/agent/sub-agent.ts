@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { writeUtf8Atomically } from "../atomic-file.js";
 import type { CoreClientLike } from "../core-client.js";
+import { ensureDirWithMode } from "../fs-utils.js";
 import { ContextManager } from "../context/context-manager.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import type { Provider, ProviderEvent, ProviderTool } from "../providers/provider.js";
@@ -209,6 +210,38 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
   const toolsUsed: string[] = [];
   let turns = 0;
   let conclusion = "";
+  // 转录边跑边写：子代理标签页以会话流形式实时展示内部消息。写入走原子替换，
+  // 避免轮询方读到半截 JSON；失败只告警，绝不影响子代理本身。
+  const transcriptPath = path.join(options.contextRoot, "subagents", `${taskId}.json`);
+  let finalStatus: "done" | "failed" = "done";
+  let finalError: string | undefined;
+  const persistTranscript = async (status: "running" | "done" | "failed", error?: string): Promise<void> => {
+    const now = new Date().toISOString();
+    try {
+      await ensureDirWithMode(path.dirname(transcriptPath), 0o700);
+      await writeUtf8Atomically(
+        transcriptPath,
+        `${JSON.stringify({
+          id: taskId,
+          prompt: options.prompt,
+          ...(options.agent ? { agent: options.agent } : {}),
+          startedAt,
+          updatedAt: now,
+          ...(status === "running" ? {} : { finishedAt: now }),
+          status,
+          ...(error ? { error: error.slice(0, 4_000) } : {}),
+          turns,
+          toolsUsed: [...toolsUsed],
+          conclusion,
+          messages,
+        }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+    } catch (writeError) {
+      process.stderr.write(`[sub-agent] 转录写入失败：${writeError instanceof Error ? writeError.message : String(writeError)}\n`);
+    }
+  };
+  await persistTranscript("running");
   try {
     let finished = false;
     let lastText = "";
@@ -317,6 +350,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
       }
       if (assistantContent.length > 0) messages.push(subMessage("assistant", assistantContent));
       lastText = text || lastText;
+      await persistTranscript("running");
       options.onProgress?.({ turns, toolsUsed: [...toolsUsed] });
       const toolCalls = assistantContent.filter((block) => block.type === "tool_call");
       // 兼容 provider 可能给出非 tool_use 的 stop reason 但已产生 tool_call：与主循环一致，
@@ -333,6 +367,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
         results.push({ type: "tool_result", toolCallId: call.id, content: outcome.content, isError: outcome.isError });
       }
       messages.push(subMessage("tool", results));
+      await persistTranscript("running");
       options.onProgress?.({ turns, toolsUsed: [...toolsUsed] });
     }
     conclusion = finished
@@ -345,24 +380,15 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
     if (options.swarm) await writeSwarmLifecycle(options.swarm.boardPath, options.swarm.member ?? taskId, "finished");
     return { taskId, conclusion, turns, toolsUsed };
   } catch (error) {
+    finalStatus = "failed";
+    finalError = options.signal.aborted ? "aborted" : error instanceof Error ? error.message : String(error);
     // 生命周期系统贴：failed（含中断；reason 截断，写失败静默）
     if (options.swarm) {
-      const reason = options.signal.aborted ? "aborted" : error instanceof Error ? error.message : String(error);
-      await writeSwarmLifecycle(options.swarm.boardPath, options.swarm.member ?? taskId, "failed", reason);
+      await writeSwarmLifecycle(options.swarm.boardPath, options.swarm.member ?? taskId, "failed", finalError);
     }
     throw error;
   } finally {
-    // 转录存档：失败只 warn，不影响结论返回
-    try {
-      await mkdir(path.join(options.contextRoot, "subagents"), { recursive: true });
-      await writeFile(
-        path.join(options.contextRoot, "subagents", `${taskId}.json`),
-        `${JSON.stringify({ id: taskId, prompt: options.prompt, ...(options.agent ? { agent: options.agent } : {}), startedAt, turns, toolsUsed, conclusion, messages }, null, 2)}\n`,
-        "utf8",
-      );
-    } catch (error) {
-      process.stderr.write(`[sub-agent] 转录写入失败：${error instanceof Error ? error.message : String(error)}\n`);
-    }
+    await persistTranscript(finalStatus, finalError);
   }
 }
 

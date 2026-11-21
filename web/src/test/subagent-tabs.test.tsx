@@ -10,7 +10,15 @@ import { renderWithClient } from "./helpers/with-client";
 vi.mock("../lib/api", () => ({
   api: { subagentTranscript: vi.fn(async (_sessionId: string, taskId: string) => ({
     id: taskId, prompt: `任务 ${taskId}`, agent: "explore", startedAt: "2026-08-01T00:00:00.000Z", turns: 3, toolsUsed: ["read"],
-    conclusion: "## 结论\n第一行结论\n第二行细节\n第三行不该显示", messages: [] })) },
+    conclusion: "## 结论\n第一行结论\n第二行细节\n第三行不该显示",
+    messages: [
+      { id: `${taskId}-u`, role: "user", content: [{ type: "text", text: `任务 ${taskId}` }], createdAt: "2026-08-01T00:00:01.000Z" },
+      { id: `${taskId}-a`, role: "assistant", content: [
+        { type: "text", text: "先读取文件" },
+        { type: "tool_call", id: "read-1", name: "read_file", input: { path: "a.ts" } },
+      ], createdAt: "2026-08-01T00:00:02.000Z" },
+      { id: `${taskId}-t`, role: "tool", content: [{ type: "tool_result", toolCallId: "read-1", content: "file body", isError: false }], createdAt: "2026-08-01T00:00:03.000Z" },
+    ] })) },
 }));
 const t = (chinese: string): string => chinese; const tab = (overrides: Partial<SubagentTab> & { toolCallId: string; seq: number }): SubagentTab => ({ prompt: "审查 a.ts", ...overrides });
 const liveRun = (overrides: Partial<LiveSubagentRun> & { taskId: string; toolCallId: string }): LiveSubagentRun =>
@@ -57,6 +65,14 @@ describe("SubagentTabView", () => {
     const done = renderWithClient(<SubagentTabView sessionId="s1" toolCallId="call-1" runs={{ t1: liveRun({ taskId: "t1", toolCallId: "call-1", status: "done", model: "deepseek-chat" }) }} />);
     await waitFor(() => expect(done.container.querySelector(".subagent-transcript-summary-text")).not.toBeNull());
     expect(done.container.querySelector(".subagent-transcript-summary-text")!.textContent).toBe("## 结论 第一行结论 第二行细节 第三行不该显示");
+    // 独立标签页以主对话同款消息流展示内部过程：任务 → 子代理正文/工具调用 → 工具结果
+    await waitFor(() => expect(done.container.querySelector(".subagent-thread-message.user")).not.toBeNull());
+    expect(done.container.querySelector(".subagent-thread-message.user")!.textContent).toContain("任务 t1");
+    expect(done.container.querySelector(".subagent-thread-tool")!.textContent).toContain("read_file");
+    const result = done.container.querySelector(".subagent-thread-result") as HTMLDetailsElement;
+    result.open = true;
+    fireEvent(result, new Event("toggle"));
+    await waitFor(() => expect(result.textContent).toContain("file body"));
     fireEvent.click(screen.getByRole("button", { name: "复制结论" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "已复制" })).toBeInTheDocument());
     expect(writeText).toHaveBeenCalledWith("## 结论\n第一行结论\n第二行细节\n第三行不该显示");

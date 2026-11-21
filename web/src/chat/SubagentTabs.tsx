@@ -2,14 +2,16 @@
  * 主区标签条 + 子代理标签内容（二者合一）：
  * - SubagentTabStrip：最左固定「主对话」标签 + 可选终端标签 + 每个 spawn 调用一个动态标签。
  *   标签状态由 App 装配层的 useSubagentTabs/useTerminalTabs 持有（按会话隔离），选中互斥在 ChatView 协调。
- * - SubagentTabView：按标签 toolCallId 过滤出该次 spawn 调用的运行组；运行行复用子代理面板的
- *   SubagentRunRow（运行中显示实时轮次/工具，终态展开 SubagentTranscriptDetails 转录折叠）。
+ * - SubagentTabView：按标签 toolCallId 过滤出该次 spawn 调用的运行组；组内可逐成员切换，
+ *   当前成员以 SubagentThread 渲染与主对话同款的消息流（任务/正文/思考/工具调用/工具结果）。
  */
-import { useEffect, useMemo, useRef, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { LiveSubagentRun, TodoItem } from "../lib/contracts";
 import { snippet } from "../lib/subagent-runs";
 import type { SubagentTab } from "../hooks/use-subagent-tabs";
-import { groupSubagentRuns, SubagentRunRow } from "../panels/SubagentsPanel";
+import { groupSubagentRuns } from "../panels/SubagentsPanel";
+import { SubagentRoleBadge, SubagentRunStats, SubagentStatusChip } from "./SubagentRunCard";
+import { SubagentThread } from "./SubagentThread";
 import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
 
@@ -198,9 +200,11 @@ export function SubagentTabStrip({ tabs, runs, selected, terminal, todoItems, on
 }
 
 /**
- * 主区子代理标签内容：按标签的 toolCallId 过滤出该次 spawn 调用的运行组。
- * 运行中显示实时状态行（轮次/已用工具）；终态由 SubagentRunRow 内嵌的
- * SubagentTranscriptDetails 提供完整转录折叠（api.subagentTranscript 按 taskId 拉取）。
+ * 主区子代理标签内容：左侧/顶部按运行切换，当前运行以主对话同款消息流展示
+ * 「任务 → 子代理正文/思考 → 工具调用 → 工具结果」。
+ *
+ * 转录由 server 边跑边写（每轮 provider 调用与每批工具结束后原子刷新），
+ * 运行中由 SubagentThread 轮询；终态停止轮询并显示结论摘要与复制入口。
  */
 export function SubagentTabView({ sessionId, toolCallId, runs }: {
   sessionId: string;
@@ -211,8 +215,12 @@ export function SubagentTabView({ sessionId, toolCallId, runs }: {
 }): ReactElement {
   const { t } = useI18n();
   const group = useMemo(() => groupSubagentRuns(runs).find((entry) => entry.toolCallId === toolCallId), [runs, toolCallId]);
+  const [selectedTaskId, setSelectedTaskId] = useState<string>();
+  // 默认跟随正在运行的成员；没有运行中的则看第一项。用户手动选中后保持其选择。
+  const fallbackRun = group?.runs.find((run) => run.status === "running") ?? group?.runs[0];
+  const activeRun = group?.runs.find((run) => run.taskId === selectedTaskId) ?? fallbackRun;
 
-  if (!group) {
+  if (!group || !activeRun) {
     return (
       <p className="muted-empty panel-empty subagent-tab-empty">
         {t("该标签对应的子代理运行已不在记录中。", "The subagent runs for this tab are no longer recorded.")}
@@ -241,15 +249,43 @@ export function SubagentTabView({ sessionId, toolCallId, runs }: {
           <span key={model} className="subagent-run-model mono" title={model}>{model}</span>
         ))}
       </header>
-      <ul className="subagent-run-items">
-        {group.runs.map((run) => (
-          <SubagentRunRow key={run.taskId} run={run} sessionId={sessionId}
-            {...(run.status === "done" || run.status === "failed" ? { summarize: true } : {})} />
-        ))}
-      </ul>
-      {running > 0 && (
-        <p className="subagent-tab-hint">{t("运行结束后可在此展开完整转录。", "The full transcript expands here once the run finishes.")}</p>
+      {group.runs.length > 1 && (
+        <div className="subagent-run-tabs" role="tablist" aria-label={t("子代理运行", "Subagent runs")}>
+          {group.runs.map((run, index) => {
+            const selected = run.taskId === activeRun.taskId;
+            const indexLabel = run.swarm ? `${run.swarm.index}/${run.swarm.total}` : `#${index + 1}`;
+            return (
+              <button
+                key={run.taskId}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                className="subagent-run-tab"
+                data-status={run.status}
+                title={run.prompt}
+                onClick={() => setSelectedTaskId(run.taskId)}
+              >
+                <span className="subagent-run-index mono">{indexLabel}</span>
+                {run.agent && <span className="subagent-run-agent mono">{run.agent}</span>}
+                <SubagentStatusChip status={run.status} />
+              </button>
+            );
+          })}
+        </div>
       )}
+      <section className="subagent-thread-panel">
+        <header className="subagent-thread-header">
+          <span className="subagent-run-index mono">
+            {activeRun.swarm ? `${activeRun.swarm.index}/${activeRun.swarm.total}` : `#${group.runs.indexOf(activeRun) + 1}`}
+          </span>
+          {activeRun.agent && <span className="subagent-run-agent mono">{activeRun.agent}</span>}
+          {activeRun.role && <SubagentRoleBadge role={activeRun.role} />}
+          {activeRun.model && <span className="subagent-run-model mono" title={activeRun.model}>{activeRun.model}</span>}
+          <SubagentStatusChip status={activeRun.status} />
+          <SubagentRunStats run={activeRun} />
+        </header>
+        <SubagentThread sessionId={sessionId} run={activeRun} />
+      </section>
     </div>
   );
 }

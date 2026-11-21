@@ -37,14 +37,12 @@ export function groupSubagentRuns(runs: Record<string, LiveSubagentRun>): Subage
   return [...groups.values()].reverse();
 }
 
-/** 单个子代理运行行（状态徽标 + 实时轮次/工具 + 终态（完成/失败）后的转录折叠）；子代理面板与主区标签视图共用 */
-export function SubagentRunRow({ run, sessionId, onOpenInTab, summarize }: {
+/** 单个子代理运行行（状态徽标 + 实时轮次/工具 + 终态（完成/失败）后的转录折叠）；子代理面板使用。 */
+export function SubagentRunRow({ run, sessionId, onOpenInTab }: {
   run: LiveSubagentRun;
   sessionId: string;
   /** 桌面端「在标签中打开」（按所在组的 toolCallId 开主区标签）；默认不渲染按钮 */
   onOpenInTab?: ((toolCallId: string) => void) | undefined;
-  /** 终态行默认展示结论摘要 + 复制（子代理标签页；面板与对话卡片保持按需拉取） */
-  summarize?: boolean | undefined;
 }): ReactElement {
   const { t } = useI18n();
   return (
@@ -64,8 +62,7 @@ export function SubagentRunRow({ run, sessionId, onOpenInTab, summarize }: {
       )}
       {(run.status === "done" || run.status === "failed") && (
         <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId}
-          {...(run.swarm ? { index: run.swarm.index } : {})}
-          {...(summarize ? { summarize } : {})} />
+          {...(run.swarm ? { index: run.swarm.index } : {})} />
       )}
     </li>
   );

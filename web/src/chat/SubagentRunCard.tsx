@@ -1,7 +1,6 @@
 import { useState, type ReactElement, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { writeClipboard } from "../lib/clipboard";
 import type { LiveSubagentRun, MessageContent } from "../lib/contracts";
 import { snippet, swarmItems } from "../lib/subagent-runs";
 import { summarizeToolInput } from "../lib/tool-format";
@@ -121,23 +120,20 @@ function TranscriptBlock({ block }: { block: MessageContent }): ReactElement | n
 const TRANSCRIPT_ROLE_LABELS: Record<string, [string, string]> = { user: ["任务", "Task"], assistant: ["子代理", "Subagent"], tool: ["工具", "Tool"] };
 
 /** subagent/spawn_swarm 工具结果携带的子代理转录：展开时按 taskId 拉取，只读展示。
- *  summarize=true（子代理标签页）时进入即可拉取结论摘要并显示「复制结论」——回顾子代理
- *  产出不必逐项展开转录；面板/对话卡片保持按需拉取，避免一次打开就发很多大请求。 */
-export function SubagentTranscriptDetails({ sessionId, taskId, index, summarize = false }: {
+ *  主区子代理标签页的实时消息流由 SubagentThread 承担，这里保留面板/对话卡片的按需转录。 */
+export function SubagentTranscriptDetails({ sessionId, taskId, index }: {
   sessionId: string;
   taskId: string;
   index?: number | undefined;
-  summarize?: boolean | undefined;
 }): ReactElement {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   // 折叠超过 TRANSCRIPT_MESSAGE_FOLD 的历史消息；用户可手动展开全部
   const [showAll, setShowAll] = useState(false);
-  const [copied, setCopied] = useState(false);
   const transcript = useQuery({
     queryKey: ["subagent-transcript", sessionId, taskId],
     queryFn: () => api.subagentTranscript(sessionId, taskId),
-    enabled: open || summarize,
+    enabled: open,
     staleTime: Number.POSITIVE_INFINITY,
   });
   const label = index !== undefined
@@ -146,23 +142,8 @@ export function SubagentTranscriptDetails({ sessionId, taskId, index, summarize 
   const messages = transcript.data?.messages ?? [];
   const hiddenCount = Math.max(0, messages.length - TRANSCRIPT_MESSAGE_FOLD);
   const shownMessages = hiddenCount > 0 && !showAll ? messages.slice(hiddenCount) : messages;
-  const copyConclusion = (): void => {
-    void writeClipboard(transcript.data?.conclusion ?? "").then((ok) => {
-      if (!ok) return;
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    });
-  };
   return (
     <>
-      {summarize && transcript.data && (
-        <div className="subagent-transcript-summary">
-          <p className="subagent-transcript-summary-text" title={transcript.data.conclusion}>{conclusionExcerpt(transcript.data.conclusion)}</p>
-          <button type="button" className="subagent-transcript-copy" onClick={copyConclusion}>
-            {copied ? t("已复制", "Copied") : t("复制结论", "Copy conclusion")}
-          </button>
-        </div>
-      )}
       <details className="subagent-transcript" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>{label}</summary>
       {open && transcript.isPending && <p className="subagent-transcript-status">{t("加载中…", "Loading…")}</p>}
