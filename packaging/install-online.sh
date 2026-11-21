@@ -18,8 +18,9 @@
 #                        用于判定全新安装还是更新，并透传给包内 install.sh
 #   --yes / -y           非交互；透传给 install.sh
 #   --port/--host/--lan/--data-dir/--system/--with-systemd/--enable-service/
-#   --open-firewall/--use-system-node/--dsh-compat
-#                        原样透传给包内 install.sh（仅全新安装时生效）
+#   --open-firewall/--use-system-node/--purge-dsh-compat
+#                        原样透传给包内 install.sh（仅全新安装时生效）；
+#                        --purge-dsh-compat 在更新模式也会执行
 #   -h, --help           显示本帮助
 #
 # 环境变量:
@@ -77,8 +78,8 @@ usage() {
   --prefix <dir>       安装前缀（绝对路径），默认用户级 ~/.local、root /usr/local
   --yes, -y            非交互（透传给 install.sh）
   --port/--host/--lan/--data-dir/--system/--with-systemd/--enable-service/
-  --open-firewall/--use-system-node/--dsh-compat
-                       原样透传给包内 install.sh（仅全新安装生效）
+  --open-firewall/--use-system-node/--purge-dsh-compat
+                       原样透传给包内 install.sh；--purge-dsh-compat 在更新模式也执行
   -h, --help           显示本帮助
 
 环境变量 OWC_INSTALL_BASE_URL 可覆盖下载基址（默认
@@ -94,6 +95,9 @@ EOF
 VERSION=''
 CHANNEL=''
 CHANNEL_SET=0
+PURGE_DSH_COMPAT=0
+DATA_DIR=''
+DATA_DIR_SET=0
 if [ "$(id -u)" -eq 0 ]; then
     # root 默认系统级前缀，与 install.sh 的 default_prefix 一致（更新模式探测依赖它）
     PREFIX=/usr/local
@@ -118,6 +122,19 @@ for arg in "$@"; do
         --latest) CHANNEL=latest; CHANNEL_SET=1 ;;
         --prerelease) CHANNEL=prerelease; CHANNEL_SET=1 ;;
         -h|--help) usage; exit 0 ;;
+    esac
+    prev=$arg
+done
+
+# --purge-dsh-compat 在更新模式也要生效；数据目录用于清理，不改变其它安装参数。
+prev=''
+for arg in "$@"; do
+    case "$prev" in
+        --data-dir) DATA_DIR=$arg; DATA_DIR_SET=1 ;;
+    esac
+    case "$arg" in
+        --purge-dsh-compat) PURGE_DSH_COMPAT=1 ;;
+        --data-dir=*) DATA_DIR=${arg#--data-dir=}; DATA_DIR_SET=1 ;;
     esac
     prev=$arg
 done
@@ -274,6 +291,36 @@ if [ -d "$PREFIX" ]; then
 fi
 LIB_DIR="$PREFIX/lib/openwebcode"
 
+# 从既有启动器读取安装时写入的默认值（与 install.sh 的 launcher_var 同口径）。
+launcher_var() {
+    raw=$(sed -n "s/^$1=//p" "$2" | head -n 1)
+    case "$raw" in
+        \'*\')
+            raw=${raw#\'}
+            raw=${raw%\'}
+            printf '%s' "$raw" | sed "s/'\\\\''/'/g"
+            ;;
+        \"*\")
+            raw=${raw#\"}
+            raw=${raw%\"}
+            printf '%s' "$raw"
+            ;;
+        *) printf '%s' "$raw" ;;
+    esac
+}
+
+default_data_dir() {
+    if [ -n "${OWC_DATA_DIR:-}" ]; then
+        printf '%s\n' "$OWC_DATA_DIR"
+    elif [ "$(id -u)" -eq 0 ]; then
+        printf '%s\n' /var/lib/openwebcode
+    elif [ -n "${XDG_DATA_HOME:-}" ]; then
+        printf '%s\n' "$XDG_DATA_HOME/openwebcode"
+    else
+        printf '%s\n' "$HOME/.local/share/openwebcode"
+    fi
+}
+
 if [ -f "$LIB_DIR/server/dist/index.js" ]; then
     # 更新模式：整体替换 lib/openwebcode 内容；保留 bin/owc 与 systemd unit。
     echo "检测到已有安装: $LIB_DIR"
@@ -282,7 +329,7 @@ if [ -f "$LIB_DIR/server/dist/index.js" ]; then
         die "目标目录不可写: $LIB_DIR（可能需要 sudo 运行，或检查目录属主与权限）" 1
     fi
     if [ $# -gt 0 ]; then
-        echo "install-online.sh: 更新模式不重建启动器，安装参数（$*）被忽略" >&2
+        echo "install-online.sh: 更新模式不重建启动器，安装参数（$*）被忽略（--purge-dsh-compat 与 --data-dir 用于清理）" >&2
     fi
     rm -rf "$LIB_DIR"
     mkdir -p "$LIB_DIR"
@@ -307,6 +354,30 @@ if [ -f "$LIB_DIR/server/dist/index.js" ]; then
     done
     chmod +x "$LIB_DIR/bin/owc-exec" 2>/dev/null || true
     echo "更新完成: $LIB_DIR"
+    if [ "$PURGE_DSH_COMPAT" -eq 1 ]; then
+        if [ "$DATA_DIR_SET" -eq 0 ]; then
+            DATA_DIR=''
+            if [ -f "$PREFIX/bin/owc" ]; then
+                DATA_DIR=$(launcher_var OWC_DEFAULT_DATA_DIR "$PREFIX/bin/owc")
+            fi
+            [ -n "$DATA_DIR" ] || DATA_DIR=$(default_data_dir)
+        fi
+        PURGE_NODE=''
+        if [ -x "$LIB_DIR/node/bin/node" ]; then
+            PURGE_NODE="$LIB_DIR/node/bin/node"
+        else
+            PURGE_NODE=$(command -v node 2>/dev/null || true)
+        fi
+        if [ -z "$PURGE_NODE" ]; then
+            echo "警告：未找到 Node.js，跳过 dsh 兼容模式残留清理。" >&2
+        elif [ ! -f "$EXTRACT_DIR/purge-dsh-compat.mjs" ]; then
+            echo "警告：发行包缺少 purge-dsh-compat.mjs，跳过 dsh 兼容模式残留清理。" >&2
+        else
+            "$PURGE_NODE" "$EXTRACT_DIR/purge-dsh-compat.mjs" \
+                --prefix "$PREFIX" --data-dir "$DATA_DIR" --yes \
+                || echo "警告：dsh 兼容模式残留清理未完成，请手动检查。" >&2
+        fi
+    fi
     # 按实际 unit 位置给出重启提示（root 系统级 / 用户级），不再只看用户级
     USER_UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/openwebcode.service"
     SYSTEM_UNIT=/etc/systemd/system/openwebcode.service

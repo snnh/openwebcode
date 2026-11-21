@@ -107,11 +107,6 @@ export interface ServerDependencies {
   indexManager?: IndexManager;
   /** 诊断服务（0.4.0 Phase 3a）；未注入时 tests/diagnostics 路由 501 */
   diagnostics?: DiagnosticsService;
-  /**
-   * dsh 兼容模式运行态（`GET /api/dsh/status`）：让 Web 入口如实判断「开关已开但端口未就绪」
-   * 并给出可行动提示（缺 vendor / 非回环无令牌 / 端口占用），未注入时该路由回 unknown。
-   */
-  dshStatus?: () => { enabled: boolean; listening: boolean; address?: string; reason?: string };
   /** SCM 服务（0.4.0 Phase 4a）；未注入时 git/* 路由 501 */
   scm?: ScmService;
   /** 评测 harness（0.5.0 Phase 3a）；扩展禁用时 eval/* 路由 503 */
@@ -333,7 +328,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       if (request.url.startsWith("/api/")) return;
       reply.header("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; script-src 'self' 'unsafe-inline'");
       reply.header("X-Content-Type-Options", "nosniff");
-      // 点击劫持防线（frame-ancestors 的老浏览器副本）；页面不做嵌入，dsh 兼容模式走独立端口的新窗口。
+      // 点击劫持防线（frame-ancestors 的老浏览器副本）；页面不做嵌入。
       reply.header("X-Frame-Options", "DENY");
       // `?token=` 引导链接会把访问令牌放进 URL：一旦页面跳外站，Referer 不得携带它。
       reply.header("Referrer-Policy", "no-referrer");

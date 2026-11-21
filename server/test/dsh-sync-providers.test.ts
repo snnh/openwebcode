@@ -640,12 +640,12 @@ describe("server API：providers.listProfiles / providers.upsertProfiles（经 E
     expect(partial.models[0]?.error).toContain("Model registry is not configured");
   });
 
-  it("扩展 id 落在 dsh- 前缀里仍走扩展通道（官方 dsh-sync 不被误判为 dsh 插件）", async () => {
+  it("官方 dsh-sync 仍走扩展通道，未知 dsh- 前缀 id 按未知扩展拒绝", async () => {
     const { dispatch } = await buildManager({ withServices: true });
-    // 真扩展：先命中 manifests → 走 providers:read 门禁与真实分发（而不是被当成 dsh 插件拒绝）
+    // 真扩展：命中 manifests → 走 providers:read 门禁与真实分发。
     await expect(dispatch({ id: "8", api: "providers.listProfiles", extensionId: "dsh-sync" })).resolves.toEqual([]);
-    // 伪扩展 dsh-<pluginId>：仍在 manifests 里找不到 → 继续走 dsh 插件通道
+    // 兼容模式已下线：不再存在 dsh-<pluginId> 伪扩展通道。
     await expect(dispatch({ id: "9", api: "providers.listProfiles", extensionId: "dsh-nope" }))
-      .rejects.toThrow(/dsh plugin lacks api access/);
+      .rejects.toThrow(/Unknown extension: dsh-nope/);
   });
 });

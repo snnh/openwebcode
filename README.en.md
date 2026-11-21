@@ -53,7 +53,6 @@ Browser (React 19 + Vite 6) ── HTTP/WebSocket ──► Node service (agent 
 - **Interface and accessibility**: bilingual Chinese/English UI, light/dark themes, accent colors, Latin/CJK/code font choices, code ligatures, and 90–125% text scaling; layout and preferences are remembered per browser.
 - **Mobile and remote access**: responsive adaptation for phones/tablets; off-loopback listening enforces an access token (auto-generated or `OWC_ACCESS_TOKEN`), with optional TOTP global login.
 - **The `owc run` CLI**: headless NDJSON event stream for CI integration.
-- **dsh compatibility mode (experimental, off by default)**: hosts the official dsh SPA on its own port and loads dsh-ecosystem plugins (Host tools/hooks and client UI plugins).
 - **dsh Sync (off by default)**: the official `dsh-sync` extension syncs model configuration and sessions **both ways** with the dsh data directory (preview the diff, tick items, then run; no plaintext keys are written and existing dsh sessions are never overwritten).
 
 See the [user guide](./help/usage.md) and [FAQ](./help/faq.md) (both in Chinese) for details.
@@ -156,7 +155,6 @@ Production reference (v1.7.6, Debian 13 x86-64, measured on an always-on instanc
 
 - [`help/usage.md`](./help/usage.md) — user guide: startup, panels, shortcuts, models and costs, extension-point templates (Chinese)
 - [`help/faq.md`](./help/faq.md) — FAQ: model setup, permissions and sandbox, snapshot rollback, CLI integration, troubleshooting (Chinese)
-- [`help/dsh-compat.md`](./help/dsh-compat.md) — dsh compatibility mode: enabling it, installing dsh plugins, supported/unsupported wire surface, trust boundary, troubleshooting (Chinese)
 - [`help/dsh-sync.en.md`](./help/dsh-sync.en.md) — dsh Sync extension: two-way sync of model configuration and sessions with the dsh data directory, panel workflow, credential handling, limitations (English; Chinese [`dsh-sync.md`](./help/dsh-sync.md))
 - [`help/development.md`](./help/development.md) — development guide: repository layout, the three builds, test conventions, entry points, CI and release (Chinese)
 - [`packaging/README.en.md`](./packaging/README.en.md) — packaging, distribution layout, installers, and the release pipeline

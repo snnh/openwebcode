@@ -12,7 +12,6 @@ import { useStore } from "./store";
 import { ui, uiStore } from "./ui-store";
 import { router, useRoute } from "./router";
 import { readChatModeEnabled } from "./chat-mode-sync";
-import { dshEntryUrl, dshNotReadyNotice, readDshMode } from "./dsh-mode-sync";
 import { sessionMeta, sessionStore } from "./session-store";
 import { useAppWiring } from "./wiring";
 import { isBusyState } from "../lib/agent-state";
@@ -76,8 +75,6 @@ export function App(): ReactElement {
   const quickOpenOpen = useStore(uiStore, (state) => state.quickOpen);
   const mode = useStore(uiStore, (state) => state.mode);
   const chatModeEnabled = useStore(uiStore, (state) => state.chatModeEnabled);
-  const dshCompatEnabled = useStore(uiStore, (state) => state.dshCompat.enabled);
-  const dshCompatPort = useStore(uiStore, (state) => state.dshCompat.port);
   const sessions = useSessionsQuery();
   const models = useModelsQuery();
   const providers = useProvidersQuery();
@@ -324,12 +321,6 @@ export function App(): ReactElement {
     if (enabled !== undefined) ui.setChatModeEnabled(enabled);
   }, [serverSettings.data]);
 
-  // 服务端设置到达/保存后同步 dsh 兼容模式入口（与 chat 模式同一刷新路径）
-  useEffect(() => {
-    const mode = readDshMode(serverSettings.data);
-    if (mode !== undefined) ui.setDshCompat(mode);
-  }, [serverSettings.data]);
-
   // 新版本提示：更新检查启用且发现更新版本时通知中心提示一次（按版本去重，点击跳转 设置 → 服务信息）
   const notifiedUpdateVersionsRef = useRef(new Set<string>());
   useEffect(() => {
@@ -450,26 +441,6 @@ export function App(): ReactElement {
             ? () => {
                 ui.setMode("chat");
                 router.navigate("/");
-              }
-            : undefined}
-          onOpenDsh={dshCompatEnabled
-            ? () => {
-                // 打开前查运行态：开关已开但端口未就绪（缺 vendor / 非回环无令牌 / 端口占用）时
-                // 给出可行动提示，而不是让用户对着「连接被拒」的空白页猜原因
-                void api.dshStatus()
-                  .then((status) => {
-                    if (!status.listening) {
-                      const notice = dshNotReadyNotice(status.reason, dshCompatPort);
-                      ui.notify(t(notice.zh, notice.en), "error");
-                      return;
-                    }
-                    // 独立端口托管 dsh SPA：新标签打开；token 随链接转发（同 host cookie 共享，二者都可）
-                    window.open(dshEntryUrl({ enabled: true, port: dshCompatPort }, window.location), "_blank", "noopener,noreferrer");
-                  })
-                  .catch(() => {
-                    const notice = dshNotReadyNotice(undefined, dshCompatPort);
-                    ui.notify(t(notice.zh, notice.en), "error");
-                  });
               }
             : undefined}
           main={main}

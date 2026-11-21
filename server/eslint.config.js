@@ -8,8 +8,7 @@ import tseslint from "typescript-eslint";
 export default tseslint.config(
   {
     // dist/ 为 tsc 产物（含生成的 config/）；coverage/ 为测试覆盖率产物
-    // assets/dsh-web 为 scripts/fetch-dsh-web.mjs 生成的第三方产物（gitignored），不参与本项目 lint
-    ignores: ["dist/", "node_modules/", "coverage/", "assets/dsh-web/"],
+    ignores: ["dist/", "node_modules/", "coverage/"],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
@@ -19,19 +18,7 @@ export default tseslint.config(
     languageOptions: {
       globals: globals.node,
     },
-  },
-  {
-    // dsh 兼容模式的桥接插件是浏览器 bundle（在 dsh SPA 里执行）：需要 browser 全局，
-    // 且它以 IIFE/打包形态书写（不做模块化重排），故只保留浏览器全局声明
-    files: ["assets/dsh-bridge/**/*.js"],
-    languageOptions: {
-      globals: globals.browser,
-    },
-    rules: {
-      "no-empty": "off",
-    },
-  },
-  {
+  },  {
     files: ["test/**/*.ts"],
     rules: {
       // 桩 provider 常用“只抛错不产出”的 async generator，yield 缺失是刻意的

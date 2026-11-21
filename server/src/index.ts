@@ -61,14 +61,10 @@ import { RemoteSyncScheduler } from "./remote-sync-scheduler.js";
 import { CronScheduler } from "./cron-scheduler.js";
 import { EvalEvaluator } from "./eval/evaluator.js";
 import { ChatAssistantStore, ChatConfigService, ChatPythonEnv, ChatRunner, ChatSessionStore } from "./chat/index.js";
-import { DEFAULT_DSH_PORT, DshCompatRuntime } from "./dsh/web-protocol/runtime.js";
-import { applySessionDefaultsFor } from "./routes/sessions-core.js";
 // 默认模型解析（导入会话补 provider/model）：与 `POST /api/sessions` 共用同一套 helper，
 // 避免第二份口径。route-context 只依赖 providers/settings/context 层（不反向 import 本文件），
 // 因此这里是单向依赖，不成环。
 import { resolveDefaultModel, resolveDefaultProvider, resolveDefaultSelection } from "./routes/route-context.js";
-import { createDshModelBridge } from "./dsh/model-bridge.js";
-import { homedir } from "node:os";
 
 const moduleDirectory = import.meta.dirname;
 const resolveFromServer = (value: string) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
@@ -503,75 +499,6 @@ const authState = resolvedAccessToken
   ? { accessToken: resolvedAccessToken.token, allowedOrigins: config.allowedOrigins, autoAllowSameOrigin: config.autoAllowSameOrigin ?? false }
   : undefined;
 
-// dsh 兼容模式（默认关闭）：按设置启停独立端口的 dsh SPA + 协议翻译层；关闭时零常驻。
-// 必须放在 authState 解析之后——dsh 端口复用访问令牌做鉴权，早于解析会拿到 undefined 并把
-// 端口开成免鉴权（const 的 TDZ 还会让启动直接崩溃）。
-const dshCompat = new DshCompatRuntime({
-  vendorDirectory: path.resolve(moduleDirectory, "../assets/dsh-web"),
-  enabled: () => settings.effective().dshCompat.enabled,
-  port: () => settings.effective().dshCompat.port || DEFAULT_DSH_PORT,
-  uiPath: () => settings.effective().dshCompat.uiPath,
-  host: () => settings.effective().host,
-  accessToken: () => authState?.accessToken,
-  ...(authState === undefined ? {} : { allowedOrigins: authState.allowedOrigins }),
-  totp,
-  sessions,
-  agent,
-  events,
-  home: homedir(),
-  // REST `/api/sessions` 的默认套用与 SessionStart 钩子：dsh `session/create` 在同一链路
-  sessionDefaults: (session, provider, model) =>
-    applySessionDefaultsFor(
-      { settings, sessions, profileOf: (modelId, providerId) => models.get(modelId, providerId) ?? getModelProfile(modelId), platform: process.platform, core, events },
-      session,
-      provider,
-      model,
-    ),
-  sessionStartHook: async (info) => {
-    await hooks.run("SessionStart", info);
-  },
-  // 模型面：dsh 模型选择器（catalog/selectModel）与新建会话的默认模型，事实来源与 REST 同一套
-  models: createDshModelBridge({ providers, models, settings }),
-  dshPlugins: () => extensions.dshPlugins(),
-  // 设置/凭据面：owc 服务商档案（provider-profiles.json）的只读投影
-  settings: {
-    profiles: () =>
-      providerProfiles.view().modelProviders.map((profile) => ({
-        id: profile.id,
-        enabled: profile.enabled,
-        interfaceType: profile.interfaceType,
-        ...(profile.baseURL === undefined ? {} : { baseURL: profile.baseURL }),
-        hasApiKey: profile.hasApiKey,
-      })),
-  },
-  version: () => getServerVersion(),
-  mainPort: () => settings.effective().port,
-  logger: {
-    info: (message) => console.log(message),
-    warn: (message) => process.stderr.write(`${message}\n`),
-  },
-});
-events.on("event", (event) => {
-  if (event.type !== "server.settings_updated" || !event.payload || typeof event.payload !== "object") return;
-  const keys = (event.payload as { keys?: unknown }).keys;
-  if (!Array.isArray(keys) || !keys.some((key) => key === "dshCompatEnabled" || key === "dshPort" || key === "dshUiPath")) return;
-  void dshCompat.sync().catch((error: unknown) => process.stderr.write(`[dsh] 启停失败：${error instanceof Error ? error.message : String(error)}\n`));
-  // dsh 插件加载计划跟随开关（关闭 → 下发空计划卸载插件与工具）
-  if (keys.some((key) => key === "dshCompatEnabled")) {
-    void extensions.syncDsh(settings.effective().dshCompat.enabled).catch((error: unknown) => process.stderr.write(`[dsh] 插件同步失败：${error instanceof Error ? error.message : String(error)}\n`));
-  }
-});
-// dsh 兼容模式是可选层：dshPort 被占（EADDRINUSE）等失败只记录原因并继续启动 owc 主服务，
-// 与下面设置热切换路径的 .catch 行为一致（主服务绝不因该层失败而拒启）
-try {
-  await dshCompat.sync();
-} catch (error) {
-  process.stderr.write(`[dsh] 启动失败（owc 主服务继续启动）：${error instanceof Error ? error.message : String(error)}\n`);
-}
-// dsh 插件（可信代码，≈ yolo）只在模式开启时下发加载计划；默认关闭时一个都不加载
-if (settings.effective().dshCompat.enabled) {
-  await extensions.syncDsh(true).catch((error: unknown) => process.stderr.write(`[dsh] 插件同步失败：${error instanceof Error ? error.message : String(error)}\n`));
-}
 const lanAddresses = listLanAddresses();
 const app = await buildServer({
   core,
@@ -599,12 +526,6 @@ const app = await buildServer({
   providerProfilesRuntime,
   indexManager,
   diagnostics,
-  dshStatus: () => ({
-    enabled: settings.effective().dshCompat.enabled,
-    listening: dshCompat.listening,
-    ...(dshCompat.address === undefined ? {} : { address: dshCompat.address }),
-    ...(dshCompat.reason === undefined ? {} : { reason: dshCompat.reason }),
-  }),
   scm,
   evalEvaluator,
   updateChecker,
@@ -650,7 +571,6 @@ const app = await buildServer({
 
 async function shutdown(): Promise<void> {
   clearInterval(gcTimer);
-  await dshCompat.close().catch(() => {});
   cron.stop();
   indexManager.stop();
   remoteSyncScheduler.stop();

@@ -11,10 +11,11 @@
 | 产物 | 平台 | 说明 |
 | --- | --- | --- |
 | `openwebcode-<version>-windows-x64.msi` | Windows x64 | CPack/WiX 安装包 |
-| `openwebcode-<version>-linux-x64.tar.gz` | Linux x86_64 | 运行时树 + 顶层 `install.sh`/`uninstall.sh` |
+| `openwebcode-<version>-linux-x64.tar.gz` | Linux x86_64 | 运行时树 + 顶层 `install.sh`/`uninstall.sh`/`purge-dsh-compat.*` |
 | `openwebcode-<version>-linux-arm64.tar.gz` | Linux aarch64 | 同上，`ubuntu-24.04-arm` 原生构建 |
 | `openwebcode-<version>-linux-loongarch64.tar.gz` | Linux 龙芯 | 同上，x64 runner 交叉编译，不内置 Node.js |
 | `install-online.sh` | Linux | `curl \| bash` 在线安装/更新脚本，按 `uname -m` 自动选架构 |
+| `purge-dsh-compat.sh` / `purge-dsh-compat.mjs` | 全平台 | 显式清理已下线的 dsh 兼容模式残留（Shell 包装器 + Node 实现） |
 | Docker 镜像 | Linux x86_64 / arm64 | `ghcr.io/snnh/openwebcode`（tag 推送由 docker.yml 构建发布，见下文「Docker 镜像」） |
 | `SHA256SUMS.txt` | 全平台 | 四个发行包的 SHA-256 校验和 |
 | `bench-results-*.json` | 全平台 | 性能基准结果，供下一版做回归对比基线 |
@@ -32,11 +33,13 @@ bin/owc-launch.cmd      Windows 安装结束页 Launch 复选框用的启动器�
 server/dist/            服务端编译产物，入口 dist/index.js
 server/package.json     "type": "module" 声明（dist 为 ESM，必需）
 server/node_modules/    生产依赖（npm prune --omit=dev 之后）
-server/assets/          运行时资产（含 dsh 兼容模式 vendor：dsh-web/ = dsh SPA + 58 个 client 插件 bundle、dsh-bridge/ = 桥接插件）
+server/assets/          运行时资产
 web/dist/               前端静态资源（server 按 server/dist/../../web/dist 解析托管）
 node/                   固定版本 Node 运行时（Windows 只有 node.exe；Linux 是完整发行目录）
 install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 uninstall.sh            Linux 卸载脚本（仅 tar.gz，位于包顶层；安装时落盘为 <prefix>/bin/owc-uninstall）
+purge-dsh-compat.sh     显式清理 dsh 兼容模式残留的 Shell 包装器（仅 tar.gz，位于包顶层）
+purge-dsh-compat.mjs    清理逻辑的 Node 实现（仅 tar.gz，位于包顶层；也可从 release 资产单独下载）
 ```
 
 bundled Node 版本固定在 release.yml 的 `env.NODE_DIST_VERSION`（当前 24.22.1），升级只改这一个常量；CI 下载后对照 nodejs.org 官方 `SHASUMS256.txt` 校验，不硬编码哈希。loongarch64 没有官方 Node 包，不创建 `node/`，`install.sh` 会自动改用系统 Node.js。
@@ -243,6 +246,7 @@ cd openwebcode
 | `--with-systemd` | 写 systemd unit 但不启用：root 写 `/etc/systemd/system/openwebcode.service`，否则写用户级 `${XDG_CONFIG_HOME:-~/.config}/systemd/user/openwebcode.service`（目标目录可用 `OWC_SYSTEMD_UNIT_DIR` 覆盖）。prefix 含空格或 systemd 特殊字符时拒绝（更新/切换场景则保留旧 unit 不重写）。 |
 | `--enable-service` | 隐含 `--with-systemd`，并执行 `systemctl daemon-reload && systemctl enable --now openwebcode`（用户级用 `systemctl --user`；未登录也开机自启还需 `loginctl enable-linger $USER`）。 |
 | `--open-firewall` | 仅 root + 非回环监听：用 firewalld/ufw 放行端口，都没有则打印手动放行提示。 |
+| `--purge-dsh-compat` | 显式清理已下线的 dsh 兼容模式残留：受管 `dsh-web`/`dsh-bridge`、`<数据目录>/dsh-plugins` 与 `dsh.json`，并从 `server-settings.json` 移除三个 dsh 键；自选 `dshUiPath` 目录只打印、不删除。 |
 | `--yes` / `-y` | 不提问，适合 CI 和脚本。 |
 | `--with-desktop-entry` | 未实现，脚本明确失败而不是伪装完成桌面集成。 |
 
@@ -280,6 +284,22 @@ sudo /usr/local/bin/owc-uninstall --yes --purge-data --remove-firewall  # 系统
 
 动作按序：systemd unit 存在时 `disable --now`（尽力而为）→ 删 unit → `daemon-reload`；`--remove-firewall` 时按启动器里的 `OWC_DEFAULT_PORT` 移除端口规则（仅 root）；删 `<prefix>/lib/openwebcode` 和 `<prefix>/bin/owc`；`--purge-data` 时删数据目录（拒绝 `/`、`$HOME` 和 prefix 本身）；最后删卸载器自身。`--prefix` 缺省为卸载器自身所在安装，从发行包根目录运行时回退到按 uid 分层的默认前缀；`--data-dir` 同样按 uid 分层。用户级安装如曾 `loginctl enable-linger`，卸载时会提示对应的 `disable-linger`。手动启动（非 systemd）的 owc 进程不在管理范围，先自行停止。
 
+### 清理已下线的 dsh 兼容模式
+
+旧版本可能留下 dsh 兼容模式的 vendor、插件数据与设置。入口已下线，升级不会自动删除用户数据；需要腾空磁盘时显式执行：
+
+```sh
+# 已安装的 Linux 环境（install.sh 或在线更新）
+./install.sh --purge-dsh-compat --yes --prefix "$HOME/.local" --data-dir "$HOME/.local/share/openwebcode"
+./install-online.sh --purge-dsh-compat --prefix "$HOME/.local" --data-dir "$HOME/.local/share/openwebcode"
+
+# 任意平台（Windows/Docker/手动部署），先 dry-run 看路径
+node scripts/purge-dsh-compat.mjs --prefix <prefix> --data-dir <dataDir> --dry-run
+node scripts/purge-dsh-compat.mjs --prefix <prefix> --data-dir <dataDir> --yes
+```
+
+删除受管的 `dsh-web`、`dsh-bridge`、`<数据目录>/dsh-plugins`、`<数据目录>/dsh.json`，并从 `server-settings.json` 移除 `dshCompatEnabled`/`dshPort`/`dshUiPath`；旧设置里的 `dshUiPath` 指向的自选 UI 目录只打印、不删除。
+
 ### install-online.sh（在线安装/更新）
 
 不落盘的 `curl | bash` 脚本（POSIX sh），一条命令完成安装或升级：
@@ -300,9 +320,10 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 | `--version <x.y.z>` | 目标版本（semver 形态，可带一个预发布后缀）；缺省查询 GitHub Releases latest 的 `tag_name`（sed/grep 解析）。 |
 | `--prefix <dir>` | 安装前缀，默认普通用户 `~/.local`、root `/usr/local`；用来判定全新安装还是更新，全新安装时透传给包内 `install.sh`。 |
 | `--yes` / `--port` / `--host` / `--lan` / `--data-dir` / `--system` / `--with-systemd` / `--enable-service` / `--open-firewall` / `--use-system-node` / `--upgrade-node` | 原样透传给包内 `install.sh`，仅全新安装生效；更新模式不重建启动器，会提示这些参数被忽略。 |
+| `--purge-dsh-compat` | 显式清理已下线的 dsh 兼容模式残留；全新安装与更新模式都会执行，更新模式可配合 `--data-dir` 指定数据目录。 |
 
 - **全新安装**：调用解出的 `install.sh`，行为与离线安装一致。
-- **更新**：整体替换 `<prefix>/lib/openwebcode/` 内容为新版，保留 `<prefix>/bin/owc` 启动器和已写好的 systemd unit，数据目录不动。既有启动器 pin 了系统 Node.js（`OWC_NODE` 非包内形式）时跳过 `node/` 复制（约 100MB 冗余，同时清掉旧的冗余目录）。目标目录不可写时明确报错（可能需要 sudo）。完成后按实际 unit 位置提示重启：系统级 `systemctl restart openwebcode`（非 root 提示加 `sudo`），用户级 `systemctl --user restart openwebcode`，没有 unit 则提示手动重启 owc。
+- **更新**：整体替换 `<prefix>/lib/openwebcode/` 内容为新版，保留 `<prefix>/bin/owc` 启动器和已写好的 systemd unit，数据目录不动；传 `--purge-dsh-compat` 时在替换后执行兼容模式残留清理。既有启动器 pin 了系统 Node.js（`OWC_NODE` 非包内形式）时跳过 `node/` 复制（约 100MB 冗余，同时清掉旧的冗余目录）。目标目录不可写时明确报错（可能需要 sudo）。完成后按实际 unit 位置提示重启：系统级 `systemctl restart openwebcode`（非 root 提示加 `sudo`），用户级 `systemctl --user restart openwebcode`，没有 unit 则提示手动重启 owc。
 
 下载基址可用 `OWC_INSTALL_BASE_URL` 覆盖（默认 `https://github.com/snnh/openwebcode/releases/download/v<version>`），便于镜像或 `file://` 本地测试。
 
@@ -390,10 +411,9 @@ server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 - **版本校验**：两个平台 job 的第一步执行，tag 推送和手动触发都跑，规则见上文「版本号机制」。
 - **测试门禁**：Windows 和 Linux x64/arm64 各自跑 core ctest、以真实 `owc-exec` 跑 server 测试、web 构建和测试。发布 job 要求 Windows、Linux 和 benchmark 全绿。
 - **Windows job**：测试 → `npm prune --omit=dev` → Release core → 组装 `build/stage/`（Node win-x64 zip 对照官方 `SHASUMS256.txt` 校验后取 `node.exe`，`owc.cmd`/`owc-launch.cmd` 转 CRLF）→ `cpack -G WIX` → `verify-wix-options.ps1` → `msiexec` 静默安装 + `/api/health` 冒烟 + 卸载 → 上传 MSI。
-- **Linux job**：按 `arch: [x64, arm64, loongarch64]` 矩阵出包。x64/arm64 原生构建（arm64 用 `ubuntu-24.04-arm` runner），测试后组装 staging（Node linux-<arch> tar.gz 同样校验后整树解入 `node/`），`tar -C stage . -C packaging install.sh uninstall.sh` 打包，临时前缀 `./install.sh --yes` 安装 + `/api/health` 冒烟。loongarch64 在 x64 runner 上用 `gcc-14-loongarch64-linux-gnu` 交叉编译（`core/toolchains/loongarch64-linux-gnu.cmake`），跳过 ctest/server 测试和冒烟，用 `file` 确认产物是 loongarch64 ELF，不内置 `node/`。
-- **dsh UI vendor（可选产物）**：Windows 与 Linux job 都在组装 staging 前执行 `node scripts/fetch-dsh-web.mjs` 抓取钉版 dsh 前端与 client 插件到 `server/assets/dsh-web/`（`continue-on-error: true`——失败不阻塞发布，发布包缺少 vendor 时 dsh 兼容模式如实不可用：端口不监听）；Docker 构建同口径（`RUN` 失败打印警告继续）。源码构建需要自行执行一次该脚本。
+- **Linux job**：按 `arch: [x64, arm64, loongarch64]` 矩阵出包。x64/arm64 原生构建（arm64 用 `ubuntu-24.04-arm` runner），测试后组装 staging（Node linux-<arch> tar.gz 同样校验后整树解入 `node/`），`tar -C stage . -C packaging install.sh uninstall.sh purge-dsh-compat.sh -C scripts purge-dsh-compat.mjs` 打包，临时前缀 `./install.sh --yes` 安装 + `/api/health` 冒烟。loongarch64 在 x64 runner 上用 `gcc-14-loongarch64-linux-gnu` 交叉编译（`core/toolchains/loongarch64-linux-gnu.cmake`），跳过 ctest/server 测试和冒烟，用 `file` 确认产物是 loongarch64 ELF，不内置 `node/`。
 - **benchmark job**：默认是发布的硬依赖，含两层判定——相对回归对比是警告级（`compare.mjs` 回归超 15% 只告警不阻断）；各 bench 脚本内置的绝对验收门禁未通过则 job 失败并阻断发布，属预期行为。当前构建缺任何一个基准场景结果也判失败。没有上一 release 基线或基线下载失败时告警并跳过对比（不阻断），除非显式开了 `bootstrap_benchmark_baseline`。结果以 `bench-results-*.json` 随发布资产上传，供下一版下载做基线。手动发布显式开 `skip_performance_tests` 时整个 job 跳过，该次 release 不含基准 JSON。
-- **release job**：下载全部产物并核对齐全 → 生成 `SHA256SUMS.txt` 并自检 → 从 `CHANGELOG.md` 提取 `## [<version>]` 段落做发布说明（缺失或为空直接失败，先补 CHANGELOG 再发版）→ `softprops/action-gh-release@v2` 创建 Release（非草稿；版本号带 `-` 时标 Pre-release；`target_commitish` 固定为触发本次运行的提交）。上传的文件：MSI、三个 tar.gz、`SHA256SUMS.txt`、`packaging/install-online.sh`、基准 JSON（如有）。
+- **release job**：下载全部产物并核对齐全 → 生成 `SHA256SUMS.txt` 并自检 → 从 `CHANGELOG.md` 提取 `## [<version>]` 段落做发布说明（缺失或为空直接失败，先补 CHANGELOG 再发版）→ `softprops/action-gh-release@v2` 创建 Release（非草稿；版本号带 `-` 时标 Pre-release；`target_commitish` 固定为触发本次运行的提交）。上传的文件：MSI、三个 tar.gz、`SHA256SUMS.txt`、`packaging/install-online.sh`、`packaging/purge-dsh-compat.sh`、`scripts/purge-dsh-compat.mjs`、基准 JSON（如有）。
 
 ### 发版步骤
 

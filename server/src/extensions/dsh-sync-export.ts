@@ -6,7 +6,7 @@
  *   稠密重编 seq → 改写图片块 → 追加标题与压缩生命周期，附件只收集不落地；
  * - {@link writeDshSession} 负责落盘（结构校验 + 内容寻址写附件 + zstd 帧 + 回读自检 + 失败清理）。
  *
- * 事件映射**复用**既有实现：`server/src/dsh/web-protocol/session-events.ts` 的 {@link deriveSessionRecords}
+ * 事件映射**复用** dsh-sync 自己的 {@link deriveSessionRecords}（自归档兼容层抽出，已去掉反向依赖）
  * （owc → dsh 的 wire 投影），本模块只做它不负责的几件事：消息层预处理（孤儿/多结果 tool 消息）、
  * 图片附件化、工具生命周期重排、事件关系修复、结构校验、压缩导出、v3 文件封装。
  *
@@ -60,7 +60,7 @@ import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import * as zlib from "node:zlib";
-import { deriveSessionRecords } from "../dsh/web-protocol/session-events.js";
+import { deriveSessionRecords } from "./dsh-sync-session-events.js";
 import type { ChatMessage, ImageContent, MessageContent, ToolResultContent } from "../sessions/types.js";
 import { DSH_SYNC_WRITE_GENERATION, decodeDshSessionFile, dshSessionDir, writeDshAttachment } from "./dsh-sync-dsh.js";
 import { imageMediaType, imageSize } from "./dsh-sync-image-size.js";

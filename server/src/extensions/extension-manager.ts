@@ -19,8 +19,6 @@ import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
 import { readManifest, type DiscoveredManifest } from "./manifest.js";
 import { ExtensionStorage, storageRoot, type StorageQuota } from "./extension-storage.js";
 import { publicSessionDetail, publicSessionMeta } from "./session-projection.js";
-import { dshPluginInfos, dshToolSourceId, scanDshPlugins, type DshPluginInfo, type DshPluginReport } from "../dsh/loader.js";
-import { DSH_SERVICE_APIS } from "../dsh/services.js";
 import { setSimulatedUserAgent } from "../user-agent.js";
 import { BUILTIN_PRESETS, getPreset, listPresets, resolvePreset, presetsDir, saveUserPreset, deleteUserPreset, PRESET_TOOL_GROUPS, PRESET_TOOLS, type PresetDetail, type AgentPreset, type PresetSummary } from "./agent-presets/index.js";
 import type { CompactVaultService } from "./compact-vault.js";
@@ -52,8 +50,6 @@ const ALIAS_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
 /** 子代理转录的 taskId 形状（uuid；与 SessionStore/routes 的读取侧同一正则，防路径穿越）。 */
 const SUBAGENT_TASK_ID_PATTERN = /^[0-9a-f-]{36}$/;
 const BUILTIN_PRESET_IDS = new Set(BUILTIN_PRESETS.map((preset) => preset.id));
-/** dsh 插件同步超时：插件激活可能含 IO（模型调用应在 apply 之外，超时即判错）。 */
-const DSH_SYNC_TIMEOUT_MS = 30_000;
 /** context.readImageFile 图片 base64 上限（≈5MB 原始字节，与消息带图同口径）：见 media-limits.ts。 */
 
 interface StoredConfig { version: 1; extensions: Record<string, ExtensionState> }
@@ -110,22 +106,12 @@ export class ExtensionManager {
   private static readonly ALWAYS_ENABLED_EXTENSIONS = new Set(["agent-presets"]);
   /** UA 模拟刷新序号：连续 configure 时只让最后一次异步解析落地。 */
   private userAgentSimulationSeq = 0;
-  /** dsh 兼容模式（M2）：上次同步聚合的插件状态，供 REST/UI 读取。 */
-  private dshInfos: DshPluginInfo[] = [];
-  /** 已请求过 dsh 同步：宿主崩溃重启 / 热重载后自动重放最近一次加载计划。 */
-  private dshSyncRequested = false;
-  /** 上次同步时 dsh 兼容模式的开关态（决定下发真实计划还是空计划）。 */
-  private dshSyncEnabled = false;
-  /** 宿主启动中的 promise（含 initialize + 启动期重放），供 dsh 插件同步等待。 */
+  /** 宿主启动中的 promise：并发 ensureHost 合并到同一次启动。 */
   private hostStarting: Promise<void> | undefined;
-  /** 当前这次 dsh 同步是否由宿主启动流程（重放）驱动：是则不再等 `hostStarting`。 */
-  private dshSyncFromHostStart = false;
-  private dshSyncInFlight: Promise<DshPluginInfo[]> | undefined;
 
-  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: StorageQuota; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike; models?: ModelRegistry; providerProfiles?: ProviderProfilesService; events?: EventBus; resolveModelSelection?: (provider?: string) => { provider?: string; model?: string } | undefined } = {}) {
+  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: StorageQuota; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike; models?: ModelRegistry; providerProfiles?: ProviderProfilesService; resolveModelSelection?: (provider?: string) => { provider?: string; model?: string } | undefined } = {}) {
     this.root = path.join(dataDir, "extensions");
     this.configPath = path.join(this.root, "extensions.json");
-    if (this.events && !this.deps.events) this.deps.events = this.events;
   }
 
   async initialize(): Promise<void> {
@@ -134,7 +120,7 @@ export class ExtensionManager {
     this.states = await this.loadStates();
     await this.applyUserAgentSimulation();
     // 延迟启动：没有任何启用扩展时不 fork 宿主进程（实测常驻 100MB+，且扩展宿主是独立 Node）。
-    // 首次真正需要宿主的操作（启用扩展 / 打开 dsh 兼容模式）会按需拉起，见 ensureHost()。
+    // 首次真正需要宿主的操作（启用扩展）会按需拉起，见 ensureHost()。
     if (this.hasEnabledExtensions()) await this.startHost();
     else process.stderr.write("[extensions] 无需要宿主的启用扩展：扩展宿主延迟启动（server 侧扩展照常生效）\n");
   }
@@ -151,8 +137,7 @@ export class ExtensionManager {
 
   /**
    * 按需拉起扩展宿主：宿主未连接时启动（启动中的并发调用等同一份启动）。
-   * 注意启动流程内部（startHostProcess / runDshSync 的 fromHostStart 分支）不得调用本方法，
-   * 否则会自等死锁。
+   * 注意启动流程内部（startHostProcess）不得调用本方法，否则会自等死锁。
    */
   private async ensureHost(): Promise<void> {
     if (this.child?.connected) return;
@@ -204,9 +189,7 @@ export class ExtensionManager {
 
   isEnabled(id: string): boolean {
     const manifest = this.manifests.find((item) => item.id === id);
-    if (manifest) return this.stateFor(manifest).enabled;
-    // dsh 插件是伪扩展（无 manifest）：启用态由 dsh 同步回报决定。
-    return this.dshInfos.some((info) => dshToolSourceId(info.id) === id && info.status === "running");
+    return manifest ? this.stateFor(manifest).enabled : false;
   }
 
   /** 扩展 id 是否已知（官方或已安装的第三方）；供 REST 层做会话级扩展状态等校验。 */
@@ -224,13 +207,11 @@ export class ExtensionManager {
     };
     await this.saveStates();
     await this.applyUserAgentSimulation();
-    if (this.hasEnabledExtensions() || this.dshSyncEnabled) {
+    if (this.hasEnabledExtensions()) {
       await this.ensureHost();
       const reloaded = await this.request("reload", { states: this.states }) as { tools?: Record<string, ExtensionToolSpec[]>; hooks?: unknown };
       this.replaceTools(reloaded.tools);
       this.replaceHostHooks(reloaded.hooks);
-      // reload 会清空宿主侧扩展状态：dsh 伪扩展的启用态与工具随加载计划重放。
-      await this.resyncDsh();
     } else {
       // 延迟启动的对称面：最后一个扩展关闭后宿主不再有活可干，回收进程（常驻 100MB+）。
       await this.close();
@@ -274,30 +255,11 @@ export class ExtensionManager {
   }
 
   async beforeTool(payload: ToolHookPayload): Promise<ToolHookPayload & { blocked?: boolean; reason?: string; audit?: string }> {
-    // dsh 兼容模式（M3）：任一 dsh 插件监听 tools/pre-execute 时走宿主 waterfall，
-    // 按上游判别式取 deny/ask/cancel（ask 降级为放行 + 审计）；无监听快速回落到通用扩展链。
-    if (this.dshInfos.some((info) => info.status === "running")) {
-      const dshOutcome = await this.dshToolHook("dsh.beforeTool", payload) as { blocked?: boolean; reason?: string; audit?: string } | undefined;
-      if (dshOutcome?.blocked) return { ...payload, blocked: true, ...(dshOutcome.reason ? { reason: dshOutcome.reason } : {}) };
-    }
     return this.hook("tool.beforeExecute", payload) as Promise<ToolHookPayload & { blocked?: boolean; reason?: string }>;
   }
 
-  /** tool.afterExecute（M3）：工具执行完成通知；dsh post-execute 可变换 content/isError（失败只记录不阻断）。 */
+  /** tool.afterExecute：工具执行完成通知；扩展可变换 content/isError（失败只记录不阻断）。 */
   async afterTool(payload: ToolAfterHookPayload): Promise<ToolAfterHookPayload> {
-    if (this.dshInfos.some((info) => info.status === "running")) {
-      const dshOutcome = await this.dshToolHook("dsh.afterTool", payload) as { content?: string; isError?: boolean } | undefined;
-      if (dshOutcome && (typeof dshOutcome.content === "string" || dshOutcome.isError === true)) {
-        return {
-          ...payload,
-          result: {
-            ...payload.result,
-            ...(typeof dshOutcome.content === "string" ? { content: dshOutcome.content } : {}),
-            ...(dshOutcome.isError === true ? { isError: true } : {}),
-          },
-        };
-      }
-    }
     const result = await this.hook("tool.afterExecute", payload) as { result?: { content?: string; isError?: boolean } };
     if (result?.result && (typeof result.result.content === "string" || result.result.isError === true)) {
       return {
@@ -310,16 +272,6 @@ export class ExtensionManager {
       };
     }
     return payload;
-  }
-
-  /** dsh 工具钩子：走宿主专设通道（dsh.beforeTool/dsh.afterTool），失败只记录不变换。 */
-  private async dshToolHook(method: "dsh.beforeTool" | "dsh.afterTool", payload: ToolHookPayload | ToolAfterHookPayload): Promise<unknown> {
-    try {
-      return await this.request(method, { ...payload }, 5500);
-    } catch (error) {
-      this.events?.publish({ source: "server", type: "extension.hook_failed", payload: { hook: method, message: error instanceof Error ? error.message : String(error) } });
-      return undefined;
-    }
   }
 
   /**
@@ -453,73 +405,6 @@ export class ExtensionManager {
   /** manifest 声明的 configSchema（无则 undefined），供 REST 层做松散校验。 */
   configSchemaFor(id: string): Record<string, unknown> | undefined {
     return this.manifests.find((item) => item.id === id)?.configSchema;
-  }
-
-  /**
-   * dsh 兼容模式插件同步（M2）：扫描 `<dataDir>/dsh-plugins` + `<dataDir>/dsh.json` 合成加载计划，
-   * 下发 Extension Host（插件激活在子进程内逐插件隔离），再与宿主回报合并为最终状态。
-   * 再次调用即全量重放（停用的插件自动卸载并回滚已注册的工具）；宿主重启 / 热重载后自动重放。
-   *
-   * `enabled` 对应设置 `dshCompatEnabled`（默认关闭）：关闭时下发**空计划**，把已加载的 dsh 插件
-   * 全部卸载并回滚工具——dsh 插件是可信代码，加载与否由用户显式开关决定，而不是「装了就生效」。
-   */
-  async syncDsh(enabled = true): Promise<DshPluginInfo[]> {
-    this.dshSyncEnabled = enabled;
-    this.dshSyncRequested = true;
-    // 打开兼容模式 = 有活要给宿主干：延迟启动的宿主在这里按需拉起（关闭态无需唤醒）
-    if (enabled) await this.ensureHost();
-    const previous = this.dshSyncInFlight;
-    const next = (previous ? previous.catch(() => undefined) : Promise.resolve([])).then(() => this.runDshSync());
-    this.dshSyncInFlight = next;
-    try {
-      return await next;
-    } finally {
-      if (this.dshSyncInFlight === next) this.dshSyncInFlight = undefined;
-    }
-  }
-
-  /** 上次同步聚合的 dsh 插件状态（未同步过返回空表）。 */
-  dshPlugins(): DshPluginInfo[] {
-    return this.dshInfos.map((info) => ({ ...info }));
-  }
-
-  private async runDshSync(): Promise<DshPluginInfo[]> {
-    // 宿主正在启动（initialize + 启动期重放）时先等它落地：启动流程自己调用时用 fromHostStart 跳过，
-    // 避免自等死锁（resyncDsh 由 startHostProcess 内部调用）。
-    if (!this.dshSyncFromHostStart && this.hostStarting !== undefined) {
-      await this.hostStarting.catch(() => undefined);
-    }
-    const scan = await scanDshPlugins(this.dataDir);
-    // 模式关闭：空计划 = 卸载全部 dsh 插件（含工具回滚），状态表如实标注原因
-    const plan = this.dshSyncEnabled ? scan.plan : [];
-    const child = this.child;
-    if (!child?.connected) {
-      this.dshInfos = dshPluginInfos(scan, undefined, "Extension Host 未连接，dsh 插件未加载", this.dshSyncEnabled);
-      return this.dshInfos;
-    }
-    let failure: string | undefined;
-    try {
-      const response = await this.request("dsh.sync", { plugins: plan }, DSH_SYNC_TIMEOUT_MS) as { plugins?: DshPluginReport[]; tools?: Record<string, ExtensionToolSpec[]> };
-      this.replaceTools(response.tools);
-      this.dshInfos = dshPluginInfos(scan, response.plugins, undefined, this.dshSyncEnabled);
-    } catch (error) {
-      failure = error instanceof Error ? error.message : String(error);
-      const message = `dsh 插件同步失败：${failure}`;
-      this.events?.publish({ source: "server", type: "extension.warning", payload: { message } });
-      this.dshInfos = dshPluginInfos(scan, undefined, message, this.dshSyncEnabled);
-    }
-    return this.dshInfos;
-  }
-
-  /** 宿主重启 / 热重载后重放 dsh 加载计划（未同步过则跳过）。 */
-  private async resyncDsh(): Promise<void> {
-    if (!this.dshSyncRequested) return;
-    this.dshSyncFromHostStart = true;
-    try {
-      await this.runDshSync().catch(() => undefined);
-    } finally {
-      this.dshSyncFromHostStart = false;
-    }
   }
 
   /** agent-presets 预设清单 + 用户预设目录绝对路径（UI 展示「把分享的预设 JSON 放到这里」）。 */
@@ -672,14 +557,7 @@ export class ExtensionManager {
 
   private async dispatchApi(request: ApiRequest): Promise<unknown> {
     const params = request.params ?? {};
-    // 已注册扩展优先于 dsh 伪扩展：官方扩展 id `dsh-sync` 落在伪 id 前缀 `dsh-` 里，
-    // 先按前缀分流会把它误判为 dsh 插件通道，故先查 manifests。
     const manifest = this.manifests.find((item) => item.id === request.extensionId);
-    // dsh 兼容模式（M3）：dsh 插件以伪扩展 id 调用宿主能力——不经 manifest 权限表，
-    // 只放行 DSH_SERVICE_APIS 白名单（llm/sessions/storage/events.subscribe），存储按伪 id 隔离。
-    if (!manifest && request.extensionId.startsWith("dsh-")) {
-      return this.dispatchDshApi(request.extensionId, request.api, params);
-    }
     if (!manifest) throw new Error(`Unknown extension: ${request.extensionId}`);
     if (!(request.api in API_PERMISSIONS)) throw new Error(`Unsupported extension api: ${request.api}`);
     const required = API_PERMISSIONS[request.api];
@@ -821,7 +699,7 @@ export class ExtensionManager {
     }
   }
 
-  /** sessions.list 的只读投影（manifest 扩展与 dsh 伪扩展共用）。 */
+  /** sessions.list 的只读投影（manifest 扩展共用）。 */
   private async listSessionMetas(): Promise<Array<Record<string, unknown>>> {
     const sessions = this.deps.sessions;
     if (!sessions) throw new Error("Session store is not configured");
@@ -837,11 +715,10 @@ export class ExtensionManager {
     return publicSessionDetail(detail);
   }
 
-  /** events.subscribe 的并集语义；requireBus 时无事件总线不登记（dsh 伪扩展口径）。 */
-  private subscribeEvents(extensionId: string, params: Record<string, unknown>, requireBus = false): { subscribed: string[] } {
+  /** events.subscribe 的并集语义。 */
+  private subscribeEvents(extensionId: string, params: Record<string, unknown>): { subscribed: string[] } {
     const requested = Array.isArray(params.types) ? params.types.filter((type): type is string => typeof type === "string") : [];
     const allowed = requested.filter(isExtensionEventAllowed);
-    if (requireBus && !this.dshEventBus) return { subscribed: allowed };
     // 与 host 侧累加语义对齐：重订阅取并集而非替换
     const existing = this.eventSubscriptions.get(extensionId);
     if (existing) {
@@ -851,48 +728,6 @@ export class ExtensionManager {
     }
     this.attachBusListener();
     return { subscribed: allowed };
-  }
-
-  /**
-   * dsh 伪扩展的能力分发（M3）：白名单 DSH_SERVICE_APIS，不经 manifest 权限表。
-   * llm 走模型网关（model.complete/model.vision，不暴露 Key）；sessions 只读元信息白名单；
-   * storage 复用扩展私有存储（按伪 id `dsh-<pluginId>` 隔离）；events.subscribe 走 EventBus 白名单。
-   */
-  private async dispatchDshApi(extensionId: string, api: ExtensionApiMethod, params: Record<string, unknown>): Promise<unknown> {
-    const allowed = (DSH_SERVICE_APIS as readonly string[]).includes(api);
-    if (!allowed) throw new Error(`dsh plugin lacks api access: ${api}`);
-    switch (api) {
-      case "model.complete":
-        return completeWithFastModel(this.deps.fastModel, params);
-      case "model.vision":
-        return describeWithVisionModel(this.deps.providers, params);
-      case "sessions.list": {
-        return this.listSessionMetas();
-      }
-      case "sessions.get": {
-        return this.getSessionDetail(params);
-      }
-      case "storage.read":
-        return this.storage(extensionId).read(String(params.path ?? ""));
-      case "storage.write":
-        return this.storage(extensionId).write(String(params.path ?? ""), params.content);
-      case "storage.delete":
-        return this.storage(extensionId).delete(String(params.path ?? ""));
-      case "storage.list":
-        return this.storage(extensionId).list(typeof params.prefix === "string" ? params.prefix : "");
-      case "events.subscribe": {
-        return this.subscribeEvents(extensionId, params, true);
-      }
-    }
-    throw new Error(`Unsupported dsh api: ${api}`);
-  }
-
-  /**
-   * dsh EventBus：显式注入优先（测试可控），缺省回落构造器事件总线。
-   * dsh 事件订阅经此推送——宿主进程把 EventMessage 转发到插件的 dshEvents handler。
-   */
-  private get dshEventBus(): EventBus | undefined {
-    return this.deps.events ?? this.events;
   }
 
   /** 扩展私有存储访问器（根目录与配额在此固定；无状态，按调用创建）。 */
@@ -1008,14 +843,11 @@ export class ExtensionManager {
     await this.close();
     this.manifests = [...OFFICIAL_EXTENSIONS, ...(await this.discoverThirdParty())];
     this.states = await this.loadStates();
-    // 安装/卸载后同样保持按需启动：没有启用扩展（且未开 dsh 兼容）就不拉起宿主。
-    if (this.hasEnabledExtensions() || this.dshSyncEnabled) await this.startHost();
+    // 安装/卸载后同样保持按需启动：没有启用扩展就不拉起宿主。
+    if (this.hasEnabledExtensions()) await this.startHost();
   }
 
-  /**
-   * 启动宿主：并发调用合并，且把「启动中」的状态暴露给 dsh 插件同步（`runDshSync`）——
-   * 否则宿主 initialize 完成时会清空 dsh 伪扩展状态，把启动期并发下发的加载计划悄悄抹掉。
-   */
+  /** 启动宿主：并发调用合并到同一次启动。 */
   private async startHost(): Promise<void> {
     const previous = this.hostStarting;
     const next = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() => this.startHostProcess());
@@ -1061,8 +893,6 @@ export class ExtensionManager {
       this.replaceTools(initialized.tools);
       this.replaceHostHooks(initialized.hooks);
       this.hostRestartCount = 0;
-      // 宿主重启（崩溃退避重启 / 安装扩展后的 restart）后重放 dsh 加载计划。
-      await this.resyncDsh();
       this.events?.publish({ source: "server", type: "extension.host_started", payload: { extensions: this.list().length } });
     } catch (error) {
       this.handleHostFailure(child, asError(error));

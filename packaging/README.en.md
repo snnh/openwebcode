@@ -11,7 +11,7 @@ Pushing a `v*` tag (or dispatching the `release` workflow manually with a tag in
 | Artifact | Platform | Notes |
 | --- | --- | --- |
 | `openwebcode-<version>-windows-x64.msi` | Windows x64 | CPack/WiX installer |
-| `openwebcode-<version>-linux-x64.tar.gz` | Linux x86_64 | Runtime tree plus top-level `install.sh`/`uninstall.sh` |
+| `openwebcode-<version>-linux-x64.tar.gz` | Linux x86_64 | Runtime tree plus top-level `install.sh`/`uninstall.sh`/`purge-dsh-compat.*` |
 | `openwebcode-<version>-linux-arm64.tar.gz` | Linux aarch64 | Same, natively built on `ubuntu-24.04-arm` |
 | `openwebcode-<version>-linux-loongarch64.tar.gz` | Linux LoongArch | Same, cross-compiled on an x64 runner, no bundled Node.js |
 | `install-online.sh` | Linux | `curl \| bash` online install/update script, picks the arch from `uname -m` |
@@ -37,6 +37,8 @@ web/dist/               frontend static assets (server resolves server/dist/../.
 node/                   pinned Node runtime (Windows: node.exe only; Linux: full distribution)
 install.sh              Linux installer (tarball only, at archive top level)
 uninstall.sh            Linux uninstaller (tarball only; installed as <prefix>/bin/owc-uninstall)
+purge-dsh-compat.sh     Shell wrapper for explicit dsh compatibility-mode cleanup (tarball only)
+purge-dsh-compat.mjs    Node implementation of the cleanup (tarball only; also a standalone release asset)
 ```
 
 The bundled Node version is pinned by `env.NODE_DIST_VERSION` in release.yml (currently 24.22.1); bumping it is a one-line change. CI verifies every Node download against the official `SHASUMS256.txt` from nodejs.org instead of hardcoding hashes. loongarch64 has no official Node build, so `node/` is not created and `install.sh` automatically falls back to the system Node.js.
@@ -283,6 +285,22 @@ sudo /usr/local/bin/owc-uninstall --yes --purge-data --remove-firewall  # system
 
 Actions in order: if a systemd unit exists, `disable --now` (best effort) → delete the unit → `daemon-reload`; with `--remove-firewall`, remove the port rule based on the launcher's `OWC_DEFAULT_PORT` (root only); delete `<prefix>/lib/openwebcode` and `<prefix>/bin/owc`; with `--purge-data`, delete the data directory (refusing `/`, `$HOME`, and the prefix itself); finally delete the uninstaller itself. `--prefix` defaults to the installation containing the uninstaller, falling back to the uid-based default when run from the tarball root; `--data-dir` follows the same uid-based defaults. If a user-level install ever used `loginctl enable-linger`, the uninstaller prints the matching `disable-linger` hint. Manually started (non-systemd) `owc` processes are out of scope — stop them first.
 
+### Cleaning up retired dsh compatibility mode
+
+Older versions may leave dsh compatibility-mode vendor files, plugin data, and settings behind. The entry points are gone, but upgrades do not delete user data automatically; run the explicit cleanup when you want the disk space back:
+
+```sh
+# Installed Linux environment (offline installer or online updater)
+./install.sh --purge-dsh-compat --yes --prefix "$HOME/.local" --data-dir "$HOME/.local/share/openwebcode"
+./install-online.sh --purge-dsh-compat --prefix "$HOME/.local" --data-dir "$HOME/.local/share/openwebcode"
+
+# Any platform (Windows/Docker/manual), dry-run first
+node scripts/purge-dsh-compat.mjs --prefix <prefix> --data-dir <dataDir> --dry-run
+node scripts/purge-dsh-compat.mjs --prefix <prefix> --data-dir <dataDir> --yes
+```
+
+It removes managed `dsh-web`, `dsh-bridge`, `<dataDir>/dsh-plugins`, and `<dataDir>/dsh.json`, and strips `dshCompatEnabled`/`dshPort`/`dshUiPath` from `server-settings.json`; a custom UI directory previously stored in `dshUiPath` is printed but never deleted.
+
 ### install-online.sh (online install and update)
 
 A `curl | bash` script (POSIX sh) that installs or upgrades in one command:
@@ -303,9 +321,10 @@ The architecture is mapped from `uname -m`: `x86_64→x64`, `aarch64→arm64`, `
 | `--version <x.y.z>` | Target version (semver shape, one prerelease suffix allowed); by default the script queries the `tag_name` of the latest GitHub release (parsed with sed/grep). |
 | `--prefix <dir>` | Install prefix, default `~/.local` for users and `/usr/local` for root; decides fresh install vs update, and is passed through to the bundled `install.sh` on fresh installs. |
 | `--yes` / `--port` / `--host` / `--lan` / `--data-dir` / `--system` / `--with-systemd` / `--enable-service` / `--open-firewall` / `--use-system-node` / `--upgrade-node` | Passed through verbatim to the bundled `install.sh`, effective only on fresh installs; update mode does not rebuild the launcher and prints a notice that these arguments were ignored. |
+| `--purge-dsh-compat` | Explicitly clean retired dsh compatibility-mode leftovers; runs on both fresh installs and updates (combine with `--data-dir` on updates). |
 
 - **Fresh install**: delegates to the extracted `install.sh`, identical to an offline install.
-- **Update**: replaces the contents of `<prefix>/lib/openwebcode/` with the new version, keeping the `<prefix>/bin/owc` launcher and any written systemd unit untouched; the data directory is never affected. When the existing launcher pins a system Node.js (`OWC_NODE` not in bundled form), the `node/` directory is not copied (about 100 MB of redundancy, and any stale copy is removed). A non-writable target fails with a clear error (sudo may be required). Afterwards the script suggests a restart based on the actual unit location: `systemctl restart openwebcode` for the system unit (`sudo` suggested when not root), `systemctl --user restart openwebcode` for the user unit, or a manual restart of the running `owc` when there is no unit.
+- **Update**: replaces the contents of `<prefix>/lib/openwebcode/` with the new version, keeping the `<prefix>/bin/owc` launcher and any written systemd unit untouched; the data directory is never affected, and `--purge-dsh-compat` runs the compatibility-mode cleanup after replacement. When the existing launcher pins a system Node.js (`OWC_NODE` not in bundled form), the `node/` directory is not copied (about 100 MB of redundancy, and any stale copy is removed). A non-writable target fails with a clear error (sudo may be required). Afterwards the script suggests a restart based on the actual unit location: `systemctl restart openwebcode` for the system unit (`sudo` suggested when not root), `systemctl --user restart openwebcode` for the user unit, or a manual restart of the running `owc` when there is no unit.
 
 The download base URL can be overridden with `OWC_INSTALL_BASE_URL` (default `https://github.com/snnh/openwebcode/releases/download/v<version>`), useful for mirrors or `file://` local testing.
 
@@ -393,7 +412,7 @@ Server modules load at process start, so `build\stage\bin\owc.cmd` must be resta
 - **Version check**: the first step of both platform jobs, run for tag pushes and manual dispatches alike; see "Version numbers" above.
 - **Test gate**: Windows and Linux x64/arm64 each run the core ctest suite, the server tests against the real `owc-exec`, and the web build and tests. The publish job requires Windows, Linux, and the benchmark job all green.
 - **Windows job**: tests → `npm prune --omit=dev` → Release core → assemble `build/stage/` (the Node win-x64 zip is verified against the official `SHASUMS256.txt` before `node.exe` is taken; `owc.cmd`/`owc-launch.cmd` are converted to CRLF) → `cpack -G WIX` → `verify-wix-options.ps1` → silent `msiexec` install + `/api/health` smoke + uninstall → upload the MSI.
-- **Linux job**: matrix over `arch: [x64, arm64, loongarch64]`. x64/arm64 build natively (arm64 on `ubuntu-24.04-arm`), then assemble staging after tests (the Node linux-<arch> tarball is likewise verified and extracted whole into `node/`), pack with `tar -C stage . -C packaging install.sh uninstall.sh`, and smoke-test with `./install.sh --yes` into a temporary prefix plus `/api/health`. loongarch64 is cross-compiled on an x64 runner with `gcc-14-loongarch64-linux-gnu` (`core/toolchains/loongarch64-linux-gnu.cmake`), skips ctest/server tests and the smoke test, verifies with `file` that the artifact is a loongarch64 ELF, and ships without `node/`.
+- **Linux job**: matrix over `arch: [x64, arm64, loongarch64]`. x64/arm64 build natively (arm64 on `ubuntu-24.04-arm`), then assemble staging after tests (the Node linux-<arch> tarball is likewise verified and extracted whole into `node/`), pack with `tar -C stage . -C packaging install.sh uninstall.sh purge-dsh-compat.sh -C scripts purge-dsh-compat.mjs`, and smoke-test with `./install.sh --yes` into a temporary prefix plus `/api/health`. loongarch64 is cross-compiled on an x64 runner with `gcc-14-loongarch64-linux-gnu` (`core/toolchains/loongarch64-linux-gnu.cmake`), skips ctest/server tests and the smoke test, verifies with `file` that the artifact is a loongarch64 ELF, and ships without `node/`.
 - **Benchmark job**: a hard release dependency by default, with two levels of judgment — the relative regression comparison is warning-level (`compare.mjs` regressions over 15% only warn, never block); the absolute acceptance gates built into each bench script fail the job and block the release, which is intended behavior. A current build missing any benchmark scenario result also fails. With no previous-release baseline, or when the baseline assets cannot be downloaded, comparison is skipped with a warning (non-blocking) unless `bootstrap_benchmark_baseline` was explicitly enabled. Results ship as `bench-results-*.json` release assets for the next version's baseline. A manual dispatch with `skip_performance_tests` skips the whole job, and that release contains no benchmark JSON.
 - **Publish job**: downloads all artifacts and verifies completeness → generates `SHA256SUMS.txt` and self-checks it → extracts the release notes from the `## [<version>]` section of `CHANGELOG.md` (a missing or empty section fails the job — update the changelog before releasing) → creates the Release with `softprops/action-gh-release@v2` (non-draft; versions containing `-` are marked pre-release; `target_commitish` is pinned to the commit that started the run). Uploaded files: the MSI, the three tarballs, `SHA256SUMS.txt`, `packaging/install-online.sh`, and the benchmark JSON (when present).
 

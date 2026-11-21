@@ -50,7 +50,6 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 - **界面与可访问性**：中英双语、浅色/深色、强调色、界面西文/CJK/代码字体、代码连字和 90–125% 文字缩放；布局与偏好按浏览器记忆。
 - **移动端与远程访问**：响应式适配手机/平板；非回环监听强制访问令牌（自动生成或 `OWC_ACCESS_TOKEN`），可选 TOTP 全局登录。
 - **`owc run` CLI**：Headless NDJSON 事件流，支持 CI 集成。
-- **dsh 兼容模式（实验，默认关闭）**：独立端口托管 dsh 官方 SPA，并加载 dsh 生态插件（Host 工具/钩子与 client UI 插件）。
 - **dsh 同步（默认关闭）**：官方扩展 `dsh-sync` 与 dsh 数据目录**双向手动**同步模型配置与会话（先预览差异、再逐项勾选；不写明文 Key、只在 dsh 侧新建会话不覆盖）。
 
 具体详见 [使用帮助](./help/usage.md) 和 [常见问题](./help/faq.md)。
@@ -153,7 +152,6 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 
 - [`help/usage.md`](./help/usage.md) — 使用帮助：启动、面板、快捷键、模型与成本、自定义扩展点模板
 - [`help/faq.md`](./help/faq.md) — 常见问题：模型接入、权限与沙盒、快照回滚、CLI 集成、故障排查
-- [`help/dsh-compat.md`](./help/dsh-compat.md) — dsh 兼容模式：开启方式、安装 dsh 插件、支持/不支持清单、可信边界与故障排查
 - [`help/dsh-sync.md`](./help/dsh-sync.md) — dsh 同步扩展：与 dsh 数据目录双向同步模型配置与会话、面板操作流、凭据处理与限制（英文 [`dsh-sync.en.md`](./help/dsh-sync.en.md)）
 - [`help/development.md`](./help/development.md) — 二次开发：仓库布局、三件套构建、测试约定、切入点、CI 与发布
 - [`packaging/README.md`](./packaging/README.md) — 打包流程、分发布局、安装脚本与发布流水线

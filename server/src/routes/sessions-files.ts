@@ -291,8 +291,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
         // 纯缓存释放失败不阻断删除
       }
       dependencies.diagnostics?.discardSession(request.params.id);
-      // 删除后广播（dsh 兼容模式据此发 `api-session/removed`，侧边栏条目才会立刻消失；
-      // owc 主工作台同样受益：多标签页/多客户端不再残留已删会话）
+      // 删除后广播：多标签页/多客户端不再残留已删会话
       events.publish({ source: "session", type: "session.deleted", sessionId: request.params.id, payload: {} });
       return reply.code(204).send();
     } finally {

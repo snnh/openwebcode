@@ -2087,8 +2087,8 @@ export class AgentRunner {
               result = { type: "tool_result", toolCallId: call.id, content, isError: true };
             }
           }
-          // tool.afterExecute 扩展钩子（M3）：dsh tools/post-execute 与扩展的完成通知；
-          // 结果只读——dsh post-execute 可经 waterfall 变换 content/isError，失败只记录不阻断。
+          // tool.afterExecute 扩展钩子：工具完成通知；扩展可经 waterfall 变换 content/isError，
+          // 失败只记录不阻断。
           if (this.extensions) {
             try {
               const afterOutcome = await this.extensions.afterTool({ sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput, result: { content: result.content, ...(result.isError ? { isError: true } : {}) } });
@@ -3071,7 +3071,7 @@ export class AgentRunner {
         }
       }
     }));
-    // tool.afterExecute 扩展钩子（M3）：与串行路径同一语义——dsh post-execute 可变换结果，失败只记录。
+    // tool.afterExecute 扩展钩子：与串行路径同一语义——扩展可变换结果，失败只记录。
     if (this.extensions) {
       for (const entry of prepared) {
         if (!entry.result) continue;

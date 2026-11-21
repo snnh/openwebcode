@@ -5,6 +5,7 @@
 docs/
 tmp/
 .tmp/
+attic/
 .agents/
 .openwebcode/
 .owc/

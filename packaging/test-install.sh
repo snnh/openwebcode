@@ -35,6 +35,8 @@ make_package() {
     mkdir -p "$package_dir/bin" "$package_dir/server/dist" "$package_dir/web/dist"
     cp "$SCRIPT_DIR/install.sh" "$package_dir/install.sh"
     cp "$SCRIPT_DIR/uninstall.sh" "$package_dir/uninstall.sh"
+    cp "$SCRIPT_DIR/purge-dsh-compat.sh" "$package_dir/purge-dsh-compat.sh"
+    cp "$SCRIPT_DIR/../scripts/purge-dsh-compat.mjs" "$package_dir/purge-dsh-compat.mjs"
     printf '%s\n' '#!/bin/sh' 'exit 0' > "$package_dir/bin/owc-exec"
     chmod +x "$package_dir/bin/owc-exec"
     : > "$package_dir/server/dist/index.js"
@@ -47,9 +49,15 @@ PREFIX="$WORK_DIR/prefix with 'quote'"
 DATA_DIR="$WORK_DIR/data dir"
 make_package "$PACKAGE"
 mkdir -p "$PACKAGE/node/bin"
+REAL_NODE=$(command -v node)
 printf '%s\n' \
     '#!/bin/sh' \
-    'printf "%s|%s|%s\n" "$OWC_PORT" "$OWC_DATA_DIR" "$OWC_HOST" > "$TEST_OUT"' \
+    'if [ -n "${TEST_OUT:-}" ]; then' \
+    '    printf "%s|%s|%s\n" "$OWC_PORT" "$OWC_DATA_DIR" "$OWC_HOST" > "$TEST_OUT"' \
+    '    exit 0' \
+    'fi' \
+    'if [ "${1:-}" = "-p" ]; then printf "24.22.1\n"; exit 0; fi' \
+    "exec \"$REAL_NODE\" \"\$@\"" \
     > "$PACKAGE/node/bin/node"
 chmod +x "$PACKAGE/node/bin/node"
 
@@ -66,6 +74,28 @@ sh -n "$PREFIX/bin/owc"
 TEST_OUT="$WORK_DIR/launcher.env" "$PREFIX/bin/owc" run ignored
 IFS= read -r ACTUAL < "$WORK_DIR/launcher.env"
 [ "$ACTUAL" = "4312|$DATA_DIR|localhost" ] || fail "launcher defaults were not preserved: $ACTUAL"
+
+# ---- --purge-dsh-compat：显式清理旧兼容模式资产与用户数据 ----
+CUSTOM_DSH_UI="$WORK_DIR/custom-dsh-ui"
+mkdir -p "$PREFIX/lib/openwebcode/server/assets/dsh-web" \
+    "$PREFIX/lib/openwebcode/server/assets/dsh-bridge" \
+    "$DATA_DIR/dsh-plugins/example" "$CUSTOM_DSH_UI"
+printf 'keep\n' > "$CUSTOM_DSH_UI/keep"
+printf '{}\n' > "$DATA_DIR/dsh.json"
+printf '{"overrides":{"dshCompatEnabled":true,"dshPort":3211,"dshUiPath":"%s","defaultLanguage":"en"}}\n' \
+    "$CUSTOM_DSH_UI" > "$DATA_DIR/server-settings.json"
+HOME="$WORK_DIR/home" "$PACKAGE/install.sh" \
+    --prefix "$PREFIX" --data-dir "$DATA_DIR" --host localhost --purge-dsh-compat --yes \
+    > "$WORK_DIR/purge.out" 2>&1
+[ ! -e "$DATA_DIR/dsh-plugins" ] || fail "purge did not remove dsh-plugins"
+[ ! -e "$DATA_DIR/dsh.json" ] || fail "purge did not remove dsh.json"
+! grep -q 'dshCompatEnabled\|dshPort\|dshUiPath' "$DATA_DIR/server-settings.json" || \
+    fail "purge did not strip dsh settings keys"
+grep -q '"defaultLanguage": "en"' "$DATA_DIR/server-settings.json" || \
+    fail "purge changed unrelated settings"
+[ -f "$CUSTOM_DSH_UI/keep" ] || fail "purge deleted custom dshUiPath directory"
+[ ! -e "$PREFIX/lib/openwebcode/server/assets/dsh-web" ] || fail "purge left dsh-web"
+[ ! -e "$PREFIX/lib/openwebcode/server/assets/dsh-bridge" ] || fail "purge left dsh-bridge"
 
 # Environment variables still override the generated defaults at run time.
 TEST_OUT="$WORK_DIR/launcher.override.env" \

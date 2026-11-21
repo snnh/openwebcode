@@ -26,12 +26,10 @@ interface WorkbenchProps {
   agentState?: string | undefined;
   /** 切到聊天模式（仅聊天模式启用时传入；活动栏底部入口） */
   onShowChat?: (() => void) | undefined;
-  /** dsh 兼容模式入口（设置开启时注入）。 */
-  onOpenDsh?: (() => void) | undefined;
   main: ReactNode;
 }
 
-export function Workbench({ sessions, agentState, onShowChat, onOpenDsh, main }: WorkbenchProps): ReactElement {
+export function Workbench({ sessions, agentState, onShowChat, main }: WorkbenchProps): ReactElement {
   const { t } = useI18n();
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const layoutState = useStore(layoutStore, (state) => state);
@@ -91,7 +89,6 @@ export function Workbench({ sessions, agentState, onShowChat, onOpenDsh, main }:
     onShowNotifications: () => ui.openSettings("notifications"),
     onOpenSettings: () => ui.openSettings(),
     onShowChat,
-    onOpenDsh,
   };
 
   const sidebarContent = (

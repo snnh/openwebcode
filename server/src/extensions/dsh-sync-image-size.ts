@@ -6,9 +6,9 @@
  * `session-format-v0-to-v1/src/payload-validation.ts` 的 `imageAttachmentValue`），
  * 而 owc 消息里只有 base64 字节与媒体类型字符串；本模块只按魔术字节解析，不信任调用方给的类型。
  *
- * 与 `server/src/dsh/web-protocol/session-projection.ts` 的 `imageDimensions(mediaType, bytes)` 的分工：
- * 那个是 dsh 兼容层（wire 投影）的入口且要求媒体类型已给出；本模块按内容嗅探，供导出/导入侧复用。
- * 两处解析实现刻意保持独立：M4 的 wire 行为已由既有测试锁定，M4a 不改动它（避免回归）。
+ * 归档兼容层的 `session-projection.ts` 也有 `imageDimensions(mediaType, bytes)`；本模块独立按内容嗅探，
+ * 供 dsh-sync 导出/导入侧复用，不再依赖兼容运行时。
+ * 两处解析实现刻意保持独立：归档兼容层的 wire 行为由历史测试锁定，dsh-sync 不改动它（避免回归）。
  *
  * 解析失败（非图片、字节截断、结构非法）一律返回 undefined，不抛错。
  */

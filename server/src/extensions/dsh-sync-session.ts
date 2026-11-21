@@ -16,8 +16,7 @@
  * `serializeSession`（落 messages.jsonl）与 `ContextManager.replaceLedger`（落 ledger.json）。
  * 一切降级都不静默：丢进 `report.droppedEvents` / `report.warnings` / `report.counts`。
  *
- * 上游权威词汇（`.tmp/dsh-refs/` + `server/assets/dsh-web/plugins/.../typert.host.js` 里的
- * `SessionEventMap` 声明）：
+ * 上游权威词汇（dsh 0.1.6-alpha.2 的 `SessionEventMap` 声明；参考产物已随兼容层归档）：
  * - surface 四类事件（必带 `surfaceOp`）：`system/message`、`user/message`、`assistant/message`、`tool/result`；
  * - 内容块：`text{text}` / `reasoning{text}` / `image{attachment}` / `file{attachment}` /
  *   `tool-call{id,name,arguments}` / `tool-result{toolCallId,content,isError?}`；

@@ -29,7 +29,6 @@ openwebcode/
 │   │   ├── sandbox/         # core-router 策略映射、WSB、filtered 代理
 │   │   ├── mcp/             # MCP 客户端（stdio + Streamable HTTP）
 │   │   ├── extensions/      # Extension Host 子进程、扩展 API、官方扩展
-│   │   ├── dsh/             # dsh 兼容层：插件 loader/垫片宿主、Typert Remote 翻译、独立端口 SPA 托管
 │   │   ├── rpc/             # frame-codec 分帧（与 core 的 LSP 风格头部对接）
 │   │   └── index/ scm/ diagnostics/ cost/ events/ eval/
 │   └── test/                # vitest：单元、HTTP 注入、真实 core 端到端
@@ -44,7 +43,8 @@ openwebcode/
 │   │   └── styles/          # 十六份样式表（fonts/tokens-*/base/layout/chat-list/chat-cards/chat-mode/composer/sidebar/panels/editor/dialogs/settings）
 │   └── src/test/            # vitest + jsdom + Testing Library
 ├── packaging/         # 分发布局、安装脚本、WiX 打包
-├── scripts/           # bench/（Node + Playwright 性能基准，回归 >15% 标红）、fetch-dsh-web.mjs（抓取 dsh UI vendor）
+├── scripts/           # bench/（Node + Playwright 性能基准，回归 >15% 标红）、运维与清理脚本
+├── attic/             # 已下线且不参与构建/测试/发布的归档代码（含恢复清单）
 ├── examples/          # 示例资产（examples/extensions/demo/ 是完整第三方扩展示例）
 └── .github/workflows/ # CI 与发布
 ```
@@ -153,7 +153,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 1. 内置预设写 `server/src/extensions/agent-presets/builtin-presets.ts`（`BUILTIN_PRESETS`）：拟态用 `identity`/`basePrompt`/`productSections` + `hideBuiltIns`/`aliases`（可带 `inputSchema`/`argMap`）；精简形态用 `promptStyle: "minimal"` + `allowedBuiltIns` 白名单。
 2. 新增工具要同步 `agent-presets/tool-catalog.ts`（`PRESET_TOOLS` / `PRESET_TOOL_GROUPS`）：保存预设时按这张表严格校验工具名，未知名字直接 400；`advancedOnly` 的工具不在精简模式编辑器里出现。
 3. 提示词形态：`transformPrompt` 把 `promptStyle`/`projectContext` 透给 `agent/prompts/prompt-builder.ts`（`minimal: true` 走精简段）；项目上下文 `paths` 由 `agent/memory-section.ts` 的 `build()` 分支处理。
-4. 工具形态：`activeToolShaping` 汇总 `allowedBuiltIns`（硬上限）/`hideBuiltIns`/`toolDescriptions`/`aliases`/`externalTools`，`agent/tool-schemas.ts` 的 `applyToolShaping` 负责落地；`externalTools: false` 时 MCP 与扩展工具都不注入。别名可带 `deferLoading`，未声明时继承源工具，显式 `false` 可覆盖；扩展工具 spec 与 dsh 插件工具注册同样支持该标记。
+4. 工具形态：`activeToolShaping` 汇总 `allowedBuiltIns`（硬上限）/`hideBuiltIns`/`toolDescriptions`/`aliases`/`externalTools`，`agent/tool-schemas.ts` 的 `applyToolShaping` 负责落地；`externalTools: false` 时 MCP 与扩展工具都不注入。别名可带 `deferLoading`，未声明时继承源工具，显式 `false` 可覆盖；扩展工具 spec 同样支持该标记。
 5. 预设数据：内置随代码分发，用户预设是 `<dataDir>/agent-presets/presets/<id>.json`（`preset-store.ts` 宽松解析、原子写、0600）；同 id 即字段级覆盖内置。旧 `env-sim` 目录由 `migration.ts` 一次性迁移并留兼容目录链接。
 6. `agent-presets` 是 server 侧 hostless 扩展：启用它不会拉起 Extension Host（见 `ExtensionManager.HOSTLESS_EXTENSIONS`）。
 7. 测试参考 `server/test/agent-presets.test.ts`（迁移/兼容链接、白名单裁剪、精简提示词、REST 校验与会话级覆盖）。
@@ -202,10 +202,6 @@ v1 扩展跑在独立的 Extension Host 子进程，经 IPC 拿到注入的 `ctx
 实现按职责拆分：`extension-manager.ts`（生命周期、权限门禁、IPC 与宿主按需启停）、`manifest.ts`（manifest/权限/路由校验）、`extension-storage.ts`（私有存储与配额）、`extension-model-api.ts` / `extension-provider-api.ts` / `extension-session-import.ts`（能力分发）、`session-projection.ts`（会话字段白名单）、`extension-host-process.ts`（宿主进程与钩子执行）。权限全集以 `types.ts` 的 `EXTENSION_PERMISSIONS` 为唯一来源。
 
 manifest 可选声明 `configSchema`（JSON Schema 子集）：设置页据此把扩展配置渲染成类型化表单而不是原始 JSON 编辑，保存时 server 做松散校验（类型/枚举/未知键，只查顶层一层，`server/src/extensions/config-schema.ts`）。表单支持的属性形态（`web/src/settings/sections/ExtensionConfigForm.tsx` 的 `parseConfigSchema`）：`string`（可带 `enum` 渲染下拉）、`number`/`integer`（可带 `minimum`/`maximum`）、`boolean`、一层 `object` 嵌套组（带 `properties`）、字符串字典（`additionalProperties: { "type": "string" }`，按「键=值」行编辑）。每个属性应给 `title` 和 `description`，表单会展示为字段名与说明文字；未覆盖的既有配置键在保存时原样保留。官方扩展的英文字段文案映射在 `ExtensionsSection.tsx` 的 `OFFICIAL_FIELD_EN`。
-
-### 改 dsh 兼容模式
-
-dsh（DeepSeek Harness）兼容层在 `server/src/dsh/`：`loader.ts`（插件发现与兼容探测）、`host-runtime.ts`（cordis / schemastery / dsh-tools 三个垫片 + 服务缝，运行在 Extension Host 子进程里）、`web-protocol/`（独立端口托管 dsh SPA、Typert Remote unary/WS 翻译）、`services.ts`（服务缝桥接）。dsh 前端与插件 vendor 产物由 `scripts/fetch-dsh-web.mjs` 抓取到 `server/assets/dsh-web/`（gitignored；**对 vendor 的一切改写只经该脚本按精确锚点施加，不手改产物**）。协议映射表与 wire 字段契约在 `docs/dsh-compat.md`（本地维护，gitignored）——dsh 升级时先更映射表、再改实现。面向用户的说明见 [`dsh-compat.md`](./dsh-compat.md)。
 
 ## 架构边界（改动前必读）
 

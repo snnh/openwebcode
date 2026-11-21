@@ -101,12 +101,6 @@ jobs:
           set -euo pipefail
           cmake -S core -B build -A x64 -DCPACK_PACKAGE_VERSION="$BASE_VERSION" -DCPACK_FULL_VERSION="$VERSION"
           cmake --build build --config Release --target owc-exec
-      - name: Vendor dsh UI
-        shell: bash
-        # dsh 兼容模式的可选产物（server/assets/dsh-web/）；失败不阻塞发布（发布包缺少 vendor 时该模式如实不可用）
-        continue-on-error: true
-        run: node scripts/fetch-dsh-web.mjs
-
       - name: Stage runtime into build/stage
         shell: bash
         run: |
@@ -308,11 +302,6 @@ jobs:
           set -euo pipefail
           # 防 toolchain 静默回落主机编译器：交叉产物必须是目标架构 ELF
           file build/owc-exec | grep -qi 'loongarch' || { echo "build/owc-exec is not loongarch64 ELF"; file build/owc-exec; exit 1; }
-      - name: Vendor dsh UI
-        # dsh 兼容模式的可选产物（server/assets/dsh-web/）；失败不阻塞发布（缺少 vendor 时该模式如实不可用）
-        continue-on-error: true
-        run: node scripts/fetch-dsh-web.mjs
-
       - name: Stage runtime into build/stage
         run: |
           set -euo pipefail
@@ -338,7 +327,8 @@ jobs:
           set -euo pipefail
           tar -czf "openwebcode-${VERSION}-linux-${{ matrix.arch }}.tar.gz" \
             -C build/stage . \
-            -C "$GITHUB_WORKSPACE/packaging" install.sh uninstall.sh
+            -C "$GITHUB_WORKSPACE/packaging" install.sh uninstall.sh purge-dsh-compat.sh \
+            -C "$GITHUB_WORKSPACE/scripts" purge-dsh-compat.mjs
       - name: Smoke-test Linux tar.gz installation
         if: ${{ matrix.arch != 'loongarch64' }}
         shell: bash
@@ -360,6 +350,8 @@ jobs:
           tar -xzf "$archive" -C "$work/pkg"
           test -x "$work/pkg/install.sh"
           test -f "$work/pkg/uninstall.sh"
+          test -x "$work/pkg/purge-dsh-compat.sh"
+          test -f "$work/pkg/purge-dsh-compat.mjs"
           "$work/pkg/install.sh" --yes --prefix "$work/prefix"
 
           test -x "$work/prefix/bin/owc"
@@ -494,6 +486,8 @@ jobs:
             release-assets/openwebcode-${{ env.VERSION }}-linux-loongarch64.tar.gz
             release-assets/SHA256SUMS.txt
             packaging/install-online.sh
+            packaging/purge-dsh-compat.sh
+            scripts/purge-dsh-compat.mjs
             ${{ needs.benchmark.result == 'success' && 'release-assets/benchmarks/bench-results-*.json' || '' }}
 
   benchmark:

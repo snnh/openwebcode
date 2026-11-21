@@ -28,8 +28,8 @@ import {
 } from "./route-context.js";
 import type { RouteContext } from "./route-context.js";
 
-/** {@link applySessionDefaultsFor} 的依赖面（REST 路由与 dsh 翻译层共用同一实现）。 */
-export interface SessionDefaultsDeps {
+/** {@link applySessionDefaultsFor} 的依赖面。 */
+interface SessionDefaultsDeps {
   settings: SettingsService | undefined;
   sessions: SessionStore;
   profileOf(model: string, provider?: string): ModelProfile;
@@ -43,9 +43,9 @@ export interface SessionDefaultsDeps {
  * 力度做能力白名单校验：模型声明不支持的静默跳过（设置是全局偏好，不应阻断创建）；
  * 非法枚举值（如 env 直写）同样静默跳过。
  *
- * REST `/api/sessions` 与 dsh `session/create` 共用本函数，保证两条创建路径语义一致。
+ * 由 REST `/api/sessions` 与结构化导入路径共用，保证各创建路径语义一致。
  */
-export async function applySessionDefaultsFor(
+async function applySessionDefaultsFor(
   deps: SessionDefaultsDeps,
   session: SessionMeta,
   provider: string,
@@ -96,7 +96,7 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
   } = ctx;
 
 
-  // 新建会话套用全局默认：复用导出的共享实现（dsh `session/create` 同一份，保证两条创建路径语义一致）
+  // 新建会话套用全局默认：复用导出的共享实现，保证各创建路径语义一致
   const applySessionDefaults = (session: SessionMeta, provider: string, model: string): Promise<SessionMeta> =>
     applySessionDefaultsFor({ settings: dependencies.settings, sessions, profileOf, platform, core, events }, session, provider, model);
 
