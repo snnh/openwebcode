@@ -139,15 +139,17 @@ owc run "Add a unit test for main.ts" --cwd . --json --yolo
 
 ## Performance and footprint
 
-Measured on a dev machine (Windows x86-64, v1.7.6, 5000-message benchmark dataset; harness and acceptance gates live in [`scripts/bench/`](./scripts/bench/)):
+Measured on a dev machine (Linux x86-64, v1.18.0, 5000-message benchmark dataset; the core row is retained from v1.7.6; harness and acceptance gates live in [`scripts/bench/`](./scripts/bench/)):
 
 | Component | Memory | CPU (single-core equivalent, 95th percentile of time) | Key numbers |
 | --- | --- | --- | --- |
-| server (Node service) | ~74 MiB idle; ~115 MiB steady-state with a 5000-message session loaded | under 0.5% | Large-session cold load 24ms, history paging p50 0.6ms; incremental context build p50 0.35ms (31× faster than full builds); agent-loop heap churn 0.9 MiB per turn; event dispatch 5800+ events/s; symbol-index queries over 100k files p50 ~15ms symbols / ~21ms files |
-| core (C executor) | ~9 MiB idle; ~15 MiB peak under a 100k-file heavy scan, released afterwards | under 0.5% | Full-repo index scan (100k files) completes in ~33s with bounded memory |
-| browser | ~93 MiB heap with a 5000-message session fully loaded | - | Long-list scrolling p50 59.9 fps; input echo p50 26.5ms; 0.1% memory growth across repeated scroll cycles (no leak); chat/workbench/share views are lazy-loaded bundles, first-load script 479 KB |
+| server (Node service) | Bench harness idle ~140 MiB RSS; a single 5000-message session adds ~5.6 MiB heap; 8 / 16 long sessions hold 48 / 86 MiB heap and 149 / 242 MiB RSS (16-session memory mode: ~62 MiB heap) | under 0.5% | Large-session cold load 22ms, history paging p50 0.31ms; incremental context build p50 0.73ms (full build 7.5ms, ~10× faster); multi-tool events 8489/s; symbol-index queries over 100k files p50 ~12ms symbols / ~13ms files |
+| core (C executor) | ~9 MiB idle; ~15 MiB peak under a 100k-file heavy scan, released afterwards (historical) | under 0.5% | Full-repo index scan (100k files) completes in ~33s with bounded memory (historical) |
+| browser | ~37 MiB heap with a 5000-message session fully loaded | - | Long-list scrolling p50 59.9 fps; input echo p50 30.2ms; 0.08% memory growth across repeated scroll cycles (no leak); chat/workbench/share views are lazy-loaded bundles, first load ~602 KB (gzip ~192 KB) |
 
-Production reference (v1.7.6, Debian 13 x86-64, measured on an always-on instance): server 110 MiB + extension host 52 MiB + core 1.9 MiB (server down ~19% from 135 MiB on v1.5.0), CPU below 0.5% 95% of the time.
+> The 1.18.0 memory numbers were re-measured with `NODE_OPTIONS=--expose-gc`: after clearing message and context caches, a 16-session heap falls from 86 MiB to ~14 MiB; RSS is retained by V8/the allocator and is not guaranteed to return to the OS immediately.
+
+Production reference (historical v1.7.6 observation on Debian 13 x86-64, measured on an always-on instance): server 110 MiB + extension host 52 MiB + core 1.9 MiB (server down ~19% from 135 MiB on v1.5.0), CPU below 0.5% 95% of the time.
 
 > As of v1.12.1, large-session memory is further optimized: each agent turn previously parsed the full `messages.jsonl` twice (~hundreds of MB heap for a single 60 MB session); now only the active segment after the `/clear` or compaction anchor is loaded — measured at full-table +101 MB / 255 ms → segment +27 MB / 133 ms for the same session. Full GC is triggered at three points (startup completion / end of each turn / idle sweep), returning V8 free pages promptly.
 

@@ -41,6 +41,9 @@ $TSX scripts/bench/bench-index-100k.mjs
 # 7. 浏览器渲染（Playwright，需先 npm run build --prefix web && npx playwright install chromium）
 $TSX scripts/bench/browser/bench-browser-render.mjs
 
+# 8. 多会话内存 soak（本地；--expose-gc 才能测出清空缓存后的真实堆）
+NODE_OPTIONS=--expose-gc $TSX scripts/bench/bench-memory-soak.mjs --sessions=8 --mode=balanced
+
 # 对比两份结果（回归 > 15% 标红、退出码 1）
 $TSX scripts/bench/compare.mjs <baseline.json> <candidate.json>
 ```
@@ -88,10 +91,12 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 | 上下文构建稳态 | `bench-context-build.mjs` | ContextManager 全量 vs 增量 buildView（5000 消息数据集） | 全量/增量 p50/p95、加速比、命中率 |
 | 大仓库索引（10 万文件） | `bench-index-100k.mjs` | 临时目录构造压实形态索引快照（10 万文件 / ~21 万符号），`IndexStore.load()` replay + `IndexManager.searchSymbols/searchFiles` fuzzyScore 全扫 | 冷加载 replay、ensureLoaded 首次查询、各 query p50/p95、堆增量 |
 | 浏览器渲染 | `browser/bench-browser-render.mjs` | Playwright + 真实 server，5000 消息会话 | 滚动 fps、输入回显延迟、内存增长 |
+| 多会话内存 soak（本地专用，不进 CI） | `bench-memory-soak.mjs` | 复制 N 个 5000 消息长会话，整表加载 + 全量 buildView；可切换 performance/balanced/memory 模式 | 每会话堆增量、进程 RSS、缓存记账、清空缓存后的残留堆 |
 | agent loop 热路径（本地专用，不进 CI） | `bench-agent-loop.mjs` | 复现 agent-runner 每轮 `SessionStore.get` + `buildView` 调用序列（long-history 数据集副本） | 每轮读取/构建耗时 p50/p95、内存增量 |
 
 `bench-agent-loop.mjs` 是本地专用场景：release.yml 的 benchmark job 运行的 7 个场景与
-基线对比均不含它，用于本地回归排查与优化验证。
+基线对比均不含它，用于本地回归排查与优化验证。`bench-memory-soak.mjs` 同样是本地诊断场景；
+测量缓存释放后的堆时需加 `NODE_OPTIONS=--expose-gc`，否则 `tryGc()` 不会生效。
 
 `bench-index-100k.mjs` 是诊断型场景：数据集不预生成（seed 化生成器在脚本内构造到临时目录，
 跑完清理），用于决策 code_search/Quick Open 是否需要索引结构优化。其内置绝对门禁为
