@@ -1,25 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { ChatMessage, ToolResultContent } from "../sessions/types.js";
 import { getUserAgent } from "../user-agent.js";
-import { normalizeProviderError, ProviderError } from "./provider-error.js";
-import { anthropicToolResultContent, collectToolMedia } from "./tool-result-media.js";
-import type { Provider, ProviderEvent, ProviderTool, StreamChatRequest } from "./provider.js";
+import { normalizeProviderError } from "./provider-error.js";
+import { buildAnthropicBody, type AnthropicProviderOptions } from "./anthropic-request.js";
+import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
-interface AnthropicProviderOptions {
-  name?: string;
-  apiKey?: string;
-  baseURL?: string;
-  maxTokens?: number;
-  promptCaching?: boolean;
-  /** 自定义请求体：浅合并进 messages 请求体，核心字段（model/messages/system/tools 等）优先；
-   * max_tokens 例外——extraBody 中的 max_tokens 可覆盖默认值（API 强制要求该字段，无法省略）。 */
-  extraBody?: Record<string, unknown>;
-  /** Maximum request duration in milliseconds; zero disables the SDK timeout. */
-  streamIdleTimeoutMs?: number;
-}
 
 const DEFAULT_ANTHROPIC_REQUEST_TIMEOUT_MS = 300_000;
 
+/** 旧直连实现：仅保留协议请求体构造/回归测试；生产注册走 llm-api-provider.ts。 */
 export class AnthropicProvider implements Provider {
   readonly name: string;
   private readonly client: Anthropic;
@@ -47,41 +35,13 @@ export class AnthropicProvider implements Provider {
 
   async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
     let streamStarted = false;
-    // Anthropic API 强制要求 max_tokens（无法像 OpenAI 端那样省略）；extraBody 可覆盖默认值
-    const extraMaxTokens = this.extraBody?.["max_tokens"];
-    const maxTokens = request.maxTokens ?? (typeof extraMaxTokens === "number" ? extraMaxTokens : this.maxTokens);
-    // 服务级（provider 配置）与请求级开关共同决定；任一关闭则不打任何显式断点。
-    const caching = this.promptCaching && request.promptCaching !== false;
-    // Anthropic / DeepSeek Messages：可以延迟部分工具，但至少要有一个可立即加载的工具，
-    // 否则端点直接 400。提前给出可诊断错误，避免把必然失败的请求发出去。
-    if (request.tools.length > 0 && request.tools.every((tool) => tool.deferLoading === true)) {
-      throw new ProviderError(
-        "invalid_request",
-        "At least one tool must have defer_loading=false; all tools cannot be deferred",
-        false,
-      );
-    }
     try {
       const stream = this.client.messages.stream(
-        {
-          ...this.extraBody,
-          model: request.model,
-          max_tokens: maxTokens,
-          ...(anthropicThinking(request, maxTokens) ? { thinking: anthropicThinking(request, maxTokens)! } : {}),
-          // 思考强度（output_config.effort）值不设限：原样透传，不做任何封顶/映射
-          // （ultra/minimal 等端点枚举外值由调用端点决定；官方枚举 low/medium/high/xhigh/max；
-          // SDK 类型仅声明到自身枚举，运行时原样发送）
-          ...(request.effort
-            ? { output_config: { effort: request.effort } as unknown as Anthropic.Messages.OutputConfig }
-            : {}),
-          // 请求级采样参数（chat 模式助手预设下发）；undefined 时不发，由端点默认决定
-          ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
-          ...(request.topP !== undefined ? { top_p: request.topP } : {}),
-          system: toAnthropicSystem(request, caching),
-          messages: toAnthropicMessages(request.messages, messageBreakpoints(request, caching)),
-          ...(request.tools.length > 0 ? { tools: toAnthropicTools(request.tools, caching) } : {}),
-          ...(caching ? { cache_control: { type: "ephemeral" as const } } : {}),
-        },
+        buildAnthropicBody(request, {
+          maxTokens: this.maxTokens,
+          promptCaching: this.promptCaching,
+          ...(this.extraBody ? { extraBody: this.extraBody } : {}),
+        }) as unknown as Anthropic.MessageCreateParamsStreaming,
         // 请求级 UA：每次请求取当前生效值（默认官方 UA，agent-presets 模拟开启时为拟态值）
         { signal: request.signal, headers: { "User-Agent": getUserAgent() } },
       );
@@ -144,264 +104,6 @@ export class AnthropicProvider implements Provider {
   }
 }
 
-/**
- * Anthropic thinking 组装（Key 按声明 + 模型名推断，值不设限）：
- * - thinkingStyle="extended"：thinking:{type:"enabled",budget_tokens}（仅 Claude 4.5 及以前
- *   等旧模型的 extended-only 形态；预算不硬编码，由 maxTokens 推导——见 extendedThinkingBudget）
- * - thinkingStyle="adaptive"：thinking:{type:"adaptive"}（预算废弃时代，深度由 output_config.effort 控制）
- * - 未声明（或 openai 型声明，如 thinking）：按模型名推断——
- *   claude 4.5 及以前 → extended；claude 4.6+/国产/未知 → adaptive
- * - thinking=disabled → 不发（Anthropic 无 disable 表达，不传即关闭思考）
- * - 用户显式 enabled / adaptive → 按选定形态发送；未选择 → 不发（模型自动）
- */
-function anthropicThinking(request: StreamChatRequest, maxTokens: number): Anthropic.ThinkingConfigParam | undefined {
-  if (request.thinking === "disabled") return undefined;
-  const style = request.thinkingStyle;
-  if (style === "extended") {
-    if (request.thinking !== "enabled") return undefined;
-    return { type: "enabled", budget_tokens: extendedThinkingBudget(maxTokens) };
-  }
-  if (style === "adaptive") {
-    return { type: "adaptive", display: "summarized" };
-  }
-  if (request.thinking === "adaptive") return { type: "adaptive", display: "summarized" };
-  if (request.thinking !== "enabled") return undefined;
-  return inferAnthropicThinking(request.model, maxTokens);
-}
-
-/** 版本号解析：兼容两代命名——新代 family 在前（claude-sonnet-4-5-20250929），
- * 旧代版本在前（claude-3-7-sonnet-20250219、claude-3-opus-20240229）。次版本限 1-2 位且
- * 后面不能再跟数字，避免把 8 位日期后缀（claude-sonnet-4-20250514）误读成次版本；
- * 缺次版本按 0 处理。 */
-function parseClaudeVersion(model: string): { major: number; minor: number } | undefined {
-  const family = "(?:opus|sonnet|haiku|fable|mythos)";
-  const version = "(\\d{1,2})(?:[-_.](\\d{1,2})(?!\\d))?";
-  const patterns = [
-    new RegExp(`claude[-_./]?${family}[-_.]?${version}`, "i"),
-    new RegExp(`claude[-_./]${version}[-_.]?${family}`, "i"),
-  ];
-  for (const pattern of patterns) {
-    const match = pattern.exec(model);
-    if (match) return { major: Number(match[1]), minor: match[2] ? Number(match[2]) : 0 };
-  }
-  return undefined;
-}
-
-/** 模型名推断（Anthropic 官方文档）：Claude 4.5 及以前仅支持 extended（type:"adaptive" 会 400）；
- * 4.6+（及国产/未知端点）用 adaptive——预算（budget_tokens）已在该代弃用/拒绝。 */
-function inferAnthropicThinking(model: string, maxTokens: number): Anthropic.ThinkingConfigParam {
-  const version = parseClaudeVersion(model);
-  if (version && (version.major <= 3 || (version.major === 4 && version.minor <= 5))) {
-    return { type: "enabled", budget_tokens: extendedThinkingBudget(maxTokens) };
-  }
-  return { type: "adaptive", display: "summarized" };
-}
-
-/** Anthropic extended thinking 的硬约束：budget_tokens ≥ 1024 且 < max_tokens。 */
-const MIN_THINKING_BUDGET = 1024;
-
-/** extended 预算：预算与正文共享 max_tokens，取满 maxTokens-1 会让思考吃掉全部额度、
- * 正文无处可写（表现为"只有思考没有回答"），故留 1/8（至少 1024）给正文；
- * maxTokens 过小时退到 1024 下限，仍装不下则按 maxTokens-1 发出（由 API 明确拒绝而非静默截断）。 */
-function extendedThinkingBudget(maxTokens: number): number {
-  const headroom = Math.max(MIN_THINKING_BUDGET, Math.floor(maxTokens / 8));
-  const budget = maxTokens - headroom;
-  if (budget >= MIN_THINKING_BUDGET) return budget;
-  return Math.min(MIN_THINKING_BUDGET, Math.max(1, maxTokens - 1));
-}
-
-/** Anthropic 每请求至多 4 个断点（tools/system/messages 合计）。 */
-const MAX_CACHE_BREAKPOINTS = 4;
-
-/**
- * system 组装：稳定前缀单独成块并打 ephemeral 断点；动态尾部（逐 turn 变化的通知）
- * 追加为不带断点的后续块，避免其变化污染稳定前缀的缓存。关闭缓存时退化为纯字符串。
- */
-function toAnthropicSystem(request: StreamChatRequest, caching: boolean): string | Anthropic.TextBlockParam[] {
-  const suffix = request.systemSuffix?.trim();
-  if (!caching) return suffix ? `${request.system}\n\n${suffix}` : request.system;
-  const blocks: Anthropic.TextBlockParam[] = [
-    { type: "text", text: request.system, cache_control: { type: "ephemeral" } },
-  ];
-  if (suffix) blocks.push({ type: "text", text: suffix });
-  return blocks;
-}
-
-/** 消息级断点预算：system 块占 1 个，tools 断点占 1 个，剩余额度给消息前缀（取最早者，缓存前缀最长）。 */
-function messageBreakpoints(request: StreamChatRequest, caching: boolean): ReadonlySet<string> {
-  if (!caching) return new Set();
-  // 延迟加载工具不能带 cache_control（端点 400）；只有存在可缓存工具时才占用一个断点额度。
-  const toolsBreakpoint = request.tools.some((tool) => tool.deferLoading !== true);
-  const budget = MAX_CACHE_BREAKPOINTS - 1 - (toolsBreakpoint ? 1 : 0);
-  return new Set((request.cacheBreakpoints ?? []).slice(0, Math.max(0, budget)));
-}
-
-/** 工具定义逐 turn 稳定，末位**非延迟**工具打断点即可缓存整个 tools 前缀；
- * 延迟工具不能携带 cache_control（Anthropic 明确 400），故断点向前找。 */
-function toAnthropicTools(tools: ProviderTool[], caching: boolean): Anthropic.Tool[] {
-  const breakpoint = caching ? tools.findLastIndex((tool) => tool.deferLoading !== true) : -1;
-  return tools.map((tool, index) => ({
-    ...toAnthropicTool(tool),
-    ...(index === breakpoint ? { cache_control: { type: "ephemeral" as const } } : {}),
-  }) as Anthropic.Tool);
-}
-
-function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<string>): Anthropic.MessageParam[] {
-  // 配对修复（与 openai-responses-provider 同款）：tool_use 与 tool_result 必须一一对应，
-  // 否则端点 400（"unexpected tool_use_id" / "tool_use ids were found without tool_result"）。
-  // 孤儿来源：!shell 直写 shell-* tool_result（无 assistant tool_use）、中断/崩溃时结果未落盘、
-  // 压缩边界裁掉 assistant 留结果。游离 tool_result 丢弃；缺失结果在随后 user 消息补占位。
-  const toolMedia = collectToolMedia(messages);
-  const outputs = new Map<string, { content: string; isError?: boolean }>();
-  const knownCallIds = new Set<string>();
-  for (const message of messages) {
-    for (const block of message.content) {
-      if (block.type === "tool_result" && !outputs.has(block.toolCallId)) {
-        outputs.set(block.toolCallId, { content: block.content, ...(block.isError ? { isError: true } : {}) });
-      } else if (block.type === "tool_call") {
-        knownCallIds.add(block.id);
-      }
-    }
-  }
-  const placeholderResults = (ids: readonly string[]): Anthropic.ContentBlockParam[] =>
-    ids.map((id) => {
-      const output = outputs.get(id);
-      return {
-        type: "tool_result" as const,
-        tool_use_id: id,
-        // 附带媒体（read_media）内联进 tool_result：image 走 base64 source，视频降级占位文本
-        content: anthropicToolResultContent(output?.content ?? "The run was interrupted before this tool finished; no result was produced.", output ? toolMedia.get(id) : undefined) as NonNullable<Anthropic.ToolResultBlockParam["content"]>,
-        ...(output?.isError ? { is_error: true } : {}),
-      };
-    });
-  const result: Anthropic.MessageParam[] = [];
-  const emittedCallIds = new Set<string>();
-  // 已下发结果的 tool_use id（真结果与占位同账）：同一 id 只允许一个 tool_result 块（见 tool 分支注释）
-  const emittedResultIds = new Set<string>();
-  let pendingCallIds: string[] = [];
-  /** 占位结果的唯一出口：登记 id 后产出块，保证「占位先发、真结果后到」时后续真结果被去重丢弃。 */
-  const emitPlaceholders = (ids: readonly string[]): Anthropic.ContentBlockParam[] => {
-    const missing = ids.filter((id) => !emittedResultIds.has(id));
-    for (const id of missing) emittedResultIds.add(id);
-    return placeholderResults(missing);
-  };
-  const pushMessage = (message: ChatMessage, mapped: Anthropic.MessageParam): void => {
-    if (breakpoints.has(message.id) && Array.isArray(mapped.content) && mapped.content.length > 0) {
-      const last = mapped.content.length - 1;
-      mapped.content[last] = { ...mapped.content[last], cache_control: { type: "ephemeral" } } as typeof mapped.content[number];
-    }
-    result.push(mapped);
-  };
-  // 并行批次的结果逐条落盘（一个 assistant 批次的多条连续 tool 消息），合并成**一条** wire
-  // user 消息：中途给兄弟调用补占位会让后续真结果与占位撞同一 tool_use_id
-  // （400 each tool_use must have a single result. Found multiple `tool_result` blocks with id），
-  // 而逐条下发又会拆出多条连续 user 消息。批次结果全孤儿（无已知 tool_use）时整批跳过，
-  // 避免空 content user 消息触发 400。
-  let batchResults: Anthropic.ContentBlockParam[] | undefined;
-  let batchMessage: ChatMessage | undefined;
-  const flushToolBatch = (): void => {
-    const message = batchMessage;
-    if (batchResults === undefined || message === undefined) return;
-    // 批次收尾时才补占位：此时仍未到达的调用是「中断未落盘」，且与已登记结果天然去重
-    const content = [...batchResults, ...emitPlaceholders(pendingCallIds)];
-    batchResults = undefined;
-    batchMessage = undefined;
-    pendingCallIds = [];
-    if (content.length === 0) return;
-    pushMessage(message, { role: "user", content });
-  };
-  for (const [index, message] of messages.entries()) {
-    if (message.role === "tool") {
-      for (const block of message.content) {
-        if (block.type !== "tool_result") continue;
-        const entry: ToolResultContent = block;
-        // 一个 tool_use 只能有一个 tool_result：重复结果（同 id 出现在多条 tool 消息、同一消息
-        // 两块、或跨轮复用同 id 的旧历史）会被端点拒绝（文案同上）。按首个结果保留
-        // （与 outputs 占位映射同口径），后续重复块丢弃。
-        if (!knownCallIds.has(entry.toolCallId) || !emittedCallIds.has(entry.toolCallId) || emittedResultIds.has(entry.toolCallId)) continue;
-        emittedResultIds.add(entry.toolCallId);
-        batchResults ??= [];
-        batchMessage ??= message;
-        batchResults.push({
-          type: "tool_result" as const,
-          tool_use_id: entry.toolCallId,
-          content: anthropicToolResultContent(entry.content, toolMedia.get(entry.toolCallId)) as NonNullable<Anthropic.ToolResultBlockParam["content"]>,
-          ...(entry.isError ? { is_error: true } : {}),
-        });
-      }
-      // 连续 tool 消息走完才收尾（下一批 tool 消息属于同一批次）
-      if (messages[index + 1]?.role !== "tool") flushToolBatch();
-      continue;
-    }
-    // 正文消息之前先收尾上一批工具结果（保持「assistant 调用 → user 结果 → 下一条」的顺序）
-    flushToolBatch();
-    // 上一条 assistant 的 tool_use 结果未随 tool 消息到达（中断未落盘，批次连一条结果都没有）：
-    // 先补占位 user 消息
-    if (pendingCallIds.length > 0) {
-      const placeholders = emitPlaceholders(pendingCallIds);
-      if (placeholders.length > 0) result.push({ role: "user", content: placeholders });
-      pendingCallIds = [];
-    }
-    if (message.role === "user") {
-      // 空 text 块不下发（纯附件的历史消息/占位缺失时可能留空串，部分端点拒收空 text part）；
-      // 过滤后为空则跳过整条（与上方全孤儿 tool 分支同款处理）。
-      const userContent = message.content.flatMap((block): Anthropic.ContentBlockParam[] => {
-        if (block.type === "text") return block.text ? [{ type: "text" as const, text: block.text }] : [];
-        // ref 形态（chat 落盘图）由调用方内联为 data 后才进 provider；缺 data 的块跳过
-        if (block.type === "image" && block.data) {
-          return [{
-            type: "image" as const,
-            source: {
-              type: "base64" as const,
-              media_type: block.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
-              data: block.data,
-            },
-          }];
-        }
-        return [];
-      });
-      if (userContent.length === 0) continue;
-      pushMessage(message, { role: "user", content: userContent });
-    } else {
-      const content: Anthropic.ContentBlockParam[] = [];
-      for (const block of message.content) {
-        if (block.type === "text") content.push({ type: "text", text: block.text });
-        // 同一 id 在多条 assistant 消息重复出现时只发一次（重复 tool_use id 会被端点拒绝）
-        else if (block.type === "tool_call" && !emittedCallIds.has(block.id)) {
-          emittedCallIds.add(block.id);
-          pendingCallIds.push(block.id);
-          content.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
-        } else if (block.type === "thinking" && block.provider === "anthropic" && block.redacted) {
-          // redacted_thinking 原样回传（见 streamChat 的持久化）
-          content.push({ type: "redacted_thinking", data: block.redacted });
-        } else if (block.type === "thinking" && block.provider === "anthropic" && block.signature) {
-          content.push({ type: "thinking", thinking: block.text, signature: block.signature });
-        }
-      }
-      if (content.length === 0) {
-        // 跨 provider 切换后 assistant 消息可能只剩异源 thinking 块（映射后为空）；
-        // Anthropic 拒绝空 content（400），补占位文本
-        content.push({ type: "text", text: "[context trimmed]" });
-      }
-      pushMessage(message, { role: "assistant", content });
-    }
-  }
-  // 历史以悬空 tool_use 结尾（中断后无后续消息）：补占位结果，保证末条为 user
-  if (pendingCallIds.length > 0) {
-    const placeholders = emitPlaceholders(pendingCallIds);
-    if (placeholders.length > 0) result.push({ role: "user", content: placeholders });
-  }
-  return result;
-}
-
-function toAnthropicTool(tool: ProviderTool): Anthropic.Tool {
-  return {
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.inputSchema as Anthropic.Tool.InputSchema,
-    ...(tool.deferLoading === true ? { defer_loading: true } : {}),
-  };
-}
 
 function asObject(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) return {};

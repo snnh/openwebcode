@@ -9,7 +9,7 @@ import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 /** OpenAI Responses 拒绝低于 16 的 max_output_tokens（dsh 同口径）。 */
 export const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
 
-interface OpenAIResponsesProviderOptions {
+export interface OpenAIResponsesProviderOptions {
   name?: string;
   apiKey?: string;
   baseURL: string;
@@ -90,6 +90,72 @@ interface ReasoningAccumulator {
  * 而持久化签名缺失时，补发第二次 thinking_end 合并密文（B3 回填，Azure 等端点只在该终态给
  * 密文）；Azure 漏发 output_item.done content 时由 completed output 兜底收尾。
  */
+/** 构造 Responses 请求体（provider 类与 llm-api 传输层共用；纯函数，便于两条路径逐字一致）。 */
+export function buildOpenAIResponsesBody(
+  request: StreamChatRequest,
+  options: OpenAIResponsesProviderOptions,
+): Record<string, unknown> {
+  const name = options.name ?? "openai-responses";
+  const maxTokens = request.maxTokens ?? options.maxTokens;
+  // 加密回放模式（官方 OpenAI same-model 口径）：请求 reasoning.encrypted_content，历史
+  // reasoning/message/function_call item 按原始结构原样回放（含 rs_/fc_ id）
+  const encrypted = request.responsesEncryptedReplay === true;
+  // 思维摘要流开关：请求级（模型能力声明）优先，回落 provider 级配置（默认开）
+  const reasoningSummary = request.reasoningContent ?? (options.reasoningContent !== false);
+  const reasoning: Record<string, unknown> = {};
+  if (options.reasoningEffort !== false && request.effort) reasoning.effort = request.effort;
+  // 思考关闭按声明分发：thinking 型（deepseek 等）→ reasoning.effort:"none"（Responses 无
+  // thinking 开关语法，none 禁用思考模式）；fixed 用户显式选择仍尝试发送；其余无表达不发。
+  // 值不设限：effort 值原样（含映射前值），key 由模型目录声明决定。
+  if (request.thinking === "disabled" && (request.thinkingStyle === "thinking" || request.thinkingStyle === "fixed")) {
+    reasoning.effort = "none";
+  }
+  // A number of Responses gateways (including simple OpenAI-compatible proxies) do not
+  // implement the optional summary field even though they accept /responses itself.
+  // Only request summaries when the caller explicitly selected a reasoning effort;
+  // plain Responses requests remain compatible with the minimal documented payload.
+  if (reasoningSummary && request.effort !== undefined) reasoning.summary = "auto";
+  // system 组装：稳定前缀 + 动态尾部（Responses 无 system 角色，统一进 instructions）
+  const suffix = request.systemSuffix?.trim();
+  const instructions = suffix ? `${request.system}\n\n${suffix}` : request.system;
+  return {
+    ...options.extraBody,
+    model: request.model,
+    stream: true,
+    // 仅在配置显式指定时发送 store。部分 Responses 兼容端点不认识该字段，
+    // 默认省略可避免无意义的 400；本地回放仍由 input 完整维护上下文。
+    ...(options.store === undefined ? {} : { store: options.store }),
+    instructions,
+    input: toResponsesInput(request.messages, name, reasoningSummary, options.diagnosticWriter ?? defaultDiagnosticWriter, encrypted),
+    // dsh 口径：max_output_tokens 显式设置时不低于 16（OpenAI 拒绝更小值）
+    ...(maxTokens !== undefined ? { max_output_tokens: Math.max(maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS) } : {}),
+    // 加密回放模式请求 reasoning.encrypted_content：include 与 reasoning 开关/effort 绑定
+    // （dsh 条件：include 紧随 reasoning effort/summary 下发）
+    ...(encrypted && (reasoningSummary || request.effort !== undefined) ? { include: ["reasoning.encrypted_content"] } : {}),
+    // 请求级采样参数：Responses 的推理档（请求携带 effort）拒绝 temperature/top_p，
+    // 此时不下发，避免 400；非推理请求按请求级配置透传
+    ...(request.effort === undefined && request.temperature !== undefined ? { temperature: request.temperature } : {}),
+    ...(request.effort === undefined && request.topP !== undefined ? { top_p: request.topP } : {}),
+    ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
+    ...(request.tools.length > 0 || request.serverWebSearch === true
+      ? {
+          tools: [
+            // Responses 扁平 function 结构（区别于 chat 的 nested function 格式）
+            ...request.tools.map((tool) => ({
+              type: "function",
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.inputSchema,
+            })),
+            // 服务端联网搜索工具：DeepSeek 等端点在服务端执行并回传 web_search_call 项
+            ...(request.serverWebSearch === true ? [{ type: "web_search" }] : []),
+          ],
+        }
+      : {}),
+  };
+}
+
+/** 旧直连实现：仅保留协议请求体构造/回归测试；生产注册走 llm-api-provider.ts。 */
 export class OpenAIResponsesProvider implements Provider {
   readonly name: string;
   readonly interfaceType = "openai-responses" as const;
@@ -114,63 +180,7 @@ export class OpenAIResponsesProvider implements Provider {
   private requestBody(request: StreamChatRequest): string {
     const cached = this.requestBodyCache.get(request);
     if (cached !== undefined) return cached;
-    const maxTokens = request.maxTokens ?? this.maxTokens;
-    // 加密回放模式（官方 OpenAI same-model 口径）：请求 reasoning.encrypted_content，历史
-    // reasoning/message/function_call item 按原始结构原样回放（含 rs_/fc_ id）
-    const encrypted = request.responsesEncryptedReplay === true;
-    // 思维摘要流开关：请求级（模型能力声明）优先，回落 provider 级配置（默认开）
-    const reasoningSummary = request.reasoningContent ?? (this.options.reasoningContent !== false);
-    const reasoning: Record<string, unknown> = {};
-    if (this.options.reasoningEffort !== false && request.effort) reasoning.effort = request.effort;
-    // 思考关闭按声明分发：thinking 型（deepseek 等）→ reasoning.effort:"none"（Responses 无
-    // thinking 开关语法，none 禁用思考模式）；fixed 用户显式选择仍尝试发送；其余无表达不发。
-    // 值不设限：effort 值原样（含映射前值），key 由模型目录声明决定。
-    if (request.thinking === "disabled" && (request.thinkingStyle === "thinking" || request.thinkingStyle === "fixed")) {
-      reasoning.effort = "none";
-    }
-    // A number of Responses gateways (including simple OpenAI-compatible proxies) do not
-    // implement the optional summary field even though they accept /responses itself.
-    // Only request summaries when the caller explicitly selected a reasoning effort;
-    // plain Responses requests remain compatible with the minimal documented payload.
-    if (reasoningSummary && request.effort !== undefined) reasoning.summary = "auto";
-    // system 组装：稳定前缀 + 动态尾部（Responses 无 system 角色，统一进 instructions）
-    const suffix = request.systemSuffix?.trim();
-    const instructions = suffix ? `${request.system}\n\n${suffix}` : request.system;
-    const body = JSON.stringify({
-      ...this.options.extraBody,
-      model: request.model,
-      stream: true,
-      // 仅在配置显式指定时发送 store。部分 Responses 兼容端点不认识该字段，
-      // 默认省略可避免无意义的 400；本地回放仍由 input 完整维护上下文。
-      ...(this.options.store === undefined ? {} : { store: this.options.store }),
-      instructions,
-      input: toResponsesInput(request.messages, this.name, reasoningSummary, this.options.diagnosticWriter ?? defaultDiagnosticWriter, encrypted),
-      // dsh 口径：max_output_tokens 显式设置时不低于 16（OpenAI 拒绝更小值）
-      ...(maxTokens !== undefined ? { max_output_tokens: Math.max(maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS) } : {}),
-      // 加密回放模式请求 reasoning.encrypted_content：include 与 reasoning 开关/effort 绑定
-      // （dsh 条件：include 紧随 reasoning effort/summary 下发）
-      ...(encrypted && (reasoningSummary || request.effort !== undefined) ? { include: ["reasoning.encrypted_content"] } : {}),
-      // 请求级采样参数：Responses 的推理档（请求携带 effort）拒绝 temperature/top_p，
-      // 此时不下发，避免 400；非推理请求按请求级配置透传
-      ...(request.effort === undefined && request.temperature !== undefined ? { temperature: request.temperature } : {}),
-      ...(request.effort === undefined && request.topP !== undefined ? { top_p: request.topP } : {}),
-      ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
-      ...(request.tools.length > 0 || request.serverWebSearch === true
-        ? {
-            tools: [
-              // Responses 扁平 function 结构（区别于 chat 的 nested function 格式）
-              ...request.tools.map((tool) => ({
-                type: "function",
-                name: tool.name,
-                description: tool.description,
-                parameters: tool.inputSchema,
-              })),
-              // 服务端联网搜索工具：DeepSeek 等端点在服务端执行并回传 web_search_call 项
-              ...(request.serverWebSearch === true ? [{ type: "web_search" }] : []),
-            ],
-          }
-        : {}),
-    });
+    const body = JSON.stringify(buildOpenAIResponsesBody(request, this.options));
     this.requestBodyCache.set(request, body);
     return body;
   }

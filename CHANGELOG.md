@@ -12,6 +12,10 @@
 
 - **dsh 兼容模式下线**：移除独立端口 SPA 托管、dsh 插件加载与工具钩子桥、`dshCompatEnabled`/`dshPort`/`dshUiPath` 设置及对应环境变量、活动栏入口和 `GET /api/dsh/status`；兼容层源码、测试、vendor 抓取脚本与用户文档归档到 `attic/dsh-compat/`（附恢复清单），不再参与构建、测试与发布。`dsh-sync` 扩展与 `dsh-minimal` 拟态不受影响。旧部署可显式执行 `--purge-dsh-compat` 或 `node scripts/purge-dsh-compat.mjs` 清理受管 vendor、`dsh-plugins`、`dsh.json` 与残留设置；自选 `dshUiPath` 目录只提示、不删除。
 
+### 重构
+
+- **LLM 调用层统一到 `@snnh/llm-api`**：Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 生产装配不再直接调用三家 SDK/SSE 客户端，认证、超时、流分帧、usage 与错误分类统一走 `@snnh/llm-api`；OWC 侧保留既有协议请求体纯函数（工具配对、prompt cache 断点、Responses 原始 reasoning/web_search 回放）与事件映射；旧直连类只留作请求体构造/回归夹具，不再注册。库同步扩展了 `rawBody`/动态 headers/systemSuffix、Responses 服务端联网搜索与完整 reasoning item/text item 签名事件、SSE 事件上限、idle 超时按 data 事件重置和 fetch 注入；生产 Provider 仍由 `ProviderRegistry` 按默认并发 3 包装，重试仍收口在 `collectProviderTurn`。
+
 ### 新功能
 
 - **子代理标签页实时消息流**：子代理转录改为运行中按轮次/工具批次原子刷新，主区子代理标签页以与主对话一致的形态展示「任务 → 子代理正文/思考 → 工具调用 → 工具结果」，运行中自动跟随最新输出，终态保留结论与「复制结论」入口（结论已在消息流中完整展示时不重复摘要）；swarm 组内可逐成员切换查看。

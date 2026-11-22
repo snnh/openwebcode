@@ -159,13 +159,15 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 
 ## 从源码构建
 
-需要 Node.js ≥ 24.22.1、CMake ≥ 3.19、C11 编译器和 Python 3（core 协议测试用）。三层各自独立构建，仓库根目录没有 `package.json`：
+需要 Node.js ≥ 24.22.1、CMake ≥ 3.19、C11 编译器、Python 3（core 协议测试用）和 Git（拉取 `@snnh/llm-api` 依赖）。三层各自独立构建，仓库根目录没有 `package.json`：
 
 ```sh
 cmake -S core -B build && cmake --build build && ctest --test-dir build   # core（C 执行器）
 cd server && npm ci && npm run build && npm test                          # server（Node 服务层）
 cd web && npm ci && npm run build && npm test                             # web（产物由 server 静态托管）
 ```
+
+> server 的 `@snnh/llm-api` 以 git commit 固定；`npm ci` 会通过 Git 拉取该公开仓库，构建环境需安装 Git。
 
 ## 数据与配置
 

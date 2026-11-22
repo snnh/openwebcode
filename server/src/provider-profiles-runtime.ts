@@ -2,10 +2,8 @@ import type { AgentRunner } from "./agent/agent-runner.js";
 import type { ChatRunner } from "./chat/chat-runner.js";
 import type { ModelRegistry, ModelProviderCredentials, RefreshReport } from "./context/model-registry.js";
 import type { EventBus } from "./events/event-bus.js";
-import { AnthropicProvider } from "./providers/anthropic-provider.js";
 import { DEFAULT_MAX_CONCURRENT } from "./providers/concurrency-limiter.js";
-import { OpenAICompatibleProvider } from "./providers/openai-compatible-provider.js";
-import { OpenAIResponsesProvider } from "./providers/openai-responses-provider.js";
+import { LLMApiProvider } from "./providers/llm-api-provider.js";
 import type { ProviderRegistry } from "./providers/provider.js";
 import type { ProviderProfilesService } from "./provider-profiles.js";
 import { createProfileSearchProvider, createProfileWebFetchProvider } from "./web-tools.js";
@@ -81,34 +79,18 @@ export class ProviderProfilesRuntime {
     for (const profile of this.profiles.modelProfiles()) {
       if (!profile.enabled) continue;
       try {
-        // 生产注册路径统一按默认 3 并发接线（provider.ts 注释口径），超出排队
-        if (profile.interfaceType === "anthropic-messages") {
-          this.providers.register(new AnthropicProvider({
-            name: profile.id,
-            ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
-            ...(profile.baseURL ? { baseURL: profile.baseURL } : {}),
-            promptCaching: profile.promptCaching !== false,
-            ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
-            ...idleOption,
-          }), DEFAULT_MAX_CONCURRENT);
-        } else if (profile.interfaceType === "openai-responses") {
-          this.providers.register(new OpenAIResponsesProvider({
-            name: profile.id,
-            baseURL: profile.baseURL ?? "https://api.openai.com/v1",
-            ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
-            ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
-            ...(profile.includeUsage !== undefined ? { includeUsage: profile.includeUsage } : {}),
-            ...idleOption,
-          }), DEFAULT_MAX_CONCURRENT);
-        } else {
-          this.providers.register(new OpenAICompatibleProvider({
-            name: profile.id,
-            baseURL: profile.baseURL ?? "https://api.openai.com/v1",
-            ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
-            ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
-            ...idleOption,
-          }), DEFAULT_MAX_CONCURRENT);
-        }
+        // 生产注册路径统一按默认 3 并发接线（provider.ts 注释口径），超出排队。
+        // 三种 interfaceType 均交给 @snnh/llm-api 传输层；请求体仍由各协议纯函数构造。
+        this.providers.register(new LLMApiProvider({
+          name: profile.id,
+          interfaceType: profile.interfaceType,
+          ...(profile.baseURL ? { baseURL: profile.baseURL } : {}),
+          ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
+          ...(profile.interfaceType === "anthropic-messages" ? { promptCaching: profile.promptCaching !== false } : {}),
+          ...(profile.includeUsage !== undefined ? { includeUsage: profile.includeUsage } : {}),
+          ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
+          ...idleOption,
+        }), DEFAULT_MAX_CONCURRENT);
         this.managedProviders.add(profile.id);
       } catch (error) {
         process.stderr.write(`[profiles] 模型服务商 ${profile.id} 注册失败：${error instanceof Error ? error.message : String(error)}\n`);

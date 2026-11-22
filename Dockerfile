@@ -14,7 +14,7 @@
 FROM node:24.22.1-trixie AS builder
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends cmake gcc make \
+ && apt-get install -y --no-install-recommends cmake gcc make git \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src

@@ -22,7 +22,7 @@ openwebcode/
 │   │   ├── core-client.ts   # C 子进程管理 + RPC 客户端（崩溃自动重启）
 │   │   ├── agent/           # agent 循环、工具调度、权限、子代理、后台任务
 │   │   ├── chat/            # chat 模式：runner、工具注册表、Python 执行、助手预设
-│   │   ├── providers/       # anthropic / openai-compatible / openai-responses
+│   │   ├── providers/       # LLMApiProvider + anthropic/openai 协议请求体
 │   │   ├── context/         # 上下文账本、buildView、预算、压缩（驱逐在 extensions/context-saver/）
 │   │   ├── sessions/        # 多会话管理、JSONL 持久化、会话树
 │   │   ├── snapshots/       # 快照后端探测链、托管工作区
@@ -158,12 +158,13 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 6. `agent-presets` 是 server 侧 hostless 扩展：启用它不会拉起 Extension Host（见 `ExtensionManager.HOSTLESS_EXTENSIONS`）。
 7. 测试参考 `server/test/agent-presets.test.ts`（迁移/兼容链接、白名单裁剪、精简提示词、REST 校验与会话级覆盖）。
 
-### 加一个 LLM provider
+### 加一个 LLM provider / 接口类型
 
-1. `server/src/providers/` 下实现 `Provider` 接口（`name` + `streamChat(req): AsyncIterable<ProviderEvent>`），参照 `anthropic-provider.ts` / `openai-compatible-provider.ts` / `openai-responses-provider.ts`。事件类型见 `providers/provider.ts`：`text_delta` / `thinking_delta` / `tool_call` / `usage` / `done` 等。
-2. 装配在 `provider-profiles-runtime.ts`：按服务商配置的 `interfaceType` 实例化并 `providers.register(...)`。新接口类型要同步加进 `provider-profiles.ts` 的 `ModelInterfaceType` 校验和设置页下拉。
-3. 配置项走 `settings-service.ts` 的 `FIELDS` 声明式（group/label/env/validate/restartRequired）。
-4. 测试参考现有 provider 的单测。
+1. 模型调用统一走 `@snnh/llm-api`（`server/src/providers/llm-api-provider.ts`）：认证、超时、SSE 分帧、usage/error 归一由库负责；OWC 只保留协议请求体构造与事件映射。依赖以 git commit 固定，且库内提交了 `dist/` 以支持 `npm ci --ignore-scripts`；`npm ci` 通过 Git 拉取公开仓库，构建环境需安装 Git。
+2. 新接口类型先在 `@snnh/llm-api` 增加 adapter（`src/*.ts` + `types.ts`），再给 `LLMApiProvider` 增加请求体构造分支；`Provider` 接口（`name` + `streamChat(req): AsyncIterable<ProviderEvent>`）与事件类型见 `providers/provider.ts`。
+3. 装配在 `provider-profiles-runtime.ts`：按服务商配置的 `interfaceType` 实例化 `LLMApiProvider` 并 `providers.register(...)`。新接口类型要同步加进 `provider-profiles.ts` 的 `ModelInterfaceType` 校验和设置页下拉。
+4. 配置项走 `settings-service.ts` 的 `FIELDS` 声明式（group/label/env/validate/restartRequired）。
+5. 测试：协议请求体可在 `anthropic-request.ts` / `openai-compatible-provider.ts` / `openai-responses-provider.ts` 的纯函数上断言；传输/事件边界用 `test/llm-api-provider.test.ts` 的 fake fetch。
 
 ### 加一个快照后端
 

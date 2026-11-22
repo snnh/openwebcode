@@ -162,13 +162,15 @@ Production reference (v1.7.6, Debian 13 x86-64, measured on an always-on instanc
 
 ## Build from source
 
-Requirements: Node.js ≥ 24.22.1, CMake ≥ 3.19, a C11 compiler, and Python 3 (for the core protocol tests). Each layer builds independently — there is no root `package.json`:
+Requirements: Node.js ≥ 24.22.1, CMake ≥ 3.19, a C11 compiler, Python 3 (for the core protocol tests), and Git (for the `@snnh/llm-api` dependency). Each layer builds independently — there is no root `package.json`:
 
 ```sh
 cmake -S core -B build && cmake --build build && ctest --test-dir build   # core (C executor)
 cd server && npm ci && npm run build && npm test                          # server (Node service)
 cd web && npm ci && npm run build && npm test                             # web (served statically by server)
 ```
+
+> Server depends on `@snnh/llm-api` pinned to a git commit; `npm ci` fetches that public repository over Git, so Git must be installed in the build environment.
 
 ## Data and configuration
 

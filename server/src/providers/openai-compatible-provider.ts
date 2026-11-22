@@ -5,7 +5,7 @@ import { collectToolOutputs, parseArguments, providerRequestHeaders, requireResp
 import { collectToolMedia, openaiCompatibleMediaMessage, type ToolMediaItem } from "./tool-result-media.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
-interface OpenAICompatibleProviderOptions {
+export interface OpenAICompatibleProviderOptions {
   name?: string;
   apiKey?: string;
   baseURL: string;
@@ -55,6 +55,48 @@ export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
  * 无界 buffer 会拖垮内存；超限属确定性协议错误，按不可重试处理（见 readSseData）。 */
 export const MAX_SSE_EVENT_BYTES = 8 * 1024 * 1024;
 
+/** 构造 chat/completions 请求体（provider 类与 llm-api 传输层共用；纯函数，便于两条路径逐字一致）。 */
+export function buildOpenAICompatibleBody(
+  request: StreamChatRequest,
+  options: OpenAICompatibleProviderOptions,
+): Record<string, unknown> {
+  const maxTokens = request.maxTokens ?? options.maxTokens;
+  // 思维链回传：请求级（模型能力声明）优先，回落 provider 级配置（默认开）
+  const reasoningContent = request.reasoningContent ?? (options.reasoningContent !== false);
+  return {
+    ...options.extraBody,
+    model: request.model,
+    stream: true,
+    ...(options.includeUsage !== false ? { stream_options: { include_usage: true } } : {}),
+    // 未显式配置则不发送 max_tokens：不限制输出长度
+    ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
+    // 请求级采样参数（chat 模式助手预设下发）；undefined 时不发，由端点默认决定
+    ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+    ...(request.topP !== undefined ? { top_p: request.topP } : {}),
+    ...(options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
+    // 思考开关按模型目录声明（thinkingStyle）分发 key；值不设限（用户选什么传什么）：
+    // - thinking/fixed：thinking:{type:enabled/disabled}（fixed 用户显式选择时仍尝试发送）
+    // - enable_thinking：顶层 enable_thinking:bool（qwen）
+    // - effort_only/extended/adaptive/未声明：不发开关（由模型自动；effort 有值已随 reasoning_effort 发）
+    // 声明为本地：端点差异见 model-metadata.ts 各模型族默认。
+    ...thinkingSwitchParam(request.thinkingStyle, request.thinking),
+    messages: toOpenAIMessages(request.system, request.messages, options.name, reasoningContent),
+    ...(request.tools.length > 0
+      ? {
+          tools: request.tools.map((tool) => ({
+            type: "function",
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.inputSchema,
+            },
+          })),
+        }
+      : {}),
+  };
+}
+
+/** 旧直连实现：仅保留协议请求体构造/回归测试；生产注册走 llm-api-provider.ts。 */
 export class OpenAICompatibleProvider implements Provider {
   readonly name: string;
   readonly interfaceType = "openai-chat-completions" as const;
@@ -79,40 +121,7 @@ export class OpenAICompatibleProvider implements Provider {
   private requestBody(request: StreamChatRequest): string {
     const cached = this.requestBodyCache.get(request);
     if (cached !== undefined) return cached;
-    const maxTokens = request.maxTokens ?? this.maxTokens;
-    // 思维链回传：请求级（模型能力声明）优先，回落 provider 级配置（默认开）
-    const reasoningContent = request.reasoningContent ?? (this.options.reasoningContent !== false);
-    const body = JSON.stringify({
-      ...this.options.extraBody,
-      model: request.model,
-      stream: true,
-      ...(this.options.includeUsage !== false ? { stream_options: { include_usage: true } } : {}),
-      // 未显式配置则不发送 max_tokens：不限制输出长度
-      ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
-      // 请求级采样参数（chat 模式助手预设下发）；undefined 时不发，由端点默认决定
-      ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
-      ...(request.topP !== undefined ? { top_p: request.topP } : {}),
-      ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
-      // 思考开关按模型目录声明（thinkingStyle）分发 key；值不设限（用户选什么传什么）：
-      // - thinking/fixed：thinking:{type:enabled/disabled}（fixed 用户显式选择时仍尝试发送）
-      // - enable_thinking：顶层 enable_thinking:bool（qwen）
-      // - effort_only/extended/adaptive/未声明：不发开关（由模型自动；effort 有值已随 reasoning_effort 发）
-      // 声明为本地：端点差异见 model-metadata.ts 各模型族默认。
-      ...thinkingSwitchParam(request.thinkingStyle, request.thinking),
-      messages: toOpenAIMessages(request.system, request.messages, this.name, reasoningContent),
-      ...(request.tools.length > 0
-        ? {
-            tools: request.tools.map((tool) => ({
-              type: "function",
-              function: {
-                name: tool.name,
-                description: tool.description,
-                parameters: tool.inputSchema,
-              },
-            })),
-          }
-        : {}),
-    });
+    const body = JSON.stringify(buildOpenAICompatibleBody(request, this.options));
     this.requestBodyCache.set(request, body);
     return body;
   }
