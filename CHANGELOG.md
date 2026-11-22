@@ -4,6 +4,10 @@
 
 ## [未发布]
 
+### 修复
+
+- **快照创建/回滚可靠性**：overlayfs 回滚先把当前 upper 复制备份，再交给 core 在 running-job 检查后 unmount/重建；Node 不再先卸载，core 的运行任务门禁因此实际生效。core restore 失败时用备份再走一次 core restore 回滚，恢复也失败则保留 backup 并报错，不删除可能仍挂载的活数据。qcow2 换叶把 umount 也纳入恢复路径，失败时重连旧叶子、删除新 child，避免工作区停在未挂载状态；`checkpoints.json` 改为原子写。检查点开始记录创建时的 `activeLeafId`，完整回滚截断消息后回到当时的活动分支（旧检查点缺字段时保持原行为；损坏的 activeLeafId 只丢字段，不丢整个检查点），并在动文件前预检消息数/叶子（损坏尾行不再误拒旧检查点）。所有后端的完整/仅文件回滚都要求先关闭用户终端；overlayfs 与 VHDX/qcow2 创建也检查终端，终端占用或正在打开时返回 409 `snapshot_terminal_open`。手动回滚在所有后端、镜像盘手动创建在换叶前自动回收持久 shell，托管工作区的自动快照遇到终端、镜像盘遇到持久 shell 则跳过并提示一次。普通会话变更（shell、编辑器保存、checkout/retry、clear/compact、上传、删除）与快照 create/restore 共用 per-session 互斥，避免回滚期间继续追加消息或写工作区；PTY 关闭按实际 owner core 路由，关闭失败时保留占用登记。回收持久 shell 后若仍检测到 PTY 占用（close 失败或记录丢失），镜像盘创建/换叶与回滚返回 409 `snapshot_pty_open`，不会带着旧 cwd 继续卸载；创建检查点时悬挂的 `activeLeafId` 统一回退到现存末条，避免写出必然被预检拒绝的检查点；`truncateMessages` 改为先写 meta 再写消息、消息写失败时回滚 meta，降低两次原子写之间崩溃留下悬空活动叶的风险。
+
 ### 移除
 
 - **dsh 兼容模式下线**：移除独立端口 SPA 托管、dsh 插件加载与工具钩子桥、`dshCompatEnabled`/`dshPort`/`dshUiPath` 设置及对应环境变量、活动栏入口和 `GET /api/dsh/status`；兼容层源码、测试、vendor 抓取脚本与用户文档归档到 `attic/dsh-compat/`（附恢复清单），不再参与构建、测试与发布。`dsh-sync` 扩展与 `dsh-minimal` 拟态不受影响。旧部署可显式执行 `--purge-dsh-compat` 或 `node scripts/purge-dsh-compat.mjs` 清理受管 vendor、`dsh-plugins`、`dsh.json` 与残留设置；自选 `dshUiPath` 目录只提示、不删除。

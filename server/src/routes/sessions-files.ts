@@ -6,7 +6,8 @@ import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import { ContextManager } from "../context/context-manager.js";
 import { SubAgentLaunchError } from "../agent/agent-runner.js";
 import { errorMessage } from "../error-utils.js";
-import { acquireSnapshotSessionLock } from "../snapshots/session-lock.js";
+import { resolveActiveLeafId } from "../sessions/session-tree.js";
+import { acquireSnapshotSessionLock, beginSessionMutation, isSessionMutationActive, isSnapshotSessionLocked, isTerminalOpening } from "../snapshots/session-lock.js";
 import { RAW_PREVIEW_MIME } from "./route-context.js";
 import type { ManagedSession, RouteContext } from "./route-context.js";
 
@@ -47,6 +48,33 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
   const checkpointConflictMessage = (session: ManagedSession): string => isManagedSession(session)
     ? "Managed workspace is in use or its checkpoint is already in progress"
     : "A checkpoint operation is already in progress for this session";
+
+  /**
+   * create 期间 overlayfs 会复制 upper、镜像盘链会卸载挂载点；restore 则会整体重建/
+   * 改写工作区（btrfs/zfs/refs/git-shadow 也一样），因此所有 restore 都要求终端关闭。
+   */
+  const snapshotNeedsTerminalCheck = (backend: string, action: "create" | "restore"): boolean =>
+    action === "restore" || backend === "overlayfs" || backend.endsWith("-chain");
+  /** 只有镜像盘链的 create 会卸载挂载点；overlayfs create 只复制 upper，不需要回收 shell。 */
+  const snapshotCreateNeedsShellDisposal = (backend: string): boolean => backend.endsWith("-chain");
+  const terminalOpen = (sessionId: string): boolean => core.activeTerminalSessions?.().has(sessionId) ?? false;
+  /** 含持久 shell 的 PTY 占用：用于关闭 shell 后确认 cwd 不再被旧进程占着。 */
+  const ptyOpen = (sessionId: string): boolean => core.activePtySessions?.().has(sessionId) ?? false;
+  const workspaceWritePending = (sessionId: string): boolean => agent.isWorkspaceWritePending?.(sessionId) ?? false;
+  const terminalConflict = (action: "create" | "restore") => ({
+    error: action === "create"
+      ? "Close the session terminal before creating a checkpoint（请先关闭该会话的终端后再创建检查点）"
+      : "Close the session terminal before restoring a checkpoint（请先关闭该会话的终端后再回滚）",
+    code: "snapshot_terminal_open",
+  });
+  const ptyConflict = {
+    error: "A terminal or persistent shell is still using this session; close it before switching the workspace（终端或持久 shell 仍占用工作区，请先关闭后再操作）",
+    code: "snapshot_pty_open",
+  };
+  const historyConflict = {
+    error: "Checkpoint history no longer matches this session; create a new checkpoint and retry（检查点历史与当前会话不一致，请新建检查点后重试）",
+    code: "checkpoint_history_mismatch",
+  };
 
 
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/sessions/:id/files", async (request, reply) => {
@@ -185,13 +213,45 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
     if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
     if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
     if (hasRunningBackgroundTask(session.id)) return reply.code(409).send({ error: "A background task is still using this session" });
+    if (restoringSessions.has(session.id)) return reply.code(409).send({ error: "A checkpoint restore is in progress" });
+    if (workspaceWritePending(session.id)) return reply.code(409).send({ error: "A file save is in progress; wait for it to finish before creating a checkpoint" });
     const label = request.body?.label ?? "Manual checkpoint"; if (typeof label !== "string" || !label.trim()) return reply.code(400).send({ error: "label must be a non-empty string" });
     const releaseWorkspace = acquireCheckpointExclusive(session);
-    if (!releaseWorkspace) return reply.code(409).send({ error: checkpointConflictMessage(session) });
+    if (!releaseWorkspace) {
+      if (isTerminalOpening(session.id)) return reply.code(409).send(terminalConflict("create"));
+      if (isSessionMutationActive(session.id)) return reply.code(409).send({ error: "A session operation is in progress" });
+      return reply.code(409).send({ error: checkpointConflictMessage(session) });
+    }
     try {
+      // 锁获取后重读 meta/工作区：等待锁期间配置或 snapshotBackend 可能已切换；
+      // 后端探测本身也可能写 meta，不能在终端/回滚窗口里用 guard 前的旧对象做。
+      const locked = await sessions.get(session.id);
+      if (!locked) return reply.code(404).send({ error: "Session not found" });
+      const backend = await resolveSnapshotBackend(locked);
+      // 锁获取后再检查，关闭「终端/保存/换层/新 run 之间」的竞态窗口。
+      if (restoringSessions.has(session.id)) return reply.code(409).send({ error: "A checkpoint restore is in progress" });
+      if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running" });
+      if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
+      if (hasRunningBackgroundTask(session.id)) return reply.code(409).send({ error: "A background task is still using this session" });
+      if (snapshotNeedsTerminalCheck(backend.name, "create") && terminalOpen(session.id)) return reply.code(409).send(terminalConflict("create"));
+      if (workspaceWritePending(session.id)) return reply.code(409).send({ error: "A file save is in progress; wait for it to finish before creating a checkpoint" });
+      // 托管镜像盘换叶会卸载 mountpoint；持久 shell 的 cwd 还在里面时必须先回收。
+      // dispose 内部等待 pty.close；若仍看到 PTY，说明关闭失败或记录已丢失但进程
+      // 未退出，此时继续换叶会把 cwd 抽走，直接 409 让用户重试。
+      if (snapshotCreateNeedsShellDisposal(backend.name)) {
+        try {
+          await agent.disposePersistentShells?.(session.id);
+        } catch (error) {
+          request.log.warn({ err: error, sessionId: session.id }, "persistent shell disposal failed before checkpoint");
+          return reply.code(409).send(ptyConflict);
+        }
+        if (ptyOpen(session.id)) return reply.code(409).send(ptyConflict);
+      }
+      // 锁内重新读取，避免使用 guard 之后被 checkout/append 改过的消息表。
+      const fresh = await sessions.get(session.id);
+      if (!fresh) return reply.code(404).send({ error: "Session not found" });
       const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
-      const backend = await resolveSnapshotBackend(session);
-      const checkpoint = await backend.create(label, session.messages.length, ledger);
+      const checkpoint = await backend.create(label, fresh.messages.length, ledger, resolveActiveLeafId(fresh.messages, fresh.activeLeafId));
       events.publish({ source: "session", type: "checkpoint.created", sessionId: session.id, payload: checkpoint }); return reply.code(201).send(checkpoint);
     } finally {
       releaseWorkspace();
@@ -205,27 +265,71 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
     if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
     if (hasRunningBackgroundTask(session.id)) return reply.code(409).send({ error: "A background task is still using this session" });
     if (request.body?.confirm !== true) return reply.code(400).send({ error: "confirm must be true" });
-    // 回退全程持有互斥标记：上方 guard 与此处之间无 await，新 run 无法从缝隙起跑
+    if (workspaceWritePending(session.id)) return reply.code(409).send({ error: "A file save is in progress; wait for it to finish before restoring a checkpoint" });
+    // 回退全程持有互斥标记：上方 guard 与此处之间无 await，新 run 无法从缝隙起跑。
+    // 标记之后的所有提前返回（解析后端失败/锁冲突/预检 409）都必须经 finally 清理。
     restoringSessions.add(session.id);
-    const releaseWorkspace = acquireCheckpointExclusive(session);
-    if (!releaseWorkspace) {
-      restoringSessions.delete(session.id);
-      return reply.code(409).send({ error: checkpointConflictMessage(session) });
-    }
+    let releaseWorkspace: (() => void) | undefined;
+    let restoreStarted = false;
     try {
-      const backend = await resolveSnapshotBackend(session);
+      releaseWorkspace = acquireCheckpointExclusive(session);
+      if (!releaseWorkspace) {
+        if (isTerminalOpening(session.id)) return reply.code(409).send(terminalConflict("restore"));
+        if (isSessionMutationActive(session.id)) return reply.code(409).send({ error: "A session operation is in progress" });
+        return reply.code(409).send({ error: checkpointConflictMessage(session) });
+      }
+      // 探测/列表/预检/写回都在锁内，避免后端在 guard 之后被切换或并发探测；
+      // 等待锁期间 meta/workspace 可能已变，必须用锁内对象探测。
+      const locked = await sessions.get(session.id);
+      if (!locked) return reply.code(404).send({ error: "Session not found" });
+      const backend = await resolveSnapshotBackend(locked);
       const checkpoint = (await backend.list()).find((item) => item.id === request.params.checkpointId);
       if (!checkpoint) return reply.code(404).send({ error: "Checkpoint not found" });
+      // 锁内重新读取，预检和写回都使用同一份消息表。
+      const fresh = await sessions.get(session.id);
+      if (!fresh) return reply.code(404).send({ error: "Session not found" });
+      // 回滚前预检：历史条数/活动叶子不合法时不要先动文件。
+      if (!request.body?.filesOnly) {
+        const retained = fresh.messages.slice(0, checkpoint.messageCount);
+        // countMessages 对损坏尾行可能比 messages.length 多 1；这是 truncate 的安全
+        // 语义，不能仅因 checkpoint.messageCount 大于有效消息数就拒绝旧快照。
+        const currentCount = await sessions.countMessages(session.id);
+        if (checkpoint.messageCount > currentCount
+          || (checkpoint.activeLeafId !== undefined && !retained.some((message) => message.id === checkpoint.activeLeafId))) {
+          return reply.code(409).send(historyConflict);
+        }
+      }
+      // 锁内再检查：normal run 可能在 guard 之后、快照锁之前起跑；restoring 标记
+      // 会阻止它走到 agent.run，但已通过的请求仍需在这里拒绝。
+      if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running" });
+      if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
+      if (hasRunningBackgroundTask(session.id)) return reply.code(409).send({ error: "A background task is still using this session" });
+      if (snapshotNeedsTerminalCheck(backend.name, "restore") && terminalOpen(session.id)) return reply.code(409).send(terminalConflict("restore"));
+      if (workspaceWritePending(session.id)) return reply.code(409).send({ error: "A file save is in progress; wait for it to finish before restoring a checkpoint" });
+      // 回退会整体重建（btrfs/zfs/overlayfs/镜像盘）或清理（git-shadow）工作区：
+      // 所有后端的持久 shell 都先回收，避免 umount EBUSY 或 cwd 留在旧树。
+      try {
+        await agent.disposePersistentShells?.(session.id);
+      } catch (error) {
+        request.log.warn({ err: error, sessionId: session.id }, "persistent shell disposal failed before checkpoint restore");
+        return reply.code(409).send(ptyConflict);
+      }
+      // close 失败时 PTY 仍可能占着 cwd；不要带着旧 shell 去做整卷重建。
+      if (ptyOpen(session.id)) return reply.code(409).send(ptyConflict);
+      // 从调用后端开始就不能再信任旧 core 配置：即使 restore 半途失败，下一次
+      // 用到会话时也必须重新配置 cwd/sandbox。
+      restoreStarted = true;
       await backend.restore(checkpoint.id);
-      if (!request.body?.filesOnly) { await sessions.truncateMessages(session.id, checkpoint.messageCount); await new ContextManager(sessions.contextRoot(session.id)).replaceLedger(checkpoint.ledger); }
-      // 回退可能整体重建了工作区（btrfs 换子卷 / zfs 清空重写）：持久 shell 的 cwd 已失效，
-      // 回收避免后续命令落进幽灵目录；core 会话配置待下次用到时重建
-      await agent.disposePersistentShells?.(session.id).catch(() => undefined);
-      configuredSessions.delete(session.id);
+      if (!request.body?.filesOnly) {
+        await sessions.truncateMessages(session.id, checkpoint.messageCount, checkpoint.activeLeafId);
+        await new ContextManager(sessions.contextRoot(session.id)).replaceLedger(checkpoint.ledger);
+      }
       events.publish({ source: "session", type: "checkpoint.restored", sessionId: session.id, payload: { id: checkpoint.id, filesOnly: request.body?.filesOnly === true } }); return checkpoint;
     } finally {
+      // 后端可能已经换过工作区，即使消息/账本写回失败也不能继续复用旧 core 配置。
+      if (restoreStarted) configuredSessions.delete(session.id);
+      releaseWorkspace?.();
       restoringSessions.delete(session.id);
-      releaseWorkspace();
     }
   });
   app.delete<{ Params: { id: string; checkpointId: string } }>("/api/sessions/:id/checkpoints/:checkpointId", async (request, reply) => {
@@ -253,10 +357,18 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
     }
     if (managedSyncingSessions.has(request.params.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
     if (managedCheckpointingSessions.has(request.params.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
+    if (restoringSessions.has(request.params.id) || isSnapshotSessionLocked(request.params.id)) return reply.code(409).send({ error: "A checkpoint operation is in progress" });
+    if (isSessionMutationActive(request.params.id)) return reply.code(409).send({ error: "A session operation is in progress" });
+    if (workspaceWritePending(request.params.id)) return reply.code(409).send({ error: "A file save is in progress; wait for it to finish before deleting the session" });
     const detail = await sessions.get(request.params.id);
     if (!detail) return reply.code(404).send({ error: "Session not found" });
+    const releaseMutation = beginSessionMutation(request.params.id);
+    if (!releaseMutation) return reply.code(409).send({ error: "A session operation is in progress" });
     const releaseWorkspace = acquireManagedWorkspaceExclusive(detail, "teardown");
-    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is in progress" });
+    if (!releaseWorkspace) {
+      releaseMutation();
+      return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is in progress" });
+    }
     try {
       // 停止该会话的后台任务
       await dependencies.backgroundTasks?.stopForSession(request.params.id).catch(() => undefined);
@@ -295,6 +407,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
       events.publish({ source: "session", type: "session.deleted", sessionId: request.params.id, payload: {} });
       return reply.code(204).send();
     } finally {
+      releaseMutation();
       releaseWorkspace();
     }
   });

@@ -11,6 +11,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import type { ManagedWorkspaceMeta } from "../src/sessions/types.js";
 import { makeControllableCore, makeFakeCore } from "./helpers/fake-core.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
@@ -20,12 +21,17 @@ const thinkingCore = {
 } as unknown as CoreClientLike;
 
 /** 测试 rig 公共部分：临时目录 + 会话 + pricing + 事件收集 + provider 注册。 */
-async function makeStack(prefix: string, provider: Provider, options: { model?: string; permissions?: "yolo"; config?: Record<string, unknown>; cwd?: (root: string) => string } = {}) {
+async function makeStack(prefix: string, provider: Provider, options: { model?: string; permissions?: "yolo"; config?: Record<string, unknown>; cwd?: (root: string) => string; workspace?: (root: string) => ManagedWorkspaceMeta } = {}) {
   const root = await tempRoot(prefix);
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const model = options.model ?? "test-model";
-  const session = await sessions.create({ cwd: options.cwd ? options.cwd(root) : root, provider: provider.name, model });
+  const session = await sessions.create({
+    cwd: options.cwd ? options.cwd(root) : root,
+    provider: provider.name,
+    model,
+    ...(options.workspace ? { workspace: options.workspace(root) } : {}),
+  });
   if (options.permissions) await sessions.updatePermissions(session.id, "yolo", []);
   if (options.config) await sessions.updateConfig(session.id, { provider: provider.name, model, ...options.config });
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
@@ -258,6 +264,24 @@ describe("自动检查点的跳过与降级", () => {
     }
     expect(downgraded).toBe(1);
   }, 30_000);
+
+  it("托管会话终端打开：跳过自动快照并只提示一次，不动 shadow", async () => {
+    const provider: Provider = {
+      name: "test",
+      async *streamChat() { yield { type: "text_delta", text: "ok" }; yield { type: "done", stopReason: "end_turn" }; },
+    };
+    const stack = await makeStack("owc-terminal-snapshot-", provider, {
+      workspace: (root) => ({ mode: "managed", backend: "qcow2", originCwd: root, image: path.join(root, "base.qcow2"), mountPoint: path.join(root, "mnt") }),
+    });
+    const core = makeFakeCore({ activeTerminalSessions: () => new Set([stack.session.id]) });
+    const runner = new AgentRunner(stack.sessions, stack.providers, core, stack.events, stack.pricing);
+    await runner.run(stack.session.id, "first");
+    await runner.run(stack.session.id, "second");
+    const failures = stack.seen.filter((event) => event.type === "checkpoint.failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.payload).toMatchObject({ code: "auto_snapshot_skip_terminal", message: expect.stringContaining("终端") });
+    expect(existsSync(path.join(stack.sessions.contextRoot(stack.session.id), "shadow.git"))).toBe(false);
+  });
 });
 
 describe("工具事件载荷（结果摘要 + input 限长）", () => {

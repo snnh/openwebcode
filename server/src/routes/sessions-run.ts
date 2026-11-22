@@ -14,6 +14,7 @@ import { isSessionUpgrading } from "../extensions/session-format-upgrade.js";
 import { MAX_IMAGE_BASE64_CHARS } from "../media-limits.js";
 import { isLoopbackOrLAN } from "../auth-totp.js";
 import { errorMessage } from "../error-utils.js";
+import { beginSessionMutation, beginTerminalOpen, isSessionMutationActive, isSnapshotSessionLocked } from "../snapshots/session-lock.js";
 import {
   IMAGE_MESSAGE_BODY_LIMIT, PDF_UPLOAD_BODY_LIMIT,
   safePdfUploadName, validatePdfUpload, pdfUploadPath, isCanonicalBase64,
@@ -44,6 +45,12 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
     isShellPending, hasRunningBackgroundTask,
   } = ctx;
 
+  /** 快照 create/restore 与所有会写消息/工作区的入口共用同一 409 门禁。 */
+  const snapshotMutationBusy = (sessionId: string): boolean =>
+    restoringSessions.has(sessionId) || isSnapshotSessionLocked(sessionId);
+  const snapshotMutationError = "A checkpoint operation is in progress（检查点操作进行中，请稍后重试）";
+  const sessionMutationError = "A session operation is in progress（会话操作进行中，请稍后重试）";
+  const mutationConflictMessage = (sessionId: string): string => isSessionMutationActive(sessionId) ? sessionMutationError : snapshotMutationError;
 
   // 上下文压缩（§7.4）：/compact（overview）、/compact tools（toolcalls），以及协议 REST 路由
   const runCompact = async (sessionId: string, mode: "toolcalls" | "overview") => {
@@ -104,12 +111,19 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
     const vaultEnabled = dependencies.vaultService !== undefined && dependencies.extensions?.isEnabled("compact-vault") === true;
     if (!dependencies.compactor && !vaultEnabled) return reply.code(503).send({ error: "Compactor not enabled" });
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    if (snapshotMutationBusy(request.params.id)) return reply.code(409).send({ error: snapshotMutationError });
     if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session is running" });
-    const mode = request.body?.mode === "toolcalls" ? "toolcalls" : "overview";
+    const releaseMutation = beginSessionMutation(request.params.id);
+    if (!releaseMutation) return reply.code(409).send({ error: mutationConflictMessage(request.params.id) });
     try {
-      return await runCompact(request.params.id, mode);
-    } catch (error) {
-      return reply.code(400).send({ error: errorMessage(error) });
+      const mode = request.body?.mode === "toolcalls" ? "toolcalls" : "overview";
+      try {
+        return await runCompact(request.params.id, mode);
+      } catch (error) {
+        return reply.code(400).send({ error: errorMessage(error) });
+      }
+    } finally {
+      releaseMutation();
     }
   });
 
@@ -119,6 +133,7 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
     async (request, reply) => {
       const session = await sessions.get(request.params.id);
       if (!session) return reply.code(404).send({ error: "Session not found" });
+      if (snapshotMutationBusy(session.id)) return reply.code(409).send({ error: snapshotMutationError });
       if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session is running" });
       if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
       if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
@@ -129,6 +144,11 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
       if (!core.writeFileBase64) return reply.code(503).send({ error: "Core binary upload support is unavailable" });
       const releaseWorkspace = acquireManagedWorkspaceUse(session);
       if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+      const releaseMutation = beginSessionMutation(session.id);
+      if (!releaseMutation) {
+        releaseWorkspace();
+        return reply.code(409).send({ error: mutationConflictMessage(session.id) });
+      }
       try {
         // Reuse the same idle-only configuration discipline as file routes.
         // CoreRouter then maps the configured cwd for WSB and translates the
@@ -149,6 +169,7 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
         request.log.error(error, "PDF upload write failed");
         return reply.code(500).send({ error: "Unable to save PDF upload" });
       } finally {
+        releaseMutation();
         releaseWorkspace();
       }
     },
@@ -213,34 +234,52 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
       }
       const clearCommand = request.body.content.match(/^\/clear\s*$/i);
       if (clearCommand) {
+        if (snapshotMutationBusy(request.params.id)) return reply.code(409).send({ error: snapshotMutationError });
         if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "会话运行中，请先等待完成或中断后再清空上下文" });
-        // 边界双空间记录：
-        // - uptoIndex 用活动路径长度（与 agent 视图/compactor 同口径：清空全部活动路径消息，
-        //   分支/retry 的离路径消息不参与计数，clear 后新追加的消息不受越界边界影响）；
-        // - uptoMessageId 为最后一条活动路径消息 id，供 buildView 与前端分隔线在自己持有的
-        //   数组（活动路径或全量 JSONL）里精确定位——仅靠活动路径长度换算全量下标会因
-        //   离路径消息穿插而错位（分隔线提早插入、REST 视图残留尾部消息）。
-        const activePath = activePathMessages(session.messages, session.activeLeafId);
-        const uptoIndex = activePath.length;
-        const uptoMessageId = activePath.at(-1)?.id;
-        const ledger = await new ContextManager(sessions.contextRoot(request.params.id)).markCleared(uptoIndex, uptoMessageId);
-        const at = ledger.cleared!.at;
-        events.publish({ source: "agent", type: "context.cleared", sessionId: request.params.id, payload: { uptoIndex, at, ...(uptoMessageId ? { uptoMessageId } : {}) } });
-        // 任务清单（todo_write 的内存态）与上下文同生命周期：clear 后旧任务对模型与 UI 均已失效，同步清空
-        agent.clearTodos(request.params.id);
-        return reply.code(200).send({ accepted: true, cleared: true, uptoIndex, at, ...(uptoMessageId ? { uptoMessageId } : {}) });
+        const releaseMutation = beginSessionMutation(request.params.id);
+        if (!releaseMutation) return reply.code(409).send({ error: mutationConflictMessage(request.params.id) });
+        try {
+          // 边界双空间记录：
+          // - uptoIndex 用活动路径长度（与 agent 视图/compactor 同口径：清空全部活动路径消息，
+          //   分支/retry 的离路径消息不参与计数，clear 后新追加的消息不受越界边界影响）；
+          // - uptoMessageId 为最后一条活动路径消息 id，供 buildView 与前端分隔线在自己持有的
+          //   数组（活动路径或全量 JSONL）里精确定位——仅靠活动路径长度换算全量下标会因
+          //   离路径消息穿插而错位（分隔线提早插入、REST 视图残留尾部消息）。
+          // 进入写入门禁后重读：等待 shell/checkout 期间活动叶可能已变化，不能拿
+          // guard 前的旧 session 计算清空边界。
+          const fresh = await sessions.get(request.params.id);
+          if (!fresh) return reply.code(404).send({ error: "Session not found" });
+          const activePath = activePathMessages(fresh.messages, fresh.activeLeafId);
+          const uptoIndex = activePath.length;
+          const uptoMessageId = activePath.at(-1)?.id;
+          const ledger = await new ContextManager(sessions.contextRoot(request.params.id)).markCleared(uptoIndex, uptoMessageId);
+          const at = ledger.cleared!.at;
+          events.publish({ source: "agent", type: "context.cleared", sessionId: request.params.id, payload: { uptoIndex, at, ...(uptoMessageId ? { uptoMessageId } : {}) } });
+          // 任务清单（todo_write 的内存态）与上下文同生命周期：clear 后旧任务对模型与 UI 均已失效，同步清空
+          agent.clearTodos(request.params.id);
+          return reply.code(200).send({ accepted: true, cleared: true, uptoIndex, at, ...(uptoMessageId ? { uptoMessageId } : {}) });
+        } finally {
+          releaseMutation();
+        }
       }
       const compactCommand = request.body.content.match(/^\/compact(?:\s+(tools?|toolcalls))?\s*$/i);
       if (compactCommand) {
         // 与 POST /compact 同口径：compact-vault 启用时不依赖 Compactor
         const slashVaultEnabled = dependencies.vaultService !== undefined && dependencies.extensions?.isEnabled("compact-vault") === true;
         if (!dependencies.compactor && !slashVaultEnabled) return reply.code(503).send({ error: "压缩器未启用" });
+        if (snapshotMutationBusy(request.params.id)) return reply.code(409).send({ error: snapshotMutationError });
         if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "会话运行中，请先等待完成或中断后再压缩" });
+        const releaseMutation = beginSessionMutation(request.params.id);
+        if (!releaseMutation) return reply.code(409).send({ error: mutationConflictMessage(request.params.id) });
         try {
-          const result = await runCompact(request.params.id, compactCommand[1] ? "toolcalls" : "overview");
-          return reply.code(200).send({ accepted: true, compacted: result.changed, result });
-        } catch (error) {
-          return reply.code(400).send({ error: errorMessage(error) });
+          try {
+            const result = await runCompact(request.params.id, compactCommand[1] ? "toolcalls" : "overview");
+            return reply.code(200).send({ accepted: true, compacted: result.changed, result });
+          } catch (error) {
+            return reply.code(400).send({ error: errorMessage(error) });
+          }
+        } finally {
+          releaseMutation();
         }
       }
       // /init：展开为探查提示词（用户覆盖 > Agent 预设 > 内置）后继续走正常 agent.run() 路径（写 AGENTS.md 经权限链与快照）
@@ -316,24 +355,34 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
         }
         // 与回退互斥的最终关卡：检查后同步进入 agent.run（其首行即占位 running），
         // 与 restore 路由的 guard 块原子交错——要么这里 409，要么 restore 端看到 running 拒绝
-        if (restoringSessions.has(request.params.id)) {
+        if (snapshotMutationBusy(request.params.id)) {
           workspaceLease.release();
-          return reply.code(409).send({ error: "Session checkpoint restore is in progress" });
+          return reply.code(409).send({ error: snapshotMutationError });
         }
-        void agent.run(request.params.id, request.body.content, {
-          ...(images?.length ? { images } : {}),
-          ...(attachmentBlocks.length ? { attachments: attachmentBlocks } : {}),
-          managedWorkspace: {
-            automaticSnapshotAllowed: workspaceLease.automaticSnapshotAllowed,
-            ...(workspaceLease.downgradeAfterAutomaticSnapshot
-              ? { downgradeAfterAutomaticSnapshot: workspaceLease.downgradeAfterAutomaticSnapshot }
-              : {}),
-          },
-        }).catch((error: unknown) => {
-          // The browser already received 202, so keep the detailed failure in
-          // the server log as well as AgentRunner's agent.error event.
-          request.log.error({ err: error, sessionId: request.params.id }, "Agent run failed after accepting message");
-        }).finally(workspaceLease.release);
+        const releaseMutation = beginSessionMutation(request.params.id);
+        if (!releaseMutation) {
+          workspaceLease.release();
+          return reply.code(409).send({ error: mutationConflictMessage(request.params.id) });
+        }
+        try {
+          void agent.run(request.params.id, request.body.content, {
+            ...(images?.length ? { images } : {}),
+            ...(attachmentBlocks.length ? { attachments: attachmentBlocks } : {}),
+            managedWorkspace: {
+              automaticSnapshotAllowed: workspaceLease.automaticSnapshotAllowed,
+              ...(workspaceLease.downgradeAfterAutomaticSnapshot
+                ? { downgradeAfterAutomaticSnapshot: workspaceLease.downgradeAfterAutomaticSnapshot }
+                : {}),
+            },
+          }).catch((error: unknown) => {
+            // The browser already received 202, so keep the detailed failure in
+            // the server log as well as AgentRunner's agent.error event.
+            request.log.error({ err: error, sessionId: request.params.id }, "Agent run failed after accepting message");
+          }).finally(workspaceLease.release);
+        } finally {
+          // agent.run 的第一段同步代码已把 running 置位；释放后快照路由会看到运行中。
+          releaseMutation();
+        }
         return reply.code(202).send({ accepted: true });
       } catch (error) {
         workspaceLease.release();
@@ -389,13 +438,28 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
       if (!session) return reply.code(404).send({ error: "Session not found" });
       const cmd = request.body?.cmd;
       if (typeof cmd !== "string" || cmd.trim() === "") return reply.code(400).send({ error: "cmd must be a non-empty string" });
+      if (snapshotMutationBusy(session.id)) return reply.code(409).send({ error: snapshotMutationError });
       if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session agent is running; wait for it to finish before running a shell command" });
       if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
       if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
       if (isShellPending(request.params.id)) return reply.code(409).send({ error: "A shell command is already pending; respond to its permission request first" });
       const releaseWorkspace = acquireManagedWorkspaceUse(session);
       if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
-      void agent.runShell(request.params.id, cmd).catch(() => undefined).finally(releaseWorkspace);
+      const releaseMutation = beginSessionMutation(session.id);
+      if (!releaseMutation) {
+        releaseWorkspace();
+        return reply.code(409).send({ error: mutationConflictMessage(session.id) });
+      }
+      try {
+        void agent.runShell(request.params.id, cmd).catch(() => undefined).finally(() => {
+          releaseMutation();
+          releaseWorkspace();
+        });
+      } catch (error) {
+        releaseMutation();
+        releaseWorkspace();
+        throw error;
+      }
       return reply.code(202).send({ accepted: true });
     },
   );
@@ -411,12 +475,18 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
       const content = request.body?.content;
       const expectedRevision = request.body?.expectedRevision;
       if (typeof path !== "string" || path.trim() === "" || typeof content !== "string" || typeof expectedRevision !== "string" || !/^[0-9a-f]{64}$/.test(expectedRevision)) return reply.code(400).send({ error: "path, content, and a valid expectedRevision are required" });
+      if (snapshotMutationBusy(session.id)) return reply.code(409).send({ error: snapshotMutationError });
       if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session agent is running; wait for it to finish before saving files" });
       if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
       if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
       if (isShellPending(request.params.id)) return reply.code(409).send({ error: "A shell command is already pending; respond to its permission request first" });
       const releaseWorkspace = acquireManagedWorkspaceUse(session);
       if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+      const releaseMutation = beginSessionMutation(session.id);
+      if (!releaseMutation) {
+        releaseWorkspace();
+        return reply.code(409).send({ error: mutationConflictMessage(session.id) });
+      }
       try {
         await agent.writeWorkspaceFile(request.params.id, path, content, expectedRevision);
         return { ok: true, revision: createHash("sha256").update(content, "utf8").digest("hex") };
@@ -425,6 +495,7 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
         if (error instanceof CoreRpcError && error.code === -32004) return reply.code(409).send({ error: error.message });
         return reply.code(400).send({ error: errorMessage(error) });
       } finally {
+        releaseMutation();
         releaseWorkspace();
       }
     },
@@ -550,8 +621,14 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
       if (ptyId === undefined) return;
       const toClose = ptyId;
       ptyId = undefined;
-      core.removePtyEvents?.(toClose);
-      core.closePty?.({ ptyId: toClose, sessionId }).catch(() => undefined);
+      // 先 close 再摘监听器：CoreRouter 需要 owner 才能把 pty.close 发到正确的 core。
+      // 关闭失败时保留登记，快照门禁仍会把它视为占用终端。
+      void Promise.resolve()
+        .then(() => core.closePty?.({ ptyId: toClose, sessionId }))
+        .then(() => { core.removePtyEvents?.(toClose); })
+        .catch((error: unknown) => {
+          request.log.warn({ err: error, sessionId, ptyId: toClose }, "terminal pty close failed");
+        });
     };
     socket.on("close", closePty);
     const dimension = (value: unknown): number | undefined =>
@@ -572,20 +649,37 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
             if (shell === undefined) { send({ type: "error", message: "shell must be a non-empty string" }); return; }
             const session = await sessionPromise;
             if (!session) { send({ type: "error", message: "Session not found" }); socket.close(1008, "Session not found"); return; }
-            // 人类终端通道：sandbox 强制 false（应用属主身份），cwd 取会话根
-            const opened = await core.openPty!({ session: sessionId, cwd: session.cwd, cols, rows, sandbox: false, shell });
-            ptyId = opened.ptyId;
-            send({ type: "opened" });
-            const emitter = core.ptyEvents!(opened.ptyId);
-            emitter.on("output", (params: { data?: unknown }) => {
-              if (params && typeof params.data === "string") send({ type: "out", data: params.data });
-            });
-            emitter.on("exit", (params: { exitCode?: unknown }) => {
-              const code = params && typeof params.exitCode === "number" ? params.exitCode : undefined;
-              send({ type: "exit", ...(code !== undefined ? { code } : {}) });
-              closePty();
-            });
-            return;
+            // 必须在 await openPty 之前同步登记 pending：否则终端通过锁检查后、
+            // pty 尚未登记时快照会误以为没有终端并开始卸载。
+            const releaseTerminalOpen = beginTerminalOpen(sessionId);
+            if (!releaseTerminalOpen) {
+              send({ type: "error", code: "snapshot_in_progress", message: "A checkpoint operation is in progress（检查点操作进行中，请稍后再打开终端）" });
+              return;
+            }
+            try {
+              if (isSnapshotSessionLocked(sessionId)) {
+                send({ type: "error", code: "snapshot_in_progress", message: "A checkpoint operation is in progress（检查点操作进行中，请稍后再打开终端）" });
+                return;
+              }
+              // 人类终端通道：sandbox 强制 false（应用属主身份），cwd 取会话根
+              const opened = await core.openPty!({ session: sessionId, cwd: session.cwd, cols, rows, sandbox: false, shell });
+              ptyId = opened.ptyId;
+              // socket 可能在 openPty await 期间关闭；close 事件当时还没有 ptyId。
+              if (socket.readyState !== 1) { closePty(); return; }
+              send({ type: "opened" });
+              const emitter = core.ptyEvents!(opened.ptyId);
+              emitter.on("output", (params: { data?: unknown }) => {
+                if (params && typeof params.data === "string") send({ type: "out", data: params.data });
+              });
+              emitter.on("exit", (params: { exitCode?: unknown }) => {
+                const code = params && typeof params.exitCode === "number" ? params.exitCode : undefined;
+                send({ type: "exit", ...(code !== undefined ? { code } : {}) });
+                closePty();
+              });
+              return;
+            } finally {
+              releaseTerminalOpen();
+            }
           }
           if (frame.type === "in") {
             if (ptyId === undefined) { send({ type: "error", message: "Terminal is not open" }); return; }

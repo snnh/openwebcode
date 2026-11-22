@@ -4,7 +4,7 @@ import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises
 import path from "node:path";
 import type { CoreClientLike } from "../core-client.js";
 import { collectJobJsonLines } from "../rpc/job-collect.js";
-import { isCheckpoint, truncateLines, type Checkpoint, type SnapshotBackend } from "./backend.js";
+import { normalizeCheckpoint, truncateLines, writeCheckpoints, type Checkpoint, type SnapshotBackend } from "./backend.js";
 
 export interface GitShadowOptions {
   /** 会话 id：index.scan 的策略快照来源（denyPaths 生效的前提）。 */
@@ -62,7 +62,7 @@ export class GitShadowSnapshots implements SnapshotBackend {
     return { backend: "git-shadow", costHint: "linear", requiresAdmin: false };
   }
 
-  async create(label: string, messageCount: number, ledger?: unknown): Promise<Checkpoint> {
+  async create(label: string, messageCount: number, ledger?: unknown, activeLeafId?: string): Promise<Checkpoint> {
     await this.initialize();
     const files = await this.scanWorkspace();
     await this.git(["add", "-u"]);
@@ -80,6 +80,7 @@ export class GitShadowSnapshots implements SnapshotBackend {
       label,
       createdAt: new Date().toISOString(),
       messageCount,
+      ...(activeLeafId === undefined ? {} : { activeLeafId }),
       ...(ledger === undefined ? {} : { ledger }),
     };
     const checkpoints = await this.list();
@@ -91,7 +92,10 @@ export class GitShadowSnapshots implements SnapshotBackend {
   async list(): Promise<Checkpoint[]> {
     try {
       const value = JSON.parse(await readFile(this.metadataPath, "utf8")) as unknown;
-      return Array.isArray(value) ? value.filter(isCheckpoint) : [];
+      return Array.isArray(value) ? value.flatMap((item) => {
+        const checkpoint = normalizeCheckpoint(item);
+        return checkpoint ? [checkpoint] : [];
+      }) : [];
     } catch (error) {
       if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
@@ -268,7 +272,7 @@ export class GitShadowSnapshots implements SnapshotBackend {
   }
 
   private async save(checkpoints: Checkpoint[]): Promise<void> {
-    await writeFile(this.metadataPath, `${JSON.stringify(checkpoints, null, 2)}\n`, "utf8");
+    await writeCheckpoints(this.metadataPath, checkpoints);
   }
 }
 

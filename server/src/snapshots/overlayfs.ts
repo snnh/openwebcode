@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -18,6 +19,7 @@ import {
   type SnapshotBackend,
   type SnapshotCapabilityInfo,
 } from "./backend.js";
+import { errorMessage } from "../error-utils.js";
 import { diffTrees, type SnapshotDiffExcludes } from "./tree-diff.js";
 
 /** overlay.restore 在 core 侧存在 running job 时的稳定冲突错误码（协议约定）。 */
@@ -147,6 +149,14 @@ async function collectUpperEntries(root: string): Promise<Map<string, UpperEntry
   return entries;
 }
 
+/** core overlay.restore 的稳定冲突码转为用户可读错误；其余错误原样保留。 */
+function overlayRestoreError(error: unknown): Error {
+  if (error instanceof CoreRpcError && error.code === OVERLAY_RESTORE_BUSY_CODE) {
+    return new Error("存在运行中的任务，请先停止再回滚");
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 /**
  * overlayfs 快照后端（Linux）：会话在 merged 视图工作，源目录作为只读 lower。
  * 检查点 = core overlay.checkpoint 把 upper 层 reflink 复制到 checkpoints/<id>；
@@ -181,7 +191,7 @@ export class OverlayfsBackend implements SnapshotBackend {
     };
   }
 
-  async create(label: string, messageCount: number, ledger?: unknown): Promise<Checkpoint> {
+  async create(label: string, messageCount: number, ledger?: unknown, activeLeafId?: string): Promise<Checkpoint> {
     await this.initialize();
     const checkpoint = requireOverlayMethod(this.core, "overlayCheckpoint");
     const id = newSnapshotId();
@@ -192,6 +202,7 @@ export class OverlayfsBackend implements SnapshotBackend {
       label,
       createdAt: new Date().toISOString(),
       messageCount,
+      ...(activeLeafId === undefined ? {} : { activeLeafId }),
       ...(ledger === undefined ? {} : { ledger }),
     };
     const checkpoints = await readCheckpoints(this.paths.checkpointsFile);
@@ -257,11 +268,21 @@ export class OverlayfsBackend implements SnapshotBackend {
     return truncateLines(lines.join("\n"));
   }
 
+  /**
+   * 回滚 = 先把当前 upper 复制备份，再交给 core 的 overlay.restore 做
+   * 「检查 running-job → unmount → 重建 upper → mount」。
+   *
+   * 备份必须是复制而不是 Node 侧重命名：Node 先 unmount 会绕过 core 的
+   * running-job 检查，且长 RPC 失败时无法判断 core 是否已经重挂。复制后由 core
+   * 按自己的 job/生命周期状态执行；失败时再用同一 backup 走一次 core restore
+   * 回滚（core 会再次检查 job、unmount 并 mount），不会删除可能仍挂载的 upper。
+   */
   async restore(id: string): Promise<void> {
     validateSnapshotId(id);
     const checkpoints = await this.list();
     if (!checkpoints.some((item) => item.id === id)) throw new Error("Checkpoint not found");
     await this.initialize();
+    const checkpoint = requireOverlayMethod(this.core, "overlayCheckpoint");
     const restore = requireOverlayMethod(this.core, "overlayRestore");
     const request: OverlayRestoreRequest = {
       stateRoot: this.paths.stateRoot,
@@ -271,14 +292,37 @@ export class OverlayfsBackend implements SnapshotBackend {
       merged: this.paths.merged,
       sourceUpper: path.join(this.paths.checkpointsDir, id),
     };
+    const backup = `${this.paths.upper}.restore-backup-${randomUUID()}`;
+    try {
+      // 复制当前 upper：不卸载、不重命名；core 的 running-job 检查仍是唯一入口。
+      await checkpoint({ stateRoot: this.paths.stateRoot, upper: this.paths.upper, dest: backup });
+    } catch (error) {
+      await rm(backup, { recursive: true, force: true }).catch(() => undefined);
+      throw overlayRestoreError(error);
+    }
     try {
       await restore(request);
     } catch (error) {
+      // core 在 unmount 前就以 running-job 拒绝：工作区未被改动，备份直接丢掉。
       if (error instanceof CoreRpcError && error.code === OVERLAY_RESTORE_BUSY_CODE) {
-        throw new Error("存在运行中的任务，请先停止再回滚");
+        await rm(backup, { recursive: true, force: true }).catch(() => undefined);
+        throw overlayRestoreError(error);
       }
-      throw error;
+      // 其余错误可能发生在 core 已清空/半挂载之后；用 backup 再走一次 core restore，
+      // 由 core 负责 unmount、重建和 mount。失败时保留 backup 供人工恢复。
+      try {
+        await restore({ ...request, sourceUpper: backup });
+      } catch (recoveryError) {
+        throw new Error(`overlayfs restore failed (${errorMessage(error)}) and recovery also failed: ${errorMessage(recoveryError)}; backup kept at ${backup}`);
+      }
+      await rm(backup, { recursive: true, force: true }).catch((cleanupError: unknown) => {
+        process.stderr.write(`[snapshots] overlayfs recovery succeeded but backup could not be deleted at ${backup}: ${errorMessage(cleanupError)}\n`);
+      });
+      throw overlayRestoreError(error);
     }
+    await rm(backup, { recursive: true, force: true }).catch((error: unknown) => {
+      process.stderr.write(`[snapshots] overlayfs restore succeeded but the previous upper backup could not be deleted at ${backup}: ${errorMessage(error)}\n`);
+    });
   }
 
   async delete(id: string): Promise<void> {

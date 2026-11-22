@@ -366,6 +366,10 @@ export interface CoreClientLike {
   /** per-pty 事件通道（exec.output 的 emitter 先例按 ptyId 细分）：output/exit */
   ptyEvents?(ptyId: number): EventEmitter;
   removePtyEvents?(ptyId: number): void;
+  /** 当前开着 PTY 的会话集合（含 agent 持久 shell 与用户终端；归档等判定用）。 */
+  activePtySessions?(): Set<string>;
+  /** 当前开着用户终端（sandbox=false 的 PTY）的会话集合；快照换层占用检查用。 */
+  activeTerminalSessions?(): Set<string>;
   /** overlay.*（可选）：旧 core 二进制无 features.overlay 时缺省，快照后端应报不可用。 */
   overlayMount?(request: OverlayMountRequest): Promise<OverlayMountResult>;
   overlayCheckpoint?(request: OverlayCheckpointRequest): Promise<OverlayCopyResult>;
@@ -419,9 +423,10 @@ export class CoreClient extends EventEmitter {
   private readonly execRunningItems = new Set<QueuedExec>();
   private readonly ptyEmitters = new Map<number, EventEmitter>();
   private readonly pendingPtyEvents = new Map<number, Array<{ type: "output" | "exit"; params: unknown }>>();
-  /** ptyId → 开出该 pty 的会话 id（pty.open 时登记）。core 要求 pty.input/
-   * resize/close 带 sessionId 并比对归属；未显式传参的调用点由此补全。 */
-  private readonly ptySessions = new Map<number, string>();
+  /** ptyId → 会话 id 与用途（pty.open 时登记）。core 要求 pty.input/
+   * resize/close 带 sessionId 并比对归属；未显式传参的调用点由此补全。
+   * terminal 区分用户终端与 agent 持久 shell。 */
+  private readonly ptySessions = new Map<number, { session: string; terminal: boolean }>();
   private nextId = 1;
   private stopping = false;
   private restartCount = 0;
@@ -682,15 +687,27 @@ export class CoreClient extends EventEmitter {
   normalizePath(request: PathNormalizeRequest): Promise<PathNormalizeResult> { return this.call("path.normalize", request); }
   async openPty(request: PtyOpenRequest): Promise<PtyOpenResult> {
     const result = await this.call<PtyOpenResult>("pty.open", request);
-    this.ptySessions.set(result.ptyId, request.session);
+    this.ptySessions.set(result.ptyId, { session: request.session, terminal: !request.sandbox });
     return result;
   }
   inputPty(request: PtyInputRequest): Promise<{ ok: true }> { return this.call("pty.input", this.withPtySession(request)); }
   resizePty(request: PtyResizeRequest): Promise<{ ok: true }> { return this.call("pty.resize", this.withPtySession(request)); }
   async closePty(request: PtyCloseRequest): Promise<PtyCloseResult> {
     const result = await this.call<PtyCloseResult>("pty.close", this.withPtySession(request));
+    // 关闭成功后才移除事件订阅与归属；失败时保留登记，终端占用门禁仍会生效。
     this.ptySessions.delete(request.ptyId);
+    this.removePtyEvents(request.ptyId);
     return result;
+  }
+
+  /** 当前开着 PTY 的会话集合（含 agent 持久 shell 与用户终端）。 */
+  activePtySessions(): Set<string> {
+    return new Set([...this.ptySessions.values()].map((owner) => owner.session));
+  }
+
+  /** 当前开着用户终端的会话集合；agent 持久 shell（sandbox=true）不计入。 */
+  activeTerminalSessions(): Set<string> {
+    return new Set([...this.ptySessions.values()].filter((owner) => owner.terminal).map((owner) => owner.session));
   }
 
   /** 补全 pty.* 的归属 sessionId：显式值优先（core 负责比对，写错就 -32002），
@@ -698,7 +715,7 @@ export class CoreClient extends EventEmitter {
   private withPtySession<T extends { ptyId: number; sessionId?: string }>(request: T): T {
     if (typeof request.sessionId === "string" && request.sessionId !== "") return request;
     const owner = this.ptySessions.get(request.ptyId);
-    return owner === undefined ? request : { ...request, sessionId: owner };
+    return owner === undefined ? request : { ...request, sessionId: owner.session };
   }
   overlayMount(request: OverlayMountRequest): Promise<OverlayMountResult> { return this.call("overlay.mount", request); }
   overlayCheckpoint(request: OverlayCheckpointRequest): Promise<OverlayCopyResult> { return this.call("overlay.checkpoint", request); }
@@ -729,9 +746,10 @@ export class CoreClient extends EventEmitter {
   }
 
   removePtyEvents(ptyId: number): void {
+    // 只摘事件侧；会话归属由 closePty 成功路径显式删除。close 失败后的兜底清理
+    // 不能把归属一起抹掉，否则 activeTerminalSessions/activePtySessions 失去占用事实。
     this.ptyEmitters.delete(ptyId);
     this.pendingPtyEvents.delete(ptyId);
-    this.ptySessions.delete(ptyId);
   }
 
   private async spawnAndHandshake(generation: number): Promise<CoreInfo> {
@@ -851,6 +869,7 @@ export class CoreClient extends EventEmitter {
     for (const emitter of this.ptyEmitters.values()) emitter.emit("exit", {});
     this.ptyEmitters.clear();
     this.pendingPtyEvents.clear();
+    this.ptySessions.clear();
     this.emitEvent("core.exit", details ?? { message: error.message });
     // 崩溃恢复：指数退避封顶 30s 后持续慢速重试，不再永久放弃（旧逻辑 3 次即死，
     // 需要整 server 重启才能恢复）；restartCount 在握手成功时清零（spawnAndHandshake）。

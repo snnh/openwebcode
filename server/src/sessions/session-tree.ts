@@ -17,6 +17,18 @@ export function isInjectionMessageId(id: string): boolean {
  * 保持旧的线性行为；父链成环时防御性截断。
  * agent 上下文组装、timeline 的 onActivePath 与 fork 共用这一份树遍历。
  */
+/**
+ * 检查点/快照使用的活动叶子：只有确实存在于当前消息表里的 id 才可写入元数据，
+ * 否则回退物理末条。悬挂 id 写入检查点会在恢复预检时被拒，旧会话也可能把后续
+ * 消息挂到不存在的父节点；这里在产生检查点时统一收敛。
+ */
+export function resolveActiveLeafId(messages: readonly ChatMessage[], activeLeafId?: string | null): string | undefined {
+  if (typeof activeLeafId === "string" && activeLeafId.length > 0 && messages.some((message) => message.id === activeLeafId)) {
+    return activeLeafId;
+  }
+  return messages.at(-1)?.id;
+}
+
 export function activePathMessages(messages: ChatMessage[], leafId: string | undefined): ChatMessage[] {
   if (!leafId) return messages;
   // 线性快路径：现实会话绝大多数是无分叉线性链，messages 本身就是根→leaf 的

@@ -612,29 +612,47 @@ export class SessionStore {
   /**
    * 检查点回退路径：把 messages.jsonl 截断到前 count 条消息（保留磁盘上已有的完整记录）。
    *
-   * 三处纪律：
+   * 写入纪律：
    * - 走 appendMessage / transformMessages 同一 per-session 串行链：截断的「读整表 →
    *   原子写回」与并发追加必须互斥，否则并发追加的消息会整条丢失（写回覆盖）；
    * - 原子写（writeUtf8Atomically）：与全仓库其他写路径一致，崩溃不留半文件；
-   * - 截断后把 activeLeafId 重置为截断后最后一条消息的 id（空则删除）：旧叶子指向已删
-   *   消息时，后续 appendMessage 会以悬空 parentId 落盘，activePathMessages 回溯到断点
-   *   即止，模型上下文只剩新消息（历史还在盘上却不可达）。
+   * - 先写 meta 再写 messages，并在 messages 失败时回滚 meta：避免两次原子写之间崩溃
+   *   留下「消息已截断、activeLeafId 仍指向被删消息」的悬空状态。截断后把 activeLeafId
+   *   重置为保留前缀的活动叶子（空则删除）：旧叶子指向已删消息时，后续 appendMessage
+   *   会以悬空 parentId 落盘，activePathMessages 回溯到断点即止，模型上下文只剩新消息。
+   * - 检查点回滚可传入创建时的 activeLeafId：分叉会话不能只看物理末条，否则会把后续
+   *   对话接到另一条分支。传入的叶子必须落在保留前缀内，否则在写盘前失败。
    */
-  async truncateMessages(id: string, count: number): Promise<void> {
+  async truncateMessages(id: string, count: number, activeLeafId?: string): Promise<void> {
     if (!Number.isSafeInteger(count) || count < 0) throw new Error("Message count must be a non-negative integer");
     return serializeByKey(this.appendChains, id, async () => {
       const detail = await this.get(id);
       if (!detail) throw new Error("Session not found");
       const messages = detail.messages.slice(0, count);
-      await writeUtf8Atomically(this.messagesPath(id), serializeMessagesJsonl(messages), { mode: 0o600 });
-      this.dropMessagesCache(id);
-      invalidateMessageIndex(this.messagesPath(id));
-      const meta = await this.readMeta(id);
-      const leafId = messages.at(-1)?.id;
+      if (activeLeafId !== undefined && !messages.some((message) => message.id === activeLeafId)) {
+        throw new Error("Checkpoint active leaf is not present in the retained messages");
+      }
+      // 先落 meta 再写 messages：旧顺序在两次原子写之间崩溃会留下「消息已截断、
+      // activeLeafId 仍指向被删消息」的悬空状态，下一条 append 会挂到不存在的父节点。
+      // 新顺序崩溃时最多是「叶子已前移、消息尚未截断」，消息表仍然完整且活动路径可达；
+      // 若 messages 写失败则把 meta 写回，保持本次操作原子（回滚失败只记录，不掩盖原错）。
+      const previousMeta = await this.readMeta(id);
+      const meta = structuredClone(previousMeta);
+      const leafId = activeLeafId ?? messages.at(-1)?.id;
       if (leafId) meta.activeLeafId = leafId;
       else delete meta.activeLeafId;
       meta.updatedAt = monotonicTimestamp();
       await this.writeMeta(meta);
+      try {
+        await writeUtf8Atomically(this.messagesPath(id), serializeMessagesJsonl(messages), { mode: 0o600 });
+      } catch (error) {
+        await this.writeMeta(previousMeta).catch((rollbackError: unknown) => {
+          process.stderr.write(`[sessions] truncateMessages meta rollback failed for ${id}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}\n`);
+        });
+        throw error;
+      }
+      this.dropMessagesCache(id);
+      invalidateMessageIndex(this.messagesPath(id));
     });
   }
 
@@ -1029,11 +1047,15 @@ export class SessionStore {
    * 消息整表缓存的 stat 指纹保持有效）。调用方负责校验 messageId 在树中。
    */
   async setActiveLeaf(id: string, messageId: string): Promise<SessionMeta> {
-    const meta = await this.readMeta(id);
-    meta.activeLeafId = messageId;
-    meta.updatedAt = monotonicTimestamp();
-    await this.writeMeta(meta);
-    return meta;
+    // 与 appendMessage/truncateMessages 共用串行链：checkout/retry 与并发追加
+    // 同时改 activeLeafId 时，最后一次写回不能覆盖另一条已落盘的消息。
+    return serializeByKey(this.appendChains, id, async () => {
+      const meta = await this.readMeta(id);
+      meta.activeLeafId = messageId;
+      meta.updatedAt = monotonicTimestamp();
+      await this.writeMeta(meta);
+      return meta;
+    });
   }
 
   /**

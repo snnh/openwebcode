@@ -20,6 +20,7 @@ import type { SessionStore } from "../sessions/session-store.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { CoreClientLike } from "../core-client.js";
 import { validateSandboxRuntime } from "../sandbox/preflight.js";
+import { beginSessionMutation, isSessionMutationActive, isSnapshotSessionLocked } from "../snapshots/session-lock.js";
 import type { SettingsService } from "../settings-service.js";
 import {
   EFFORT_LEVELS, NO_PROVIDER_MESSAGE,
@@ -88,7 +89,7 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
   const { core, sessions, agent, events, providers } = dependencies;
   const {
     platform,
-    managedSyncingSessions, managedSyncAbortControllers, managedCheckpointingSessions,
+    managedSyncingSessions, managedSyncAbortControllers, managedCheckpointingSessions, restoringSessions,
     isShellPending, hasRunningBackgroundTask,
     validateSandboxMode, validateSandboxNetwork, validateBindLinks, validateToolNameList, normalizeFallbackModels,
     profileOf,
@@ -447,9 +448,16 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     if (typeof messageId !== "string" || !messageId) return reply.code(400).send({ error: "messageId must be a non-empty string" });
     if (!session.messages.some((message) => message.id === messageId)) return reply.code(400).send({ error: "Message not found in this session" });
     if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running; wait for it to become idle before checkout" });
-    const meta = await sessions.setActiveLeaf(session.id, messageId);
-    events.publish({ source: "session", type: "session.updated", sessionId: meta.id, payload: meta });
-    return { ok: true, activeLeafId: meta.activeLeafId };
+    if (restoringSessions.has(session.id) || isSnapshotSessionLocked(session.id)) return reply.code(409).send({ error: "A checkpoint operation is in progress" });
+    const releaseMutation = beginSessionMutation(session.id);
+    if (!releaseMutation) return reply.code(409).send({ error: isSessionMutationActive(session.id) ? "A session operation is in progress" : "A checkpoint operation is in progress" });
+    try {
+      const meta = await sessions.setActiveLeaf(session.id, messageId);
+      events.publish({ source: "session", type: "session.updated", sessionId: meta.id, payload: meta });
+      return { ok: true, activeLeafId: meta.activeLeafId };
+    } finally {
+      releaseMutation();
+    }
   });
 
   /**
@@ -488,6 +496,7 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     // 会话格式升级中（session-format-upgrade 扩展触发）：锁定期内重发同样拒绝
     if (isSessionUpgrading(session.id)) return reply.code(409).send({ error: "Session format upgrade is in progress" });
     if (isShellPending(session.id)) return reply.code(409).send({ error: "shell 命令挂起中，请先回应权限请求或等待其完成" });
+    if (restoringSessions.has(session.id) || isSnapshotSessionLocked(session.id)) return reply.code(409).send({ error: "A checkpoint operation is in progress" });
     // retry 仅携带文本：原消息的图片/附件块不随 retry 重放（editedContent 同理为纯文本）
     const text = editedContent?.trim()
       ? editedContent
@@ -505,21 +514,31 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
           budget,
         });
       }
-      // checkout 到目标父节点：agent.run 追加的新用户消息以其为父（编辑内容时即为改写后的新消息）
-      const meta = await sessions.setActiveLeaf(session.id, target.parentId);
-      events.publish({ source: "session", type: "session.updated", sessionId: meta.id, payload: meta });
-      void agent.run(session.id, text, {
-        managedWorkspace: {
-          automaticSnapshotAllowed: workspaceLease.automaticSnapshotAllowed,
-          ...(workspaceLease.downgradeAfterAutomaticSnapshot
-            ? { downgradeAfterAutomaticSnapshot: workspaceLease.downgradeAfterAutomaticSnapshot }
-            : {}),
-        },
-      }).catch((error: unknown) => {
-        // 浏览器已收到 202，详细失败留在 server 日志与 AgentRunner 的 agent.error 事件中。
-        request.log.error({ err: error, sessionId: session.id }, "Agent run failed after accepting retry");
-      }).finally(workspaceLease.release);
-      return reply.code(202).send({ ok: true });
+      const releaseMutation = beginSessionMutation(session.id);
+      if (!releaseMutation) {
+        workspaceLease.release();
+        return reply.code(409).send({ error: isSessionMutationActive(session.id) ? "A session operation is in progress" : "A checkpoint operation is in progress" });
+      }
+      try {
+        // checkout 到目标父节点：agent.run 追加的新用户消息以其为父（编辑内容时即为改写后的新消息）
+        const meta = await sessions.setActiveLeaf(session.id, target.parentId);
+        events.publish({ source: "session", type: "session.updated", sessionId: meta.id, payload: meta });
+        void agent.run(session.id, text, {
+          managedWorkspace: {
+            automaticSnapshotAllowed: workspaceLease.automaticSnapshotAllowed,
+            ...(workspaceLease.downgradeAfterAutomaticSnapshot
+              ? { downgradeAfterAutomaticSnapshot: workspaceLease.downgradeAfterAutomaticSnapshot }
+              : {}),
+          },
+        }).catch((error: unknown) => {
+          // 浏览器已收到 202，详细失败留在 server 日志与 AgentRunner 的 agent.error 事件中。
+          request.log.error({ err: error, sessionId: session.id }, "Agent run failed after accepting retry");
+        }).finally(workspaceLease.release);
+        return reply.code(202).send({ ok: true });
+      } finally {
+        // agent.run 同步段已把 running 置位；释放 mutation 后快照会看到会话运行中。
+        releaseMutation();
+      }
     } catch (error) {
       workspaceLease.release();
       throw error;

@@ -42,11 +42,11 @@ export class BtrfsBackend implements SnapshotBackend {
     return { backend: "btrfs", costHint: "instant", requiresAdmin: false, detail: "子卷只读快照" };
   }
 
-  async create(label: string, messageCount: number, ledger?: unknown): Promise<Checkpoint> {
+  async create(label: string, messageCount: number, ledger?: unknown, activeLeafId?: string): Promise<Checkpoint> {
     await this.initialize();
     const id = newSnapshotId();
     await this.must("snapshot", ["subvolume", "snapshot", "-r", this.workspace, path.join(this.snapRoot, id)]);
-    const checkpoint: Checkpoint = { id, label, createdAt: new Date().toISOString(), messageCount, ...(ledger === undefined ? {} : { ledger }) };
+    const checkpoint: Checkpoint = { id, label, createdAt: new Date().toISOString(), messageCount, ...(activeLeafId === undefined ? {} : { activeLeafId }), ...(ledger === undefined ? {} : { ledger }) };
     const checkpoints = await this.list();
     checkpoints.push(checkpoint);
     await writeCheckpoints(this.metadataPath, checkpoints);

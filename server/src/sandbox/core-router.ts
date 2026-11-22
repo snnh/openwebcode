@@ -278,9 +278,10 @@ export class CoreRouter extends EventEmitter {
   private readonly hostNormalizeConfigs = new Set<string>();
   /** ptyId → 开出该 pty 的 core 客户端（各 core 独立编号，openPty 时登记）。 */
   private readonly ptyOwners = new Map<number, CoreClientLike>();
-  /** ptyId → 开出该 pty 的会话 id（pty.open 时登记）。core 要求 pty.input/
-   * resize/close 带 sessionId 并与 pty 归属比对；未显式传参的调用点由此补全。 */
-  private readonly ptySessions = new Map<number, string>();
+  /** ptyId → 开出该 pty 的会话 id 与用途（pty.open 时登记）。core 要求 pty.input/
+   * resize/close 带 sessionId 并与 pty 归属比对；未显式传参的调用点由此补全。
+   * terminal 区分用户终端与 agent 持久 shell：快照换层只阻断前者。 */
+  private readonly ptySessions = new Map<number, { session: string; terminal: boolean }>();
   /** sessionId → 最近一次 configureSession 成功后 core 上报的执行级别（REST 透出用）。 */
   private readonly sandboxStatus = new Map<string, { capability: string; reason?: string; at: number }>();
   /** sessionId → 最近一次成功下发的有效策略与来源/丢弃项（REST/UI 透出用）。 */
@@ -327,7 +328,10 @@ export class CoreRouter extends EventEmitter {
       if (pending.client === client) this.configuring.delete(id);
     }
     for (const [ptyId, owner] of this.ptyOwners) {
-      if (owner === client) this.ptyOwners.delete(ptyId);
+      if (owner !== client) continue;
+      this.ptyOwners.delete(ptyId);
+      // core 重启/释放后旧 pty 已死：归属表一并清掉，避免 activeTerminalSessions 永久占位。
+      this.ptySessions.delete(ptyId);
     }
   }
 
@@ -496,6 +500,7 @@ export class CoreRouter extends EventEmitter {
     this.configuredClients.clear();
     this.configuring.clear();
     this.ptyOwners.clear();
+    this.ptySessions.clear();
     this.sandboxStatus.clear();
     this.effectivePolicies.clear();
   }
@@ -540,6 +545,12 @@ export class CoreRouter extends EventEmitter {
 
   /** 释放会话持有的沙盒 core（WSB 虚拟机蒸发）与 filtered sidecar；非 wsb/非 filtered 会话为 no-op。 */
   async release(sessionId: string): Promise<void> {
+    // 释放会话 core/VM 后旧 pty 已不可用：按归属清掉，避免终端占用检查留下幽灵。
+    for (const [ptyId, owner] of this.ptySessions) {
+      if (owner.session !== sessionId) continue;
+      this.ptySessions.delete(ptyId);
+      this.ptyOwners.delete(ptyId);
+    }
     this.configuredClients.delete(sessionId);
     this.configuring.delete(sessionId);
     this.sandboxStatus.delete(sessionId);
@@ -562,9 +573,14 @@ export class CoreRouter extends EventEmitter {
   }
 
   /** 最近一次 configureSession 记录的会话执行级别；无记录（未配置/已释放）返回 undefined。 */
-  /** 当前仍开着 PTY（终端标签）的会话 id 集合：归档等「有活动就拒绝」的判定用。 */
+  /** 当前仍开着 PTY（含 agent 持久 shell）的会话 id 集合：归档等「有活动就拒绝」的判定用。 */
   activePtySessions(): Set<string> {
-    return new Set(this.ptySessions.values());
+    return new Set([...this.ptySessions.values()].map((owner) => owner.session));
+  }
+
+  /** 当前开着用户终端（非 agent 持久 shell）的会话 id 集合：快照换层占用检查用。 */
+  activeTerminalSessions(): Set<string> {
+    return new Set([...this.ptySessions.values()].filter((owner) => owner.terminal).map((owner) => owner.session));
   }
 
   sandboxStatusFor(sessionId: string): { capability: string; reason?: string; at: number } | undefined {
@@ -799,7 +815,7 @@ export class CoreRouter extends EventEmitter {
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
     const result = await client.openPty({ ...request, cwd });
     this.ptyOwners.set(result.ptyId, client);
-    this.ptySessions.set(result.ptyId, request.session);
+    this.ptySessions.set(result.ptyId, { session: request.session, terminal: !request.sandbox });
     return result;
   }
 
@@ -816,10 +832,15 @@ export class CoreRouter extends EventEmitter {
   }
 
   async closePty(request: PtyCloseRequest): Promise<{ ok: true; exitCode?: number }> {
-    const client = this.ptyOwners.get(request.ptyId) ?? this.shared;
+    // 不能回退到 shared：ptyId 只在各自 core 内有意义，回退可能关掉共享 core 上
+    // 另一个同号终端。owner 只能由 openPty 登记，缺失说明状态已损坏，应显式失败。
+    const client = this.ptyOwners.get(request.ptyId);
+    if (!client) throw new Error(`PTY owner is not registered: ${request.ptyId}`);
     if (!client.closePty) throw new Error("Core pty support is unavailable");
     const withSession = this.withPtySession(request);
     const result = await client.closePty(withSession);
+    // 只有真正关闭成功后才摘除监听器与归属；关闭失败时保留登记，快照门禁仍会看到终端。
+    client.removePtyEvents?.(request.ptyId);
     this.ptyOwners.delete(request.ptyId);
     this.ptySessions.delete(request.ptyId);
     return result;
@@ -830,19 +851,20 @@ export class CoreRouter extends EventEmitter {
   private withPtySession<T extends { ptyId: number; sessionId?: string }>(request: T): T {
     if (typeof request.sessionId === "string" && request.sessionId !== "") return request;
     const owner = this.ptySessions.get(request.ptyId);
-    return owner === undefined ? request : { ...request, sessionId: owner };
+    return owner === undefined ? request : { ...request, sessionId: owner.session };
   }
 
   ptyEvents(ptyId: number): EventEmitter {
-    const client = this.ptyOwners.get(ptyId) ?? this.shared;
-    if (!client.ptyEvents) throw new Error("Core pty support is unavailable");
+    const client = this.ptyOwners.get(ptyId);
+    if (!client?.ptyEvents) throw new Error("Core pty support is unavailable");
     return client.ptyEvents(ptyId);
   }
 
   removePtyEvents(ptyId: number): void {
-    this.ptyOwners.delete(ptyId);
-    this.ptySessions.delete(ptyId);
-    this.shared.removePtyEvents?.(ptyId);
+    // 只摘监听器，不摘 owner/会话：调用方通常紧接着 closePty，先删 owner 会让
+    // close 回退到 shared（错误 core）。关闭成功后由 closePty 统一删除登记。
+    // owner 已关闭时 no-op；绝不能回退到 shared，否则会误删同号 PTY 的监听器。
+    this.ptyOwners.get(ptyId)?.removePtyEvents?.(ptyId);
   }
 }
 

@@ -41,11 +41,11 @@ export class ZfsBackend implements SnapshotBackend {
     return { backend: "zfs", costHint: "instant", requiresAdmin: false, detail: "数据集快照（restore 为复制回写）" };
   }
 
-  async create(label: string, messageCount: number, ledger?: unknown): Promise<Checkpoint> {
+  async create(label: string, messageCount: number, ledger?: unknown, activeLeafId?: string): Promise<Checkpoint> {
     await this.initialize();
     const id = newSnapshotId();
     await this.must("snapshot", ["snapshot", `${this.dataset}@${id}`]);
-    const checkpoint: Checkpoint = { id, label, createdAt: new Date().toISOString(), messageCount, ...(ledger === undefined ? {} : { ledger }) };
+    const checkpoint: Checkpoint = { id, label, createdAt: new Date().toISOString(), messageCount, ...(activeLeafId === undefined ? {} : { activeLeafId }), ...(ledger === undefined ? {} : { ledger }) };
     const checkpoints = await this.list();
     checkpoints.push(checkpoint);
     await writeCheckpoints(this.metadataPath, checkpoints);

@@ -66,6 +66,7 @@ import {
 } from "./tool-schemas.js";
 import type { CronScheduler } from "../cron-scheduler.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
+import { acquireSnapshotSessionLock, isTerminalOpening } from "../snapshots/session-lock.js";
 import { ToolAliasResolver, normalizeBuiltinToolInput } from "./tool-alias.js";
 
 import { digestSwarmBoard, SWARM_BOARD_EXCERPT_LIMIT, swarmBoardPath, writeSwarmRoster, type SwarmRosterMember } from "./swarm-board.js";
@@ -73,7 +74,7 @@ import type { ChatMessage, MessageContent, NodeEnv, PythonEnv, SessionMeta, WebS
 import { replaceThinkingBlockById } from "../providers/thinking-merge.js";
 import { effectivePythonEnv, UvPythonEnvironments, uvVenvDir, wrapCommandWithNote, wrapCommandWithVenv } from "../python-env.js";
 import { effectiveNodeEnv, NodeEnvManagers, wrapCommandWithNodeEnv } from "../node-env.js";
-import { activePathMessages, INJECTION_MESSAGE_ID_PREFIX, isInjectionMessageId } from "../sessions/session-tree.js";
+import { activePathMessages, INJECTION_MESSAGE_ID_PREFIX, isInjectionMessageId, resolveActiveLeafId } from "../sessions/session-tree.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import { resolveSessionPreset } from "../sessions/extension-state.js";
@@ -845,6 +846,8 @@ export class AgentRunner {
   /** read_artifact 粘性注入集：视图出现 artifact 引用后该会话持续注入（防工具表逐轮翻转击穿前缀缓存）。 */
   private readonly artifactToolSticky = new Set<string>();
   private readonly mcpWarningSignatures = new Map<string, string>();
+  /** 自动快照跳过原因（sessionId → reason）：同类原因只提示一次，避免每轮 toast。 */
+  private readonly autoSnapshotSkipNotified = new Map<string, string>();
   /** 会话累计成本快照（sessionId → {at, cost}）：persist=false 的 usage 中间帧取 sessionCost 用，见 recordUsageEvent。 */
   private readonly usageCostSnapshots = new Map<string, { at: number; cost: ContextLedger["cost"] }>();
   /** 可编辑提示词覆盖：按 cwd 缓存一次，避免每轮 IO；首次构建时读取。 */
@@ -1295,11 +1298,27 @@ export class AgentRunner {
       // 文件/命令等 shared use，则它改为 shared lease，并让本轮安全地跳过自动快照。
       const workspaceBusyForAutomaticSnapshot = automaticSnapshotRequested
         && options?.managedWorkspace?.automaticSnapshotAllowed === false;
-      const automaticSnapshot = automaticSnapshotRequested && !backgroundTaskRunning && !workspaceBusyForAutomaticSnapshot;
+      // 托管工作区的自动快照会在「写入用户消息前」换叶/复制 upper：用户终端可能正在写文件，
+      // qcow2/VHDX 还会短暂卸载挂载点。终端打开时跳过自动快照；持久 shell 只对镜像盘链生效
+      // （overlayfs 的 checkpoint 不卸载，空闲 shell 不写文件）。手动快照/回滚仍可回收 shell。
+      const managedWorkspace = configuredSession.workspace?.mode === "managed";
+      const managedChain = managedWorkspace && configuredSession.workspace?.backend !== "overlayfs";
+      const terminalOpenForSnapshot = managedWorkspace
+        && ((this.core.activeTerminalSessions?.().has(sessionId) ?? false) || isTerminalOpening(sessionId));
+      // activePtySessions 同时覆盖仍登记的持久 shell 与用户终端；后者已由上方
+      // terminalOpenForSnapshot 处理。再看 PTY 表，可兜住 shell 记录已摘除但
+      // pty.close 失败、cwd 仍被旧进程占用的窗口。
+      const persistentShellOpenForSnapshot = managedChain
+        && (this.persistentShells.hasSession(sessionId) || (this.core.activePtySessions?.().has(sessionId) ?? false));
+      const automaticSnapshotSkipReason = terminalOpenForSnapshot ? "terminal" : persistentShellOpenForSnapshot ? "shell" : undefined;
+      if (automaticSnapshotRequested && automaticSnapshotSkipReason === undefined) this.autoSnapshotSkipNotified.delete(sessionId);
+      const automaticSnapshot = automaticSnapshotRequested && !backgroundTaskRunning && !workspaceBusyForAutomaticSnapshot && automaticSnapshotSkipReason === undefined;
       // 若入口预留独占 lease 后才发现后台任务，或配置在 run 期间切换为手动模式，
       // 不等待本轮结束，立即降级为 shared lease，避免无谓阻塞文件浏览和命令执行。
       if (!automaticSnapshot) options?.managedWorkspace?.downgradeAfterAutomaticSnapshot?.();
       const snapshotMessageCount = await this.sessions.countMessages(sessionId);
+      // 回退时不仅按条数截断，还要把活动叶子恢复到本轮开始前的分支。
+      const snapshotActiveLeafId = resolveActiveLeafId(configuredSession.messages, configuredSession.activeLeafId);
       // 在用户消息写入前读取 ledger；实际镜像创建放到写入后，以保证任何快照/权限错误
       // 都不会吞掉已接受的消息。用户写入不改变 ledger 或工作区，因此仍是本轮前状态。
       const snapshotLedger = automaticSnapshot
@@ -1336,19 +1355,49 @@ export class AgentRunner {
           sessionId,
           payload: { message: "工作区正在被文件或命令操作使用，已跳过自动快照；请等待操作结束后再创建手动快照。" },
         });
+      } else if (automaticSnapshotRequested && automaticSnapshotSkipReason !== undefined) {
+        // 同类占用只提示一次；终端关闭/换层成功后原因消失，下一次成功快照会清掉记录。
+        if (this.autoSnapshotSkipNotified.get(sessionId) !== automaticSnapshotSkipReason) {
+          this.autoSnapshotSkipNotified.set(sessionId, automaticSnapshotSkipReason);
+          this.events.publish({
+            source: "session",
+            type: "checkpoint.failed",
+            sessionId,
+            payload: {
+              code: `auto_snapshot_skip_${automaticSnapshotSkipReason}`,
+              message: automaticSnapshotSkipReason === "terminal"
+                ? "会话终端正在占用工作区，已跳过本轮自动快照；关闭终端后可恢复。"
+                : "持久 shell 正在占用工作区，已跳过本轮自动快照；可手动创建检查点（会回收 shell）。",
+            },
+          });
+        }
       }
       // UserPromptSubmit 钩子：仅通知不阻断（否决语义为 PreToolUse 专属）。
       await this.runNotificationHook("UserPromptSubmit", { sessionId, cwd: configuredSession.cwd, prompt: effectiveText.slice(0, 2000) });
       await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? defaultSandboxPolicy(configuredSession.cwd) });
       if (automaticSnapshot) {
         await this.state(sessionId, "snapshotting");
+        // 与手动检查点/终端 WS 共用 per-session 锁：终端在预检之后打开时也不能落进换层窗口。
+        const releaseSnapshot = acquireSnapshotSessionLock(sessionId);
         // 配置成功后再创建镜像，避免 Core 无法启动时留下无用的 VHD checkpoint；
         // 仍使用写入用户消息前捕获的 ledger/messageCount，恢复语义保持为本轮前状态。
         try {
+          if (!releaseSnapshot) {
+            if (managedWorkspace && ((this.core.activeTerminalSessions?.().has(sessionId) ?? false) || isTerminalOpening(sessionId))) {
+              this.autoSnapshotSkipNotified.set(sessionId, "terminal");
+              throw new Error("会话终端正在占用工作区，已跳过本轮自动快照；关闭终端后可恢复。");
+            }
+            throw new Error("另一个检查点操作正在进行，已跳过本轮自动快照。");
+          }
+          if (managedWorkspace && ((this.core.activeTerminalSessions?.().has(sessionId) ?? false) || isTerminalOpening(sessionId))) {
+            this.autoSnapshotSkipNotified.set(sessionId, "terminal");
+            throw new Error("会话终端正在占用工作区，已跳过本轮自动快照；关闭终端后可恢复。");
+          }
           const prepared = await snapshotLedger!;
           if ("error" in prepared) throw prepared.error;
           const checkpoint = await (await getSnapshotBackend(this.sessions, configuredSession, { core: this.core }))
-            .create(text.slice(0, 80) || "User message", snapshotMessageCount, prepared.ledger);
+            .create(text.slice(0, 80) || "User message", snapshotMessageCount, prepared.ledger, snapshotActiveLeafId);
+          this.autoSnapshotSkipNotified.delete(sessionId);
           this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
         } catch (error) {
           this.events.publish({
@@ -1358,6 +1407,7 @@ export class AgentRunner {
             payload: { message: errorMessage(error) },
           });
         } finally {
+          releaseSnapshot?.();
           // 物理换叶已经结束（成功或已由 backend 回滚），后续 provider/tool 回合
           // 只需 shared lease；否则会把整个长对话错误地当成 checkpoint 临界区。
           options?.managedWorkspace?.downgradeAfterAutomaticSnapshot?.();
@@ -4420,7 +4470,7 @@ export class AgentRunner {
 
   /** 会话删除时回收该会话的持久 shell（挂在 app.ts 会话删除路由的清理链上）。 */
   async disposePersistentShells(sessionId: string): Promise<void> {
-    this.persistentShells.disposeSession(sessionId);
+    await this.persistentShells.disposeSessionAndWait(sessionId);
   }
 
   /**
@@ -4439,6 +4489,7 @@ export class AgentRunner {
   discardSession(sessionId: string, cwd?: string): void {
     this.perfRecords.delete(sessionId);
     this.mcpWarningSignatures.delete(sessionId);
+    this.autoSnapshotSkipNotified.delete(sessionId);
     this.artifactToolSticky.delete(sessionId);
     this.usageCostSnapshots.delete(sessionId);
     this.todos.delete(sessionId);

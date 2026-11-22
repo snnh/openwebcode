@@ -292,6 +292,15 @@ export class PersistentShellManager {
     return queued;
   }
 
+  /** 该会话是否仍有存活的持久 shell（自动快照判断换层占用，不能只看在途命令）。 */
+  hasSession(sessionId: string): boolean {
+    const prefix = `${sessionId}:`;
+    for (const [key, shell] of this.shells) {
+      if (key.startsWith(prefix) && !shell.dead) return true;
+    }
+    return false;
+  }
+
   /** 会话删除/配置变更时回收该会话的全部持久 shell。 */
   disposeSession(sessionId: string): void {
     const prefix = `${sessionId}:`;
@@ -302,7 +311,7 @@ export class PersistentShellManager {
       // 配置路由的 force 强制切换是主要触发路径。
       const active = shell.active;
       if (active) this.settle(shell, () => active.reject(new Error("Persistent shell disposed: session config changed")));
-      this.destroy(shell);
+      void this.destroy(shell);
     }
     // 串行化队列条目一并清理（条目永不删除会随会话数泄漏；在途命令的链上 Promise 已由
     // destroy 的 exit/abort 路径结算，删除条目不影响其收尾）
@@ -316,8 +325,30 @@ export class PersistentShellManager {
     }
   }
 
+  /**
+   * 回收并等待该会话的全部持久 shell 真正关闭（快照换层/卸载前使用）。
+   * disposeSession 只发起 pty.close 不等待；若紧接着 umount，cwd 仍可能被 shell 进程占着。
+   */
+  async disposeSessionAndWait(sessionId: string): Promise<void> {
+    const prefix = `${sessionId}:`;
+    const closing: Promise<void>[] = [];
+    for (const [key, shell] of [...this.shells]) {
+      if (!key.startsWith(prefix)) continue;
+      const active = shell.active;
+      if (active) this.settle(shell, () => active.reject(new Error("Persistent shell disposed: checkpoint workspace switch")));
+      closing.push(this.destroy(shell, true));
+    }
+    for (const key of [...this.queues.keys()]) {
+      if (key.startsWith(prefix)) this.queues.delete(key);
+    }
+    for (const key of [...this.initFailed]) {
+      if (key.startsWith(prefix)) this.initFailed.delete(key);
+    }
+    await Promise.all(closing);
+  }
+
   disposeAll(): void {
-    for (const shell of [...this.shells.values()]) this.destroy(shell);
+    for (const shell of [...this.shells.values()]) void this.destroy(shell);
   }
 
   private async runExclusive(
@@ -361,7 +392,7 @@ export class PersistentShellManager {
         };
       } catch (error) {
         if (attempt === 0 && errorMessage(error).includes("pty not found")) {
-          this.destroy(record);
+          void this.destroy(record);
           continue;
         }
         throw error;
@@ -432,7 +463,7 @@ export class PersistentShellManager {
         throw new PersistentShellUnavailableError(`Persistent shell could not enter the session cwd (init code ${initCode}); falling back to one-shot exec`);
       }
     } catch (error) {
-      this.destroy(record);
+      void this.destroy(record);
       // init 期间 shell 死亡（如 MSYS bash 在 AppContainer 下 DLL 初始化失败）：与
       // 开壳即死同等处理，统一回退一次性 exec，并缓存该 session:backend 不再重试
       if (record.dead) {
@@ -500,7 +531,7 @@ export class PersistentShellManager {
     return new Promise<{ code: number; raw: Buffer[] }>((resolve, reject) => {
       const onAbort = () => {
         this.settle(shell, () => {
-          this.destroy(shell);
+          void this.destroy(shell);
           try {
             signal.throwIfAborted();
           } catch (error) {
@@ -511,7 +542,7 @@ export class PersistentShellManager {
       const timer = timeoutMs > 0 ? setTimeout(() => {
         this.settle(shell, () => {
           // 超时的命令可能仍占着 shell：销毁重建，避免下条命令读到残流
-          this.destroy(shell);
+          void this.destroy(shell);
           // 附带已捕获输出的尾部：命令跑飞（如全盘遍历）时模型能看到现场并自我纠正
           const tail = parser.output().slice(-2000).trim();
           reject(new Error(`command timed out after ${timeoutMs}ms` + (tail ? `\ncaptured output before timeout (tail):\n${tail}` : "")));
@@ -521,7 +552,7 @@ export class PersistentShellManager {
       signal.addEventListener("abort", onAbort, { once: true });
       this.writeInput(shell, payload).catch((error: unknown) => {
         this.settle(shell, () => {
-          this.destroy(shell);
+          void this.destroy(shell);
           reject(error instanceof Error ? error : new Error(String(error)));
         });
       });
@@ -560,7 +591,7 @@ export class PersistentShellManager {
       if (active) {
         this.settle(record, () => active.reject(new Error(`Persistent shell exited${code !== undefined ? ` (code ${code})` : ""}`)));
       }
-      this.closePty(record);
+      void this.closePty(record).catch(() => undefined);
     });
   }
 
@@ -570,14 +601,32 @@ export class PersistentShellManager {
     if (this.shells.get(record.key) === record) this.shells.delete(record.key);
   }
 
-  private closePty(record: ShellRecord): void {
-    this.core.removePtyEvents?.(record.ptyId);
-    void this.core.closePty?.({ ptyId: record.ptyId, sessionId: record.sessionId }).catch(() => undefined);
+  private closePty(record: ShellRecord): Promise<void> {
+    // 先 close 再摘监听器：CoreRouter 需要 owner 才能把 pty.close 发到正确的 core；
+    // 关闭失败时保留事件与归属，快照门禁仍能看见这个 shell。
+    return Promise.resolve()
+      .then(() => this.core.closePty?.({ ptyId: record.ptyId, sessionId: record.sessionId }))
+      .then(() => {
+        this.core.removePtyEvents?.(record.ptyId);
+      });
   }
 
-  private destroy(record: ShellRecord): void {
-    this.discard(record);
-    this.closePty(record);
+  /**
+   * 关闭并移出记录。strict=true 用于快照换层/卸载前的等待：close 失败时保留记录
+   * 并向上抛错，避免「以为已关闭、实际 cwd 仍占用」；普通销毁路径只记日志后摘除。
+   */
+  private async destroy(record: ShellRecord, strict = false): Promise<void> {
+    // 普通销毁路径保持「同步摘表」：调用方（超时/abort/初始化失败）会立刻重试，
+    // 不能让 close 的 await 把旧 shell 留在表里被下一条命令复用。
+    if (!strict) this.discard(record);
+    try {
+      await this.closePty(record);
+    } catch (error) {
+      if (strict) throw error;
+      process.stderr.write(`[snapshots] persistent shell close failed for pty ${record.ptyId}: ${errorMessage(error)}\n`);
+      this.core.removePtyEvents?.(record.ptyId);
+    }
+    if (strict) this.discard(record);
   }
 
   /** core pty.input 单帧解码后 ≤8KB：按 UTF-8 字符边界切块发送。 */

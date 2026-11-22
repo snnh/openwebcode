@@ -256,6 +256,19 @@ describe("readMessages 整表缓存的等价性", () => {
       .toEqual([early[0]!.id, early[1]!.id, early[2]!.id, afterRestore.id]);
   });
 
+  it("truncateMessages 可恢复指定活动叶子；叶子不在保留前缀时拒绝且不写盘", async () => {
+    const root = await tempRoot("owc-msgcache-leaf-");
+    const store = await storeAt(root);
+    const session = await newSession(store);
+    const messages = await seedMessages(store, session, 4);
+    await store.truncateMessages(session, 4, messages[1]!.id);
+    expect((await store.get(session))!.activeLeafId).toBe(messages[1]!.id);
+    const before = await readFile(messagesPathOf(root, session), "utf8");
+    await expect(store.truncateMessages(session, 2, messages[3]!.id)).rejects.toThrow(/active leaf/);
+    expect(await readFile(messagesPathOf(root, session), "utf8")).toBe(before);
+    expect((await store.get(session))!.activeLeafId).toBe(messages[1]!.id);
+  });
+
   it("损坏尾行 / 中间行 / 整体缺失：recovery 状态与缓存读取一致", async () => {
     const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);

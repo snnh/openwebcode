@@ -8,8 +8,8 @@ import type { SessionMeta } from "../src/sessions/types.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
 /** 最小 pty fake：openPty 立即成功，inputPty 回送 sentinel 行（init 退出码可配）。 */
-function makePtyCore(initCode: number) {
-  let ptySeq = 0, openCalls = 0;
+function makePtyCore(initCode: number, closeGate?: Promise<void>) {
+  let ptySeq = 0, openCalls = 0, closeCalls = 0;
   const emitters = new Map<number, EventEmitter>();
   const core = {
     on() { return core; },
@@ -21,14 +21,32 @@ function makePtyCore(initCode: number) {
       if (emitter && rand) setTimeout(() => emitter.emit("output", { data: Buffer.from(`\r\n__OWC_DONE_${rand}_${initCode}__\r\n`, "utf8").toString("base64") }), 0);
       return { ok: true as const };
     },
-    async closePty() { return { ok: true as const }; },
+    async closePty() { closeCalls += 1; if (closeGate) await closeGate; return { ok: true as const }; },
     ptyEvents(ptyId: number) { return emitters.get(ptyId) ?? new EventEmitter(); },
     removePtyEvents(ptyId: number) { emitters.delete(ptyId); },
   } as unknown as CoreClientLike;
-  return { core, openCalls: () => openCalls };
+  return { core, openCalls: () => openCalls, closeCalls: () => closeCalls };
 }
 
 describe("持久 shell 初始化失败缓存回收", () => {
+  it("disposeSessionAndWait 等待 pty.close 完成后再返回", async () => {
+    const root = await tempRoot("owc-persistent-shell-wait-");
+    let releaseClose!: () => void;
+    const closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const { core, closeCalls } = makePtyCore(0, closeGate);
+    const manager = new PersistentShellManager(core, new UvPythonEnvironments(), () => "global", new NodeEnvManagers(), () => "global");
+    const session = { id: "session-wait", cwd: root, provider: "test", model: "test-model" } as SessionMeta;
+    await manager.run(session, "echo hi", new AbortController().signal);
+    let settled = false;
+    const disposing = manager.disposeSessionAndWait(session.id).then(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+    expect(closeCalls()).toBe(1);
+    releaseClose();
+    await disposing;
+    expect(settled).toBe(true);
+  }, 20_000);
+
   it("disposeSession 清理 initFailed，环境修复后重新尝试建壳", async () => {
     const root = await tempRoot("owc-persistent-shell-");
     const { core, openCalls } = makePtyCore(1); // init 退出码非零 = 进不了会话 cwd

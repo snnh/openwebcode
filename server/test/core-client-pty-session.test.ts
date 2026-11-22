@@ -80,6 +80,9 @@ describe("CoreClient pty.* session binding", () => {
     expect(requests.find((request) => request.method === "pty.input")?.params).toEqual({ ptyId: opened.ptyId, sessionId: "session-b", data: "QUJD" });
     await expect(client.inputPty({ ptyId: opened.ptyId, sessionId: "session-a", data: "QUJD" })).resolves.toEqual({ ok: true });
     const other = await client.openPty({ session: "session-b", cwd: "/ws/b", cols: 80, rows: 24, sandbox: true });
+    // sandbox=false 才是用户终端；agent 持久 shell（sandbox=true）不应阻断快照换层。
+    expect(client.activePtySessions()).toEqual(new Set(["session-a", "session-b"]));
+    expect(client.activeTerminalSessions()).toEqual(new Set(["session-a"]));
     requests.length = 0;
     await Promise.all([client.inputPty({ ptyId: opened.ptyId, data: "QQ==" }), client.inputPty({ ptyId: other.ptyId, data: "Qg==" })]);
     expect(requests.map((request) => request.params)).toEqual([
@@ -93,6 +96,7 @@ describe("CoreClient pty.* session binding", () => {
     await client.start();
     const opened = await client.openPty({ session: "session-a", cwd: "/ws/a", cols: 80, rows: 24, sandbox: false });
     await client.closePty({ ptyId: opened.ptyId, sessionId: "session-a" });
+    expect(client.activeTerminalSessions()).toEqual(new Set());
     requests.length = 0;
     await expect(client.inputPty({ ptyId: opened.ptyId, data: "QUJD" })).rejects.toMatchObject({ code: -32602 });
     expect(requests.at(-1)?.params).toEqual({ ptyId: opened.ptyId, data: "QUJD" }); // 登记已清空：原样发出，不含补全值

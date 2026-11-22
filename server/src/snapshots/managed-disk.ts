@@ -2,6 +2,7 @@ import { existsSync, type Dirent } from "node:fs";
 import { cp, mkdir, readdir, readFile, rm, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { errorMessage } from "../error-utils.js";
 import type { ManagedWorkspaceMeta } from "../sessions/types.js";
 import {
   newSnapshotId,
@@ -59,6 +60,7 @@ interface ChainEntry {
   label: string;
   createdAt: string;
   messageCount: number;
+  activeLeafId?: string;
   ledger?: unknown;
   file: string;
   parentFile: string | null;
@@ -204,7 +206,7 @@ export class ManagedDiskBackend implements SnapshotBackend {
     return { backend: this.name, costHint: "instant", requiresAdmin: true, detail };
   }
 
-  async create(label: string, messageCount: number, ledger?: unknown): Promise<Checkpoint> {
+  async create(label: string, messageCount: number, ledger?: unknown, activeLeafId?: string): Promise<Checkpoint> {
     return this.serialMutation(async () => {
       await this.initialize();
       const state = await this.readState();
@@ -222,6 +224,7 @@ export class ManagedDiskBackend implements SnapshotBackend {
         label,
         createdAt: new Date().toISOString(),
         messageCount,
+        ...(activeLeafId === undefined ? {} : { activeLeafId }),
         ...(ledger === undefined ? {} : { ledger }),
         file: state.active.file,
         parentFile: state.active.parentFile,
@@ -229,7 +232,7 @@ export class ManagedDiskBackend implements SnapshotBackend {
       state.checkpoints.unshift(entry);
       state.active = { file: child, parentFile: entry.file };
       await this.writeStateOrRollback(state, child, previousLeaf, state.device);
-      const checkpoint: Checkpoint = { id, label, createdAt: entry.createdAt, messageCount, ...(ledger === undefined ? {} : { ledger }) };
+      const checkpoint: Checkpoint = { id, label, createdAt: entry.createdAt, messageCount, ...(activeLeafId === undefined ? {} : { activeLeafId }), ...(ledger === undefined ? {} : { ledger }) };
       return checkpoint;
     });
   }
@@ -237,11 +240,12 @@ export class ManagedDiskBackend implements SnapshotBackend {
   async list(): Promise<Checkpoint[]> {
     await this.initialize();
     const state = await this.readState();
-    return state.checkpoints.map(({ id, label, createdAt, messageCount, ledger }) => ({
+    return state.checkpoints.map(({ id, label, createdAt, messageCount, activeLeafId, ledger }) => ({
       id,
       label,
       createdAt,
       messageCount,
+      ...(typeof activeLeafId === "string" && activeLeafId.length > 0 ? { activeLeafId } : {}),
       ...(ledger === undefined ? {} : { ledger }),
     }));
   }
@@ -311,20 +315,53 @@ export class ManagedDiskBackend implements SnapshotBackend {
       return;
     }
     await this.createDiff(parent, child);
-    await this.swapMount(oldFile, child, device);
+    try {
+      await this.swapMount(oldFile, child, device);
+    } catch (error) {
+      // createDiff 成功但换叶在挂载前失败时，child 还不在 chain.json 中，可安全清理；
+      // swapMount 内部已恢复成功时这里是无操作。
+      await rm(child, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
-  /** 换叶：卸载当前叶子并挂载新叶子（qcow2 复用同一 nbd 设备重连新文件）。 */
-  private async swapMount(oldFile: string, newFile: string, device: string | undefined): Promise<void> {
+  /**
+   * 换叶：卸载当前叶子并挂载新叶子（qcow2 复用同一 nbd 设备重连新文件）。
+   * qcow2 的卸载/断连/重连/挂载是四个独立命令；旧实现任一步失败都会把工作区留在
+   * 未挂载状态。这里在失败时重连旧叶子并重新挂载，删除本次创建的 child。
+   * rollbackForkAndSwap 反向换叶时关闭自动恢复，避免把刚切过去的新叶又挂回来。
+   */
+  private async swapMount(oldFile: string, newFile: string, device: string | undefined, recoverOnFailure = true): Promise<void> {
     if (this.kind === "vhdx") {
       await runScript(this.runner, "swap", ["-OldImage", oldFile, "-NewImage", newFile, "-MountPoint", this.mountPoint]);
       return;
     }
     const nbd = device ?? "/dev/nbd0";
-    ensureOk("umount", await this.runner.run("sudo", ["umount", this.mountPoint], { timeoutMs: 60_000 }));
-    ensureOk("qemu-nbd -d", await this.runner.run("sudo", ["qemu-nbd", "-d", nbd], { timeoutMs: 60_000 }));
-    ensureOk("qemu-nbd -c", await this.runner.run("sudo", ["qemu-nbd", "-c", nbd, newFile], { timeoutMs: 60_000 }));
-    ensureOk("mount", await this.runner.run("sudo", ["mount", nbd, this.mountPoint], { timeoutMs: 60_000 }));
+    try {
+      // umount 也放进恢复路径：命令超时但实际已卸载时，必须有机会重新挂旧叶。
+      ensureOk("umount", await this.runner.run("sudo", ["umount", this.mountPoint], { timeoutMs: 60_000 }));
+      ensureOk("qemu-nbd -d", await this.runner.run("sudo", ["qemu-nbd", "-d", nbd], { timeoutMs: 60_000 }));
+      ensureOk("qemu-nbd -c", await this.runner.run("sudo", ["qemu-nbd", "-c", nbd, newFile], { timeoutMs: 60_000 }));
+      ensureOk("mount", await this.runner.run("sudo", ["mount", nbd, this.mountPoint], { timeoutMs: 60_000 }));
+    } catch (error) {
+      if (!recoverOnFailure) throw error;
+      // 恢复顺序：先卸载可能半挂载的新叶，再断连、重连旧叶并挂回；rm child 最后做。
+      await this.runner.run("sudo", ["umount", this.mountPoint], { timeoutMs: 60_000 }).catch(() => undefined);
+      await this.runner.run("sudo", ["qemu-nbd", "-d", nbd], { timeoutMs: 60_000 }).catch(() => undefined);
+      const reconnect = await this.runner.run("sudo", ["qemu-nbd", "-c", nbd, oldFile], { timeoutMs: 60_000 }).catch(() => ({ stdout: "", code: 1 }));
+      const mount = await this.runner.run("sudo", ["mount", nbd, this.mountPoint], { timeoutMs: 60_000 }).catch(() => ({ stdout: "", code: 1 }));
+      const failures: string[] = [];
+      if (mount.code !== 0) {
+        failures.push(`mount old leaf failed (${mount.code})${reconnect.code !== 0 ? `; reconnect failed (${reconnect.code})` : ""}`);
+      }
+      await rm(newFile, { force: true }).catch((failure: unknown) => {
+        failures.push(`remove child: ${errorMessage(failure)}`);
+      });
+      if (failures.length > 0) {
+        throw new Error(`qcow2 leaf switch failed (${errorMessage(error)}) and recovery also failed: ${failures.join("; ")}`);
+      }
+      throw error;
+    }
   }
 
   private defaultState(): ChainState {
@@ -374,7 +411,7 @@ export class ManagedDiskBackend implements SnapshotBackend {
       await runScript(this.runner, "rollback-fork-swap", ["-NewImage", child, "-OldImage", previousLeaf, "-MountPoint", this.mountPoint]);
       return;
     }
-    await this.swapMount(child, previousLeaf, device);
+    await this.swapMount(child, previousLeaf, device, false);
     await rm(child, { force: true });
   }
 

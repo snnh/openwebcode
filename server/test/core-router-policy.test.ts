@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -66,6 +67,43 @@ describe("CoreRouter.policyFor 平台分支", () => {
     expect(wsb).toMatchObject({ enabled: false });
     expect(wsb.bindLinks).toBeUndefined();
     expect(CoreRouter.policyFor(meta("off"), policy, undefined, undefined, "linux").enabled).toBe(false);
+  });
+});
+
+describe("CoreRouter pty owner", () => {
+  it("close/remove 使用开 pty 的 owner，不误触 shared core", async () => {
+    const fakeClient = () => {
+      let opens = 0;
+      let closes = 0;
+      const removed: number[] = [];
+      const client = {
+        on() { return client; },
+        start: async () => ({}),
+        configureSession: async () => ({ sandboxCapability: "enforced" as const }),
+        openPty: async () => { opens += 1; return { ptyId: 7 }; },
+        closePty: async () => { closes += 1; return { ok: true as const }; },
+        ptyEvents: () => new EventEmitter(),
+        removePtyEvents: (ptyId: number) => { removed.push(ptyId); },
+      };
+      return { client, opens: () => opens, closes: () => closes, removed: () => removed };
+    };
+    const shared = fakeClient();
+    const guest = fakeClient();
+    const wsb = {
+      onClientCreated: undefined as ((sessionId: string, client: unknown) => void) | undefined,
+      acquire: async () => guest.client,
+      release: async () => undefined,
+      releaseAll: async () => undefined,
+    };
+    const meta = { ...baseMeta, cwd: "C:\\work", sandboxMode: "wsb" as const };
+    const router = new CoreRouter(shared.client as never, { get: async () => meta } as never, wsb as never, undefined, undefined, "win32");
+    const opened = await router.openPty({ session: "s1", cwd: "C:\\work", cols: 80, rows: 24, sandbox: false });
+    expect([shared.opens(), guest.opens()]).toEqual([0, 1]);
+    router.removePtyEvents(opened.ptyId);
+    expect(guest.removed()).toContain(opened.ptyId);
+    expect(shared.removed()).toEqual([]);
+    await router.closePty({ ptyId: opened.ptyId, sessionId: "s1" });
+    expect([shared.closes(), guest.closes()]).toEqual([0, 1]);
   });
 });
 
