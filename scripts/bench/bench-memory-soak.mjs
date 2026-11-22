@@ -27,7 +27,6 @@ const { SessionStore } = await import("../../server/src/sessions/session-store.t
 const { ContextManager } = await import("../../server/src/context/context-manager.ts");
 const { setCacheScale } = await import("../../server/src/cache-limits.ts");
 const { runtimeProfile } = await import("../../server/src/runtime-mode.ts");
-const { messageIndexStats } = await import("../../server/src/sessions/message-reader.ts");
 
 const MODE = args.mode ?? "balanced";
 if (!["performance", "balanced", "memory"].includes(MODE)) throw new Error("--mode 必须是 performance/balanced/memory");
@@ -72,7 +71,6 @@ try {
   const after = process.memoryUsage();
   const cache = store.messagesCacheStats();
   const context = ContextManager.cacheStats();
-  const index = messageIndexStats();
   const dropOrder = args["drop-order"] === "context" ? "context" : "messages";
   let droppedFirst;
   let droppedSecond;
@@ -116,9 +114,6 @@ try {
     { name: "context.viewMB", value: mb(context.viewBytes), unit: "MB", direction: "lower-better" },
     { name: "context.ledgerEntries", value: context.ledgerEntries, unit: "count", direction: "none" },
     { name: "context.ledgerMB", value: mb(context.ledgerBytes), unit: "MB", direction: "lower-better" },
-    { name: "index.entries", value: index.entries, unit: "count", direction: "none" },
-    { name: "index.lines", value: index.lines, unit: "count", direction: "none" },
-    { name: "index.approxMB", value: mb(index.approxBytes), unit: "MB", direction: "lower-better" },
     { name: `drop.${firstLabel}Entries`, value: droppedFirst, unit: "count", direction: "none" },
     { name: `drop.${firstLabel}MB`, value: mb(after.heapUsed - afterFirst.heapUsed), unit: "MB", direction: "lower-better" },
     { name: `drop.${secondLabel}Entries`, value: droppedSecond, unit: "count", direction: "none" },
