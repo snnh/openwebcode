@@ -431,7 +431,8 @@ describe("ManagedDiskBackend qcow2 换叶", () => {
     await expect(backend.create("cp", 1, undefined, "leaf-1")).rejects.toThrow(/mount failed/);
     expect(calls.filter((call) => call.includes("qemu-nbd -c")).length).toBeGreaterThanOrEqual(2);
     expect(calls.at(-1)).toBe(`sudo mount /dev/nbd0 ${mountPoint}`);
-    expect(await readFile(path.join(workspaceRoot, "chain.json"), "utf8")).toContain(`"file": "${base}"`);
+    const state = JSON.parse(await readFile(path.join(workspaceRoot, "chain.json"), "utf8")) as { active: { file: string } };
+    expect(state.active.file).toBe(base);
     expect((await readdir(workspaceRoot)).sort()).toEqual(["base.qcow2", "chain.json"]);
   });
   it("成功换叶记录 activeLeafId 并把旧叶冻结为检查点载体", async () => {
