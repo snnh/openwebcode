@@ -6,8 +6,8 @@
 
 1. **通用（17）：**
 [关闭浏览器标签页后，agent 还在运行吗？](#q-关闭浏览器标签页后agent-还在运行吗) | [agent 一直显示「正在输出」但没有内容，是卡死了吗？](#q-agent-一直显示正在输出但没有内容是卡死了吗) | [支持哪些平台？](#q-支持哪些平台) | [端口 3210 被占用怎么办？](#q-端口-3210-被占用怎么办) | [数据存在哪里？](#q-数据存在哪里) | [如何升级？](#q-如何升级) | [怎么知道有没有新版本？](#q-怎么知道有没有新版本) | [升级后我的设置会被覆盖吗？](#q-升级后我的设置会被覆盖吗) | [界面缩放为什么只改文字，按钮和图标没变？](#q-界面缩放为什么只改文字按钮和图标没变) | [能自定义系统提示词吗？](#q-能自定义系统提示词吗) | [离线模式是干什么的？](#q-离线模式是干什么的) | [下载的发布包怎么校验完整性？](#q-下载的发布包怎么校验完整性) | [cron 定时任务在重启 server 后还在吗？](#q-cron-定时任务在重启-server-后还在吗) | [如何分叉或重新生成一段对话？](#q-如何分叉或重新生成一段对话) | [Chat 模式是什么？怎么开启？](#q-chat-模式是什么怎么开启) | [Chat 模式的数据和工作台互通吗？](#q-chat-模式的数据和工作台互通吗) | [Chat 分享链接安全吗？](#q-chat-分享链接安全吗)
-2. **模型与服务商（11）：**
-[支持哪些 LLM 服务商？](#q-支持哪些-llm-服务商) | [模型列表为空或刷新失败？](#q-模型列表为空或刷新失败) | [会话中途能换模型吗？](#q-会话中途能换模型吗) | [主模型报错了能自动换别的模型吗？](#q-主模型报错了能自动换别的模型吗) | [为什么有些模型不能调用工具？](#q-为什么有些模型不能调用工具) | [为什么没有 `web_fetch` 或 `web_search`？](#q-为什么没有-web_fetch-或-web_search) | [怎么用模型服务商自带的联网搜索（比如 DeepSeek 的 `web_search`）？](#q-怎么用模型服务商自带的联网搜索比如-deepseek-的-web_search) | [thinking / reasoning 怎么开？](#q-thinking--reasoning-怎么开) | [对话支持 Markdown 和数学公式吗？](#q-对话支持-markdown-和数学公式吗) | [agent 运行报错（认证失败 / 限流 / 过载）怎么办？](#q-agent-运行报错认证失败--限流--过载怎么办) | [缓存命中能降低成本吗？](#q-缓存命中能降低成本吗)
+2. **模型与服务商（12）：**
+[支持哪些 LLM 服务商？](#q-支持哪些-llm-服务商) | [Gemini 原生接口怎么配置？](#q-gemini-原生接口怎么配置) | [模型列表为空或刷新失败？](#q-模型列表为空或刷新失败) | [会话中途能换模型吗？](#q-会话中途能换模型吗) | [主模型报错了能自动换别的模型吗？](#q-主模型报错了能自动换别的模型吗) | [为什么有些模型不能调用工具？](#q-为什么有些模型不能调用工具) | [为什么没有 `web_fetch` 或 `web_search`？](#q-为什么没有-web_fetch-或-web_search) | [怎么用模型服务商自带的联网搜索（比如 DeepSeek 的 `web_search`）？](#q-怎么用模型服务商自带的联网搜索比如-deepseek-的-web_search) | [thinking / reasoning 怎么开？](#q-thinking--reasoning-怎么开) | [对话支持 Markdown 和数学公式吗？](#q-对话支持-markdown-和数学公式吗) | [agent 运行报错（认证失败 / 限流 / 过载）怎么办？](#q-agent-运行报错认证失败--限流--过载怎么办) | [缓存命中能降低成本吗？](#q-缓存命中能降低成本吗)
 3. **权限与沙盒（8）：**
 [ask / acceptEdits / review / yolo 有什么区别？](#q-ask--acceptedits--review--yolo-有什么区别) | [「允许一次」和「总是允许」有什么区别？](#q-允许一次和总是允许有什么区别) | [agent 的 bash 是每次新开一个 shell 吗？](#q-agent-的-bash-是每次新开一个-shell-吗) | [yolo 了还会被沙盒拦吗？](#q-yolo-了还会被沙盒拦吗) | [沙盒的网络三档 allow / deny / filtered 是什么？](#q-沙盒的网络三档-allow--deny--filtered-是什么) | [agent 要写沙盒外的路径怎么办？](#q-agent-要写沙盒外的路径怎么办) | [跑不可信代码怎么配置？](#q-跑不可信代码怎么配置) | [agent 提交 git 需要我确认吗？](#q-agent-提交-git-需要我确认吗)
 4. **上下文与快照（9）：**
@@ -97,10 +97,17 @@ ChatGPT 风格的纯对话模式（1.6.0 新增），适合问答、写作、数
 
 四种接口类型：Anthropic Messages、OpenAI Chat Completions（DeepSeek / Qwen / Ollama / GLM 等兼容端点）、OpenAI Responses、Google Gemini 原生 `generateContent`。设置页可保存多个具名服务商配置，逐个选接口类型、Base URL 和 API Key；每个已启用服务商的模型合并显示为 `模型ID【服务商】`。
 
+### Q: Gemini 原生接口怎么配置？
+
+在设置 → 模型目录选「Google Gemini（原生）」预设，Base URL 默认 `https://generativelanguage.googleapis.com/v1beta`；API Key 通过 `x-goog-api-key` 发送。启用后刷新模型目录，会读取 `models?pageSize=1000` 并把 `inputTokenLimit` 写进上下文窗口；「测试连接」使用 `GET models?pageSize=1`，不产生生成计费。
+
+请求走 `generateContent` / `streamGenerateContent?alt=sse`，支持正文、思考、工具调用与 `thoughtSignature` / `functionCall.id` 回放，工具结果图片/视频以 `inlineData` 投递。限制：内置 Google Search 暂不映射（`model-api` 模式对 Gemini 无效）、`deferLoading` 被忽略、显式 prompt cache 断点不适用（依赖端点自动缓存）；自定义网关的 Base URL 按填写值原样使用，需要自己带 `/v1beta` 等路径。
+
 ### Q: 模型列表为空或刷新失败？
 
 - 确认服务商已启用，接口类型、Base URL、API Key 正确
 - 用服务商表单里的「测试连接」定位：错误按认证失败、URL 错误、无法连接、限流分类提示（5 秒超时）
+- Gemini 原生确认 API Key 有效且 Base URL 指向网关的 `/v1beta`（官方地址可只填根地址，保存后请求时会补 `/v1beta`）；自定义网关需按网关要求填写完整路径
 - Ollama 等不实现 `/v1/models` 的，直接手填模型 id（如 `qwen2.5-coder:14b`）
 - 拉取失败不阻塞使用，按保守默认运行并在 UI 提示
 
@@ -127,11 +134,11 @@ ChatGPT 风格的纯对话模式（1.6.0 新增），适合问答、写作、数
 1. 服务商用 OpenAI Responses 接口连接。
 2. 设置 → 联网服务 → 联网搜索模式选 `model-api` 并保存。
 
-`model-api` 把搜索交给模型服务端执行（请求级下发标记，只有 OpenAI Responses 接口消费），此时本地 `web_search` 工具不再注入；`web_fetch` 两种模式都能用。默认的 `local` 模式走上面配置的联网服务商，任何接口类型都能用。
+`model-api` 把搜索交给模型服务端执行（请求级下发标记，只有 OpenAI Responses 接口消费；Gemini 原生暂不映射 Google Search），此时本地 `web_search` 工具不再注入，其他接口类型的会话没有搜索能力；`web_fetch` 两种模式都能用。默认的 `local` 模式走上面配置的联网服务商，任何接口类型都能用。
 
 ### Q: thinking / reasoning 怎么开？
 
-支持 reasoning 的模型在输入框下方有「思考」选择器，可选关闭、自适应或模型声明的强度。Anthropic 翻译为 `thinking.budget_tokens`，OpenAI 系翻译为 `reasoning_effort`。思考块默认折叠，思考 token 计入成本。
+支持 reasoning 的模型在输入框下方有「思考」选择器，可选关闭、自适应或模型声明的强度。Anthropic 翻译为 `thinking.budget_tokens`，OpenAI 系翻译为 `reasoning_effort`，Gemini 原生映射为 `thinkingConfig.thinkingLevel`（模型不声明 effort 时不发送强度）。思考块默认折叠，思考 token 计入成本。
 
 ### Q: 对话支持 Markdown 和数学公式吗？
 
@@ -224,7 +231,7 @@ Windows 选 WSB 沙盒：一会话一 VM，关闭即销毁，仅工作目录留�
 
 默认会：文件和会话历史一起截到对应消息，并恢复到检查点创建时的活动分支（分叉会话不会接到另一条支线；旧检查点没有分支信息时按消息条数恢复）。点「仅文件」可只恢复文件、保留对话。账本随检查点一并回退。
 
-文件侧注意：git-shadow 按快照树重置已跟踪文件。`contextExcludes` 只影响之后创建的检查点；某路径若在检查点创建后才加入排除、但此前已被跟踪，回退到更早检查点仍会删除它。deny 路径（`.env`、`.owc/hooks.json`、`.owc/mcp.json` 等）保留回退前的当前内容或缺失状态。
+文件侧注意：git-shadow 按快照树重置已跟踪文件。`contextExcludes` 只影响之后创建的检查点；某路径若在检查点创建后才加入排除、但此前已被跟踪，回退到更早检查点仍会删除它。git-shadow 回退会保留 deny 路径（`.env`、`.owc/hooks.json`、`.owc/mcp.json` 等）回退前的当前内容或缺失状态。
 
 ### Q: 快照回退后可以马上继续对话吗？
 
@@ -247,7 +254,7 @@ Windows 选 WSB 沙盒：一会话一 VM，关闭即销毁，仅工作目录留�
 - `agent-presets`（默认开）：在经典、精简、五档拟态与自定义预设之间切换提示词与工具集，底层实现与权限链不变
 - `compact-vault`（默认关）：`/compact` 切换为档案库式压缩——完整上下文归档到会话 `compact/` 目录，上下文只留索引，主模型按 key 经 `recall_memory` 召回细节
 - `vision-tools`（默认关）：主模型不支持视觉时，图片交给视觉模型生成描述注入上下文（describe），或以占位符 + `describe_image` 工具按需提问（toolCall）
-- `dsh-sync`（默认关）：与 dsh（DeepSeek Harness）数据目录**双向手动**同步模型配置与会话——先预览差异、再逐项勾选；导出**不写明文 Key**（只生成 `OWC_SYNC_*_API_KEY` 引用）、只在 dsh 侧新建会话目录不覆盖；会话压缩同步需要 Node ≥22.15。详见 [dsh-sync.md](./dsh-sync.md)
+- `dsh-sync`（默认关）：与 dsh（DeepSeek Harness）数据目录**双向手动**同步模型配置与会话——先预览差异、再逐项勾选；导出**不写明文 Key**（只生成 `OWC_SYNC_*_API_KEY` 引用）、只在 dsh 侧新建会话目录不覆盖；会话压缩同步需要 Node ≥22.15。模型配置同步暂不含 Gemini 原生接口。详见 [dsh-sync.md](./dsh-sync.md)
 
 在设置 → 扩展启停和配置。Extension Host 是独立子进程，单个钩子最多跑 5 秒。第三方 v1 扩展不是安全沙盒，只装信得过的。
 

@@ -150,4 +150,5 @@ dsh 同步扩展做两件事，各自**双向**、互不相干（两个区块各
 - **改写只动 `llm-service-lite` 段**：以 CST 保注释方式改写 `profiles/<profile>/cordis.patch.yml` 里 `id: llm-service-lite` 条目的 `config.providers`，其余条目（含注释、`!!js` 自定义标签）原样保留。若你在 dsh 设置页保存过同一区块，可能覆盖本次改动——建议写完尽快重启 dsh 并核对。
 - **dsh 头行不含 provider/model，模型归属写在 assistant 消息上**：导出时按会话当前 provider/model（缺项先按上节规则补全）写进每条 assistant 消息的 `source`，dsh 打开后以 dsh 当前模型配置继续对话。
 - **模型配置为 manual 层**：导入的 dsh `models[]` 写入 owc 模型目录的 manual 层；映射不上的字段进报告「未映射字段」，不做猜测。
+- **Gemini 原生接口不参与模型配置同步**：dsh 的 `llm-service-lite` 接口词表只有 Anthropic Messages / OpenAI Chat Completions / OpenAI Responses；owc 的 Google Gemini（原生）provider 在模型配置导入/导出时会跳过并写入 warning。会话同步不受影响，dsh 侧仍按自己的模型配置继续。
 - **默认关闭**：扩展默认不启用，启用后也只在你点「预览 / 执行」时才读写文件。

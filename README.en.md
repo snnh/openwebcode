@@ -53,7 +53,7 @@ Browser (React 19 + Vite 6) ── HTTP/WebSocket ──► Node service (agent 
 - **Interface and accessibility**: bilingual Chinese/English UI, light/dark themes, accent colors, Latin/CJK/code font choices, code ligatures, and 90–125% text scaling; layout and preferences are remembered per browser.
 - **Mobile and remote access**: responsive adaptation for phones/tablets; off-loopback listening enforces an access token (auto-generated or `OWC_ACCESS_TOKEN`), with optional TOTP global login.
 - **The `owc run` CLI**: headless NDJSON event stream for CI integration.
-- **dsh Sync (off by default)**: the official `dsh-sync` extension syncs model configuration and sessions **both ways** with the dsh data directory (preview the diff, tick items, then run; no plaintext keys are written and existing dsh sessions are never overwritten).
+- **dsh Sync (off by default)**: the official `dsh-sync` extension syncs model configuration and sessions **both ways** with the dsh data directory (preview the diff, tick items, then run; no plaintext keys are written and existing dsh sessions are never overwritten; model-configuration sync does not include the Gemini native interface).
 
 See the [user guide](./help/usage.md) and [FAQ](./help/faq.md) (both in Chinese) for details.
 
@@ -139,7 +139,7 @@ owc run "Add a unit test for main.ts" --cwd . --json --yolo
 
 ## Performance and footprint
 
-Measured on Linux x86-64 with v1.18.0 and 5000-message sessions:
+Measured on Linux x86-64 with v1.18.0 and 5000-message sessions (not re-benchmarked for 1.19.0; historical data):
 
 - server: ~140 MiB RSS idle; a long session adds ~5.6 MiB heap; 16 sessions hold ~86 MiB heap / 242 MiB RSS.
 - browser: ~37 MiB heap with a long session; 59.9 fps scrolling, 30.2ms input echo, 0.08% growth across repeated scrolls.

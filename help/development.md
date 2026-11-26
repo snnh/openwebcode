@@ -246,6 +246,14 @@ manifest 可选声明 `configSchema`（JSON Schema 子集）：设置页据此�
 
 发布前确认 server 依赖的 `@snnh/llm-api` commit 已推送到公开仓库；tag 推送会同时触发 `release` 与 `docker`，两者都从该 tag 的源码树构建。
 
+发布检查清单：
+
+1. 先把用户可见变更写进 `CHANGELOG.md` 的 `## [<version>] - YYYY-MM-DD` 段落（Release 说明直接提取该段，缺失会阻断发布）。
+2. 同步用户文档：`README.md` / `README.en.md`、`help/usage.md`、`help/faq.md`、`help/development.md`、`help/dsh-sync*.md` 与 `packaging/README*.md`；涉及新接口时同时更新设置页文案和实现说明。
+3. 对齐版本号：`core/CMakeLists.txt` 的 `project(VERSION)`、`server/package.json`、`web/package.json` 及两个 lockfile 的根版本；release.yml 会校验 tag 与这些值一致。
+4. 跑 `server` / `web` 的 build、test、lint、knip、contracts-check；涉及 core 时跑 CTest。发布工作流还会跑基准绝对门禁。
+5. 提交后创建 annotated tag：`git tag -a v<version> -m "OpenWebCode v<version>"`，推送 tag 前再核对提交信息与提交者身份不含本地隐私。
+
 staging 契约见 `core/CMakeLists.txt` 末尾注释；从干净源码到本地出包、冒烟的逐步命令见 [`../packaging/README.md`](../packaging/README.md)。
 
 ## 提交规范
