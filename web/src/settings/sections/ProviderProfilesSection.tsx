@@ -45,6 +45,7 @@ const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
   { name: "Anthropic", interfaceType: "anthropic-messages", baseURL: "https://api.anthropic.com" },
   { name: "百度千帆", interfaceType: "openai-chat-completions", baseURL: "https://qianfan.baidubce.com/v2" },
   { name: "DeepSeek", interfaceType: "openai-responses", baseURL: "https://api.deepseek.com/v1" },
+  { name: "Google Gemini（原生）", interfaceType: "gemini-generate-content", baseURL: "https://generativelanguage.googleapis.com/v1beta" },
   { name: "GLM Coding Plan", interfaceType: "openai-chat-completions", baseURL: "https://open.bigmodel.cn/api/coding/paas/v4", codingPlan: true },
   { name: "Kimi Coding Plan", interfaceType: "openai-chat-completions", baseURL: "https://api.kimi.com/coding/v1", codingPlan: true },
   { name: "Moonshot (Kimi)", interfaceType: "openai-chat-completions", baseURL: "https://api.moonshot.cn/v1" },
@@ -193,6 +194,7 @@ export function ModelProvidersSection(): ReactElement {
     "anthropic-messages": "Anthropic Messages",
     "openai-chat-completions": "OpenAI Chat Completions",
     "openai-responses": "OpenAI Responses",
+    "gemini-generate-content": "Google Gemini (generateContent)",
   };
   const modelLabel = (profile: ModelProviderProfileView): string => INTERFACE_LABELS[profile.interfaceType];
 
@@ -249,6 +251,7 @@ export function ModelProvidersSection(): ReactElement {
             <option value="openai-chat-completions">OpenAI Chat Completions</option>
             <option value="openai-responses">OpenAI Responses</option>
             <option value="anthropic-messages">Anthropic Messages</option>
+            <option value="gemini-generate-content">Google Gemini (generateContent)</option>
           </select>
           <input value={modelForm.baseURL} placeholder={t("Base URL（留空使用官方地址）", "Base URL (blank for official endpoint)")} onChange={(event) => updateModelForm({ baseURL: event.target.value })} spellCheck={false} />
           <input type="password" value={modelForm.apiKey} placeholder={modelForm.originalId ? t("API Key（留空保留）", "API Key (blank keeps current)") : "API Key"} onChange={(event) => updateModelForm({ apiKey: event.target.value, clearApiKey: false })} autoComplete="off" />

@@ -125,7 +125,7 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, actionsRef, 
     setModified(spec.source === "agent-write" ? spec.content : fileContent.data?.content);
     setRevision(spec.source === "agent-write" ? undefined : fileContent.data?.revision);
     setDecisions({});
-  }, [fileContent.data?.content, activePath, spec]);
+  }, [fileContent.data?.content, fileContent.data?.revision, activePath, spec]);
   // 切换打开目标时清空文件选择
   useEffect(() => setSelectedPath(undefined), [spec]);
 
@@ -300,22 +300,23 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, actionsRef, 
 
   // App 命令动作面：接受/拒绝当前（首个待处理）hunk、聚焦
   useEffect(() => {
-    if (!actionsRef) return;
-    actionsRef.current.accept = () => {
+    const actions = actionsRef?.current;
+    if (!actions) return;
+    actions.accept = () => {
       if (!canWrite) return;
       if (model.mode === "change") setChangeResolved("accepted");
       else if (pendingHunks.length > 0) acceptHunk(pendingHunks[0]!);
     };
-    actionsRef.current.reject = () => {
+    actions.reject = () => {
       if (!canWrite) return;
       if (model.mode === "change") rejectChange();
       else if (pendingHunks.length > 0) rejectHunk(pendingHunks[0]!);
     };
-    actionsRef.current.focus = () => diffEditorRef.current?.focus();
+    actions.focus = () => diffEditorRef.current?.focus();
     return () => {
-      actionsRef.current.accept = undefined;
-      actionsRef.current.reject = undefined;
-      actionsRef.current.focus = undefined;
+      actions.accept = undefined;
+      actions.reject = undefined;
+      actions.focus = undefined;
     };
   }, [actionsRef, canWrite, model.mode, pendingHunks, acceptHunk, rejectHunk, rejectChange]);
 

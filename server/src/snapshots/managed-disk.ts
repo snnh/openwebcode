@@ -203,7 +203,7 @@ export class ManagedDiskBackend implements SnapshotBackend {
     const detail = this.kind === "vhdx"
       ? "VHDX 差分链（Hyper-V）：需管理员或 Hyper-V Administrators 组；不支持删除单个检查点，最多 32 个检查点"
       : "qcow2 差分链（qemu-nbd）：需 root/免密 sudo；不支持删除单个检查点，最多 32 个检查点";
-    return { backend: this.name, costHint: "instant", requiresAdmin: true, detail };
+    return { backend: this.name, costHint: "instant", requiresAdmin: true, detail, supportsDelete: false };
   }
 
   async create(label: string, messageCount: number, ledger?: unknown, activeLeafId?: string): Promise<Checkpoint> {

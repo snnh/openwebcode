@@ -40,7 +40,7 @@ Browser (React 19 + Vite 6) ── HTTP/WebSocket ──► Node service (agent 
 - **Comparatively complete sandbox**: Job Object / AppContainer / WSB on Windows, bubblewrap / Landlock on Linux.
 - **Git and filesystem-level snapshots**: ZFS / Btrfs / overlayfs / VHDX / qcow2 backends, auto-detected with silent fallback on failure.
 - **Context management**: a tunable auto-compaction threshold and compaction output budget; manual `/compact` validates output against verbatim echoing and degrades gracefully on fast-model failure; rolling eviction, context-entry management, and selective context (pin/exclude) are provided by the official context-saver extension and can be switched off wholesale.
-- **Multi-model support**: Anthropic Messages / OpenAI Chat Completions / OpenAI Responses interfaces; **switch model and thinking tier mid-run** (no interruption to in-flight requests, effective on the next turn).
+- **Multi-model support**: Anthropic Messages / OpenAI Chat Completions / OpenAI Responses / Google Gemini native `generateContent` interfaces; **switch model and thinking tier mid-run** (no interruption to in-flight requests, effective on the next turn).
 - **Agent presets**: switch the prompt and tool set between **classic** (no overrides, default), **minimal** (OWC's own trimmed prompt plus a tool allowlist), **mimicry** (Claude Code / Kimi / ZCode / Codex / DSH presets), and **custom** presets, while keeping the original tool implementations and permission chain underneath; presets are laid out side by side with a global default plus per-session overrides. Specifically tuned for DeepSeek V4 Pro 0813 — with that model, use the `dsh-minimal` mimicry preset or minimal mode.
 - **Sub-agents and agent swarms**: isolated-context parallel dispatch with live progress and transcripts; both plain sub-agents and swarms that can communicate with each other.
 - **A good range of extension points**: skills, slash commands, hooks, custom sub-agents, MCP, and third-party Extension Host packages.
@@ -79,7 +79,7 @@ Note: the loongarch64 package ships no bundled Node.js and requires system Node.
 
 ### Docker (Linux / macOS, x86_64 / arm64)
 
-Release images are hosted on GitHub Container Registry (`ghcr.io/snnh/openwebcode`) with the full runtime baked in (core, Node 24.22.1, bubblewrap, git, python3); user data lives in a named volume:
+Release images are hosted on GitHub Container Registry (`ghcr.io/snnh/openwebcode`) with the full runtime baked in (core, Node 24.22.1, bubblewrap, git ≥ 2.25, python3); user data lives in a named volume:
 
 ```sh
 # 1. Start from the repository root (pulls the GHCR release image)
@@ -107,7 +107,7 @@ docker logs openwebcode | grep 访问链接
 
 ### First run
 
-1. Under **Settings → Model Catalog**, add and enable a model provider (Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses interfaces are all supported), then refresh the catalog.
+1. Under **Settings → Model Catalog**, add and enable a model provider (Anthropic Messages, OpenAI Chat Completions, OpenAI Responses, and Google Gemini native interfaces are all supported), then refresh the catalog.
 2. Click **+** in the sidebar to create a session: pick a working directory, provider/model, and sandbox mode.
 3. Describe the task in the composer and press Enter.
 
@@ -158,7 +158,7 @@ Harness and acceptance gates: [`scripts/bench/`](./scripts/bench/).
 
 ## Build from source
 
-Requirements: Node.js ≥ 24.22.1, CMake ≥ 3.19, a C11 compiler, Python 3 (for the core protocol tests), and Git (for the `@snnh/llm-api` dependency). Each layer builds independently — there is no root `package.json`:
+Requirements: Node.js ≥ 24.22.1, CMake ≥ 3.19, a C11 compiler, Python 3 (for the core protocol tests), and Git ≥ 2.25 (for the `@snnh/llm-api` dependency; git-shadow checkpoint creation also uses `--pathspec-from-file`). Each layer builds independently — there is no root `package.json`:
 
 ```sh
 cmake -S core -B build && cmake --build build && ctest --test-dir build   # core (C executor)
@@ -166,7 +166,7 @@ cd server && npm ci && npm run build && npm test                          # serv
 cd web && npm ci && npm run build && npm test                             # web (served statically by server)
 ```
 
-> Server depends on `@snnh/llm-api` pinned to a git commit; `npm ci` fetches that public repository over Git, so Git must be installed in the build environment.
+> Server depends on `@snnh/llm-api` pinned to a git commit; `npm ci` fetches that public repository over Git, so Git ≥ 2.25 must be installed in the build environment; older versions fail when creating git-shadow checkpoints because `--pathspec-from-file` is unavailable.
 
 ## Data and configuration
 

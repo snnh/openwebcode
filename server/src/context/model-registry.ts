@@ -3,6 +3,7 @@ import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { getUserAgent } from "../user-agent.js";
 import { withTimeout } from "../http-utils.js";
+import { normalizeGeminiBaseURL } from "../providers/gemini-request.js";
 import { lookupModelMetadata, type ModelMetadata } from "./model-metadata.js";
 import {
   getModelProfile,
@@ -28,7 +29,7 @@ interface ModelCredentials {
 
 export interface ModelProviderCredentials {
   provider: string;
-  interfaceType: "anthropic-messages" | "openai-chat-completions" | "openai-responses";
+  interfaceType: "anthropic-messages" | "openai-chat-completions" | "openai-responses" | "gemini-generate-content";
   apiKey?: string;
   baseURL?: string;
 }
@@ -405,27 +406,23 @@ export class ModelRegistry {
         changed = true;
       }
     }
+    const track = (fetched: Promise<CatalogModel[]>, provider: string): Promise<void> => fetched
+      .then((models) => {
+        const result = this.replaceProviderEntries(provider, models);
+        added += result.added;
+        changed ||= result.changed;
+      })
+      .catch((error: unknown) => { errors.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`); });
     for (const entry of configured) {
       if (entry.interfaceType === "anthropic-messages" && entry.apiKey) {
-      tasks.push(
-          this.fetchAnthropicModels(entry, entry.provider)
-            .then((models) => {
-              const result = this.replaceProviderEntries(entry.provider, models);
-              added += result.added;
-              changed ||= result.changed;
-            })
-            .catch((error: unknown) => { errors.push(`${entry.provider}: ${error instanceof Error ? error.message : String(error)}`); }),
-      );
+        tasks.push(track(this.fetchAnthropicModels(entry, entry.provider), entry.provider));
       } else if (entry.interfaceType === "openai-chat-completions" || entry.interfaceType === "openai-responses") {
-      tasks.push(
-          this.fetchOpenAIModels({ ...entry, baseURL: entry.baseURL ?? "https://api.openai.com/v1" }, entry.provider)
-            .then((models) => {
-              const result = this.replaceProviderEntries(entry.provider, models);
-              added += result.added;
-              changed ||= result.changed;
-            })
-            .catch((error: unknown) => { errors.push(`${entry.provider}: ${error instanceof Error ? error.message : String(error)}`); }),
-      );
+        tasks.push(track(
+          this.fetchOpenAIModels({ ...entry, baseURL: entry.baseURL ?? "https://api.openai.com/v1" }, entry.provider),
+          entry.provider,
+        ));
+      } else if (entry.interfaceType === "gemini-generate-content") {
+        tasks.push(track(this.fetchGeminiModels(entry, entry.provider), entry.provider));
       }
     }
     if (tasks.length === 0) errors.push("未配置任何 provider 凭据");
@@ -511,13 +508,13 @@ export class ModelRegistry {
     return response.json();
   }
 
-  private toCatalog(id: string, provider: string, displayName?: string): CatalogModel {
+  private toCatalog(id: string, provider: string, displayName?: string, contextWindow?: number): CatalogModel {
     const metadata: ModelMetadata = lookupModelMetadata(id);
     return {
       id,
       provider,
       ...(displayName && displayName !== id ? { displayName } : {}),
-      contextWindow: metadata.contextWindow,
+      contextWindow: contextWindow ?? metadata.contextWindow,
       capabilities: metadata.capabilities,
       source: "api",
     };
@@ -551,6 +548,31 @@ export class ModelRegistry {
     return (body.data ?? [])
       .filter((entry) => entry.id && isChatModelId(entry.id))
       .map((entry) => this.toCatalog(entry.id!, provider));
+  }
+
+  /** Gemini 原生模型列表：name 形如 models/gemini-…，inputTokenLimit 直接作目录窗口。 */
+  private async fetchGeminiModels(credentials: { apiKey?: string; baseURL?: string }, provider: string): Promise<CatalogModel[]> {
+    const base = normalizeGeminiBaseURL(credentials.baseURL);
+    const headers: Record<string, string> = credentials.apiKey ? { "x-goog-api-key": credentials.apiKey } : {};
+    const models: CatalogModel[] = [];
+    let pageToken: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const query = new URLSearchParams({ pageSize: "1000" });
+      if (pageToken) query.set("pageToken", pageToken);
+      const body = (await this.fetchJson(`${base}/models?${query.toString()}`, headers)) as {
+        models?: Array<{ name?: string; displayName?: string; inputTokenLimit?: number }>;
+        nextPageToken?: string;
+      };
+      for (const entry of body.models ?? []) {
+        const id = entry.name?.replace(/^models\//, "");
+        if (!id || !isChatModelId(id)) continue;
+        const contextWindow = typeof entry.inputTokenLimit === "number" && entry.inputTokenLimit > 0 ? entry.inputTokenLimit : undefined;
+        models.push(this.toCatalog(id, provider, entry.displayName, contextWindow));
+      }
+      if (!body.nextPageToken) break;
+      pageToken = body.nextPageToken;
+    }
+    return models;
   }
 }
 

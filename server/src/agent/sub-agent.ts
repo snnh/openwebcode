@@ -281,8 +281,8 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
             activeTextIndex = assistantContent.length - 1;
           }
         } else if (event.type === "text_end") {
-          // Responses message item 收尾：以权威文本替换 delta 累积块并固化 v1 textSignature
-          // （{v:1,id,phase?}），回放时还原 message item id/phase。
+          // text_end 收尾：以权威文本替换 delta 累积块；Responses 固化 v1 textSignature
+          // （{v:1,id,phase?}），Gemini 固化原生 thoughtSignature。
           const completedText: MessageContent = {
             type: "text",
             text: event.text,
@@ -326,6 +326,8 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
               type: "tool_call",
               id: event.id,
               ...(event.itemId ? { itemId: event.itemId } : {}),
+              ...(event.signature ? { signature: event.signature } : {}),
+              ...(event.providerId ? { providerId: event.providerId } : {}),
               name: event.name,
               input: event.input,
             });

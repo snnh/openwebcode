@@ -4,7 +4,7 @@ import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
 import { ensureDirWithMode } from "./fs-utils.js";
 
-type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses";
+type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses" | "gemini-generate-content";
 export type WebCapability = "search" | "fetch";
 type WebProviderType = "jina" | "brave" | "tavily" | "custom" | "bing" | "searxng" | "exa" | "linkup" | "bocha" | "firecrawl" | "baidu" | "scrapingbee" | "scraperapi" | "zenrows";
 
@@ -141,8 +141,8 @@ export function normalizeModel(value: unknown): ModelProviderProfile {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ProviderProfilesValidationError("模型服务商配置必须是对象");
   const raw = value as Record<string, unknown>;
   const id = requireId(raw.id);
-  if (raw.interfaceType !== "anthropic-messages" && raw.interfaceType !== "openai-chat-completions" && raw.interfaceType !== "openai-responses") {
-    throw new ProviderProfilesValidationError("接口类型必须是 anthropic-messages、openai-chat-completions 或 openai-responses");
+  if (raw.interfaceType !== "anthropic-messages" && raw.interfaceType !== "openai-chat-completions" && raw.interfaceType !== "openai-responses" && raw.interfaceType !== "gemini-generate-content") {
+    throw new ProviderProfilesValidationError("接口类型必须是 anthropic-messages、openai-chat-completions、openai-responses 或 gemini-generate-content");
   }
   const baseURL = optionalHttpUrl(raw.baseURL, "Base URL");
   const apiKey = optionalSecret(raw.apiKey);

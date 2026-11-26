@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { appendFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,9 +13,10 @@ import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { activePathMessages } from "../src/sessions/session-tree.js";
-import { readCheckpoints, writeCheckpoints, type SnapshotBackend } from "../src/snapshots/backend.js";
+import { readCheckpoints, truncateLines, writeCheckpoints, type SnapshotBackend } from "../src/snapshots/backend.js";
 import { acquireSnapshotSessionLock, beginSessionMutation, beginTerminalOpen } from "../src/snapshots/session-lock.js";
 import { BtrfsBackend } from "../src/snapshots/btrfs.js";
+import { captureDenyFiles, denyPathInsideWorkspace, restoreDenyFiles } from "../src/snapshots/deny-preserve.js";
 import { GitShadowSnapshots } from "../src/snapshots/git-shadow.js";
 import { probeSnapshotBackend, probeSnapshotBackendByName, type CommandRunner, type SnapshotProbeDeps } from "../src/snapshots/probe.js";
 import type { OverlayfsCore } from "../src/snapshots/overlayfs.js";
@@ -255,6 +256,10 @@ describe("ZfsBackend", () => {
 });
 
 describe("检查点元数据兼容", () => {
+  it("truncateLines 保留前 N 行并标注总行数；未超限原样返回", () => {
+    expect(truncateLines("a\nb\nc", 2)).toBe("a\nb\n…（截断，共 3 行）");
+    expect(truncateLines("a\nb", 2)).toBe("a\nb");
+  });
   it("损坏的 activeLeafId 只丢字段，不丢整个检查点", async () => {
     const root = await tempRoot("owc-checkpoint-meta-");
     const file = path.join(root, "checkpoints.json");
@@ -267,6 +272,10 @@ describe("检查点元数据兼容", () => {
     expect(list.map((item) => item.id)).toEqual(["snap-1-abcdef", "snap-2-abcdef"]);
     expect(list[0]?.activeLeafId).toBe("leaf-1");
     expect("activeLeafId" in list[1]!).toBe(false);
+    // 默认容错；git-shadow 的 strict 模式必须把损坏元数据暴露出来。
+    await writeFile(file, "{broken", "utf8");
+    expect(await readCheckpoints(file)).toEqual([]);
+    await expect(readCheckpoints(file, { strict: true })).rejects.toThrow();
   });
 });
 
@@ -428,6 +437,7 @@ describe("ManagedDiskBackend qcow2 换叶", () => {
     const { workspaceRoot, mountPoint, base } = await rig();
     const { runner, calls } = makeRunner({ failMount: true });
     const backend = new ManagedDiskBackend({ kind: "qcow2", workspaceRoot, mountPoint, runner });
+    expect(await backend.capability()).toMatchObject({ backend: "qcow2-chain", supportsDelete: false });
     await expect(backend.create("cp", 1, undefined, "leaf-1")).rejects.toThrow(/mount failed/);
     expect(calls.filter((call) => call.includes("qemu-nbd -c")).length).toBeGreaterThanOrEqual(2);
     expect(calls.at(-1)).toBe(`sudo mount /dev/nbd0 ${mountPoint}`);
@@ -477,8 +487,12 @@ describe("snapshot routes", () => {
     const created = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints`, payload: { label: "manual" } });
     expect(created.statusCode).toBe(201);
     const checkpoint = created.json<{ id: string; label: string }>();
+    // 账本只供服务端恢复：REST/WS 只下发摘要，不随列表重复传输上下文副本。
+    expect(created.json()).not.toHaveProperty("ledger");
     const listed = (await app.inject({ method: "GET", url: `/api/sessions/${session.id}/checkpoints` })).json();
     expect(listed).toMatchObject([{ id: checkpoint.id, label: "manual" }]); expect(listed).toHaveLength(1);
+    expect(listed[0]).not.toHaveProperty("ledger");
+    expect(published.find((event) => event.type === "checkpoint.created")?.payload).not.toHaveProperty("ledger");
     expect((await app.inject({ method: "DELETE", url: `/api/sessions/${session.id}/checkpoints/${checkpoint.id}` })).statusCode).toBe(204);
     expect(published.some((event) => event.type === "checkpoint.deleted" && (event.payload as { id?: string }).id === checkpoint.id)).toBe(true);
     expect((await app.inject({ method: "GET", url: `/api/sessions/${session.id}/checkpoints` })).json()).toEqual([]);
@@ -505,7 +519,9 @@ describe("snapshot routes", () => {
     const checkpoint = created.json<{ id: string; messageCount: number }>();
     expect(checkpoint.messageCount).toBe(3);
     await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "later" }]);
-    expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints/${checkpoint.id}/restore`, payload: { confirm: true } })).statusCode).toBe(200);
+    const restored = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints/${checkpoint.id}/restore`, payload: { confirm: true } });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json()).not.toHaveProperty("ledger");
     const afterRestore = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "after" }]);
     const detail = await sessions.get(session.id);
     expect(detail!.messages).toHaveLength(4);
@@ -613,7 +629,9 @@ describe("snapshot routes", () => {
     const checkpoint = created.json<{ id: string }>();
     // 从 a1 续写 u3，然后再回滚：旧实现会把活动叶子设成物理末条 a2。
     await sessions.appendMessage(session.id, "user", [{ type: "text", text: "u3" }]);
-    expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints/${checkpoint.id}/restore`, payload: { confirm: true } })).statusCode).toBe(200);
+    const restored = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints/${checkpoint.id}/restore`, payload: { confirm: true } });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json()).not.toHaveProperty("ledger");
     const detail = await sessions.get(session.id);
     expect(detail!.messages.map((message) => message.id)).toEqual([u1.id, a1.id, u2.id, a2.id]);
     expect(detail!.activeLeafId).toBe(a1.id);
@@ -748,6 +766,21 @@ async function shadowRig(prefix: string) {
   return { workspace, session: path.join(root, "session") };
 }
 
+describe("deny-preserve", () => {
+  it.skipIf(process.platform === "win32")("父目录符号链接不读取/写回工作区外", async () => {
+    const { root, workspace } = await tempWorkspace("owc-deny-symlink-");
+    const outside = path.join(root, "outside");
+    await mkdir(outside);
+    await writeFile(path.join(outside, "secret.txt"), "outside");
+    await symlink(outside, path.join(workspace, "link"), "dir");
+    const target = path.join(workspace, "link", "secret.txt");
+    expect(await denyPathInsideWorkspace(workspace, target)).toBe(false);
+    expect(await captureDenyFiles(workspace, [target])).toEqual([]);
+    await restoreDenyFiles([{ path: target, content: Buffer.from("overwrite"), mode: 0o600, workspace }]);
+    expect(await readFile(path.join(outside, "secret.txt"), "utf8")).toBe("outside");
+  });
+});
+
 describe("GitShadowSnapshots", () => {
   it("空树检查点回退清空工作区；跟踪/未跟踪文件往返 + diff 供 hunk 解析 + ledger 一致", async () => {
     const { workspace, session } = await shadowRig("owc-shadow-");
@@ -771,6 +804,37 @@ describe("GitShadowSnapshots", () => {
     await expect(readFile(path.join(workspace, "new.cache"), "utf8")).rejects.toThrow();
     await expect(readFile(path.join(workspace, "new.txt"), "utf8")).rejects.toThrow();
   });
+  it("回退清除后续检查点新增的已跟踪文件，保留 deny 当前值/缺失状态与字面 exclude 文件", async () => {
+    const { workspace, session } = await shadowRig("owc-shadow-restore-");
+    await writeFiles(workspace, { "app.txt": "v1", ".env": "SECRET=original", ".keep": "keep" });
+    const denyPaths = [path.join(workspace, ".env")];
+    const baseline = new GitShadowSnapshots(session, workspace, { contextExcludes: [".keep"] });
+    const first = await baseline.create("first", 1);
+    await writeFiles(workspace, { "app.txt": "v2", "later.txt": "later", ".env": "SECRET=current" });
+    const guarded = new GitShadowSnapshots(session, workspace, { denyPaths, contextExcludes: [".keep"] });
+    const second = await guarded.create("second", 2);
+    // first 之后新增的 later.txt 已被 second 跟踪：旧 checkout 只更新目标树中的路径，会把它留下。
+    await guarded.restore(first.id);
+    expect(await readFile(path.join(workspace, "app.txt"), "utf8")).toBe("v1");
+    await expect(stat(path.join(workspace, "later.txt"))).rejects.toThrow();
+    // .env 在快照里是旧值，但当前值必须原样保留；.keep 是字面 contextExclude，clean 不得删除。
+    expect(await readFile(path.join(workspace, ".env"), "utf8")).toBe("SECRET=current");
+    expect(await readFile(path.join(workspace, ".keep"), "utf8")).toBe("keep");
+    // 回退前 .env 不存在时，目标快照里的旧 .env 也不能被“造回来”。
+    await rm(path.join(workspace, ".env"));
+    await guarded.restore(second.id);
+    expect(await readFile(path.join(workspace, "app.txt"), "utf8")).toBe("v2");
+    expect(await readFile(path.join(workspace, "later.txt"), "utf8")).toBe("later");
+    await expect(stat(path.join(workspace, ".env"))).rejects.toThrow();
+    expect(await readFile(path.join(workspace, ".keep"), "utf8")).toBe("keep");
+    // 删掉最后一个检查点后影子仓库一并移除，后续仍可继续创建。
+    await guarded.delete(first.id);
+    await guarded.delete(second.id);
+    await expect(stat(path.join(session, "shadow.git"))).rejects.toThrow();
+    expect((await guarded.create("again", 3)).id).toMatch(/^[0-9a-f]{40,64}$/);
+    expect(await guarded.list()).toHaveLength(1);
+  });
+
   // B9：`add -u` 会把「已被跟踪、检查点之后才加入 deny」的路径改动也暂存进快照。
   it("检查点之后加入 deny 的已跟踪文件改动不进快照", async () => {
     const { workspace, session } = await shadowRig("owc-shadow-deny-");

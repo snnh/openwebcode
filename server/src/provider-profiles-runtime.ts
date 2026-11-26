@@ -80,7 +80,7 @@ export class ProviderProfilesRuntime {
       if (!profile.enabled) continue;
       try {
         // 生产注册路径统一按默认 3 并发接线（provider.ts 注释口径），超出排队。
-        // 三种 interfaceType 均交给 @snnh/llm-api 传输层；请求体仍由各协议纯函数构造。
+        // 四种 interfaceType 均交给 @snnh/llm-api 传输层；请求体仍由各协议纯函数构造。
         this.providers.register(new LLMApiProvider({
           name: profile.id,
           interfaceType: profile.interfaceType,

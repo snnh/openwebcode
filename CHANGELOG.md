@@ -2,6 +2,22 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [Unreleased]
+
+### 修复
+
+- **快照回退与传输优化**：git-shadow 回退改用 `read-tree --reset`，会删除检查点之后新增、已被后续检查点跟踪的文件（旧实现只更新目标树中存在的路径，新增文件会残留）；回退前暂存 deny 文件，恢复后写回当前内容，回退前已缺失的 deny 文件不会从旧快照“复活”，deny 暂存改用 `lstat` 不跟随符号链接，并校验父目录真实路径仍在工作区内；字面 `contextExcludes` 文件不再被 `clean` 误删；后来加入排除的已跟踪路径仍受快照回退影响，使用/FAQ 文档已标注。检查点创建把全部扫描路径经 stdin 一次交给 `git add --pathspec-from-file`，大仓库不再按 200 文件拆成数百次 git 进程；同时禁用影子仓库的提交签名与全局 hooks。`GET/POST /checkpoints`、恢复响应与 `checkpoint.*` WS 事件只下发检查点摘要，不再重复传输账本副本；diff 采集设置 1/4 MiB 上限，避免超大 diff 撑爆内存。删除最后一个 git-shadow 检查点时一并移除影子仓库；托管差分链能力声明 `supportsDelete: false`，时间线隐藏不支持的删除操作。
+
+### 新功能
+
+- **Google Gemini 原生协议**：模型服务商新增 `gemini-generate-content` 接口，直接走 `generateContent` / `streamGenerateContent?alt=sse`，支持 `contents/parts`、`systemInstruction`、function calling、thinkingConfig、usage、模型发现与连接测试；请求/回放保留 Gemini `thoughtSignature` 与 `functionCall.id`（文本、思考、工具调用分别落盘并在多轮工具调用中原样回传），工具结果图片/视频以 `inlineData` 投递。当前不映射 Gemini 内置 Google Search（`serverWebSearch` 与其他非 Responses 接口一样忽略），`deferLoading` 标记不生效，显式 prompt cache 断点不适用（依赖端点自动缓存）。设置页新增「Google Gemini（原生）」预设，Base URL 默认可填到 `/v1beta`，API Key 使用 `x-goog-api-key`。
+
+### 工程
+
+- **Git 最低版本**：git-shadow 检查点创建使用 `git add --pathspec-from-file`，明确要求 Git ≥ 2.25；README、开发/使用文档与打包文档已同步，低于该版本会在创建检查点时失败。
+- **快照采集输出有界化**：git-shadow 回退的 `git clean` 改为静默，git 子进程 stderr 限长 64 KiB，无 core 的 fallback 扫描与生产扫描共用深度/节点预算；`truncateLines` 改为流式计数，不再为超大 diff 建整行数组；diff 的 stat 与全文两次只读 git 调用并行执行。
+- **`@snnh/llm-api` 同步**：依赖固定到 `5e72a35`，带上游新增的原生 Gemini `generateContent`、thought signature 字段与 preset 更新；OWC 同步暴露 Gemini 原生接口，原有 Anthropic Messages / OpenAI Chat Completions / OpenAI Responses 请求路径与行为不变。
+
 ## [1.18.0] - 2026-11-22
 
 ### 修复

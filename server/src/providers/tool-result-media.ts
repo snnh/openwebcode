@@ -5,8 +5,10 @@
  * - openai-chat-completions：tool 消息保持纯文本，媒体抽出为紧随其后的合成 user 消息
  *   （image_url / video_url data URL）；
  * - openai-responses：tool 输出同样纯文本，媒体合成 user 消息（input_image）；
- *   视频端点不支持，降级占位文本。
- * 三个 provider 各自在消息映射入口调用本模块，共用同一份收集/降级规则。
+ *   视频端点不支持，降级占位文本；
+ * - gemini-generate-content：tool 输出走 functionResponse，媒体作为同轮 inlineData
+ *   part 追加（gemini-request 消费本模块的收集结果）。
+ * 各 provider 在自己的消息映射入口调用本模块，共用同一份收集/降级规则。
  */
 import type { ChatMessage, ImageContent, VideoContent } from "../sessions/types.js";
 
@@ -26,7 +28,7 @@ const MEDIA_ATTACHMENT_NOTE = "Attached media from tool result:";
  * toolCallId → 附带媒体（仅 data 内联形态；ref 形态由调用方内联后才会有 data，
  * 缺 data 的块不进 provider——与 user 消息图片块的既有口径一致）。
  */
-export function collectToolMedia(messages: ChatMessage[]): Map<string, ToolMediaItem[]> {
+export function collectToolMedia(messages: readonly ChatMessage[]): Map<string, ToolMediaItem[]> {
   const media = new Map<string, ToolMediaItem[]>();
   for (const message of messages) {
     for (const block of message.content) {

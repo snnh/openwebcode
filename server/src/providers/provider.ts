@@ -49,15 +49,15 @@ export interface StreamChatRequest {
 
 export type ProviderEvent =
   | { type: "text_delta"; text: string }
-  /** Responses message item 的 v1 textSignature：{v:1,id,phase?}，落盘供回放 message item
-   * id/phase；与 thinking_end 同语义的文本收尾事件（output_item.done 权威文本兜底后发出）。 */
+  /** 文本收尾事件：Responses 的 v1 textSignature（{v:1,id,phase?}）或 Gemini 的
+   * thoughtSignature，落盘供原样回放；与 thinking_end 同语义（权威文本兜底后发出）。 */
   | { type: "text_end"; text: string; signature?: string }
   | { type: "thinking_delta"; text: string }
   | { type: "thinking_end"; text: string; signature?: string; /** Anthropic redacted_thinking 的密文载荷（此时 text 为空）。 */ redacted?: string }
   /** 工具调用参数流式分片：id 在首个分片就绪后稳定；name 仅在已知时携带；
    * argumentsDelta 是参数 JSON 文本的增量片段（拼接后才是完整 JSON）。 */
   | { type: "tool_call_delta"; id: string; name?: string; argumentsDelta: string }
-  | { type: "tool_call"; id: string; name: string; input: Record<string, unknown>; /** OpenAI Responses function_call item 的原始 id（fc_xxx），随块持久化供回放原样回传。 */ itemId?: string }
+  | { type: "tool_call"; id: string; name: string; input: Record<string, unknown>; /** OpenAI Responses function_call item 的原始 id（fc_xxx），随块持久化供回放原样回传。 */ itemId?: string; /** Gemini functionCall thoughtSignature，随块持久化供回放。 */ signature?: string; /** Gemini functionCall.id，回放时与 functionResponse.id 配对。 */ providerId?: string }
   /** 服务端工具活动（如 Responses API 的 web_search_call）：工具由模型服务端执行，
    * 无需本地调度；仅用于实时活动展示，不落盘、不参与 stopReason 判定。 */
   | { type: "server_tool"; tool: string; phase: "start" | "update" | "end" }
@@ -80,7 +80,7 @@ export interface Provider {
   readonly promptCaching?: boolean | undefined;
   /** 端点接口形态（装配侧已知；与 provider-profiles 的 interfaceType 同词汇表）。
    * 消费方（如 read_media 的视频投递门）按它区分端点能力；未声明（测试 stub 等）按未知处理。 */
-  readonly interfaceType?: "anthropic-messages" | "openai-chat-completions" | "openai-responses" | undefined;
+  readonly interfaceType?: "anthropic-messages" | "openai-chat-completions" | "openai-responses" | "gemini-generate-content" | undefined;
   streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent>;
 }
 

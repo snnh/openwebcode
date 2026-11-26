@@ -6,6 +6,7 @@
  * - openai-chat-completions / openai-responses：GET {baseURL}/models（免费端点）
  * - anthropic-messages：GET {baseURL}/v1/models?limit=1（免费端点；
  *   不做 POST /v1/messages 的 1-token ping，避免产生计费 token）
+ * - gemini-generate-content：GET {baseURL}/models?pageSize=1（x-goog-api-key）
  *
  * 边界：5 秒超时、不跟随重定向（redirect: manual）、不读取响应体
  * （仅按状态码分类，响应体直接取消，天然不受响应大小影响）。
@@ -13,6 +14,7 @@
  */
 import { getUserAgent } from "./user-agent.js";
 import { withTimeout } from "./http-utils.js";
+import { GEMINI_DEFAULT_BASE_URL, normalizeGeminiBaseURL } from "./providers/gemini-request.js";
 import type { ModelProviderProfile } from "./provider-profiles.js";
 
 const PROVIDER_TEST_TIMEOUT_MS = 5000;
@@ -25,18 +27,24 @@ const DEFAULT_BASE_URL: Record<ModelProviderProfile["interfaceType"], string> = 
   "anthropic-messages": "https://api.anthropic.com",
   "openai-chat-completions": "https://api.openai.com/v1",
   "openai-responses": "https://api.openai.com/v1",
+  "gemini-generate-content": GEMINI_DEFAULT_BASE_URL,
 };
 
 export async function testModelProviderConnection(
   profile: ModelProviderProfile,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ProviderConnectionTestResult> {
-  const base = (profile.baseURL ?? DEFAULT_BASE_URL[profile.interfaceType]).replace(/\/$/, "");
+  const gemini = profile.interfaceType === "gemini-generate-content";
+  const base = gemini
+    ? normalizeGeminiBaseURL(profile.baseURL)
+    : (profile.baseURL ?? DEFAULT_BASE_URL[profile.interfaceType]).replace(/\/$/, "");
   const anthropic = profile.interfaceType === "anthropic-messages";
-  const url = anthropic ? `${base}/v1/models?limit=1` : `${base}/models`;
+  const url = anthropic ? `${base}/v1/models?limit=1` : gemini ? `${base}/models?pageSize=1` : `${base}/models`;
   const headers: Record<string, string> = anthropic
     ? { "User-Agent": getUserAgent(), "x-api-key": profile.apiKey ?? "", "anthropic-version": "2023-06-01" }
-    : { "User-Agent": getUserAgent(), ...(profile.apiKey ? { authorization: `Bearer ${profile.apiKey}` } : {}) };
+    : gemini
+      ? { "User-Agent": getUserAgent(), ...(profile.apiKey ? { "x-goog-api-key": profile.apiKey } : {}) }
+      : { "User-Agent": getUserAgent(), ...(profile.apiKey ? { authorization: `Bearer ${profile.apiKey}` } : {}) };
 
   const started = Date.now();
   let response: Response;

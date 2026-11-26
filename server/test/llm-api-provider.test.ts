@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildGeminiBody } from "../src/providers/gemini-request.js";
 import { LLMApiProvider } from "../src/providers/llm-api-provider.js";
 import type { ProviderEvent, StreamChatRequest } from "../src/providers/provider.js";
 import type { ChatMessage } from "../src/sessions/types.js";
@@ -138,6 +139,98 @@ describe("LLMApiProvider transport", () => {
     expect(JSON.parse(textEnd.signature ?? "{}")).toEqual({ v: 1, id: "msg_1", phase: "final_answer" });
     expect(events.find((event) => event.type === "usage")).toEqual({ type: "usage", inputTokens: 6, outputTokens: 2, cacheRead: 3, cacheWrite: 1 });
     expect(events.at(-1)).toEqual({ type: "done", stopReason: "end_turn" });
+  });
+
+
+  it("gemini：native wire 路径/鉴权、thinking/text/tool 签名与 usage", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    let url = "";
+    let headers: Headers | undefined;
+    const provider = new LLMApiProvider({
+      name: "gemini",
+      interfaceType: "gemini-generate-content",
+      baseURL: "https://generativelanguage.googleapis.com",
+      apiKey: "google-key",
+      fetch: (async (input, init) => {
+        url = String(input);
+        headers = new Headers(init?.headers);
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return sse([{
+          candidates: [{
+            content: { parts: [
+              { text: "想", thought: true, thoughtSignature: "sig-think" },
+              { text: "答", thoughtSignature: "sig-text" },
+              { functionCall: { id: "fc1", name: "bash", args: { cmd: "ls" } }, thoughtSignature: "sig-call" },
+            ] },
+            finishReason: "STOP",
+          }],
+          usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 2, thoughtsTokenCount: 3, cachedContentTokenCount: 1 },
+        }]);
+      }) as typeof fetch,
+    });
+    const events = await collect(provider, request({
+      model: "gemini-3.8-flash",
+      messages: [message("u1", "user", "hi")],
+      tools: [{ name: "bash", description: "run", inputSchema: { type: "object" } }],
+    }));
+    expect(url).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse");
+    expect(headers?.get("x-goog-api-key")).toBe("google-key");
+    expect(bodies[0]).toMatchObject({
+      contents: [{ role: "user", parts: [{ text: "hi" }] }],
+      tools: [{ functionDeclarations: [{ name: "bash", description: "run" }] }],
+    });
+    expect(events.filter((event) => event.type === "thinking_end")).toEqual([{ type: "thinking_end", text: "想", signature: "sig-think" }]);
+    expect(events.filter((event) => event.type === "text_end")).toEqual([{ type: "text_end", text: "答", signature: "sig-text" }]);
+    expect(events.filter((event) => event.type === "tool_call")).toEqual([
+      { type: "tool_call", id: "fc1", name: "bash", input: { cmd: "ls" }, signature: "sig-call", providerId: "fc1" },
+    ]);
+    expect(events.find((event) => event.type === "usage")).toEqual({ type: "usage", inputTokens: 9, outputTokens: 5, cacheRead: 1, cacheWrite: 0 });
+    expect(events.at(-1)).toEqual({ type: "done", stopReason: "tool_use" });
+  });
+
+  it("gemini：历史 thinking/tool_call/functionResponse 原样回放，中断结果补占位", () => {
+    const messages: ChatMessage[] = [
+      message("u1", "user", "看看"),
+      {
+        id: "a1", role: "assistant", createdAt: at(1), content: [
+          { type: "thinking", text: "想", signature: "sig-think", provider: "gemini" },
+          { type: "text", text: "答", textSignature: "sig-text" },
+          { type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" }, signature: "sig-call", providerId: "fc1" },
+          { type: "tool_call", id: "call_2", name: "read_file", input: { path: "a" } },
+        ],
+      },
+      {
+        id: "t1", role: "tool", createdAt: at(2), content: [
+          { type: "tool_result", toolCallId: "call_1", content: "{\"ok\":true}", isError: false },
+        ],
+      },
+    ];
+    const body = buildGeminiBody(request({
+      model: "gemini-3.8-flash",
+      system: "sys",
+      messages,
+      thinking: "enabled",
+      effort: "high",
+      maxTokens: 100,
+      temperature: 0.2,
+    }), { providerName: "gemini" });
+    const contents = body.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+    expect(body.systemInstruction).toEqual({ parts: [{ text: "sys" }] });
+    expect(body.generationConfig).toEqual({ maxOutputTokens: 100, temperature: 0.2, thinkingConfig: { thinkingLevel: "high", includeThoughts: true } });
+    expect(contents[1]?.role).toBe("model");
+    expect(contents[1]?.parts).toEqual([
+      { text: "想", thought: true, thoughtSignature: "sig-think" },
+      { text: "答", thoughtSignature: "sig-text" },
+      { functionCall: { id: "fc1", name: "bash", args: { cmd: "ls" } }, thoughtSignature: "sig-call" },
+      { functionCall: { name: "read_file", args: { path: "a" } } },
+    ]);
+    expect(contents[2]).toEqual({
+      role: "user",
+      parts: [
+        { functionResponse: { id: "fc1", name: "bash", response: { ok: true } } },
+        { functionResponse: { name: "read_file", response: { error: expect.stringContaining("interrupted") } } },
+      ],
+    });
   });
 
   it("HTTP 错误映射为 ProviderError 分类（401 不重试）", async () => {

@@ -209,7 +209,7 @@ export class ChatRunner {
         // thinking 块带 provider 字段随 assistant 消息落盘：OpenAI 兼容接口的思维链回传
         // 依赖历史中的同源 thinking 素材（DeepSeek 思维模式强制，缺素材会 400）。
         let hasToolCall = false;
-        const toolCalls: { id: string; name: string; input: Record<string, unknown>; itemId?: string }[] = [];
+        const toolCalls: { id: string; name: string; input: Record<string, unknown>; itemId?: string; signature?: string; providerId?: string }[] = [];
         // 本响应 tool_call id 去重表（落盘与执行共用同一份 toolCalls，去重后两处天然一致）
         const turnToolCallIds: ToolCallIdRegistry = new Set();
         const assistantMsgContent: MessageContent[] = [];
@@ -228,8 +228,8 @@ export class ChatRunner {
             }
             textPersisted = true;
           } else if (event.type === "text_end") {
-            // Responses message item 收尾：以权威文本替换 delta 累积块并固化 v1 textSignature
-            // （{v:1,id,phase?}），回放时还原 message item id/phase。
+            // text_end 收尾：以权威文本替换 delta 累积块；Responses 固化 v1 textSignature
+            // （{v:1,id,phase?}），Gemini 固化原生 thoughtSignature。
             const completedText: MessageContent = {
               type: "text",
               text: event.text,
@@ -270,7 +270,14 @@ export class ChatRunner {
             hasToolCall = true;
             // 同一响应内重复 id 只保留首个：重复会让一条 tool_use 落两份结果，下轮请求被端点拒绝
             if (recordToolCallId(turnToolCallIds, event.id, event.name, "chat-runner")) {
-              toolCalls.push({ id: event.id, name: event.name, input: event.input, ...(event.itemId ? { itemId: event.itemId } : {}) });
+              toolCalls.push({
+                id: event.id,
+                name: event.name,
+                input: event.input,
+                ...(event.itemId ? { itemId: event.itemId } : {}),
+                ...(event.signature ? { signature: event.signature } : {}),
+                ...(event.providerId ? { providerId: event.providerId } : {}),
+              });
               onToolCall?.({ id: event.id, name: event.name });
             }
           } else if (event.type === "web_search_call") {
@@ -296,6 +303,8 @@ export class ChatRunner {
             type: "tool_call",
             id: tc.id,
             ...(tc.itemId ? { itemId: tc.itemId } : {}),
+            ...(tc.signature ? { signature: tc.signature } : {}),
+            ...(tc.providerId ? { providerId: tc.providerId } : {}),
             name: tc.name,
             input: tc.input,
           });

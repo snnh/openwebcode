@@ -1,6 +1,7 @@
 import { createLLM, isLLMError, type ChatRequest, type LLM, type LLMEvent, type LLMConfig } from "@snnh/llm-api";
 import { getUserAgent } from "../user-agent.js";
 import { buildAnthropicBody, type AnthropicProviderOptions } from "./anthropic-request.js";
+import { buildGeminiBody, normalizeGeminiBaseURL } from "./gemini-request.js";
 import { classifyHttpError, normalizeProviderError, ProviderError } from "./provider-error.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 import { buildOpenAICompatibleBody, type OpenAICompatibleProviderOptions } from "./openai-compatible-provider.js";
@@ -9,7 +10,7 @@ import { encodeTextSignatureV1 } from "./responses-replay.js";
 
 export interface LLMApiProviderOptions {
   name: string;
-  interfaceType: "anthropic-messages" | "openai-chat-completions" | "openai-responses";
+  interfaceType: "anthropic-messages" | "openai-chat-completions" | "openai-responses" | "gemini-generate-content";
   baseURL?: string;
   apiKey?: string;
   promptCaching?: boolean;
@@ -49,6 +50,9 @@ export class LLMApiProvider implements Provider {
     const anthropic = this.interfaceType === "anthropic-messages";
     const anthropicBase = (this.options.baseURL ?? "https://api.anthropic.com").replace(/\/+$/, "");
     const anthropicPath = anthropicBase.endsWith("/v1") ? "/messages" : "/v1/messages";
+    const baseURL = this.interfaceType === "gemini-generate-content"
+      ? normalizeGeminiBaseURL(this.options.baseURL)
+      : this.options.baseURL;
     return {
       version: 1,
       force: true,
@@ -60,7 +64,7 @@ export class LLMApiProvider implements Provider {
         // baseURL 则已含 /v1，故只在 Anthropic 上补 path。
         ...(anthropic
           ? { baseUrl: anthropicBase, path: anthropicPath }
-          : this.options.baseURL ? { baseUrl: this.options.baseURL } : {}),
+          : baseURL ? { baseUrl: baseURL } : {}),
         ...(this.options.apiKey ? { apiKey: this.options.apiKey } : {}),
         // 生产并发上限由 ProviderRegistry 的 ConcurrencyLimitedProvider 统一包装，
         // 这里不再叠加第二队列。重试同理收口在 collectProviderTurn。
@@ -94,6 +98,11 @@ export class LLMApiProvider implements Provider {
         promptCaching: this.promptCaching,
       };
       body = buildAnthropicBody(request, options);
+    } else if (this.interfaceType === "gemini-generate-content") {
+      body = buildGeminiBody(request, {
+        providerName: this.name,
+        ...(this.options.extraBody ? { extraBody: this.options.extraBody } : {}),
+      });
     } else if (this.interfaceType === "openai-responses") {
       const options: OpenAIResponsesProviderOptions = {
         name: this.name,
@@ -150,6 +159,10 @@ export class LLMApiProvider implements Provider {
       case "done":
         return event;
       case "text_end":
+        // Gemini 的 text_end.signature 是原生 thoughtSignature；Responses 则是 v1 item 签名。
+        if (this.interfaceType === "gemini-generate-content") {
+          return { type: "text_end", text: event.text, ...(event.signature ? { signature: event.signature } : {}) };
+        }
         if (this.interfaceType !== "openai-responses") return undefined;
         return {
           type: "text_end",

@@ -37,7 +37,7 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 - **相对完善的沙盒**：Windows Job Object / AppContainer / WSB，Linux bubblewrap / Landlock。
 - **git 与文件系统级快照**：ZFS / Btrfs / overlayfs / VHDX / qcow2 多种后端，自动探测、失败静默回落。
 - **上下文管理**：可调的自动压缩阈值与压缩输出预算；手动 `/compact` 校验输出防复述、快速模型失败优雅降级；滚动驱逐、上下文条目管理与选择性上下文（pin/exclude）由官方 context-saver 扩展提供，可整体关闭。
-- **多模型适配**：支持 Anthropic Messages / OpenAI Chat Completions / OpenAI Responses 三大接口；**运行中可直接更换模型与思考档**（不打断在途请求，下一轮生效）。
+- **多模型适配**：支持 Anthropic Messages / OpenAI Chat Completions / OpenAI Responses / Google Gemini 原生 `generateContent` 四大接口；**运行中可直接更换模型与思考档**（不打断在途请求，下一轮生效）。
 - **Agent 预设**：提示词与工具集在**经典**（零侵入，默认）、**精简**（OWC 原生精简提示词 + 工具白名单）、**拟态**（Claude Code / Kimi / ZCode / Codex / DSH 五档）与**自定义**之间切换，底层工具实现与权限链不变；设置页平铺选择，全局默认 + 会话级覆盖。已对 DeepSeek V4 Pro 0813 专项适配——使用该模型时可用 `dsh-minimal` 拟态或精简模式。
 - **子代理与 agent swarm**：隔离上下文的并行派发，可见进度与转录；普通子代理与可互相沟通的子代理集群。
 - **较多的扩展支持**：Skills、斜杠命令、Hooks、自定义子代理、MCP 和 Extension Host 第三方扩展。
@@ -76,7 +76,7 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 
 ### Docker（Linux / macOS，x86_64 / arm64）
 
-发布镜像托管在 GitHub Container Registry（`ghcr.io/snnh/openwebcode`），内置完整运行时（core、Node 24.22.1、bubblewrap、git、python3），数据目录可持久化：
+发布镜像托管在 GitHub Container Registry（`ghcr.io/snnh/openwebcode`），内置完整运行时（core、Node 24.22.1、bubblewrap、git ≥ 2.25、python3），数据目录可持久化：
 
 ```sh
 # 1. 在仓库根目录启动（拉取 GHCR 发布镜像）
@@ -104,7 +104,7 @@ docker logs openwebcode | grep 访问链接
 
 ### 首次使用
 
-1. 在 **设置 → 模型目录** 添加并启用一个模型服务商（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses），然后刷新模型目录。
+1. 在 **设置 → 模型目录** 添加并启用一个模型服务商（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses / Google Gemini 原生），然后刷新模型目录。
 2. 点侧栏的 **+** 新建会话，选工作目录、服务商/模型和沙盒模式。
 3. 在输入框里描述任务，回车发送。
 
@@ -155,7 +155,7 @@ v1.18.0 实测（Linux x86-64，5000 条消息会话）：
 
 ## 从源码构建
 
-需要 Node.js ≥ 24.22.1、CMake ≥ 3.19、C11 编译器、Python 3（core 协议测试用）和 Git（拉取 `@snnh/llm-api` 依赖）。三层各自独立构建，仓库根目录没有 `package.json`：
+需要 Node.js ≥ 24.22.1、CMake ≥ 3.19、C11 编译器、Python 3（core 协议测试用）和 Git ≥ 2.25（拉取 `@snnh/llm-api` 依赖，并供 git-shadow 快照创建使用 `--pathspec-from-file`）。三层各自独立构建，仓库根目录没有 `package.json`：
 
 ```sh
 cmake -S core -B build && cmake --build build && ctest --test-dir build   # core（C 执行器）
@@ -163,7 +163,7 @@ cd server && npm ci && npm run build && npm test                          # serv
 cd web && npm ci && npm run build && npm test                             # web（产物由 server 静态托管）
 ```
 
-> server 的 `@snnh/llm-api` 以 git commit 固定；`npm ci` 会通过 Git 拉取该公开仓库，构建环境需安装 Git。
+> server 的 `@snnh/llm-api` 以 git commit 固定；`npm ci` 会通过 Git 拉取该公开仓库，构建环境需安装 Git ≥ 2.25；低于该版本时 git-shadow 检查点创建会因 `--pathspec-from-file` 不可用而失败。
 
 ## 数据与配置
 

@@ -182,11 +182,40 @@ describe("ProviderProfilesService", () => {
       expect(wired).toContain("fetch:Jina");
     } finally { runtime.stop(); }
   });
+  it("Gemini 原生档案：热注册、x-goog-api-key 拉取 models/ 前缀模型并写入窗口", async () => {
+    const s = await fixture();
+    const providers = new ProviderRegistry();
+    const agent = {
+      setSearchProvider: () => undefined,
+      setWebFetchProvider: () => undefined,
+    } as unknown as AgentRunner;
+    const calls: Array<{ url: string; headers: unknown }> = [];
+    const models = await ModelRegistry.load({
+      snapshotPath: path.join(s.root, "models.json"),
+      manualPath: path.join(s.root, "models.manual.json"),
+      fetchImpl: (async (input, init) => {
+        calls.push({ url: String(input), headers: init?.headers });
+        return new Response(JSON.stringify({ models: [{ name: "models/gemini-3.8-flash", displayName: "Gemini 3.8 Flash", inputTokenLimit: 1_000_000 }] }), { headers: { "content-type": "application/json" } });
+      }) as typeof fetch,
+    });
+    const runtime = new ProviderProfilesRuntime(s.service, providers, agent, models, new EventBus());
+    runtime.start();
+    try {
+      await s.service.upsertModel(undefined, { id: "Google Native", enabled: true, interfaceType: "gemini-generate-content", apiKey: "google-key" });
+      expect(providers.list()).toEqual(["Google Native"]);
+      await vi.waitFor(() => expect(models.list()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "gemini-3.8-flash", provider: "Google Native", contextWindow: 1_000_000, displayName: "Gemini 3.8 Flash" }),
+      ])));
+      expect(calls[0]?.url).toBe("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000");
+      expect(calls[0]?.headers).toMatchObject({ "x-goog-api-key": "google-key" });
+    } finally { runtime.stop(); }
+  });
 });
 describe("POST /api/provider-profiles/test", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
   const openaiBody = { id: "测试服务", interfaceType: "openai-chat-completions", baseURL: "https://api.example.test/v1", apiKey: "sk-test" };
   const anthropicBody = { id: "Claude", interfaceType: "anthropic-messages", apiKey: "sk-ant" };
+  const geminiBody = { id: "Gemini", interfaceType: "gemini-generate-content", baseURL: "https://generativelanguage.googleapis.com", apiKey: "google-key" };
   const connectionApp = async () => (await makeTestApp({ tempPrefix: "owc-provider-test-", providerProfiles: true })).app;
   const stubFetchStatus = (status: number) => {
     const handler = vi.fn(async () => new Response(null, { status }));
@@ -194,7 +223,7 @@ describe("POST /api/provider-profiles/test", () => {
     return handler;
   };
   const post = (app: Awaited<ReturnType<typeof connectionApp>>, payload: Record<string, unknown>) => app.inject({ method: "POST", url: "/api/provider-profiles/test", payload });
-  it("两家接口的成功探测形状（URL/鉴权头/不跟重定向）与请求体校验 400", async () => {
+  it("三种接口的成功探测形状（URL/鉴权头/不跟重定向）与请求体校验 400", async () => {
     const app = await connectionApp();
     try {
       const openai = stubFetchStatus(200);
@@ -209,6 +238,12 @@ describe("POST /api/provider-profiles/test", () => {
       const [anthUrl, anthInit] = anthropic.mock.calls[0] as [string, RequestInit];
       expect(anthUrl).toBe("https://api.anthropic.com/v1/models?limit=1");
       expect(anthInit.headers).toMatchObject({ "x-api-key": "sk-ant", "anthropic-version": "2023-06-01" });
+      const gemini = stubFetchStatus(200);
+      const gem = await post(app, geminiBody);
+      expect([gem.statusCode, gem.json()]).toMatchObject([200, { ok: true }]);
+      const [gemUrl, gemInit] = gemini.mock.calls[0] as [string, RequestInit];
+      expect(gemUrl).toBe("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1");
+      expect(gemInit.headers).toMatchObject({ "x-goog-api-key": "google-key" });
       const badInterface = await post(app, { id: "坏配置", interfaceType: "graphql" }); // 校验复用 provider-profiles 口径
       const missingKey = await post(app, { id: "Claude", interfaceType: "anthropic-messages" });
       expect(badInterface.statusCode).toBe(400);

@@ -56,7 +56,7 @@ openwebcode/
 - Node.js ≥ 24.22.1（CI、Docker 镜像、发行包内置 Node 与 `engines.node` 同一版本）
 - CMake ≥ 3.19、C11 编译器（Windows MSVC / Linux gcc 或 clang）
 - Python 3（跑 core 协议测试）
-- Git（server 的 `@snnh/llm-api` 以公开 git commit 固定，`npm ci` 需要 Git 拉取；Docker builder 已安装）
+- Git ≥ 2.25（server 的 `@snnh/llm-api` 以公开 git commit 固定，`npm ci` 需要 Git 拉取；git-shadow 快照创建使用 `--pathspec-from-file`；Docker builder 已安装）
 
 ## 构建与测试
 
@@ -113,7 +113,7 @@ cd web && npm run dev
 
 浏览器开 5173，API 请求由 Vite proxy 转到 3210。不设 `OWC_CORE_PATH` 时 server 按源码树相对位置找，开发态通常也能找到。
 
-第一次联调没有服务商配置：在设置页添加并启用一个服务商（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses 三种接口），刷新模型目录后新建会话。
+第一次联调没有服务商配置：在设置页添加并启用一个服务商（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses / Google Gemini 原生四种接口），刷新模型目录后新建会话。
 
 ### 数据目录
 
@@ -161,15 +161,15 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 
 ### 加一个 LLM provider / 接口类型
 
-1. 模型调用统一走 `@snnh/llm-api`（`server/src/providers/llm-api-provider.ts`）：认证、超时、SSE 分帧、usage/error 归一由库负责；OWC 只保留协议请求体构造与事件映射。依赖以 git commit 固定，且库内提交了 `dist/` 以支持 `npm ci --ignore-scripts`；`npm ci` 通过 Git 拉取公开仓库，构建环境需安装 Git。
-2. 新接口类型先在 `@snnh/llm-api` 增加 adapter（`src/*.ts` + `types.ts`），再给 `LLMApiProvider` 增加请求体构造分支；`Provider` 接口（`name` + `streamChat(req): AsyncIterable<ProviderEvent>`）与事件类型见 `providers/provider.ts`。
+1. 模型调用统一走 `@snnh/llm-api`（`server/src/providers/llm-api-provider.ts`）：认证、超时、SSE 分帧、usage/error 归一由库负责；OWC 只保留协议请求体构造与事件映射。依赖以 git commit 固定，且库内提交了 `dist/` 以支持 `npm ci --ignore-scripts`；`npm ci` 通过 Git 拉取公开仓库，构建环境需安装 Git ≥ 2.25（git-shadow 快照创建使用 `--pathspec-from-file`）。
+2. 新接口类型先在 `@snnh/llm-api` 增加 adapter（`src/*.ts` + `types.ts`），再给 `LLMApiProvider` 增加请求体构造分支；Gemini 原生的请求体在 `providers/gemini-request.ts`（含 thinking/tool 签名回放与 functionResponse 配对）。`Provider` 接口（`name` + `streamChat(req): AsyncIterable<ProviderEvent>`）与事件类型见 `providers/provider.ts`。
 3. 装配在 `provider-profiles-runtime.ts`：按服务商配置的 `interfaceType` 实例化 `LLMApiProvider` 并 `providers.register(...)`。新接口类型要同步加进 `provider-profiles.ts` 的 `ModelInterfaceType` 校验和设置页下拉。
 4. 配置项走 `settings-service.ts` 的 `FIELDS` 声明式（group/label/env/validate/restartRequired）。
-5. 测试：协议请求体可在 `anthropic-request.ts` / `openai-compatible-provider.ts` / `openai-responses-provider.ts` 的纯函数上断言；传输/事件边界用 `test/llm-api-provider.test.ts` 的 fake fetch。
+5. 测试：协议请求体可在 `anthropic-request.ts` / `openai-compatible-provider.ts` / `openai-responses-provider.ts` / `gemini-request.ts` 的纯函数上断言；传输/事件边界用 `test/llm-api-provider.test.ts` 的 fake fetch。
 
 ### 加一个快照后端
 
-1. `server/src/snapshots/` 下加实现，参照 `btrfs.ts` / `zfs.ts` / `git-shadow.ts`，实现 `backend.ts` 的 `SnapshotBackend` 接口。
+1. `server/src/snapshots/` 下加实现，参照 `btrfs.ts` / `zfs.ts` / `git-shadow.ts`，实现 `backend.ts` 的 `SnapshotBackend` 接口；`capability()` 可声明 `supportsDelete: false`，Web 时间线据此隐藏逐个删除入口。
 2. `diff()` 优先复用 `tree-diff.ts` 的 `diffTrees()`（有界遍历双侧树 + per-file `git diff --no-index`，输出与 git-shadow 同形、web 可直接 hunk 解析；系统无 git 时返回 null，后端如实降级为自产摘要）。
 2. 探测链在 `snapshots/probe.ts` 的 `probeSnapshotBackend()`：Linux 依次试 btrfs → zfs → overlayfs → git shadow，Windows 试 ReFS → git shadow。任何一步失败静默回落，新后端按同样方式插进链里。
 3. 需要 core 协助（新 RPC 方法）时走下面的六方同步流程。

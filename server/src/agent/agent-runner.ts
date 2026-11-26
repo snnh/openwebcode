@@ -65,6 +65,7 @@ import {
   WEB_SEARCH_TOOL,
 } from "./tool-schemas.js";
 import type { CronScheduler } from "../cron-scheduler.js";
+import { checkpointSummary } from "../snapshots/backend.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import { acquireSnapshotSessionLock, isTerminalOpening } from "../snapshots/session-lock.js";
 import { ToolAliasResolver, normalizeBuiltinToolInput } from "./tool-alias.js";
@@ -1398,7 +1399,7 @@ export class AgentRunner {
           const checkpoint = await (await getSnapshotBackend(this.sessions, configuredSession, { core: this.core }))
             .create(text.slice(0, 80) || "User message", snapshotMessageCount, prepared.ledger, snapshotActiveLeafId);
           this.autoSnapshotSkipNotified.delete(sessionId);
-          this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
+          this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpointSummary(checkpoint) });
         } catch (error) {
           this.events.publish({
             source: "session",
@@ -1952,8 +1953,8 @@ export class AgentRunner {
               activeTextIndex = assistantContent.length - 1;
             }
           } else if (event.type === "text_end") {
-            // Responses message item 收尾：以权威文本替换 delta 累积块，并固化 v1 textSignature
-            // （{v:1,id,phase?}），回放时还原 message item id/phase。
+            // text_end 收尾：以权威文本替换 delta 累积块；Responses 固化 v1 textSignature
+            // （{v:1,id,phase?}），Gemini 固化原生 thoughtSignature。
             const completedText: MessageContent = {
               type: "text",
               text: event.text,
@@ -1998,6 +1999,8 @@ export class AgentRunner {
                 type: "tool_call",
                 id: event.id,
                 ...(event.itemId ? { itemId: event.itemId } : {}),
+                ...(event.signature ? { signature: event.signature } : {}),
+                ...(event.providerId ? { providerId: event.providerId } : {}),
                 name: event.name,
                 input: event.input,
               });
@@ -2723,9 +2726,9 @@ export class AgentRunner {
     if (sniffed.kind === "video" && !mediaCapability.video) {
       throw new Error("The current model does not declare video input. Switch to a video-capable model, or enable the vision-tools extension.");
     }
-    // 视频仅 openai 兼容（chat/completions）端点可投递（video_url data URL）；其余端点无视频形态
-    if (sniffed.kind === "video" && mediaCapability.providerInterface !== "openai-chat-completions") {
-      throw new Error("Video tool results can only be delivered to OpenAI-compatible (chat/completions) providers. Switch to such a provider, or extract frames and read them as images.");
+    // 视频仅 OpenAI Chat Completions（video_url）与 Gemini 原生（inlineData）可投递；其余端点无视频形态
+    if (sniffed.kind === "video" && mediaCapability.providerInterface !== "openai-chat-completions" && mediaCapability.providerInterface !== "gemini-generate-content") {
+      throw new Error("Video tool results can only be delivered to OpenAI-compatible (chat/completions) or Gemini native providers. Switch to such a provider, or extract frames and read them as images.");
     }
     if (sniffed.kind === "image" && base64.length > MAX_IMAGE_BASE64_CHARS) {
       throw new Error(`Image is too large to attach (${Math.round(bytes.length / 1024)} KB; the limit is about 5 MB). Downscale or crop the image first, then retry.`);

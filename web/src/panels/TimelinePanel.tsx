@@ -41,6 +41,7 @@ export function TimelinePanel({ sessionId, running }: {
     enabled: Boolean(sessionId && selectedCheckpoint),
   });
   const treeRef = useRef<HTMLDivElement>(null);
+  const canDelete = capability.data !== undefined && capability.data.supportsDelete !== false;
   const activeLeafId = timeline.data?.activeLeafId;
   const treeEntryCount = timeline.data?.entries.length ?? 0;
   // 会话树加载/检出后，滚动让当前叶节点可见（jsdom 无 scrollIntoView 时跳过）
@@ -87,7 +88,7 @@ export function TimelinePanel({ sessionId, running }: {
           disabled={running}
           title={running ? t("运行中无法创建检查点", "Cannot create a checkpoint while running") : t("以当前状态创建检查点", "Create a checkpoint from the current state")}
           onClick={() => {
-            api.createCheckpoint(sessionId)
+            api.createCheckpoint(sessionId, t("手动检查点", "Manual checkpoint"))
               .then(() => { refresh(); ui.notify(t("已创建检查点", "Checkpoint created")); })
               .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("创建检查点失败", "Could not create checkpoint"), "error"));
           }}
@@ -186,27 +187,29 @@ export function TimelinePanel({ sessionId, running }: {
             >
               {t("仅文件", "Files only")}
             </button>
-            <button
-              className="btn small danger-outline"
-              disabled={running}
-              title={t("删除该检查点", "Delete this checkpoint")}
-              onClick={() => confirm.ask({
-                title: t("删除检查点", "Delete checkpoint"),
-                body: t(`删除检查点「${checkpoint.label}」？快照数据将一并移除。`, `Delete checkpoint “${checkpoint.label}”? Its snapshot data will also be removed.`),
-                confirmLabel: t("删除", "Delete"),
-                onConfirm: () => {
-                  api.deleteCheckpoint(sessionId, checkpoint.id)
-                    .then(() => {
-                      setSelectedCheckpoint((value) => (value === checkpoint.id ? undefined : value));
-                      refresh();
-                      ui.notify(t("已删除检查点", "Checkpoint deleted"));
-                    })
-                    .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("删除检查点失败", "Could not delete checkpoint"), "error"));
-                },
-              })}
-            >
-              <Icon name="trash" size={12} />
-            </button>
+            {canDelete && (
+              <button
+                className="btn small danger-outline"
+                disabled={running}
+                title={t("删除该检查点", "Delete this checkpoint")}
+                onClick={() => confirm.ask({
+                  title: t("删除检查点", "Delete checkpoint"),
+                  body: t(`删除检查点「${checkpoint.label}」？工作区当前文件不受影响。`, `Delete checkpoint “${checkpoint.label}”? Current workspace files are not affected.`),
+                  confirmLabel: t("删除", "Delete"),
+                  onConfirm: () => {
+                    api.deleteCheckpoint(sessionId, checkpoint.id)
+                      .then(() => {
+                        setSelectedCheckpoint((value) => (value === checkpoint.id ? undefined : value));
+                        refresh();
+                        ui.notify(t("已删除检查点", "Checkpoint deleted"));
+                      })
+                      .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("删除检查点失败", "Could not delete checkpoint"), "error"));
+                  },
+                })}
+              >
+                <Icon name="trash" size={12} />
+              </button>
+            )}
           </div>
           {selectedCheckpoint === checkpoint.id && (
             <>

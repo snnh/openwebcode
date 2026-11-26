@@ -182,12 +182,13 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
 
   // App 命令动作面：mod+s 保存 / 分栏焦点切换
   useEffect(() => {
-    if (!actionsRef) return;
-    actionsRef.current.save = save;
-    actionsRef.current.focus = () => editorRef.current?.focus();
+    const actions = actionsRef?.current;
+    if (!actions) return;
+    actions.save = save;
+    actions.focus = () => editorRef.current?.focus();
     return () => {
-      actionsRef.current.save = undefined;
-      actionsRef.current.focus = undefined;
+      actions.save = undefined;
+      actions.focus = undefined;
     };
   }, [actionsRef, save]);
 

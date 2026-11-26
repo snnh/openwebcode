@@ -1,4 +1,4 @@
-export type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses";
+export type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses" | "gemini-generate-content";
 export type WebCapability = "search" | "fetch";
 export type WebProviderType = "jina" | "brave" | "tavily" | "custom" | "bing" | "searxng" | "exa" | "linkup" | "bocha" | "firecrawl" | "baidu" | "scrapingbee" | "scraperapi" | "zenrows";
 

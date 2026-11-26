@@ -3,7 +3,7 @@ export type MessageRole = "user" | "assistant" | "tool";
 export interface TextContent {
   type: "text";
   text: string;
-  /** OpenAI Responses message item 的 v1 签名（{v:1,id,phase?}），随 text_end 落盘，回放时还原 message item id/phase。 */
+  /** Provider 不透明文本签名：Responses 为 v1 JSON（{v:1,id,phase?}），Gemini 为 thoughtSignature。 */
   textSignature?: string;
 }
 
@@ -27,6 +27,10 @@ export interface ToolCallContent {
   /** OpenAI Responses function_call item 的原始 id（fc_xxx）：随块持久化，回放时原样回传，
    * 思维模式端点校验 reasoning↔function_call 配对时需要。旧数据缺失时回放端派生 fc_ id。 */
   itemId?: string;
+  /** Provider 不透明签名（Gemini functionCall 的 thoughtSignature）：原样回放才能通过多轮工具校验。 */
+  signature?: string;
+  /** Provider 分配的调用 id（Gemini functionCall.id）：回放时同时写入 functionCall / functionResponse。 */
+  providerId?: string;
 }
 
 export interface ToolResultContent {

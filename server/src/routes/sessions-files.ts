@@ -7,6 +7,7 @@ import { ContextManager } from "../context/context-manager.js";
 import { SubAgentLaunchError } from "../agent/agent-runner.js";
 import { errorMessage } from "../error-utils.js";
 import { resolveActiveLeafId } from "../sessions/session-tree.js";
+import { checkpointSummary } from "../snapshots/backend.js";
 import { acquireSnapshotSessionLock, beginSessionMutation, isSessionMutationActive, isSnapshotSessionLocked, isTerminalOpening } from "../snapshots/session-lock.js";
 import { RAW_PREVIEW_MIME } from "./route-context.js";
 import type { ManagedSession, RouteContext } from "./route-context.js";
@@ -201,7 +202,8 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
     const releaseWorkspace = acquireManagedWorkspaceUse(session);
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
-      return await (await resolveSnapshotBackend(session)).list();
+      const backend = await resolveSnapshotBackend(session);
+      return (await backend.list()).map(checkpointSummary);
     } finally {
       releaseWorkspace();
     }
@@ -252,7 +254,8 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
       if (!fresh) return reply.code(404).send({ error: "Session not found" });
       const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
       const checkpoint = await backend.create(label, fresh.messages.length, ledger, resolveActiveLeafId(fresh.messages, fresh.activeLeafId));
-      events.publish({ source: "session", type: "checkpoint.created", sessionId: session.id, payload: checkpoint }); return reply.code(201).send(checkpoint);
+      const summary = checkpointSummary(checkpoint);
+      events.publish({ source: "session", type: "checkpoint.created", sessionId: session.id, payload: summary }); return reply.code(201).send(summary);
     } finally {
       releaseWorkspace();
     }
@@ -324,7 +327,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
         await sessions.truncateMessages(session.id, checkpoint.messageCount, checkpoint.activeLeafId);
         await new ContextManager(sessions.contextRoot(session.id)).replaceLedger(checkpoint.ledger);
       }
-      events.publish({ source: "session", type: "checkpoint.restored", sessionId: session.id, payload: { id: checkpoint.id, filesOnly: request.body?.filesOnly === true } }); return checkpoint;
+      events.publish({ source: "session", type: "checkpoint.restored", sessionId: session.id, payload: { id: checkpoint.id, filesOnly: request.body?.filesOnly === true } }); return checkpointSummary(checkpoint);
     } finally {
       // 后端可能已经换过工作区，即使消息/账本写回失败也不能继续复用旧 core 配置。
       if (restoreStarted) configuredSessions.delete(session.id);

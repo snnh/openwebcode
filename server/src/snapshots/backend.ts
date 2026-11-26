@@ -17,7 +17,12 @@ export interface SnapshotCapabilityInfo {
   costHint: "instant" | "linear";
   requiresAdmin: boolean;
   detail?: string;
+  /** 是否支持逐个删除检查点；缺省 true（差异链后端为 false）。 */
+  supportsDelete?: boolean;
 }
+
+/** 对外可见的检查点摘要：不携带账本副本（仅恢复路径在服务端内部使用）。 */
+export type CheckpointSummary = Omit<Checkpoint, "ledger">;
 
 export interface SnapshotBackend {
   readonly name: string;
@@ -51,7 +56,7 @@ function isCheckpoint(value: unknown): value is Checkpoint {
  * 兼容旧/损坏元数据：activeLeafId 不是非空字符串时只丢弃该字段，不丢掉整个
  * 检查点（旧实现会把这类检查点从列表里静默过滤掉，用户看不到也回滚不了）。
  */
-export function normalizeCheckpoint(value: unknown): Checkpoint | undefined {
+function normalizeCheckpoint(value: unknown): Checkpoint | undefined {
   if (!isCheckpoint(value)) return undefined;
   const item = value as Checkpoint;
   if (item.activeLeafId === undefined || (typeof item.activeLeafId === "string" && item.activeLeafId.length > 0)) return item;
@@ -59,15 +64,19 @@ export function normalizeCheckpoint(value: unknown): Checkpoint | undefined {
   return rest;
 }
 
-/** 读取 checkpoints.json：文件缺失或内容损坏都按空列表处理（容错）。 */
-export async function readCheckpoints(file: string): Promise<Checkpoint[]> {
+/**
+ * 读取 checkpoints.json：默认对文件缺失/内容损坏容错为空列表；
+ * strict 模式只把 ENOENT 当空列表，其余错误（权限、损坏 JSON）向上抛。
+ */
+export async function readCheckpoints(file: string, options: { strict?: boolean } = {}): Promise<Checkpoint[]> {
   try {
     const value = JSON.parse(await readFile(file, "utf8")) as unknown;
     return Array.isArray(value) ? value.flatMap((item) => {
       const checkpoint = normalizeCheckpoint(item);
       return checkpoint ? [checkpoint] : [];
     }) : [];
-  } catch {
+  } catch (error) {
+    if (options.strict && !(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT")) throw error;
     return [];
   }
 }
@@ -76,9 +85,30 @@ export async function writeCheckpoints(file: string, checkpoints: Checkpoint[]):
   await writeUtf8Atomically(file, `${JSON.stringify(checkpoints, null, 2)}\n`);
 }
 
-/** 简要 diff 文本统一截断到 maxLines 行。 */
+/** API/WS 只下发摘要：账本随上下文增长，列表/事件不应重复传输整份副本。 */
+export function checkpointSummary(checkpoint: Checkpoint): CheckpointSummary {
+  if (checkpoint.ledger === undefined) return checkpoint;
+  const { ledger: _ledger, ...summary } = checkpoint;
+  return summary;
+}
+
+/** 简要 diff 文本统一截断到 maxLines 行；流式扫描，避免为超大 diff 建整行数组。 */
 export function truncateLines(text: string, maxLines = 200): string {
-  const lines = text.split("\n");
-  if (lines.length <= maxLines) return text;
-  return `${lines.slice(0, maxLines).join("\n")}\n…（截断，共 ${lines.length} 行）`;
+  if (maxLines <= 0) return text;
+  let lineCount = 1;
+  let cut = -1;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== "\n") continue;
+    lineCount += 1;
+    if (lineCount === maxLines + 1) {
+      cut = index;
+      break;
+    }
+  }
+  if (cut === -1) return text;
+  let total = lineCount;
+  for (let index = cut + 1; index < text.length; index += 1) {
+    if (text[index] === "\n") total += 1;
+  }
+  return `${text.slice(0, cut)}\n…（截断，共 ${total} 行）`;
 }
