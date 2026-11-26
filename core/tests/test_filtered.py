@@ -55,7 +55,12 @@ def collect_until_response(proc, request_id):
 def configure(proc, request_id, cwd, sandbox=None, session="filtered"):
     params = {"sessionId": session, "cwd": cwd}
     if sandbox is not None:
-        params["sandbox"] = sandbox
+        # RLIMIT_NPROC on POSIX is per real UID, not per sandbox tree.  Hosted
+        # CI users (notably arm64) can already own more than the default 64
+        # processes, which would make every fork inside the test fail before
+        # isolation is exercised.  This test is about namespace/mount policy,
+        # so request the accepted maximum instead of inheriting that host noise.
+        params["sandbox"] = {"jobMaxProcesses": 4096, **sandbox}
     request(proc, request_id, "session.configure", params)
     return collect_until_response(proc, request_id)[0]
 

@@ -136,7 +136,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 
 ## 性能与资源占用
 
-v1.18.0 实测（Linux x86-64，5000 条消息会话）；1.19.0 的发布基准以 Release 资产中的 `bench-results-1.19.0.json` 为准：
+v1.18.0 实测（Linux x86-64，5000 条消息会话）；1.19.1 的发布基准以 Release 资产中的 `bench-results-1.19.1.json` 为准：
 
 - server：空闲约 140 MiB RSS；单个长会话堆增量约 5.6 MiB，16 会话约 86 MiB 堆 / 242 MiB RSS。
 - 浏览器：长会话堆约 37 MiB；滚动 59.9 fps，输入回显 30.2 ms，持续滚动增长 0.08%。

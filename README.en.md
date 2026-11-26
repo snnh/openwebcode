@@ -139,7 +139,7 @@ owc run "Add a unit test for main.ts" --cwd . --json --yolo
 
 ## Performance and footprint
 
-Measured on Linux x86-64 with v1.18.0 and 5000-message sessions; the 1.19.0 release baseline is published as `bench-results-1.19.0.json` in the Release assets:
+Measured on Linux x86-64 with v1.18.0 and 5000-message sessions; the 1.19.1 release baseline is published as `bench-results-1.19.1.json` in the Release assets:
 
 - server: ~140 MiB RSS idle; a long session adds ~5.6 MiB heap; 16 sessions hold ~86 MiB heap / 242 MiB RSS.
 - browser: ~37 MiB heap with a long session; 59.9 fps scrolling, 30.2ms input echo, 0.08% growth across repeated scrolls.

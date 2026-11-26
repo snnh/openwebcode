@@ -2,6 +2,12 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.19.1] - 2026-11-26
+
+### 修复
+
+- **Linux arm64 发布门禁**：v1.19.0 的 release 流水线在 linux x64 / arm64 的 core `bwrap` / `filtered` 测试中失败，原因是 POSIX `RLIMIT_NPROC` 按真实 UID 计数，而托管 runner 用户已拥有超过默认 64 个进程，沙盒内 `fork` 被拒绝。测试现为隔离用例显式请求 `jobMaxProcesses: 4096`，不再把宿主进程数当作沙盒能力；运行时默认值与产品行为不变。v1.19.0 tag 保留，但因发布门禁未通过未产出 Release；本版本仅修正测试门禁。
+
 ## [1.19.0] - 2026-11-26
 
 > 升级提示：git-shadow 检查点创建要求 Git ≥ 2.25；server 的 `@snnh/llm-api` 已固定到 `5e72a35`。
