@@ -364,9 +364,9 @@ docker compose up -d                          # or just compose (pulls the GHCR 
 
 ### Sandbox capabilities and limits
 
-- **Landlock**: available by default inside the container (host kernel ≥ 5.13), no extra configuration — this is the default sandbox tier in containers.
-- **bubblewrap**: requires the host to allow unprivileged user namespaces and the container to allow `mount` and friends — uncomment `security_opt: seccomp=unconfined` in compose (add `cap_add: [SYS_ADMIN]` if needed). When unavailable, the core degrades to Landlock with a diagnostic trace — by design.
-- **Snapshots**: overlayfs mounts are subject to the same seccomp limits; the default snapshot backend probe chain degrades automatically (git-shadow/refs); unblock seccomp if overlay is required.
+- **bubblewrap**: the default sandbox tier on Linux, including containers. It requires the host to allow unprivileged user namespaces and the container to allow `mount` and friends — uncomment `security_opt: seccomp=unconfined` in compose (add `cap_add: [SYS_ADMIN]` if needed). When unavailable, core **fails closed**: commands are refused with guidance and it does **not** silently fall back to Landlock.
+- **Landlock**: an explicit compatibility tier available with host kernel ≥ 5.13. `denyPaths` are not enforced for commands inside the sandbox, and network denial requires Landlock ABI 4 (roughly 6.7+) and covers TCP only. It is never selected automatically in a container; switch explicitly in the session/settings, or set `OWC_SANDBOX_MODE`.
+- **Snapshots**: overlayfs mounts are subject to the same seccomp limits; the Linux probe chain falls back to git-shadow automatically; unblock seccomp if overlay is required.
 - No in-place self-update inside the container (`OWC_UPDATE_CHECK_ENABLED=false`, `/opt/openwebcode` is read-only for the `owc` user) — upgrading means pulling a new image; the data volume is untouched.
 
 ### Publishing (docker.yml)

@@ -363,9 +363,9 @@ docker compose up -d                          # 或直接 compose（默认拉 GH
 
 ### 沙盒能力边界
 
-- **Landlock**：容器内默认可用（宿主机内核 ≥ 5.13），无需额外配置，这是容器内的默认沙盒档。
-- **bubblewrap**：需要宿主机允许非特权 user namespace，且容器放行 `mount` 等系统调用——compose 里取消 `security_opt: seccomp=unconfined` 注释（必要时 `cap_add: [SYS_ADMIN]`）。不可用时 core 自动降级 Landlock 并在诊断留痕，属设计内行为。
-- **快照**：overlayfs 挂载同样受 seccomp 限制，默认快照后端探测链会自动降级（git-shadow/refs）；需要 overlay 时放开 seccomp。
+- **bubblewrap**：Linux（含容器）的默认沙盒档。需要宿主机允许非特权 user namespace，且容器放行 `mount` 等系统调用——compose 里取消 `security_opt: seccomp=unconfined` 注释（必要时 `cap_add: [SYS_ADMIN]`）。不可用时 core **fail-closed**：命令拒绝执行并给出指引，**不会**自动降级到 Landlock。
+- **Landlock**：显式兼容档，宿主机内核 ≥ 5.13 即可使用；`denyPaths` 对沙盒内命令不生效，禁网需要 Landlock ABI 4（约 6.7+）且只覆盖 TCP。容器内不会自动选择，需要在会话/设置里显式切换，或改 `OWC_SANDBOX_MODE`。
+- **快照**：overlayfs 挂载同样受 seccomp 限制，Linux 默认探测链会自动回落到 git-shadow；需要 overlay 时放开 seccomp。
 - 容器内不做原地自更新（`OWC_UPDATE_CHECK_ENABLED=false`，`/opt/openwebcode` 对 `owc` 用户只读）——升级 = 拉新镜像，数据卷不动。
 
 ### 发布（docker.yml）
